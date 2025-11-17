@@ -1,0 +1,125 @@
+"""API集成测试"""
+
+import pytest
+import json
+from httpx import AsyncClient
+
+
+class TestAPIEndpoints:
+    """API端点集成测试"""
+
+    @pytest.mark.asyncio
+    async def test_root_endpoint(self, client: AsyncClient):
+        """测试根路径"""
+        response = await client.get("/")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["service"] == "Claude Code API"
+        assert "version" in data
+        assert "endpoints" in data
+
+    @pytest.mark.asyncio
+    async def test_health_endpoint(self, client: AsyncClient):
+        """测试健康检查端点"""
+        response = await client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "healthy"
+        assert data["service"] == "claude-code-api"
+        assert "version" in data
+
+    @pytest.mark.asyncio
+    async def test_metrics_endpoint(self, client: AsyncClient):
+        """测试指标端点"""
+        response = await client.get("/metrics")
+        assert response.status_code == 200
+        data = response.json()
+        assert "version" in data
+        assert "ccr_command" in data
+        assert "requests_total" in data
+        assert "requests_active" in data
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_endpoint_headers(self, client: AsyncClient, sample_request):
+        """测试聊天流端点的响应头"""
+        response = await client.post("/chat/stream/testuser", json=sample_request, follow_redirects=True)
+
+        # 检查响应状态
+        assert response.status_code == 200
+
+        # 检查SSE相关的响应头
+        assert response.headers.get("content-type") == "text/event-stream; charset=utf-8"
+        assert response.headers.get("cache-control") == "no-cache"
+        assert response.headers.get("connection") == "keep-alive"
+        assert response.headers.get("x-accel-buffering") == "no"
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_with_minimal_request(self, client: AsyncClient):
+        """测试最小请求的聊天流"""
+        minimal_request = {
+            "user": "test_user",
+            "content": "hi"
+        }
+
+        response = await client.post("/chat/stream/testuser", json=minimal_request)
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_with_invalid_request(self, client: AsyncClient):
+        """测试无效请求的聊天流"""
+        invalid_request = {
+            "user": "test_user"
+            # 缺少content字段
+        }
+
+        response = await client.post("/chat/stream/testuser", json=invalid_request)
+        assert response.status_code == 422  # Unprocessable Entity
+
+    @pytest.mark.asyncio
+    async def test_correlation_id_header(self, client: AsyncClient):
+        """测试关联ID头处理"""
+        # 发送带有关联ID的请求
+        correlation_id = "test-correlation-id-123"
+        response = await client.get(
+            "/health",
+            headers={"X-Correlation-ID": correlation_id}
+        )
+
+        assert response.status_code == 200
+        # 检查响应中是否包含相同的关联ID
+        assert response.headers.get("X-Correlation-ID") == correlation_id
+
+    @pytest.mark.asyncio
+    async def test_auto_generated_correlation_id(self, client: AsyncClient):
+        """测试自动生成的关联ID"""
+        response = await client.get("/health")
+
+        assert response.status_code == 200
+        # 检查响应中是否有自动生成的关联ID
+        assert "X-Correlation-ID" in response.headers
+        assert len(response.headers["X-Correlation-ID"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_with_different_commands(self, client: AsyncClient):
+        """测试不同CCR命令的聊天流"""
+        minimal_request = {
+            "user": "test_user",
+            "content": "hi"
+        }
+
+        # 测试不同的命令
+        for cmd in ["ccr", "codebuddy", "codebuddy-code"]:
+            response = await client.post("/chat/stream/testuser", json=minimal_request)
+            assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_404_not_found(self, client: AsyncClient):
+        """测试不存在的端点"""
+        response = await client.get("/nonexistent")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_method_not_allowed(self, client: AsyncClient):
+        """测试不允许的HTTP方法"""
+        response = await client.get("/chat/stream")
+        assert response.status_code == 405  # Method Not Allowed

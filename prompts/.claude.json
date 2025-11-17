@@ -1,0 +1,59 @@
+{
+  "installMethod": "unknown",
+  "autoUpdates": true,
+  "cachedStatsigGates": {
+    "tengu_disable_bypass_permissions_mode": false,
+    "tengu_tool_pear": false
+  },
+  "firstStartTime": "2025-11-01T16:11:04.111Z",
+  "sonnet45MigrationComplete": true,
+  "mcpServers": {
+    "NOS-MCP": {
+      "type": "sse",
+      "url": "http://toolsnet.nos-mcp.ngate.tencent-cloud.com/sse"
+    },
+    "NOSGPT_IWIKI": {
+      "disabled": false,
+      "timeout": 60,
+      "command": "npx",
+      "args": [
+        "-y",
+        "@tencent/mcprouter"
+      ],
+      "env": {
+        "VEDAS_MCP_URL": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_IWIKI/ins_UKDSwnIXbW/sse",
+        "VEDAS_TOKEN": "f9hmEO22BhIRTtpNHV9lVfSu@2745"
+      },
+      "transportType": "stdio"
+    },
+    "NOSGPT_SYSLOG": {
+      "disabled": false,
+      "timeout": 60,
+      "command": "npx",
+      "args": [
+        "-y",
+        "@tencent/mcprouter"
+      ],
+      "env": {
+        "VEDAS_MCP_URL": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_SYSLOG/ins_r81OKVUlou/sse",
+        "VEDAS_TOKEN": "f9hmEO22BhIRTtpNHV9lVfSu@2745"
+      },
+      "transportType": "stdio"
+    },
+    "NOSGPT_TALOS": {
+      "disabled": false,
+      "timeout": 60,
+      "command": "npx",
+      "args": [
+        "-y",
+        "@tencent/mcprouter"
+      ],
+      "env": {
+        "VEDAS_MCP_URL": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_TALOS/ins_869aXHMtPg/sse",
+        "VEDAS_TOKEN": "f9hmEO22BhIRTtpNHV9lVfSu@2745"
+      },
+      "transportType": "stdio"
+    }
+  },
+  "userID": "4088a7f9b8fe6da1b20126381f53d162046225a3badf923331cbff31499f592c"
+}

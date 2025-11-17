@@ -1,0 +1,21 @@
+[Unit]
+Description=Claude Code API Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/tswitch-rca-agent
+ExecStart=/root/.local/bin/uv run python -m uvicorn src.claude_code_api.api:app --host 0.0.0.0 --port 8081
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+# 日志限制
+SystemMaxUse=100M
+SystemMaxFileSize=10M
+SystemMaxFiles=10
+MaxRetentionSec=7d
+
+[Install]
+WantedBy=multi-user.target
