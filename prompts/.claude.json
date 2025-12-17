@@ -13,46 +13,36 @@
       "url": "http://toolsnet.nos-mcp.ngate.tencent-cloud.com/sse"
     },
     "NOSGPT_IWIKI": {
-      "disabled": false,
-      "timeout": 60,
-      "command": "npx",
-      "args": [
-        "-y",
-        "@tencent/mcprouter"
-      ],
-      "env": {
-        "VEDAS_MCP_URL": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_IWIKI/ins_UKDSwnIXbW/sse",
-        "VEDAS_TOKEN": "f9hmEO22BhIRTtpNHV9lVfSu@2745"
+      "url": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_IWIKI/ins_yksLN3K7GS/mcp",
+      "headers": {
+        "Authorization": "Bearer f9hmEO22BhIRTtpNHV9lVfSu@2745",
+        "x-request-from": "router"
       },
-      "transportType": "stdio"
+      "type": "http"
     },
     "NOSGPT_SYSLOG": {
-      "disabled": false,
-      "timeout": 60,
-      "command": "npx",
-      "args": [
-        "-y",
-        "@tencent/mcprouter"
-      ],
-      "env": {
-        "VEDAS_MCP_URL": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_SYSLOG/ins_r81OKVUlou/sse",
-        "VEDAS_TOKEN": "f9hmEO22BhIRTtpNHV9lVfSu@2745"
+      "url": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_SYSLOG/ins_r81OKVUlou/sse",
+      "headers": {
+        "Authorization": "Bearer f9hmEO22BhIRTtpNHV9lVfSu@2745",
+        "x-request-from": "router"
       },
-      "transportType": "stdio"
+      "type": "sse"
     },
     "NOSGPT_TALOS": {
-      "disabled": false,
-      "timeout": 60,
-      "command": "npx",
-      "args": [
-        "-y",
-        "@tencent/mcprouter"
-      ],
-      "env": {
-        "VEDAS_MCP_URL": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_TALOS/ins_869aXHMtPg/sse",
-        "VEDAS_TOKEN": "f9hmEO22BhIRTtpNHV9lVfSu@2745"
+      "url": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_TALOS/ins_869aXHMtPg/sse",
+      "headers": {
+        "Authorization": "Bearer f9hmEO22BhIRTtpNHV9lVfSu@2745",
+        "x-request-from": "router"
       },
-      "transportType": "stdio"
+      "type": "sse"
+    },
+    "NOSGPT_LINK": {
+      "url": "http://api.open.vedas.woa.com/mcp/api/NOSGPT_LINK/ins_ty4LRy5ZXT/sse",
+      "headers": {
+        "Authorization": "Bearer f9hmEO22BhIRTtpNHV9lVfSu@2745",
+        "x-request-from": "router"
+      },
+      "type": "sse"
     }
   },
   "userID": "4088a7f9b8fe6da1b20126381f53d162046225a3badf923331cbff31499f592c"
