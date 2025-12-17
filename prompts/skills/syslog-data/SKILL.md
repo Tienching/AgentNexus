@@ -1,26 +1,37 @@
 ---
 name: syslog-data
-description: 专门用于从NOSGPT_SYSLOG系统获取设备日志信息的技能。该技能可以查询SONiC设备的系统日志，支持按时间范围、主机名、进程名、接口名等条件过滤，用于网络故障诊断和问题排查。
+description: 专门用于从NOSGPT_SYSLOG系统获取设备日志信息的技能。该技能通过MCP工具查询SONiC设备的系统日志，支持按时间范围、主机名、进程名、接口名等条件过滤，用于网络故障诊断和问题排查。
 ---
 
 # Syslog Data Retrieval Skill
 
-这是一个专门用于从NOSGPT_SYSLOG系统获取设备日志信息的技能。该技能可以查询SONiC设备的系统日志，支持按时间范围、主机名、进程名、接口名等条件过滤，用于网络故障诊断和问题排查。
+这是一个专门用于从NOSGPT_SYSLOG系统获取设备日志信息的技能。该技能**直接使用MCP工具**查询SONiC设备的系统日志，支持按时间范围、主机名、进程名、接口名等条件过滤，用于网络故障诊断和问题排查。
+
+## 重要说明
+
+**本技能使用MCP工具进行日志查询，不使用任何脚本文件。** 所有日志查询操作通过以下MCP工具完成：
+
+- `mcp__NOSGPT_SYSLOG__SearchLog` - 搜索日志（主要工具）
+- `mcp__NOSGPT_SYSLOG__GetCurrentTimestamp` - 获取当前时间戳
+- `mcp__NOSGPT_SYSLOG__LogClassify` - 日志分类
+- `mcp__NOSGPT_SYSLOG__GetEsFields` - 获取ES字段信息
+- `mcp__NOSGPT_SYSLOG__QueryClickhouse` - 查询Clickhouse存储
+- `mcp__NOSGPT_SYSLOG__ExtractAndAggregate` - 提取并聚合日志数据
 
 ## 使用方法
 
 1. **调用技能**，告诉我要查询什么日志
 2. **提供查询参数**（时间范围、设备名、进程名等）
-3. **获取系统日志信息**
+3. **直接调用MCP工具获取系统日志信息**
 
 ## 核心功能
 
-- **📅 时间范围查询**: 支持精确的时间范围过滤
-- **🖥️ 主机过滤**: 按设备主机名过滤日志
-- **⚙️ 进程过滤**: 按进程名过滤（如bgpd、teamd、syncd等）
-- **🔌 接口过滤**: 按网络接口名过滤相关日志
-- **🔍 关键词搜索**: 支持自定义关键词搜索
-- **⏰ 时间获取**: 自动获取当前时间用于确定查询范围
+- **时间范围查询**: 支持精确的时间范围过滤
+- **主机过滤**: 按设备主机名过滤日志
+- **进程过滤**: 按进程名过滤（如bgpd、teamd、syncd等）
+- **接口过滤**: 按网络接口名过滤相关日志
+- **关键词搜索**: 支持自定义关键词搜索
+- **时间获取**: 使用MCP工具或系统命令获取当前时间
 
 ## 支持的日志类型
 
@@ -108,9 +119,9 @@ description: 专门用于从NOSGPT_SYSLOG系统获取设备日志信息的技能
    }
    ```
 
-4. **工具调用**:
-   - 使用系统命令获取当前时间 - `date '+%Y-%m-%dT%H:%M:%S+08:00'`
-   - `NOSGPT_SYSLOG.SearchLog` - 搜索日志
+4. **MCP工具调用**:
+   - 使用 `mcp__NOSGPT_SYSLOG__GetCurrentTimestamp` 或系统命令获取当前时间
+   - 使用 `mcp__NOSGPT_SYSLOG__SearchLog` 搜索日志
 
 5. **结果格式化**:
    - 时间戳转换和排序
