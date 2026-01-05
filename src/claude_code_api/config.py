@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     api_workers: int = 1
 
     # CCR 配置
-    ccr_command: str = "codebuddy-code"  # ccr / codebuddy-code / codebuddy
+    ccr_command: str = "claude-internal"  # ccr / claude-internal / codebuddy-code
     ccr_timeout: int = 120  # 秒
     agent_ccr_command_map: dict = {}
 
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     # 用户目录配置
-    user_home_base: str = "/home"  # 用户主目录基础路径（现在使用/home/{agent_name}/{api_user}结构）
+    user_home_base: str = "/home"  # 用户主目录基础路径（使用/home/{agent_name}/sessions/{session_id}结构）
     auto_create_user_dir: bool = True   # 是否自动创建用户目录
 
     model_config = {

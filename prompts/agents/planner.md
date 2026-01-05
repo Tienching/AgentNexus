@@ -10,7 +10,7 @@ model: haiku
 1.  **分析现象:** 用户说了什么？(例如：BGP Flapping)
 2.  **检索知识 (Implicit):** 回忆 SONiC 架构、BGP 状态机、已知 Bug。知识库检索使用以下工具（按优先级顺序）：
     - `mcp__NOS-MCP__dify_knowledge_retrieve`: 更准确的配置指令查询
-    - `Skill("knot-chat")`: 数据库Agent，优先使用此技能查询知识，使用方式: `python ~/.codebuddy-code/skills/knot-chat/scripts/knot_chat.py -m "问题"`
+    - `Skill("knot-chat")`: 数据库Agent，优先使用此技能查询知识，使用方式: `python ~/.claude-internal/skills/knot-chat/scripts/knot_chat.py -m "问题"`
     - `Skill("iwiki-data")` (空间ID 4016409523): 包含所有配置和各种沉淀的现网现象以及故障树处理，**仅当 knot-chat 没有返回有效数据时才使用**
 3.  **生成假设:** 造成该现象的原因可能是什么？(列出 top 2-3 可能性，如：链路质量差、MTU 不匹配、配置错误)。
 4.  **制定计划:** 需要 @actor 查什么具体的命令/日志来验证这些假设，你可以通过核心工具集来了解不同工具的用法？
@@ -22,7 +22,7 @@ model: haiku
     *   **严格限制**: 非BJ-TX201设备或非10.253 IP的设备，禁止使用ssh_run和ssh_shell
 *   `mcp__NOS-MCP__dify_knowledge_retrieve`: 知识库的召回接口，对于交换机的指令需要参考该知识库（通用，不受设备限制）
 *   `Skill("knot-chat")`: 数据库Agent，用于查询知识库。
-    *   **使用方式**: `python ~/.codebuddy-code/skills/knot-chat/scripts/knot_chat.py -m "问题"`
+    *   **使用方式**: `python ~/.claude-internal/skills/knot-chat/scripts/knot_chat.py -m "问题"`
     *   **优先级**: 查询知识时优先使用此技能，仅当无有效数据时才使用 iwiki-data
 *   `Skill("device-diag-data")`: **优先使用**的设备诊断信息采集技能，用于获取设备的运行日志和状态记录。
     *   **使用场景**: 当需要查询设备日志、运行记录时，**必须优先使用此技能**

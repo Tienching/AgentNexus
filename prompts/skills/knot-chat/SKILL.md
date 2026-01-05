@@ -8,5 +8,5 @@ description: 数据库Agent，用于查询知识库。当需要查询技术知�
 ## 使用方法
 
 ```bash
-python ~/.codebuddy-code/skills/knot-chat/scripts/knot_chat.py -m "你的问题"
+python ~/.claude-internal/skills/knot-chat/scripts/knot_chat.py -m "你的问题"
 ```

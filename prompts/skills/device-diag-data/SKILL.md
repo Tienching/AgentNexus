@@ -29,14 +29,14 @@ ls -la *<设备名>*.tar.gz 2>/dev/null
 如果本地没有文件，查询远程是否有今天内完成的任务：
 
 ```bash
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py query -d "<设备名>"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py query -d "<设备名>"
 ```
 
 **检查返回结果中的 `createTime` 字段**：
 - 如果任务创建时间是**今天**（与当前日期相同），且有 `resultFileUrl`
 - 则使用 `download` 命令下载该文件：
   ```bash
-  python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py download -u "<resultFileUrl>"
+  python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py download -u "<resultFileUrl>"
   ```
 - 告知用户："发现今天已有的诊断任务，正在下载..."
 
@@ -47,7 +47,7 @@ python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py 
 3. **或者用户明确要求获取最新/实时的诊断数据**（如用户说"重新采集"、"获取最新的"、"刷新diag"等）
 
 ```bash
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py all -d "<设备名>"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py all -d "<设备名>"
 ```
 
 ### 判断逻辑流程图
@@ -131,7 +131,7 @@ python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py 
 ### 命令行语法
 
 ```bash
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py <command> [options]
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py <command> [options]
 ```
 
 ### 可用命令
@@ -139,55 +139,55 @@ python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py 
 #### 1. 创建任务
 ```bash
 # 使用IP地址创建任务
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py create -d "29.159.248.25" --ip
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py create -d "29.159.248.25" --ip
 
 # 使用设备名称创建任务（默认方式，无需--name参数）
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py create -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py create -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
 
 # 批量设备创建任务
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py create -d "switch01,switch02"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py create -d "switch01,switch02"
 
 # 带自定义参数创建任务
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py create -d "29.159.248.25" --ip --tool-params '{"key1":"value1"}'
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py create -d "29.159.248.25" --ip --tool-params '{"key1":"value1"}'
 ```
 
 #### 2. 查询任务
 ```bash
 # 查询IP地址的任务状态
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py query -d "29.159.248.25" --ip
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py query -d "29.159.248.25" --ip
 
 # 查询设备名称的任务状态（默认方式）
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py query -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py query -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
 
 # 查询所有成功任务
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py query
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py query
 ```
 
 #### 3. 下载文件
 ```bash
 # 下载最新任务的文件（推荐）
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py download
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py download
 
 # 下载特定设备的任务文件
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py download -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py download -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
 
 # 下载IP地址设备的任务文件
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py download -d "29.159.248.25" --ip
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py download -d "29.159.248.25" --ip
 ```
 
 #### 4. 一体化操作
 ```bash
 # 使用设备名称进行完整采集（推荐，默认方式）
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py all -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py all -d "WH-XHZD-101-B08-TCS94R-GPULC-015"
 
 # 使用IP地址进行完整采集
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py all -d "29.159.248.25" --ip
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py all -d "29.159.248.25" --ip
 
 # 批量设备完整采集
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py all -d "switch01,switch02"
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py all -d "switch01,switch02"
 
 # 带自定义参数的完整采集
-python ~/.codebuddy-code/skills/device-diag-data/scripts/device_diag_manager.py all -d "29.159.248.25" --ip --tool-params '{"custom":"value"}'
+python ~/.claude-internal/skills/device-diag-data/scripts/device_diag_manager.py all -d "29.159.248.25" --ip --tool-params '{"custom":"value"}'
 ```
 
 ### 参数说明

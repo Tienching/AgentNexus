@@ -10,7 +10,7 @@ if [ ! -f "$PID_FILE" ]; then
     echo "尝试通过进程名查找..."
 
     # 尝试通过进程名停止
-    PIDS=$(pgrep -f "uvicorn src.claude_code_api.api:app")
+    PIDS=$(pgrep -f "uvicorn src.claude_code_api.app:app")
     if [ -z "$PIDS" ]; then
         echo "❌ 没有找到运行中的 API 进程"
         exit 1
@@ -49,7 +49,7 @@ else
     rm -f "$PID_FILE"
 
     # 尝试通过进程名停止
-    PIDS=$(pgrep -f "uvicorn src.claude_code_api.api:app")
+    PIDS=$(pgrep -f "uvicorn src.claude_code_api.app:app")
     if [ ! -z "$PIDS" ]; then
         echo "找到其他 API 进程: $PIDS"
         kill $PIDS

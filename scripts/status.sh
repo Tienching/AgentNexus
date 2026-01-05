@@ -31,7 +31,7 @@ fi
 # 查找所有相关进程
 echo ""
 echo "📊 所有 API 进程:"
-ps aux | grep -v grep | grep "uvicorn src.claude_code_api.api:app" || echo "   没有找到运行中的进程"
+ps aux | grep -v grep | grep "uvicorn src.claude_code_api.app:app" || echo "   没有找到运行中的进程"
 
 # 测试健康检查
 echo ""

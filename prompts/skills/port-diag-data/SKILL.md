@@ -26,7 +26,7 @@ description: 专门用于端口诊断数据采集的技能。该技能可以对�
 ### 基本用法
 
 ```bash
-python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d <设备IP或名称> -i <接口名称>
+python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d <设备IP或名称> -i <接口名称>
 ```
 
 ### 参数说明
@@ -52,19 +52,19 @@ python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d <设
 
 ```bash
 # 同步诊断端口（默认 normal 类型）
-python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128
+python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128
 
 # 仅获取端口映射信息（simple 类型）
-python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128 -t simple
+python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128 -t simple
 
 # 获取完整诊断数据（deep 类型，包含 bcm_phy 和 hexdump_eeprom）
-python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128 -t deep
+python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128 -t deep
 
 # 异步诊断端口，指定业务和操作者
-python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128 -b test -o jonaszchen -m async
+python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d 10.253.49.151 -i Eth200GE128 -b test -o jonaszchen -m async
 
 # 使用设备名称
-python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d "SH-FX-2202-F15-TCS84R-LA100G-015" -i Ethernet0
+python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d "SH-FX-2202-F15-TCS84R-LA100G-015" -i Ethernet0
 ```
 
 ## 返回结果
@@ -109,7 +109,7 @@ phy 85 *
 
 1. 使用 `simple` 类型获取端口映射：
    ```bash
-   python ~/.codebuddy-code/skills/port-diag-data/scripts/port_diag_data.py -d <设备> -i <接口> -t simple
+   python ~/.claude-internal/skills/port-diag-data/scripts/port_diag_data.py -d <设备> -i <接口> -t simple
    ```
 
 2. 在返回的 `port_mappings` 中查找对应关系：
