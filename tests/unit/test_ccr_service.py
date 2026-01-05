@@ -168,3 +168,22 @@ class TestCCRCodeService:
             assert len(responses) > 0
             # 验证至少有一个包含"Hello"的响应
             assert any("Hello" in r for r in responses)
+
+    def test_clean_content_enter_chat_event(self, service):
+        """测试过滤enter_chat事件"""
+        # 测试单独的enter_chat事件
+        content = '{"event_type": "enter_chat"}'
+        result = service._clean_content(content)
+        assert result == ""
+
+    def test_clean_content_normal_message(self, service):
+        """测试正常消息不受影响"""
+        content = "你好"
+        result = service._clean_content(content)
+        assert result == "你好"
+
+    def test_clean_content_mixed_content(self, service):
+        """测试混合内容正确过滤"""
+        content = '{"event_type": "enter_chat"}你好'
+        result = service._clean_content(content)
+        assert result == "你好"

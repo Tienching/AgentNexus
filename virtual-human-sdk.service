@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/root/virtual-human-sdk
-ExecStart=/root/.local/bin/uv run python -m uvicorn src.claude_code_api.api:app --host 0.0.0.0 --port 8081
+ExecStart=/root/.local/bin/uv run python -m uvicorn src.claude_code_api.app:app --host 0.0.0.0 --port 8081
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal

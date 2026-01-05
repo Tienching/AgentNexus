@@ -3,14 +3,16 @@
 import logging
 import logging.handlers
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 import sys
 from typing import Any, Dict, Optional
 import uuid
 from contextvars import ContextVar
 import traceback
-from datetime import timezone
+
+# 东八区时区
+CHINA_TZ = timezone(timedelta(hours=8))
 
 # 用于存储请求上下文的变量
 correlation_id_var: ContextVar[str] = ContextVar("correlation_id", default="")
@@ -21,8 +23,8 @@ class HumanReadableFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """格式化日志记录为人类可读格式"""
-        # 获取基本信息
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        # 获取基本信息（东八区时间）
+        timestamp = datetime.now(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
         level = record.levelname
         correlation_id = correlation_id_var.get()
 
@@ -95,9 +97,9 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         """格式化日志记录为JSON"""
-        # 基础日志对象
+        # 基础日志对象（东八区时间）
         log_obj: Dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(CHINA_TZ).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -246,7 +248,7 @@ class RequestLogger:
         client_info: Optional[str] = None,
     ) -> None:
         """记录完整的请求信息"""
-        self.start_time = datetime.now(timezone.utc)
+        self.start_time = datetime.now(CHINA_TZ)
 
         # 准备请求数据
         self.request_data = {
@@ -282,7 +284,7 @@ class RequestLogger:
     ) -> None:
         """记录响应信息"""
         if self.start_time:
-            duration_ms = int((datetime.now(timezone.utc) - self.start_time).total_seconds() * 1000)
+            duration_ms = int((datetime.now(CHINA_TZ) - self.start_time).total_seconds() * 1000)
         else:
             duration_ms = 0
 

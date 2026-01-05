@@ -1,4 +1,4 @@
-"""数据模型定义"""
+"""易事厅格式数据模型定义"""
 
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -14,6 +14,7 @@ class RequestModel(BaseModel):
     raw_msg: Optional[str] = Field(default="", description="企业微信解密后的消息回调")
     session_id: Optional[str] = Field(default="", description="助手号场景的会话id，其他场景忽略")
     business_keys: Optional[List[str]] = Field(default_factory=list, description="服务标识")
+    response_url: Optional[str] = Field(default="", description="流式连接断开后的回调URL，用于发送剩余消息")
 
     # 允许额外字段
     class Config:

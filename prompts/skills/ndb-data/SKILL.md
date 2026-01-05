@@ -49,7 +49,7 @@ description: 专门用于从NDB系统获取设备信息的技能。当需要查�
 ### 命令行语法
 
 ```bash
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py [options]
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py [options]
 ```
 
 ### 使用示例
@@ -57,25 +57,25 @@ python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py [options]
 #### 1. 通过设备名称查询devid
 ```bash
 # 查询单个设备
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "BJ-TX201-C03U05-IP49050-TCS9500-LC-159"
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "BJ-TX201-C03U05-IP49050-TCS9500-LC-159"
 
 # 批量查询设备
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01,switch02,switch03"
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01,switch02,switch03"
 ```
 
 #### 2. 通过IP地址查询devid
 ```bash
 # 查询单个IP
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "29.159.248.25" --ip
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "29.159.248.25" --ip
 
 # 批量查询IP
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "29.159.248.25,29.159.248.26" --ip
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "29.159.248.25,29.159.248.26" --ip
 ```
 
 #### 3. 混合查询（不推荐，但支持）
 ```bash
 # 如果某些条目是IP格式，会自动识别
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "BJ-TX201-C03U05-IP49050-TCS9500-LC-159,29.159.248.25"
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "BJ-TX201-C03U05-IP49050-TCS9500-LC-159,29.159.248.25"
 ```
 
 ### 参数说明
@@ -223,22 +223,22 @@ Skill包含完整的错误处理机制：
 ### 1. 批量查询优化
 ```bash
 # 推荐：一次查询多个设备，减少API调用
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "device1,device2,device3"
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "device1,device2,device3"
 ```
 
 ### 2. 结果保存
 ```bash
 # 保存查询结果到文件
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --save-to-file device_ids.json
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --save-to-file device_ids.json
 ```
 
 ### 3. 脚本集成
 ```bash
 # 在其他脚本中使用查询结果
-DEVID=$(python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].id')
-DEVICE_TYPE=$(python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].type')
-DEVICE_LEVEL=$(python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].levelName')
-MANAGE_IP=$(python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].manageIp')
+DEVID=$(python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].id')
+DEVICE_TYPE=$(python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].type')
+DEVICE_LEVEL=$(python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].levelName')
+MANAGE_IP=$(python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --output json | jq -r '.devices[0].manageIp')
 echo "设备ID: $DEVID, 类型: $DEVICE_TYPE, 角色: $DEVICE_LEVEL, 管理IP: $MANAGE_IP"
 ```
 
@@ -280,7 +280,7 @@ echo "设备ID: $DEVID, 类型: $DEVICE_TYPE, 角色: $DEVICE_LEVEL, 管理IP: $
 
 可以通过添加 `--debug` 参数启用详细日志输出：
 ```bash
-python ~/.codebuddy-code/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --debug
+python ~/.claude-internal/skills/ndb-data/scripts/ndb_data_manager.py -d "switch01" --debug
 ```
 
 ## 性能优化
