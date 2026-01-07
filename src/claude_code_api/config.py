@@ -37,6 +37,23 @@ class Settings(BaseSettings):
     user_home_base: str = "/home"  # 用户主目录基础路径（使用/home/{agent_name}/sessions/{session_id}结构）
     auto_create_user_dir: bool = True   # 是否自动创建用户目录
 
+    # Redis 配置
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: str | None = None
+    redis_key_prefix: str = "aona:"  # Redis key 前缀
+    redis_connection_timeout: int = 10  # 连接超时（秒）
+    redis_socket_timeout: int = 5  # 操作超时（秒）
+    
+    # 任务执行器配置
+    executor_enabled: bool = True  # 是否启用任务执行器
+    executor_default_max_concurrency: int = 1  # 默认最大并行数
+    executor_poll_interval: float = 1.0  # 轮询间隔（秒）
+    executor_max_retries: int = 3  # 最大重试次数
+    executor_retry_delay: float = 5.0  # 重试延迟（秒）
+    executor_task_timeout: float = 3600.0  # 任务超时（秒）
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

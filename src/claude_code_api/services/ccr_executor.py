@@ -31,6 +31,7 @@ from ..models.agui_events import (
 from ..config import settings
 from ..logger import get_logger
 from .user_directory import UserDirectoryManager
+from .slash_command_handler import SlashCommandHandler, SLASH_COMMANDS
 
 logger = get_logger(__name__)
 
@@ -45,6 +46,23 @@ class CCRExecutor:
     def __init__(self, config=None):
         self.config = config or settings
         self.user_dir_manager = UserDirectoryManager(config)
+        self._slash_handlers: Dict[str, SlashCommandHandler] = {}
+
+    def _get_slash_handler(self, agent_name: str) -> SlashCommandHandler:
+        """Get or create slash command handler for agent"""
+        if agent_name not in self._slash_handlers:
+            self._slash_handlers[agent_name] = SlashCommandHandler(agent_name, self.config)
+        return self._slash_handlers[agent_name]
+
+    def _is_slash_command(self, content: str) -> bool:
+        """Check if content is a slash command (excluding /clear which has special handling)"""
+        content_lower = content.lower().strip()
+        for cmd in SLASH_COMMANDS:
+            if cmd == "/clear":
+                continue  # /clear has existing special handling
+            if content_lower == cmd or content_lower.startswith(cmd + " "):
+                return True
+        return False
 
     async def execute(
         self, 
@@ -87,6 +105,14 @@ class CCRExecutor:
 
         # 清理输入内容
         cleaned_content = self._clean_content(request.content)
+
+        # 检查是否为斜杠命令（非/clear）
+        if self._is_slash_command(cleaned_content):
+            async for output in self._handle_slash_command(
+                cleaned_content, agent_name, output_format
+            ):
+                yield output
+            return
 
         # 检查管理员命令
         if self._check_for_admin_command(cleaned_content):
@@ -157,6 +183,53 @@ class CCRExecutor:
         except Exception as e:
             logger.error(f"Process error: {e}", exc_info=True)
             error_msg = self._format_error_message(str(e), agent_name)
+            if output_format == "legacy":
+                yield self.format_legacy_error(error_msg)
+            else:
+                yield json.dumps({"type": "error", "message": error_msg})
+
+    async def _handle_slash_command(
+        self,
+        content: str,
+        agent_name: str,
+        output_format: str = "raw"
+    ) -> AsyncGenerator[str, None]:
+        """Handle slash commands and yield formatted response
+        
+        Args:
+            content: The slash command content
+            agent_name: Linux agent user name
+            output_format: Output format - "raw" or "legacy"
+            
+        Yields:
+            Formatted response strings
+        """
+        handler = self._get_slash_handler(agent_name)
+        
+        try:
+            # Get markdown response from handler
+            response = handler.handle_command(content)
+            
+            logger.info(f"Slash command handled", extra={
+                "command": content.split()[0] if content else "",
+                "agent_name": agent_name,
+                "response_length": len(response),
+            })
+            
+            if output_format == "legacy":
+                # For legacy format, send as SSE
+                yield self.format_legacy_sse(response, finished=True)
+            else:
+                # For raw format, create a simple result event
+                yield json.dumps({
+                    "type": "result",
+                    "subtype": "slash_command",
+                    "content": response,
+                })
+                
+        except Exception as e:
+            logger.error(f"Slash command error: {e}", exc_info=True)
+            error_msg = f"命令执行错误: {str(e)}"
             if output_format == "legacy":
                 yield self.format_legacy_error(error_msg)
             else:
