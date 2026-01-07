@@ -895,6 +895,39 @@ class AGUIAdapter(BaseAdapter):
             
             return "".join(results)
         
+        # 处理斜杠命令的成功响应
+        subtype = event.get("subtype")
+        if subtype == "slash_command":
+            content = event.get("content", "")
+            if content:
+                results = []
+                
+                # 创建新消息
+                if self.state and not self.state.message_started:
+                    msg_id = f"slash-msg-{uuid.uuid4()}"
+                    self.state.current_message_id = msg_id
+                    self.state.message_started = True
+                    msg_start = TextMessageStartEvent(
+                        messageId=msg_id,
+                        role=MessageRole.ASSISTANT
+                    )
+                    results.append(msg_start.to_sse())
+                
+                # 发送内容
+                if self.state and self.state.current_message_id:
+                    msg_content = TextMessageContentEvent(
+                        messageId=self.state.current_message_id,
+                        delta=content
+                    )
+                    results.append(msg_content.to_sse())
+                    
+                    # 结束消息
+                    msg_end = TextMessageEndEvent(messageId=self.state.current_message_id)
+                    results.append(msg_end.to_sse())
+                    self.state.message_started = False
+                
+                return "".join(results)
+        
         # 非错误情况，在 create_end_event 中处理
         return None
     

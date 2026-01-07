@@ -3,6 +3,7 @@
 
 import time
 import json
+from typing import Optional
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,13 @@ from .config import settings
 from .middleware import CorrelationMiddleware
 from .routers import chat_router, health_router
 from .logger import setup_logger, get_logger
+from .services import (
+    TaskQueue,
+    TaskExecutor,
+    create_and_start_executor,
+    get_executor,
+)
+from .models.task_models import Task
 
 # 全局变量用于存储指标
 metrics = {
@@ -21,10 +29,65 @@ metrics = {
     "start_time": time.time(),
 }
 
+# 全局任务队列
+_task_queue: Optional[TaskQueue] = None
+
+
+async def task_handler(task: Task) -> Optional[str]:
+    """任务执行处理函数
+    
+    执行任务并返回错误消息（如果有）。
+    返回 None 表示成功，返回字符串表示失败原因。
+    """
+    from .services import CCRExecutor
+    from .models import RequestModel
+    import asyncio
+    
+    logger = get_logger(__name__)
+    
+    # 使用任务中存储的 agent_name
+    agent_name = task.agent_name or "ubuntu"
+    logger.info(f"Executing task {task.id} for agent {agent_name}: {task.description[:50]}...")
+    
+    try:
+        # 创建 CCR 执行器
+        executor = CCRExecutor()
+        
+        # 构建请求模型
+        request = RequestModel(
+            content=task.description,
+            user=task.project_id or "task_executor",  # 使用 project_id 作为用户标识
+            session_id=f"task_{task.id}",
+        )
+        
+        # 收集所有输出
+        output_lines = []
+        async for output in executor.execute(request, agent_name, output_format="raw"):
+            output_lines.append(output)
+            # 检查是否有错误
+            try:
+                data = json.loads(output)
+                if data.get("type") == "error":
+                    return data.get("message", "Unknown error")
+            except json.JSONDecodeError:
+                pass
+        
+        logger.info(f"Task {task.id} completed successfully")
+        return None  # 成功
+        
+    except asyncio.CancelledError:
+        logger.warning(f"Task {task.id} was cancelled")
+        raise
+    except Exception as e:
+        logger.error(f"Task {task.id} failed: {e}", exc_info=True)
+        return str(e)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    global _task_queue
+    
     # 启动时
     setup_logger(
         log_level=settings.log_level,
@@ -40,10 +103,37 @@ async def lifespan(app: FastAPI):
     )
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"CCR command: {settings.ccr_command}")
+    
+    # 启动任务执行器
+    executor = None
+    if settings.executor_enabled:
+        try:
+            import os
+            # 默认使用 ubuntu agent（与路由 /chat/stream/ubuntu 对应）
+            agent_name = os.environ.get("AGENT_NAME", "ubuntu")
+            
+            # 初始化任务队列
+            _task_queue = TaskQueue(agent_name=agent_name)
+            
+            # 创建并启动执行器
+            executor = await create_and_start_executor(
+                task_queue=_task_queue,
+                task_handler=task_handler,
+            )
+            logger.info(f"Task executor started for agent: {agent_name}")
+        except Exception as e:
+            logger.error(f"Failed to start task executor: {e}", exc_info=True)
 
     yield
 
     # 关闭时
+    if executor:
+        try:
+            await executor.stop()
+            logger.info("Task executor stopped")
+        except Exception as e:
+            logger.error(f"Error stopping task executor: {e}")
+    
     logger.info("Shutting down Claude Code API")
 
 

@@ -56,6 +56,14 @@ from .agui_events import (
     AGUIEventFactory,
 )
 
+# Task Models
+from .task_models import (
+    Task,
+    TaskPriority,
+    TaskStatus,
+    ExecutorConfig,
+)
+
 __all__ = [
     # Legacy Models
     "RequestModel",
@@ -104,4 +112,9 @@ __all__ = [
     "AGUIRequest",
     "AGUIMessage",
     "AGUIEventFactory",
+    # Task Models
+    "Task",
+    "TaskPriority",
+    "TaskStatus",
+    "ExecutorConfig",
 ]
