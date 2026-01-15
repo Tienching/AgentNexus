@@ -73,9 +73,14 @@ class AGUIAdapter(BaseAdapter):
         return ProtocolType.AGUI
     
     def _generate_message_id(self) -> str:
-        """生成消息ID"""
+        """生成消息ID
+        
+        使用 run_id + 计数器 确保每次请求的消息 ID 全局唯一，
+        避免同一会话多次请求时消息 ID 冲突导致覆盖。
+        """
         self._message_id_counter += 1
-        return f"msg_{self._message_id_counter:04d}"
+        run_id_suffix = self.state.run_id[:8] if self.state and self.state.run_id else uuid.uuid4().hex[:8]
+        return f"msg_{run_id_suffix}_{self._message_id_counter:04d}"
     
     def _sanitize_text(self, text: str) -> str:
         """清理文本中的特殊标签

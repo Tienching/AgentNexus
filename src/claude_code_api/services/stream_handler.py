@@ -7,9 +7,10 @@ Handle AG-UI and Legacy protocol streaming responses
 import asyncio
 import json
 import time
-from typing import Dict, Any, List
+import uuid
+from typing import Any, Dict
 
-from fastapi import Request, HTTPException, status
+from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
@@ -19,6 +20,7 @@ from ..adapters import ProtocolType, get_router
 from ..logger import get_logger
 from .ccr_executor import CCRExecutor
 from .callback_handler import CallbackHandler
+from .stream_archiver import create_archiver
 
 logger = get_logger(__name__)
 
@@ -49,6 +51,9 @@ class StreamHandler:
             )
         
         legacy_data = agui_request.to_legacy_request()
+        # Username is optional for AG-UI callers; use an internal default.
+        if not legacy_data.get("user"):
+            legacy_data["user"] = "anonymous"
         request_model = RequestModel.model_validate(legacy_data)
         
         adapter.init_state(
@@ -69,16 +74,11 @@ class StreamHandler:
             }
         )
         
-        if not request_model.user or not request_model.content:
-            missing_fields = []
-            if not request_model.user:
-                missing_fields.append("user (or forwardedProps.username for AG-UI)")
-            if not request_model.content:
-                missing_fields.append("content (or messages for AG-UI)")
-            
+        # For AG-UI, content is required but user is not.
+        if not request_model.content:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Missing required fields: {', '.join(missing_fields)}"
+                detail="Missing required field: content (or messages for AG-UI)"
             )
         
         # 如果有 response_url，启用超时回调模式
@@ -88,10 +88,31 @@ class StreamHandler:
             )
         
         # 标准 AG-UI 流式处理
+        # Extract username for archiver
+        username = request_model.user or "anonymous"
+        
+        # Create archiver for session storage
+        archiver = create_archiver(
+            thread_id=agui_request.threadId,
+            run_id=agui_request.runId,
+            username=username,
+            agent_name=agent_name,
+        )
+        
+        # Extract initial messages for archiver
+        initial_messages = [
+            {"id": msg.get("id"), "role": msg.get("role"), "content": msg.get("content")}
+            for msg in (agui_request.messages or [])
+            if isinstance(msg, dict)
+        ]
+        
         async def generate_agui():
             """生成 AG-UI 格式的 SSE 流"""
             event_count = 0
             try:
+                # Initialize archiver with initial messages
+                await archiver.on_run_started(initial_messages)
+                
                 start_event = adapter.create_start_event()
                 if start_event:
                     event_count += 1
@@ -104,6 +125,20 @@ class StreamHandler:
                     try:
                         event_data = json.loads(line)
                         converted = adapter.convert(event_data)
+                        
+                        # Archive converted AG-UI events asynchronously (non-blocking)
+                        if converted:
+                            for _evt in converted.split('\n\n'):
+                                _evt = _evt.strip()
+                                if not _evt:
+                                    continue
+                                if _evt.startswith('data:'):
+                                    try:
+                                        payload = _evt.replace('data:', '', 1).strip()
+                                        asyncio.create_task(archiver.archive_event(json.loads(payload)))
+                                    except Exception:
+                                        pass
+                        
                         if converted:
                             for event_line in converted.split('\n\n'):
                                 if event_line.strip():
@@ -123,10 +158,15 @@ class StreamHandler:
                             event_count += 1
                     yield end_event
                 
+                # Finalize archiver
+                await archiver.on_run_finished()
+                
                 logger.info(f"AG-UI stream completed, total events: {event_count}")
                     
             except Exception as e:
                 logger.error(f"AG-UI stream error: {e}", exc_info=True)
+                # Notify archiver of error
+                await archiver.on_run_error(str(e))
                 error_event = adapter.create_error_event(str(e))
                 yield error_event
         
@@ -159,6 +199,22 @@ class StreamHandler:
         response_url = agui_request.get_response_url()
         msg_id = agui_request.get_msg_id()
         
+        # Create archiver for session storage
+        username = request_model.user or "anonymous"
+        archiver = create_archiver(
+            thread_id=agui_request.threadId,
+            run_id=agui_request.runId,
+            username=username,
+            agent_name=agent_name,
+        )
+        
+        # Extract initial messages for archiver
+        initial_messages = [
+            {"id": msg.get("id"), "role": msg.get("role"), "content": msg.get("content")}
+            for msg in (agui_request.messages or [])
+            if isinstance(msg, dict)
+        ]
+        
         message_queue: asyncio.Queue = asyncio.Queue()
         
         stream_state = {
@@ -173,6 +229,9 @@ class StreamHandler:
         async def producer():
             """后台生产者：执行 CCR 并收集事件"""
             try:
+                # Initialize archiver
+                await archiver.on_run_started(initial_messages)
+                
                 async for line in self.executor.execute(request_model, agent_name=agent_name, output_format="raw"):
                     if not line.strip():
                         continue
@@ -180,6 +239,20 @@ class StreamHandler:
                     try:
                         event_data = json.loads(line)
                         converted = adapter.convert(event_data)
+                        
+                        # Archive converted AG-UI events asynchronously
+                        if converted:
+                            for _evt in converted.split('\n\n'):
+                                _evt = _evt.strip()
+                                if not _evt:
+                                    continue
+                                if _evt.startswith('data:'):
+                                    try:
+                                        payload = _evt.replace('data:', '', 1).strip()
+                                        asyncio.create_task(archiver.archive_event(json.loads(payload)))
+                                    except Exception:
+                                        pass
+                        
                         if converted:
                             # 保存事件
                             for event_str in converted.split('\n\n'):
@@ -196,10 +269,15 @@ class StreamHandler:
                         
             except Exception as e:
                 logger.error(f"AG-UI producer error: {e}", exc_info=True)
+                await archiver.on_run_error(str(e))
                 await message_queue.put(("error", str(e)))
             finally:
                 stream_state["producer_done"] = True
                 await message_queue.put(("done", None))
+                
+                # Finalize archiver
+                if not stream_state.get("error_occurred"):
+                    await archiver.on_run_finished()
                 
                 # 如果超时或断开，发送剩余事件到 response_url
                 if (stream_state["stream_timeout"] or stream_state["client_disconnected"]) and response_url:
@@ -335,7 +413,13 @@ class StreamHandler:
         body_dict: Dict[str, Any], 
         agent_name: str
     ) -> StreamingResponse:
-        """处理易事厅协议请求"""
+        """处理易事厅协议请求
+
+        说明：历史上 Legacy 模式只负责“把 SSE 返回给调用方”，不会写入 NexusHub 会话存储。
+        为了让用户在 `NexusHub` 能看到所有对话记录，这里也会对 Legacy 流做归档：
+        - 对外仍返回 legacy SSE（event:delta）
+        - 对内用 `AGUIAdapter` 转一份 AG-UI 事件并落库
+        """
         try:
             request_model = RequestModel.model_validate(body_dict)
         except ValidationError as e:
@@ -349,31 +433,106 @@ class StreamHandler:
                 detail=f"Failed to parse request: {str(e)}"
             )
 
-        if not request_model.user or not request_model.content:
-            missing_fields = []
-            if not request_model.user:
-                missing_fields.append("user")
-            if not request_model.content:
-                missing_fields.append("content")
+        # Legacy 调用也允许不带 user（我们内部用匿名用户兜底）
+        if not request_model.user:
+            request_model.user = "anonymous"
 
+        if not request_model.content:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Missing required fields: {', '.join(missing_fields)}"
+                detail="Missing required field: content"
             )
+
+        # 确保 session_id / msg_id 存在
+        if not request_model.session_id:
+            request_model.session_id = f"legacy-{uuid.uuid4().hex}"
+        if not request_model.msg_id:
+            request_model.msg_id = f"legacy-run-{uuid.uuid4().hex}"
 
         # 提取 response_url
         response_url = self._extract_response_url(request_model)
-
         if response_url:
+            # TODO: legacy 的 response_url 回调模式目前未做归档（可按需补齐）
             return await self._stream_with_disconnect_callback(request, request_model, agent_name)
 
-        # 简单流式处理
+        router = get_router()
+        legacy_adapter = router.get_adapter(ProtocolType.LEGACY)
+        agui_adapter = router.get_adapter(ProtocolType.AGUI)
+        agui_adapter.init_state(thread_id=request_model.session_id, run_id=request_model.msg_id)
+
+        archiver = create_archiver(
+            thread_id=request_model.session_id,
+            run_id=request_model.msg_id,
+            username=request_model.user,
+            agent_name=agent_name,
+        )
+
+        initial_messages = [
+            {
+                "id": f"user-{request_model.msg_id}",
+                "role": "user",
+                "content": request_model.content,
+            }
+        ]
+
         async def generate():
             try:
-                async for chunk in self.executor.execute(request_model, agent_name=agent_name, output_format="legacy"):
-                    yield chunk
+                await archiver.on_run_started(initial_messages)
+
+                async for line in self.executor.execute(
+                    request_model,
+                    agent_name=agent_name,
+                    output_format="raw",
+                ):
+                    if not line.strip():
+                        continue
+
+                    try:
+                        event_data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    # 1) 归档：转为 AG-UI 事件并落库
+                    try:
+                        converted_agui = agui_adapter.convert(event_data)
+                        if converted_agui:
+                            for _evt in converted_agui.split("\n\n"):
+                                _evt = _evt.strip()
+                                if not _evt:
+                                    continue
+                                if _evt.startswith("data:"):
+                                    try:
+                                        payload = _evt.replace("data:", "", 1).strip()
+                                        asyncio.create_task(archiver.archive_event(json.loads(payload)))
+                                    except Exception:
+                                        pass
+                    except Exception:
+                        pass
+
+                    # 2) 输出：仍按 legacy SSE 返回给调用方
+                    if isinstance(event_data, dict) and event_data.get("type") == "error":
+                        yield self.executor.format_legacy_error(event_data.get("message", "处理错误"))
+                        continue
+
+                    # slash command 的 raw 输出是 result 事件；legacy_adapter 会跳过 result，需要这里手动输出
+                    if isinstance(event_data, dict) and event_data.get("type") == "result" and event_data.get("subtype") == "slash_command":
+                        content = event_data.get("content") or event_data.get("result") or ""
+                        if content:
+                            yield self.executor.format_legacy_sse(content, finished=True, answer_success=1)
+                        continue
+
+                    converted_legacy = legacy_adapter.convert(event_data)
+                    if converted_legacy:
+                        yield converted_legacy
+
+                await archiver.on_run_finished()
+
             except Exception as e:
                 logger.error(f"Stream generation error: {e}", exc_info=True)
+                try:
+                    await archiver.on_run_error(str(e))
+                except Exception:
+                    pass
                 yield self.executor.format_legacy_error(f"处理错误: {e}")
 
         return StreamingResponse(

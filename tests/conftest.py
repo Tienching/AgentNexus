@@ -4,7 +4,7 @@ import pytest
 import asyncio
 from typing import AsyncGenerator
 from httpx import AsyncClient, ASGITransport
-from src.claude_code_api.api import app
+from src.claude_code_api.app import app
 
 
 @pytest.fixture(scope="session")
