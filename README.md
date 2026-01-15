@@ -8,6 +8,7 @@
 - **流式响应**：实时 SSE 流式输出
 - **多用户隔离**：基于 agent + user + session 的目录隔离
 - **协议自动识别**：根据请求格式自动选择适配器
+- **会话历史查看**：内置 NexusHub 风格 Web UI，支持会话回放
 
 ## 快速开始
 
@@ -51,6 +52,9 @@ cp .env.example .env
 | `/health` | GET | 健康检查 |
 | `/chat/stream/{agent_name}` | POST | 流式聊天（自动识别协议） |
 | `/agui/test` | GET | AG-UI 协议测试 |
+| `/nexus/` | GET | NexusHub Web UI |
+| `/api/nexus/sessions` | GET | 会话列表 API |
+| `/api/nexus/sessions/{id}` | GET | 会话详情 API |
 
 ### 易事厅协议（Legacy）
 
@@ -124,6 +128,48 @@ data: {"type": "TEXT_MESSAGE_END", "messageId": "..."}
 data: {"type": "RUN_FINISHED", "threadId": "...", "runId": "..."}
 ```
 
+## NexusHub Web UI
+
+服务内置了 NexusHub 风格的 Web 界面，用于查看和管理 AGUI 会话历史。
+
+### 访问方式
+
+启动服务后，在浏览器中访问：
+```
+http://localhost:8081/nexus/
+```
+
+### 功能特性
+
+- **会话列表**：按时间分组显示所有会话
+- **搜索过滤**：支持按标题搜索、按用户筛选、按状态过滤
+- **会话详情**：点击会话查看完整对话内容
+- **工具调用展示**：inline 显示工具调用及其结果
+- **实时更新**：运行中的会话自动刷新状态
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `GET /api/nexus/sessions` | GET | 获取会话列表（支持分页、搜索、状态过滤） |
+| `GET /api/nexus/sessions/{id}` | GET | 获取会话详情 |
+| `GET /api/nexus/sessions/{id}/messages` | GET | 获取会话消息和工具调用 |
+| `DELETE /api/nexus/sessions/{id}` | DELETE | 删除会话 |
+| `POST /api/nexus/sessions/{id}/cancel` | POST | 取消运行中的会话 |
+| `GET /api/nexus/usernames` | GET | 获取所有用户名列表 |
+
+### 数据存储
+
+会话数据存储在 Redis 中，使用以下 key 模式：
+- `aona:session:{sessionId}:meta` - 会话元信息
+- `aona:session:{sessionId}:messages` - 消息列表
+- `aona:session:{sessionId}:toolcalls` - 工具调用记录
+- `aona:sessions:all` - 全局会话索引
+- `aona:user:{username}:sessions` - 用户会话索引
+
+默认 TTL 为 7 天。
+```
+
 ## 配置
 
 通过 `.env` 文件配置：
@@ -139,6 +185,10 @@ data: {"type": "RUN_FINISHED", "threadId": "...", "runId": "..."}
 | `LOG_DIR` | `./logs` | 日志目录 |
 | `USER_HOME_BASE` | `/home` | 用户目录基础路径 |
 | `DEBUG` | `false` | 调试模式 |
+| `REDIS_HOST` | `localhost` | Redis 服务器地址 |
+| `REDIS_PORT` | `6379` | Redis 端口 |
+| `REDIS_DB` | `0` | Redis 数据库 |
+| `REDIS_KEY_PREFIX` | `aona:` | Redis key 前缀 |
 
 ## 项目结构
 
@@ -159,10 +209,18 @@ virtual-human-sdk/
 │   │   └── legacy_models.py   # 易事厅模型
 │   ├── routers/               # 路由
 │   │   ├── chat.py            # 聊天端点
-│   │   └── health.py          # 健康检查
+│   │   ├── health.py          # 健康检查
+│   │   └── nexus.py           # NexusHub Web API
+│   ├── static/                # 静态文件
+│   │   └── nexus/             # NexusHub Web UI
+│   │       ├── index.html     # 主页面
+│   │       ├── css/           # 样式文件
+│   │       └── js/            # JavaScript 文件
 │   └── services/              # 服务层
 │       ├── ccr_executor.py    # CCR 命令执行器
 │       ├── stream_handler.py  # 流处理器
+│       ├── stream_archiver.py # 会话归档器
+│       ├── session_storage.py # 会话存储服务
 │       └── user_directory.py  # 用户目录管理
 ├── tests/                     # 测试文件
 ├── scripts/                   # 便捷脚本

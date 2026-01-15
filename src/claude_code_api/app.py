@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
 """FastAPI Application Entry Point"""
 
+import os
 import time
 import json
 from typing import Optional
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from pydantic import ValidationError
 
 from .config import settings
 from .middleware import CorrelationMiddleware
 from .routers import chat_router, health_router
+from .routers.nexus import router as nexus_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -160,6 +163,12 @@ app.add_middleware(CorrelationMiddleware, metrics=metrics)
 # 注册路由
 app.include_router(health_router)
 app.include_router(chat_router)
+app.include_router(nexus_router)
+
+# Mount static files for NexusHub Web UI
+static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
+if os.path.exists(static_dir):
+    app.mount("/nexus", StaticFiles(directory=static_dir, html=True), name="nexus")
 
 # 获取日志器
 logger = get_logger(__name__)

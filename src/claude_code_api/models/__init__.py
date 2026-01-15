@@ -64,6 +64,18 @@ from .task_models import (
     ExecutorConfig,
 )
 
+# Session Models (NexusHub)
+from .session import (
+    SessionStatus,
+    SessionMeta,
+    MessageStatus,
+    StoredMessage,
+    ToolCallStatus,
+    StoredToolCall,
+    SessionListResponse,
+    SessionMessagesResponse,
+)
+
 __all__ = [
     # Legacy Models
     "RequestModel",
@@ -117,4 +129,13 @@ __all__ = [
     "TaskPriority",
     "TaskStatus",
     "ExecutorConfig",
+    # Session Models (NexusHub)
+    "SessionStatus",
+    "SessionMeta",
+    "MessageStatus",
+    "StoredMessage",
+    "ToolCallStatus",
+    "StoredToolCall",
+    "SessionListResponse",
+    "SessionMessagesResponse",
 ]

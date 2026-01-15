@@ -16,6 +16,8 @@ from .task_executor import (
     set_executor,
     create_and_start_executor,
 )
+from .session_storage import SessionStorage, get_session_storage
+from .stream_archiver import StreamArchiver, create_archiver
 
 __all__ = [
     "CCRExecutor",
@@ -35,4 +37,8 @@ __all__ = [
     "get_executor",
     "set_executor",
     "create_and_start_executor",
+    "SessionStorage",
+    "get_session_storage",
+    "StreamArchiver",
+    "create_archiver",
 ]
