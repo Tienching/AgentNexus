@@ -17,6 +17,15 @@ router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
 
 
+@router.post("/chat/stream", response_class=StreamingResponse)
+async def chat_stream_default(request: Request):
+    """默认 agent 的流式聊天入口。
+
+    主要用于让 `/chat/stream` 这个路径存在，从而对 GET 返回 405（符合测试期望）。
+    """
+    return await chat_stream(request, agent_name="ubuntu")
+
+
 @router.post("/chat/stream/{agent_name}", response_class=StreamingResponse)
 async def chat_stream(request: Request, agent_name: str):
     """

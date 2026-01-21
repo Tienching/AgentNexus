@@ -106,6 +106,86 @@ class NexusAPI {
         }
         return response.json();
     }
+
+    // ============ Tasks API ============
+
+    static async getTasks(options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+            page: options.page || 1,
+            page_size: options.pageSize || 50,
+        });
+
+        if (options.status) params.append('status', options.status);
+        if (options.projectId) params.append('project_id', options.projectId);
+        if (options.workspace) params.append('workspace', options.workspace);
+        if (options.search) params.append('search', options.search);
+
+        const response = await fetch(`${API_BASE}/tasks?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch tasks: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    static async getTask(taskId, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`);
+        if (!response.ok) {
+            if (response.status === 404) {
+                throw new Error('Task not found');
+            }
+            throw new Error(`Failed to fetch task: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    static async deleteTask(taskId, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to delete task: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    static async getTaskMessages(taskId, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        if (options.tail) params.append('tail', options.tail);
+        if (options.limit) params.append('limit', options.limit);
+
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/agui/messages?${params}`);
+        if (!response.ok) {
+            if (response.status === 404) {
+                throw new Error('Task conversation log not found');
+            }
+            throw new Error(`Failed to fetch task messages: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    static streamTaskMessages(taskId, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+            tail: options.tail || 200,
+        });
+
+        if (options.pollIntervalMs) params.append('poll_interval_ms', options.pollIntervalMs);
+
+        const url = `${API_BASE}/tasks/${encodeURIComponent(taskId)}/agui/stream?${params}`;
+        return new EventSource(url);
+    }
 }
 
 // Export for use in other scripts

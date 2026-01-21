@@ -364,6 +364,46 @@ class TestTaskQueue:
         recent = task_queue.get_recent_tasks(limit=3)
         assert len(recent) == 3
 
+    def test_list_tasks_basic_pagination(self, task_queue):
+        """Test list_tasks pagination"""
+        for i in range(5):
+            task_queue.add_task(description=f"Task {i}")
+
+        page1, total1 = task_queue.list_tasks(page=1, page_size=2)
+        page2, total2 = task_queue.list_tasks(page=2, page_size=2)
+
+        assert total1 == 5
+        assert total2 == 5
+        assert len(page1) == 2
+        assert len(page2) == 2
+        # Most recent first
+        assert page1[0].created_at >= page1[1].created_at
+
+    def test_list_tasks_filters(self, task_queue):
+        """Test list_tasks filtering by status/project/workspace/search"""
+        t1 = task_queue.add_task(description="Fix login", project_id="proj-a", project_name="Project A", workspace="/ws/a")
+        t2 = task_queue.add_task(description="Refactor API", project_id="proj-b", project_name="Project B", workspace="/ws/b")
+        t3 = task_queue.add_task(description="Fix checkout", project_id="proj-a", project_name="Project A", workspace="/ws/a")
+
+        # Make one task done
+        task_queue.start_task(t1.id)
+        task_queue.complete_task(t1.id)
+
+        done_tasks, total_done = task_queue.list_tasks(status="done")
+        assert total_done == 1
+        assert done_tasks[0].id == t1.id
+
+        proj_a_tasks, total_proj_a = task_queue.list_tasks(project_id="proj-a")
+        assert total_proj_a == 2
+        assert set([t.id for t in proj_a_tasks]) == {t1.id, t3.id}
+
+        ws_a_tasks, total_ws_a = task_queue.list_tasks(workspace="/ws/a")
+        assert total_ws_a == 2
+
+        search_tasks, total_search = task_queue.list_tasks(search="checkout")
+        assert total_search == 1
+        assert search_tasks[0].id == t3.id
+
     def test_delete_project(self, task_queue):
         """Test soft deleting a project"""
         task_queue.add_task(

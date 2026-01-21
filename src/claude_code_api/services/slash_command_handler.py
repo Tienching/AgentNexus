@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """Slash Command Handler for tswitch-rca-agent
 
-Handles slash commands like /think, /check, /usage, /report, /cancel, /trash.
+Handles slash commands like /task, /check, /usage, /report, /cancel, /trash, /chat.
+
+Note:
+- `/think` and `/log` are removed (no compatibility).
+- Free-text arguments must appear after `--` (parsed by `slash_command_parser`).
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple
@@ -16,13 +21,23 @@ from typing import Optional, Tuple
 from ..config import settings
 from ..logger import get_logger
 from ..models.task_models import TaskPriority, TaskStatus
+from .session_storage import get_session_storage
 from .task_storage import TaskQueue
+from .worktree import (
+    NotGitRepoError,
+    WorktreeDirConflictError,
+    WorktreeCommandError,
+    WorktreeError,
+    ensure_task_worktree,
+)
+from .slash_command_parser import SlashCommandParseError, parse_slash_command, usage_for
 
 logger = get_logger(__name__)
 
 
 # Known slash commands
-SLASH_COMMANDS = ["/think", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/log"]
+# NOTE: `/think` and `/log` are intentionally removed (no compatibility).
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat"]
 
 
 def slugify_project(name: str) -> str:
@@ -78,71 +93,447 @@ class SlashCommandHandler:
         args = parts[1] if len(parts) > 1 else ""
         return command, args
 
-    def handle_command(self, content: str) -> str:
-        """Handle a slash command and return markdown response
-        
+    def handle_command(self, content: str, source_session_id: Optional[str] = None) -> str:
+        """Handle a slash command and return markdown response.
+
+        Grammar (strict):
+            /<cmd> <subcmd> [options...] [-- <free-text...>]
+
         Args:
-            content: The full command string (e.g., "/think Build a feature")
-            
-        Returns:
-            Markdown formatted response string
+            content: The slash command content
+            source_session_id: Session ID from the source context (for task creation)
+
+        Notes:
+            - Free text MUST appear after `--`.
+            - All options must provide both short and long forms.
+            - `/think` and `/log` are removed (no compatibility).
         """
-        command, args = self.get_command_and_args(content)
-        
+        content = (content or "").strip()
+        if not content:
+            return "## ❌ Error\n\nEmpty command."
+
+        # Removed commands (explicit error; no compatibility)
+        lowered = content.lower().strip()
+        if lowered == "/think" or lowered.startswith("/think "):
+            return "## ❌ 命令已移除\n\n`/think` 命令已移除。"
+        if lowered == "/log" or lowered.startswith("/log "):
+            return "## ❌ 命令已移除\n\n`/log` 命令已移除。"
+
         try:
-            if command == "/think":
-                return self._handle_think(args)
-            elif command == "/check":
-                return self._handle_check()
-            elif command == "/usage":
-                return self._handle_usage()
-            elif command == "/report":
-                return self._handle_report(args)
-            elif command == "/cancel":
-                return self._handle_cancel(args)
-            elif command == "/trash":
-                return self._handle_trash(args)
-            elif command == "/clear":
-                return self._handle_clear()
-            elif command == "/help":
-                return self._handle_help()
-            elif command == "/log":
-                return self._handle_log(args)
-            else:
-                return f"## ❌ Unknown Command\n\nUnknown command: `{command}`\n\n输入 `/help` 查看所有可用命令。"
+            parsed = parse_slash_command(content)
+        except SlashCommandParseError as e:
+            usage = (e.usage or "").strip()
+            if usage:
+                return f"## ❌ 命令解析失败\n\n{e.message}\n\n**Usage:** `{usage}`"
+            return f"## ❌ 命令解析失败\n\n{e.message}"
         except Exception as e:
-            logger.error(f"Error handling command {command}: {e}", exc_info=True)
+            logger.error(f"Error parsing slash command: {e}", exc_info=True)
+            return f"## ❌ Error\n\nFailed to parse command: {str(e)}"
+
+        try:
+            if parsed.cmd == "task" and parsed.subcmd == "create":
+                return self._handle_task_create(
+                    description=parsed.free_text,
+                    project_name=parsed.options.get("project"),
+                    workspace=parsed.options.get("workspace"),
+                    inplace=bool(parsed.options.get("inplace", False)),
+                    source_session_id=source_session_id,
+                    agent_name=parsed.options.get("agent"),
+                )
+
+            if parsed.cmd == "chat" and parsed.subcmd == "history":
+                return self._handle_chat_history(
+                    task_id=parsed.options["task"],
+                    tail=int(parsed.options.get("tail", 10)),
+                )
+            if parsed.cmd == "chat" and parsed.subcmd == "continue":
+                return self._handle_chat_continue(
+                    task_id=parsed.options["task"],
+                    message=parsed.free_text,
+                )
+
+            if parsed.cmd == "check" and parsed.subcmd == "status":
+                return self._handle_check()
+
+            if parsed.cmd == "usage" and parsed.subcmd == "show":
+                return self._handle_usage()
+
+            if parsed.cmd == "report" and parsed.subcmd == "daily":
+                return self._handle_report("")
+            if parsed.cmd == "report" and parsed.subcmd == "list":
+                return self._handle_report("--list")
+            if parsed.cmd == "report" and parsed.subcmd == "task":
+                return self._handle_report(parsed.options["task"])
+            if parsed.cmd == "report" and parsed.subcmd == "project":
+                return self._handle_report(parsed.options["project"])
+
+            if parsed.cmd == "cancel" and parsed.subcmd == "task":
+                return self._handle_cancel(parsed.options["task"])
+            if parsed.cmd == "cancel" and parsed.subcmd == "project":
+                return self._handle_cancel(parsed.options["project"])
+
+            if parsed.cmd == "trash" and parsed.subcmd == "list":
+                return self._handle_trash("list")
+            if parsed.cmd == "trash" and parsed.subcmd == "restore":
+                return self._handle_trash(f"restore {parsed.options['project']}")
+            if parsed.cmd == "trash" and parsed.subcmd == "empty":
+                return self._handle_trash("empty")
+
+            if parsed.cmd == "clear" and parsed.subcmd == "now":
+                return self._handle_clear()
+
+            if parsed.cmd == "help" and parsed.subcmd == "show":
+                return self._handle_help()
+
+            return f"## ❌ Unknown Command\n\nUnknown command: `/{parsed.cmd} {parsed.subcmd}`\n\n输入 `/help show` 查看所有可用命令。"
+
+        except Exception as e:
+            logger.error(f"Error handling parsed command /{parsed.cmd} {parsed.subcmd}: {e}", exc_info=True)
             return f"## ❌ Error\n\nFailed to execute command: {str(e)}"
 
-    def _handle_think(self, args: str) -> str:
-        """Handle /think command - create task or capture thought
+    def _handle_task_create(
+        self,
+        description: str,
+        project_name: Optional[str] = None,
+        workspace: Optional[str] = None,
+        inplace: bool = False,
+        source_session_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
+    ) -> str:
+        """Handle `/task create` (strict syntax; free text must be after `--`).
         
-        Usage:
-            /think <description>                      - Create THOUGHT priority task
-            /think <description> -p <proj>            - Create SERIOUS priority project task
-            /think <description> -w <workspace>       - Create task with workspace
-            /think <description> -p <proj> -w <path>  - Create project task with workspace
+        Args:
+            source_session_id: Session ID from the source context.
+                              Task session_id will be {source_session_id}_{task_id}.
+            agent_name: Optional agent name (CCR user) for task execution.
+                       If not provided, uses the default agent from task queue.
         """
-        if not args.strip():
+        if not (description or "").strip():
             return (
                 "## ❌ Missing Description\n\n"
-                "**Usage:**\n"
-                "- `/think <description>` - Capture a thought\n"
-                "- `/think <description> -p <project>` - Create project task\n"
-                "- `/think <description> -w <workspace>` - Create task with workspace\n"
-                "- `/think <description> -p <project> -w <workspace>` - Full options"
+                f"**Usage:** `{usage_for('task', 'create')}`"
             )
+
+        # Determine priority
+        priority = TaskPriority.SERIOUS if project_name else TaskPriority.THOUGHT
+        project_id = slugify_project(project_name) if project_name else None
+
+        requested_workspace = (workspace or "").strip() or None
+        use_inplace = bool(inplace) and bool(requested_workspace)
+
+        # Generate task id early so worktree path/branch are deterministic
+        task_id = str(uuid.uuid4())[:8]
+
+        context = {}
+        exec_workspace: Optional[str] = None
+        
+        # 为初始用户消息生成唯一 ID
+        context["next_user_message_id"] = f"task-init-{task_id}"
+
+        if requested_workspace:
+            context["requested_workspace"] = requested_workspace
+            if use_inplace:
+                context["cwd_mode"] = "inplace"
+                exec_workspace = requested_workspace
+            else:
+                context["cwd_mode"] = "worktree"
+                try:
+                    wt = ensure_task_worktree(Path(requested_workspace), task_id=task_id)
+                    exec_workspace = str(wt.worktree_dir)
+                    context["worktree"] = {
+                        "repo_root": str(wt.repo_root),
+                        "branch": wt.branch,
+                        "dir": str(wt.worktree_dir),
+                        "reused": bool(wt.reused),
+                    }
+                except NotGitRepoError as e:
+                    return (
+                        "## ❌ Workspace 不是 Git 仓库\n\n"
+                        f"{str(e)}\n\n"
+                        "提示：如果想直接在原目录开发，请加 `-i`。"
+                    )
+                except WorktreeDirConflictError as e:
+                    return (
+                        "## ❌ Worktree 目录冲突\n\n"
+                        f"{str(e)}\n\n"
+                        "提示：请清理该目录，或确认它已被 `git worktree list` 注册后再重试。"
+                    )
+                except (WorktreeCommandError, WorktreeError) as e:
+                    return (
+                        "## ❌ 创建 worktree 失败\n\n"
+                        f"{str(e)}"
+                    )
+        else:
+            # No -w provided: --inplace is ignored by design.
+            if inplace:
+                context["inplace_ignored"] = True
+
+        # Create task (workspace for execution)
+        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, agent_name={agent_name!r}")
+        task = self.task_queue.add_task(
+            description=description.strip(),
+            priority=priority,
+            context=context or None,
+            project_id=project_id,
+            project_name=project_name,
+            workspace=exec_workspace,
+            task_id=task_id,
+            source_session_id=source_session_id,
+            agent_name=agent_name,
+        )
+
+        priority_emoji = "🔴" if priority == TaskPriority.SERIOUS else "💭"
+        priority_label = "Serious" if priority == TaskPriority.SERIOUS else "Thought"
+
+        response = f"## {priority_emoji} {priority_label} Task Created\n\n"
+        response += "| Field | Value |\n"
+        response += "|-------|-------|\n"
+        response += f"| Task ID | #{task.id} |\n"
+        response += f"| Priority | {priority_label} |\n"
+        if agent_name:
+            response += f"| Agent | {agent_name} |\n"
+        if project_name:
+            response += f"| Project | {project_name} |\n"
+        if requested_workspace:
+            response += f"| Workspace | `{requested_workspace}` |\n"
+        if exec_workspace:
+            response += f"| Exec CWD | `{exec_workspace}` |\n"
+        response += f"\n**Description:** {description.strip()}"
+
+        return response
+
+    def _handle_chat_continue(self, task_id: str, message: str) -> str:
+        """Handle `/chat continue` - enqueue a background run for an existing task."""
+        task_id = (task_id or "").strip()
+        msg = (message or "").strip()
+        if not task_id:
+            return (
+                "## ❌ Missing Task ID\n\n"
+                f"**Usage:** `{usage_for('chat', 'continue')}`"
+            )
+        if not msg:
+            return (
+                "## ❌ Missing Message\n\n"
+                f"**Usage:** `{usage_for('chat', 'continue')}`"
+            )
+
+        task = self.task_queue.get_task(task_id)
+        if not task:
+            return f"## ❌ Not Found\n\n任务 `{task_id}` 不存在。"
+
+        status_val = task.status if isinstance(task.status, str) else task.status.value
+        if status_val == TaskStatus.DOING.value:
+            return (
+                f"## ⏳ 已在执行中\n\n"
+                f"任务 `#{task.id}` 正在执行中，请稍后再试。\n\n"
+                f"你可以用 `/chat -t {task.id}` 查看当前进度。"
+            )
+
+        try:
+            self.task_queue.enqueue_chat_continue(task_id, msg)
+        except Exception as e:
+            return f"## ❌ 入队失败\n\n{str(e)}"
+
+        return (
+            f"## ✅ 已入队\n\n"
+            f"已将续聊消息加入后台队列：任务 `#{task.id}`。\n\n"
+            f"- 查看结果：`/chat -t {task.id}`\n"
+            f"- 实时回放（Nexus）：`/api/nexus/tasks/{task.id}/agui/stream`\n"
+        )
+
+    def _handle_chat_history(self, task_id: str, tail: int = 10) -> str:
+        """Handle `/chat history` - show task execution log/conversation."""
+        task_id = (task_id or "").strip()
+        if not task_id:
+            return (
+                "## ❌ Missing Task ID\n\n"
+                f"**Usage:** `{usage_for('chat', 'history')}`"
+            )
+
+        # sanitize tail
+        try:
+            tail_n = int(tail)
+        except Exception:
+            tail_n = 10
+        if tail_n <= 0:
+            tail_n = 10
+        if tail_n > 100:
+            tail_n = 100
+
+        task = self.task_queue.get_task(task_id)
+        if not task:
+            return f"## ❌ Not Found\n\n任务 `{task_id}` 不存在。"
+
+        status_val = task.status if isinstance(task.status, str) else task.status.value
+        status_icons = {
+            "done": "✅",
+            "doing": "🔄",
+            "todo": "🕒",
+            "failed": "❌",
+            "cancelled": "🗑️",
+        }
+        status_icon = status_icons.get(status_val, "•")
+
+        response = f"## 💬 对话记录 - #{task.id}\n\n"
+        response += f"**状态:** {status_icon} {status_val}\n"
+        response += f"**描述:** {task.description}\n"
+        if task.project_name:
+            response += f"**项目:** {task.project_name}\n"
+        if task.workspace:
+            response += f"**工作目录:** `{task.workspace}`\n"
+        response += f"**创建时间:** {task.created_at.strftime('%Y-%m-%d %H:%M:%S') if task.created_at else 'N/A'}\n"
+
+        # Prefer Redis archived session messages
+        session_id = task.session_id or f"task_{task.id}"  # Use stored session_id, fallback for legacy tasks
+        try:
+            storage = get_session_storage()
+            meta = storage.get_session_meta(session_id)
+
+            if meta:
+                # meta.updated_at is in ms
+                try:
+                    updated_dt = datetime.fromtimestamp(meta.updated_at / 1000, tz=timezone.utc)
+                    updated_str = updated_dt.strftime('%Y-%m-%d %H:%M:%S UTC')
+                except Exception:
+                    updated_str = str(getattr(meta, "updated_at", ""))
+                response += f"**会话状态:** {getattr(meta, 'status', '')}\n"
+                response += f"**会话更新时间:** {updated_str}\n"
+            else:
+                response += "**会话状态:** (暂无归档会话；可能尚未开始执行)\n"
+
+            stored_messages = storage.get_session_messages(session_id) if meta else []
+            
+            # 获取工具调用信息
+            try:
+                tool_calls = storage.get_session_tool_calls(session_id) if meta else []
+            except Exception:
+                tool_calls = []
+            tool_calls_map = {tc.id: tc for tc in tool_calls}
+
+            if stored_messages:
+                response += f"\n### 最近 {tail_n} 条\n\n"
+                tail_messages = stored_messages[-tail_n:] if len(stored_messages) > tail_n else stored_messages
+                for m in tail_messages:
+                    role = (getattr(m, "role", None) or "assistant").lower()
+                    content = getattr(m, "content", "") or ""
+                    
+                    # 构建消息内容，包含工具调用信息
+                    msg_parts = []
+                    
+                    # 如果有 content_segments，按顺序展示
+                    content_segments = getattr(m, "content_segments", None)
+                    if content_segments:
+                        sorted_segments = sorted(content_segments, key=lambda s: getattr(s, "sequence", 0))
+                        for seg in sorted_segments:
+                            seg_type = getattr(seg, "type", "")
+                            if seg_type == "text":
+                                seg_content = getattr(seg, "content", "")
+                                if seg_content:
+                                    msg_parts.append(seg_content)
+                            elif seg_type == "tool_call":
+                                tc_id = getattr(seg, "tool_call_id", "")
+                                if tc_id and tc_id in tool_calls_map:
+                                    tc = tool_calls_map[tc_id]
+                                    tool_name = getattr(tc, "tool_name", "unknown")
+                                    msg_parts.append(f"🔧 *[调用工具: {tool_name}]*")
+                    else:
+                        # 旧格式：只有 content
+                        if content:
+                            msg_parts.append(content)
+                        
+                        # 检查 tool_call_ids
+                        tool_call_ids = getattr(m, "tool_call_ids", None)
+                        if tool_call_ids:
+                            for tc_id in tool_call_ids:
+                                if tc_id in tool_calls_map:
+                                    tc = tool_calls_map[tc_id]
+                                    tool_name = getattr(tc, "tool_name", "unknown")
+                                    msg_parts.append(f"🔧 *[调用工具: {tool_name}]*")
+                    
+                    final_content = "\n".join(msg_parts) if msg_parts else "(无内容)"
+
+                    if role == "user":
+                        response += f"**👤 用户:**\n{final_content}\n\n"
+                    elif role == "assistant":
+                        response += f"**🤖 助手:**\n{final_content}\n\n"
+                    elif role == "system":
+                        response += f"**⚙️ 系统:**\n{final_content}\n\n"
+                    else:
+                        response += f"**🔧 {role}:**\n{final_content}\n\n"
+
+                return response
+        except Exception as e:
+            logger.debug(f"Could not read archived session messages: {e}")
+
+        # Fallback to conversation.json (legacy path)
+        log_path = Path(self.config.user_home_base) / self.agent_name / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+
+        if log_path.exists():
+            try:
+                import json
+
+                with open(log_path, 'r', encoding='utf-8') as f:
+                    conversation = json.load(f)
+
+                response += f"\n### 最近 {tail_n} 条\n\n"
+
+                messages = conversation if isinstance(conversation, list) else conversation.get('messages', [])
+
+                for msg in messages[-tail_n:]:
+                    role = msg.get('role', 'unknown')
+                    content = msg.get('content', '')
+
+                    if isinstance(content, list):
+                        text_parts = []
+                        for item in content:
+                            if isinstance(item, dict):
+                                if item.get('type') == 'text':
+                                    text_parts.append(item.get('text', ''))
+                                elif item.get('type') == 'tool_use':
+                                    text_parts.append(f"[调用工具: {item.get('name', 'unknown')}]")
+                            elif isinstance(item, str):
+                                text_parts.append(item)
+                        content = '\n'.join(text_parts)
+
+                    if len(content) > 500:
+                        content = content[:500] + "..."
+
+                    if role == 'user':
+                        response += f"**👤 用户:**\n{content}\n\n"
+                    elif role == 'assistant':
+                        response += f"**🤖 助手:**\n{content}\n\n"
+
+                return response
+            except Exception as e:
+                logger.debug(f"Could not read conversation log: {e}")
+
+        response += "\n### 💬 对话记录\n\n暂无对话记录或无法读取。\n"
+        return response
+
+    # -----------------
+    # Legacy handlers (kept for internal reuse)
+    # -----------------
+
+    def _handle_task(self, args: str, invoked_command: str = "/task") -> str:
+        """Legacy `/task` handler (deprecated).
+
+        The backend now requires strict syntax:
+            `/task create [options...] -- <description...>`
+
+        This legacy handler is kept for compatibility with internal calls only.
+        """
+        return "## ❌ 旧写法已移除\n\n请使用严格语法：`/task create [-p|--project <项目>] [-w|--workspace <路径>] -- <描述...>`。"
 
         # Parse -p flag for project
         project_name = None
         workspace = None
         description = args
-        
+
         # Check for -p or --project flag
         project_match = re.search(r'\s+-p\s+(\S+)', args)
         if not project_match:
             project_match = re.search(r'\s+--project[=\s]+(\S+)', args)
-        
+
         if project_match:
             project_name = project_match.group(1)
             description = args[:project_match.start()] + args[project_match.end():]
@@ -152,7 +543,7 @@ class SlashCommandHandler:
         workspace_match = re.search(r'\s+-w\s+(\S+)', description)
         if not workspace_match:
             workspace_match = re.search(r'\s+--workspace[=\s]+(\S+)', description)
-        
+
         if workspace_match:
             workspace = workspace_match.group(1)
             description = description[:workspace_match.start()] + description[workspace_match.end():]
@@ -177,7 +568,7 @@ class SlashCommandHandler:
         # Build response
         priority_emoji = "🔴" if priority == TaskPriority.SERIOUS else "💭"
         priority_label = "Serious" if priority == TaskPriority.SERIOUS else "Thought"
-        
+
         response = f"## {priority_emoji} {priority_label} Task Created\n\n"
         response += "| Field | Value |\n"
         response += "|-------|-------|\n"
@@ -188,7 +579,7 @@ class SlashCommandHandler:
         if workspace:
             response += f"| Workspace | `{workspace}` |\n"
         response += f"\n**Description:** {description}"
-        
+
         return response
 
     def _handle_check(self) -> str:
@@ -598,68 +989,70 @@ class SlashCommandHandler:
         """Handle /help command - show all available commands"""
         return """## 📚 帮助 - 可用命令
 
+### 语法规则
+
+- `/<cmd> [options...] [-- <text>]`
+- 根据参数自动推断操作类型
+
+---
+
 ### 任务管理
 
-| 命令 | 说明 |
-|------|------|
-| `/think <描述>` | 创建一个思考任务（低优先级） |
-| `/think <描述> -p <项目>` | 创建项目任务（高优先级） |
-| `/think <描述> -w <工作目录>` | 创建指定工作目录的任务 |
-| `/check` | 查看系统状态和任务队列 |
-| `/report` | 查看今日任务摘要 |
-| `/report <任务ID>` | 查看任务详情 |
-| `/report <项目名>` | 查看项目报告 |
-| `/report --list` | 列出所有项目 |
-| `/log <任务ID>` | 查看任务执行日志/对话记录 |
-| `/cancel <任务ID>` | 取消待执行的任务 |
-| `/cancel <项目名>` | 取消项目所有任务 |
+**`/task`** - 创建任务
+```
+/task [-p <项目>] [-w <路径> [-i]] -- <描述>
+```
+
+**`/chat`** - 对话管理
+```
+/chat -t <任务ID>              # 查看记录
+/chat -t <ID> -n <N>           # 最近N条
+/chat -c -t <ID> -- <msg>      # 续聊
+```
+
+**`/check`** - 系统状态
+
+**`/report`** - 报告
+```
+/report              # 今日摘要
+/report -t <任务ID>  # 任务详情
+/report -p <项目>    # 项目报告
+/report -l           # 列出项目
+```
+
+**`/cancel`** - 取消
+```
+/cancel -t <任务ID>  # 取消任务
+/cancel -p <项目>    # 取消项目
+```
+
+---
 
 ### 系统管理
 
-| 命令 | 说明 |
-|------|------|
-| `/usage` | 查看 Claude Code 使用量 |
-| `/trash list` | 查看回收站内容 |
-| `/trash restore <项目>` | 从回收站恢复项目 |
-| `/trash empty` | 清空回收站 |
-| `/clear` | 清除当前会话 |
-| `/help` | 显示此帮助信息 |
+**`/usage`** - 查看使用量
 
-### 任务状态说明
-
-| 状态 | 图标 | 说明 |
-|------|------|------|
-| To Do | 🕒 | 等待执行 |
-| Doing | 🔄 | 正在执行 |
-| Done | ✅ | 执行完成 |
-| Failed | ❌ | 执行失败 |
-| Cancelled | 🗑️ | 已取消 |
-
-### 示例
-
+**`/trash`** - 回收站
 ```
-/think 优化登录页面的性能
-/think 实现用户注册功能 -p myapp
-/think 修复数据库连接问题 -p backend -w /home/ubuntu/projects/backend
-/check
-/report abc123
-/log abc123
-/cancel abc123
+/trash              # 查看列表
+/trash -p <项目>    # 恢复项目
+/trash -e           # 清空
 ```
+
+**`/clear`** - 清除会话
+
+**`/help`** - 显示帮助
+
+---
+
+### 任务状态
+
+🕒 To Do · 🔄 Doing · ✅ Done · ❌ Failed · 🗑️ Cancelled
 """
 
     def _handle_log(self, args: str) -> str:
-        """Handle /log command - show task execution log
-        
-        Usage:
-            /log <task_id>  - Show task execution log/conversation
-        """
-        if not args.strip():
-            return (
-                "## ❌ Missing Task ID\n\n"
-                "**Usage:** `/log <task_id>` - 查看任务执行日志\n\n"
-                "**示例:** `/log abc123`"
-            )
+        """Deprecated: `/log` is removed (no compatibility)."""
+        return "## ❌ 命令已移除\n\n`/log` 已移除，请使用 `/chat history -t|--task <任务ID> [-n|--tail <N>]`。"
 
         task_id = args.strip()
         task = self.task_queue.get_task(task_id)
@@ -705,8 +1098,77 @@ class SlashCommandHandler:
         
         if task.error_message:
             response += f"\n### ❌ 错误信息\n\n```\n{task.error_message}\n```\n"
-        
-        # 尝试读取任务执行日志
+
+        # 优先从 Redis 会话归档读取（与 /nexus/tasks/{id}/agui/messages 对齐）
+        session_id = task.session_id or f"task_{task.id}"  # Use stored session_id, fallback for legacy tasks
+        try:
+            storage = get_session_storage()
+            meta = storage.get_session_meta(session_id)
+            stored_messages = storage.get_session_messages(session_id) if meta else []
+            
+            # 获取工具调用信息
+            try:
+                tool_calls = storage.get_session_tool_calls(session_id) if meta else []
+            except Exception:
+                tool_calls = []
+            tool_calls_map = {tc.id: tc for tc in tool_calls}
+
+            if stored_messages:
+                response += "\n### 💬 对话记录\n\n"
+                tail_messages = stored_messages[-10:] if len(stored_messages) > 10 else stored_messages
+                for m in tail_messages:
+                    role = (getattr(m, "role", None) or "assistant").lower()
+                    content = getattr(m, "content", "") or ""
+                    
+                    # 构建消息内容，包含工具调用信息
+                    msg_parts = []
+                    
+                    # 如果有 content_segments，按顺序展示
+                    content_segments = getattr(m, "content_segments", None)
+                    if content_segments:
+                        sorted_segments = sorted(content_segments, key=lambda s: getattr(s, "sequence", 0))
+                        for seg in sorted_segments:
+                            seg_type = getattr(seg, "type", "")
+                            if seg_type == "text":
+                                seg_content = getattr(seg, "content", "")
+                                if seg_content:
+                                    msg_parts.append(seg_content)
+                            elif seg_type == "tool_call":
+                                tc_id = getattr(seg, "tool_call_id", "")
+                                if tc_id and tc_id in tool_calls_map:
+                                    tc = tool_calls_map[tc_id]
+                                    tool_name = getattr(tc, "tool_name", "unknown")
+                                    msg_parts.append(f"🔧 *[调用工具: {tool_name}]*")
+                    else:
+                        # 旧格式：只有 content
+                        if content:
+                            msg_parts.append(content)
+                        
+                        # 检查 tool_call_ids
+                        tool_call_ids = getattr(m, "tool_call_ids", None)
+                        if tool_call_ids:
+                            for tc_id in tool_call_ids:
+                                if tc_id in tool_calls_map:
+                                    tc = tool_calls_map[tc_id]
+                                    tool_name = getattr(tc, "tool_name", "unknown")
+                                    msg_parts.append(f"🔧 *[调用工具: {tool_name}]*")
+                    
+                    final_content = "\n".join(msg_parts) if msg_parts else "(无内容)"
+
+                    if role == "user":
+                        response += f"**👤 用户:**\n{final_content}\n\n"
+                    elif role == "assistant":
+                        response += f"**🤖 助手:**\n{final_content}\n\n"
+                    elif role == "system":
+                        response += f"**⚙️ 系统:**\n{final_content}\n\n"
+                    else:
+                        response += f"**🔧 {role}:**\n{final_content}\n\n"
+
+                return response
+        except Exception as e:
+            logger.debug(f"Could not read archived session messages: {e}")
+
+        # 回退：尝试读取任务执行日志（旧链路）
         log_path = Path(self.config.user_home_base) / self.agent_name / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
         
         if log_path.exists():

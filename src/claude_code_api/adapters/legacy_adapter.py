@@ -22,8 +22,8 @@ class LegacyAdapter(BaseAdapter):
         return ProtocolType.LEGACY
     
     def _sanitize_text(self, text: str) -> str:
-        """清理文本中的特殊标签"""
-        return re.sub(r'</?think>', '', text)
+        """保持原始文本（Legacy SSE 里保留 <think> 标签，便于调用方自行处理）。"""
+        return text
     
     def convert(self, claude_event: Dict[str, Any]) -> Optional[str]:
         """
@@ -102,7 +102,11 @@ class LegacyAdapter(BaseAdapter):
                 del self.tool_input_buffer[index]
                 
                 return self._format_tool_call(tool_name, params)
-        
+
+        # 结束事件（CCR 会输出 message_stop）
+        elif inner_type in ("message_stop", "message_end"):
+            return self._format_response("", finished=True, answer_success=1)
+
         return None
     
     def _handle_user_event(self, event: Dict[str, Any]) -> Optional[str]:
@@ -194,14 +198,14 @@ class LegacyAdapter(BaseAdapter):
         lines.append("")
         return "\n".join(lines)
     
-    def _format_response(self, text: str, finished: bool = False) -> str:
+    def _format_response(self, text: str, finished: bool = False, answer_success: int = 0) -> str:
         """格式化为易事厅响应格式"""
         return self.format_sse({
             "response": text,
             "finished": finished,
             "global_output": {
                 "context": "",
-                "answer_success": 0,
+                "answer_success": answer_success,
                 "docs": []
             }
         })
