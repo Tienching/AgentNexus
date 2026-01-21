@@ -7,7 +7,7 @@ Provides CRUD operations for AGUI session data in Redis.
 import json
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..models.session import (
     SessionMeta,
@@ -271,35 +271,47 @@ class SessionStorage:
             return False
 
     def delete_session(self, session_id: str, username: Optional[str] = None) -> bool:
-        """Delete session and all associated data
-        
-        Args:
-            session_id: Session ID
-            username: Optional username (for removing from user index)
-            
-        Returns:
-            True if successful
+        """Delete session and all associated data.
+
+        Notes:
+            - Idempotent: deleting a non-existent session returns True.
+            - If username is not provided, we will best-effort resolve it from session meta
+              so user index doesn't accumulate stale ids.
+            - Also clears AGUI event log and temporary streaming content keys.
         """
         try:
-            # Delete all session keys
+            # Resolve username from meta if not provided
+            if not username:
+                try:
+                    meta = self.get_session_meta(session_id)
+                    if meta and meta.username:
+                        username = meta.username
+                except Exception:
+                    pass
+
+            # Delete all fixed session keys
             keys_to_delete = [
                 f"session:{session_id}:meta",
                 f"session:{session_id}:messages",
                 f"session:{session_id}:toolcalls",
+                f"session:{session_id}:events",  # task SSE playback log
             ]
-            
-            for key in keys_to_delete:
-                self._redis.delete(key)
-            
+            self._redis.delete(*keys_to_delete)
+
+            # Delete temporary streaming content keys: session:{id}:msg:*:content
+            try:
+                for key in self._redis.scan_iter(f"session:{session_id}:msg:*:content"):
+                    self._redis.delete(key)
+            except Exception:
+                pass
+
             # Remove from global index
-            global_key = "sessions:all"
-            self._redis.zrem(global_key, session_id)
-            
-            # Remove from user index if username provided
+            self._redis.zrem("sessions:all", session_id)
+
+            # Remove from user index if username known
             if username:
-                user_key = f"user:{username}:sessions"
-                self._redis.zrem(user_key, session_id)
-            
+                self._redis.zrem(f"user:{username}:sessions", session_id)
+
             logger.info(f"Deleted session: {session_id}")
             return True
         except Exception as e:
@@ -558,6 +570,59 @@ class SessionStorage:
         except Exception as e:
             logger.error(f"Failed to delete streaming content: {e}")
             return False
+
+    # ============ AGUI Event Log Operations ============
+
+    def append_agui_event(self, session_id: str, event: Dict[str, Any], max_len: int = 5000) -> bool:
+        """Append a raw AG-UI event JSON into an ordered event log.
+
+        用途：Task 在后台执行时，前端无法直连 CCR 的 SSE；我们把转换后的 AG-UI 事件写入 Redis，
+        然后由 `/api/nexus/tasks/{id}/agui/stream` 以 SSE 方式增量推送。
+        """
+        try:
+            key = f"session:{session_id}:events"
+            self._redis.rpush(key, json.dumps(event, ensure_ascii=False))
+
+            # TTL aligned with session lifetime
+            self._redis.client.expire(self._redis._key(key), SESSION_TTL)
+
+            # Best-effort cap
+            if max_len and max_len > 0:
+                try:
+                    # Keep last N items
+                    self._redis.client.ltrim(self._redis._key(key), -max_len, -1)
+                except Exception:
+                    pass
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to append AGUI event: {e}")
+            return False
+
+    def get_agui_event_count(self, session_id: str) -> int:
+        """Get event count for session event log."""
+        try:
+            key = f"session:{session_id}:events"
+            return int(self._redis.llen(key) or 0)
+        except Exception:
+            return 0
+
+    def get_agui_events(self, session_id: str, start: int = 0, end: int = -1) -> List[Dict[str, Any]]:
+        """Get a slice of AG-UI events."""
+        try:
+            key = f"session:{session_id}:events"
+            raw = self._redis.lrange(key, start, end)
+            out: List[Dict[str, Any]] = []
+            for item in raw or []:
+                try:
+                    evt = json.loads(item)
+                    if isinstance(evt, dict):
+                        out.append(evt)
+                except Exception:
+                    continue
+            return out
+        except Exception:
+            return []
 
 
 # Global instance getter

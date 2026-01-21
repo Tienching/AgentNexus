@@ -100,6 +100,9 @@ class Task(BaseModel):
     # Agent isolation
     agent_name: Optional[str] = None
     
+    # Session ID for conversation storage (format: {session_id}_{task_id})
+    session_id: Optional[str] = None
+    
     model_config = ConfigDict(use_enum_values=True)
     
     def to_redis_hash(self) -> Dict[str, str]:

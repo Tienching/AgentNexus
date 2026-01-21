@@ -5,7 +5,7 @@ description = "Stream API wrapper for ccr code CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.104.1",
+    "fastapi>=0.115.0",
     "uvicorn[standard]>=0.24.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
@@ -14,6 +14,7 @@ dependencies = [
     "python-json-logger>=2.0.7",
     "httpx>=0.25.2",
     "redis>=5.0.0",
+    "sse-starlette>=2.0.0",
 ]
 
 [project.optional-dependencies]

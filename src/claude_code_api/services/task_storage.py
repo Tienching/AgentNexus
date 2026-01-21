@@ -7,6 +7,8 @@ Provides TaskQueue class for managing tasks in Redis.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import uuid
 from typing import List, Optional, Dict, Any
 
 from ..logger import get_logger
@@ -80,16 +82,43 @@ class TaskQueue:
         project_id: Optional[str] = None,
         project_name: Optional[str] = None,
         workspace: Optional[str] = None,
+        task_id: Optional[str] = None,
+        source_session_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
     ) -> Task:
-        """Add new task to queue"""
+        """Add new task to queue
+        
+        Args:
+            source_session_id: Optional session ID from the source context (e.g., chat session).
+                              If provided, task session_id will be {source_session_id}_{task_id}.
+                              Otherwise, defaults to task_{task_id}.
+            agent_name: Optional agent name (CCR user) for task execution.
+                       If not provided, uses self.agent_name (the queue's default agent).
+        """
+        # Generate task_id first if not provided
+        actual_task_id = str(task_id) if task_id else str(uuid.uuid4())[:8]
+        
+        # Use provided agent_name or fallback to queue's default
+        effective_agent = agent_name or self.agent_name
+        
+        # Generate session_id based on source_session_id
+        logger.info(f"add_task called with source_session_id={source_session_id!r}, task_id={actual_task_id}, agent_name={effective_agent}")
+        if source_session_id:
+            session_id = f"{source_session_id}_{actual_task_id}"
+        else:
+            session_id = f"task_{actual_task_id}"
+        logger.info(f"Generated session_id={session_id}")
+        
         task = Task(
+            id=actual_task_id,
             description=description,
             priority=priority,
             context=context,
             project_id=project_id,
             project_name=project_name,
             workspace=workspace,
-            agent_name=self.agent_name,
+            agent_name=effective_agent,
+            session_id=session_id,
         )
         
         # Store task data
@@ -120,6 +149,68 @@ class TaskQueue:
         workspace_info = f" [Workspace: {workspace}]" if workspace else ""
         logger.info(f"Added task {task.id}: {description[:50]}...{project_info}{workspace_info}")
         
+        return task
+
+    def enqueue_chat_continue(self, task_id: str, message: str) -> Optional[Task]:
+        """Re-enqueue an existing task as a background chat-continue run.
+
+        This keeps the same task id and session id (`task_<id>`), but updates task.context
+        with the latest user message for the next run.
+
+        Rules:
+        - If task is DOING, do not enqueue.
+        - If task is CANCELLED, do not enqueue.
+        - Avoid duplicating task id in the TODO queue.
+        """
+        task_id = str(task_id)
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        status_val = task.status if isinstance(task.status, str) else task.status.value
+        if status_val == TaskStatus.DOING.value:
+            return task
+        if status_val == TaskStatus.CANCELLED.value:
+            raise ValueError("Task is cancelled")
+
+        msg = (message or "").strip()
+        if not msg:
+            raise ValueError("Empty message")
+
+        # Update context for next run
+        ctx: Dict[str, Any] = task.context or {}
+        ctx["next_user_message"] = msg
+        ctx["next_user_message_id"] = f"continue-{uuid.uuid4().hex[:8]}"
+        ctx["next_run_kind"] = "chat_continue"
+        task.context = ctx
+        self._redis.hset(self._task_key(task.id), {"context": json.dumps(ctx, ensure_ascii=False)})
+
+        # Move status to TODO (from DONE/FAILED/etc.)
+        try:
+            self._update_task_status(task, TaskStatus.TODO)
+        except Exception:
+            # best-effort
+            pass
+
+        # Ensure task appears only once in the queue
+        try:
+            self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
+        except Exception:
+            pass
+
+        try:
+            if task.priority == TaskPriority.SERIOUS:
+                self._redis.lpush(self._queue_key(task.workspace), task.id)
+            else:
+                self._redis.rpush(self._queue_key(task.workspace), task.id)
+            logger.info(f"Enqueued chat_continue for task {task.id}", extra={
+                "task_id": task.id,
+                "workspace": task.workspace,
+                "message": message[:50] if message else "",
+            })
+        except Exception as e:
+            logger.error(f"Failed to enqueue chat_continue for task {task.id}: {e}")
+
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
@@ -327,6 +418,74 @@ class TaskQueue:
         
         return tasks
 
+    def list_tasks(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        status: Optional[str] = None,
+        project_id: Optional[str] = None,
+        workspace: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> tuple[List[Task], int]:
+        """List tasks with simple filtering and pagination.
+
+        Notes:
+            - This implementation favors correctness and minimal dependencies.
+            - Filtering is done by loading task objects; for large datasets this can be optimized.
+
+        Returns:
+            (tasks, total)
+        """
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 20
+
+        # Fetch all task IDs, most recent first
+        all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
+        all_task_ids = list(reversed(all_task_ids))
+
+        status_norm = status.lower().strip() if status else None
+        project_norm = project_id.strip() if project_id else None
+        workspace_norm = workspace.strip() if workspace else None
+        search_norm = search.lower().strip() if search else None
+
+        filtered: List[Task] = []
+        for task_id in all_task_ids:
+            task = self.get_task(task_id)
+            if not task:
+                continue
+
+            task_status = task.status if isinstance(task.status, str) else task.status.value
+            if status_norm and task_status != status_norm:
+                continue
+
+            if project_norm and (task.project_id or "") != project_norm:
+                continue
+
+            if workspace_norm and (task.workspace or "") != workspace_norm:
+                continue
+
+            if search_norm:
+                hay = " ".join([
+                    task.id or "",
+                    task.description or "",
+                    task.project_id or "",
+                    task.project_name or "",
+                    task.workspace or "",
+                    task_status or "",
+                ]).lower()
+                if search_norm not in hay:
+                    continue
+
+            filtered.append(task)
+
+        total = len(filtered)
+
+        start = (page - 1) * page_size
+        end = start + page_size
+        return filtered[start:end], total
+
     def get_failed_tasks(self, limit: int = 10) -> List[Task]:
         """Get the most recent failed tasks"""
         task_ids = self._redis.smembers(self._status_key(TaskStatus.FAILED))
@@ -359,6 +518,94 @@ class TaskQueue:
             logger.info(f"Soft deleted project {project_id}: {count} tasks moved to trash")
         
         return count
+
+    def delete_task_hard(self, task_id: str) -> bool:
+        """Hard delete a task and all related indexes.
+
+        This removes the task from:
+        - task hash
+        - all tasks zset
+        - status/project/workspace indexes
+        - todo queue / executing set (best effort)
+
+        The operation is idempotent.
+        """
+        task_id = str(task_id)
+
+        # Best-effort cleanups even if task is missing
+        removed_any = False
+
+        task = self.get_task(task_id)
+        if task:
+            # Remove from status index
+            try:
+                status_val = task.status if isinstance(task.status, str) else task.status.value
+                try:
+                    st = TaskStatus(status_val)
+                    if self._redis.srem(self._status_key(st), task_id):
+                        removed_any = True
+                except Exception:
+                    # fallback: remove from all known status sets
+                    for st in TaskStatus:
+                        if self._redis.srem(self._status_key(st), task_id):
+                            removed_any = True
+            except Exception:
+                pass
+
+            # Remove from project index
+            if task.project_id:
+                try:
+                    if self._redis.srem(self._project_key(task.project_id), task_id):
+                        removed_any = True
+                except Exception:
+                    pass
+
+            # Remove from workspace index + queues
+            try:
+                if self._redis.srem(self._workspace_key(task.workspace), task_id):
+                    removed_any = True
+            except Exception:
+                pass
+
+            try:
+                # Remove from TODO queue if present
+                if self._redis.lrem(self._queue_key(task.workspace), 0, task_id):
+                    removed_any = True
+            except Exception:
+                pass
+
+            try:
+                if self._redis.srem(self._executing_key(task.workspace), task_id):
+                    removed_any = True
+            except Exception:
+                pass
+        else:
+            # If task meta is missing, still try to remove from common indexes
+            try:
+                for st in TaskStatus:
+                    if self._redis.srem(self._status_key(st), task_id):
+                        removed_any = True
+            except Exception:
+                pass
+
+        # Remove from global zset
+        try:
+            if self._redis.zrem(self._all_tasks_key(), task_id):
+                removed_any = True
+        except Exception:
+            pass
+
+        # Remove the task hash
+        try:
+            if self._redis.delete(self._task_key(task_id)):
+                removed_any = True
+        except Exception:
+            pass
+
+        if removed_any:
+            logger.info(f"Hard deleted task {task_id}")
+
+        return True
 
     # ============ Executor Support Methods ============
     

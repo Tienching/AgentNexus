@@ -21,7 +21,23 @@
                     <h1 class="text-xl font-semibold">NexusHub</h1>
                 </div>
                 <div class="flex items-center space-x-4">
-                    <div class="relative">
+                    <!-- View Switcher -->
+                    <div class="bg-gray-700 border border-gray-600 rounded-lg p-1 flex items-center">
+                        <button
+                            id="viewChatBtn"
+                            class="px-3 py-1.5 rounded-md text-sm font-medium bg-gray-900 text-white"
+                        >
+                            Chat
+                        </button>
+                        <button
+                            id="viewTaskBtn"
+                            class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-300 hover:text-white"
+                        >
+                            Task
+                        </button>
+                    </div>
+
+                    <div class="relative" id="usernameFilterWrap">
                         <select 
                             id="usernameFilter" 
                             class="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 pl-10 w-48 focus:outline-none focus:border-blue-500 text-sm appearance-none cursor-pointer"
@@ -57,28 +73,42 @@
         </header>
 
         <!-- Main Content -->
-        <main class="flex-1 overflow-hidden flex">
-            <!-- Session List -->
-            <div class="w-80 border-r border-gray-700 overflow-y-auto">
-                <div id="sessionList" class="p-4 space-y-2">
-                    <!-- Sessions will be rendered here -->
-                    <div class="text-center text-gray-500 py-8">
-                        <p>加载中...</p>
+        <main class="flex-1 overflow-hidden">
+            <!-- Chat View -->
+            <div id="chatView" class="h-full flex">
+                <!-- Session List -->
+                <div class="w-80 border-r border-gray-700 overflow-y-auto">
+                    <div id="sessionList" class="p-4 space-y-2">
+                        <!-- Sessions will be rendered here -->
+                        <div class="text-center text-gray-500 py-8">
+                            <p>加载中...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Session Detail -->
+                <div class="flex-1 overflow-hidden flex flex-col">
+                    <div id="sessionDetail" class="flex-1 overflow-y-auto p-6">
+                        <div class="flex items-center justify-center h-full text-gray-500">
+                            <div class="text-center">
+                                <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                                </svg>
+                                <p>选择一个会话查看详情</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Session Detail -->
-            <div class="flex-1 overflow-hidden flex flex-col">
-                <div id="sessionDetail" class="flex-1 overflow-y-auto p-6">
-                    <div class="flex items-center justify-center h-full text-gray-500">
-                        <div class="text-center">
-                            <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
-                            </svg>
-                            <p>选择一个会话查看详情</p>
-                        </div>
+            <!-- Task View -->
+            <div id="taskView" class="h-full hidden">
+                <div class="h-full flex overflow-hidden">
+                    <div class="flex-1 overflow-x-auto overflow-y-hidden">
+                        <div id="taskBoard" class="h-full p-4 flex space-x-4 min-w-[1100px]"></div>
                     </div>
+
+                    <div id="taskDetail" class="w-[32rem] border-l border-gray-700 overflow-y-auto p-4 hidden"></div>
                 </div>
             </div>
         </main>
@@ -88,7 +118,7 @@
     <div id="deleteModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
         <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
             <h3 class="text-lg font-semibold mb-4">确认删除</h3>
-            <p class="text-gray-400 mb-6">确定要删除这个会话吗？此操作不可撤销。</p>
+            <p id="deleteModalMessage" class="text-gray-400 mb-6">确定要删除这个会话吗？此操作不可撤销。</p>
             <div class="flex justify-end space-x-3">
                 <button id="cancelDeleteBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">
                     取消
@@ -105,7 +135,7 @@
         <p id="errorMessage"></p>
     </div>
 
-    <script src="js/api.js?v=5"></script>
-    <script src="js/app.js?v=5"></script>
+    <script src="js/api.js?v=6"></script>
+    <script src="js/app.js?v=6"></script>
 </body>
 </html>

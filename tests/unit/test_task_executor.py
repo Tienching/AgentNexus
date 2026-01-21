@@ -3,7 +3,6 @@
 
 import pytest
 import asyncio
-from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime, timezone
 
 from src.claude_code_api.services.task_executor import (
@@ -392,3 +391,5 @@ class TestExecutorConfig:
         assert config.get_max_concurrency(None) == 1
         assert config.get_max_concurrency("/path/default") == 1
         assert config.get_max_concurrency("/path/special") == 5
+
+

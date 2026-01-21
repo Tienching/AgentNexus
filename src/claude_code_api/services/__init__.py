@@ -18,6 +18,14 @@ from .task_executor import (
 )
 from .session_storage import SessionStorage, get_session_storage
 from .stream_archiver import StreamArchiver, create_archiver
+from .worktree import (
+    WorktreeError,
+    NotGitRepoError,
+    WorktreeDirConflictError,
+    WorktreeCommandError,
+    WorktreeResult,
+    ensure_task_worktree,
+)
 
 __all__ = [
     "CCRExecutor",
@@ -41,4 +49,10 @@ __all__ = [
     "get_session_storage",
     "StreamArchiver",
     "create_archiver",
+    "WorktreeError",
+    "NotGitRepoError",
+    "WorktreeDirConflictError",
+    "WorktreeCommandError",
+    "WorktreeResult",
+    "ensure_task_worktree",
 ]

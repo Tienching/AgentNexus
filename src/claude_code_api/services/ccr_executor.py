@@ -32,6 +32,7 @@ from ..config import settings
 from ..logger import get_logger
 from .user_directory import UserDirectoryManager
 from .slash_command_handler import SlashCommandHandler, SLASH_COMMANDS
+from .slash_command_parser import SlashCommandParseError, parse_slash_command
 
 logger = get_logger(__name__)
 
@@ -58,8 +59,6 @@ class CCRExecutor:
         """Check if content is a slash command (excluding /clear which has special handling)"""
         content_lower = content.lower().strip()
         for cmd in SLASH_COMMANDS:
-            if cmd == "/clear":
-                continue  # /clear has existing special handling
             if content_lower == cmd or content_lower.startswith(cmd + " "):
                 return True
         return False
@@ -88,11 +87,102 @@ class CCRExecutor:
             logger.error(f"Missing required user parameter", extra={"agent_name": agent_name})
             raise ValueError("用户名参数是必需的，请在请求中提供 'user' 字段")
 
-        # 获取session_id
-        session_id = request.session_id if request.session_id else "default"
+        # 清理输入内容
+        cleaned_content = self._clean_content(request.content)
 
-        # 确保用户目录存在
-        user_dir = await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
+        # Helper: yield a markdown-like slash response (works for both protocols)
+        def _format_slash_result(text: str, is_error: bool = False) -> str:
+            # For raw output, return a pseudo "result" event; legacy formatting is handled by caller.
+            if output_format == "legacy":
+                return self.format_legacy_sse(text, finished=True, answer_success=0 if is_error else 1)
+            return json.dumps({
+                "type": "result",
+                "subtype": "slash_command",
+                "content": text,
+            })
+
+        # Removed commands (explicit error; no compatibility)
+        lowered = (cleaned_content or "").lower().strip()
+        if lowered == "/think" or lowered.startswith("/think "):
+            yield _format_slash_result(
+                "## ❌ 命令已移除\n\n`/think` 命令已移除。",
+                is_error=True,
+            )
+            return
+        if lowered == "/log" or lowered.startswith("/log "):
+            yield _format_slash_result(
+                "## ❌ 命令已移除\n\n`/log` 命令已移除。",
+                is_error=True,
+            )
+            return
+
+        # Slash commands (strict grammar)
+        if self._is_slash_command(cleaned_content):
+            try:
+                parsed = parse_slash_command(cleaned_content)
+            except SlashCommandParseError as e:
+                usage = (e.usage or "").strip()
+                if usage:
+                    yield _format_slash_result(f"## ❌ 命令解析失败\n\n{e.message}\n\n**Usage:** `{usage}`", is_error=True)
+                else:
+                    yield _format_slash_result(f"## ❌ 命令解析失败\n\n{e.message}", is_error=True)
+                return
+
+            # /clear now: clear directory and return immediately
+            if parsed.cmd == "clear" and parsed.subcmd == "now":
+
+                session_id = request.session_id if request.session_id else "default"
+                user_dir = await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
+                await self.user_dir_manager.clear_directory(agent_name, request.user, user_dir, session_id)
+                await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
+                yield _format_slash_result(
+                    "## 🔄 Session Cleared\n\nYour session has been cleared. A fresh workspace has been created.",
+                    is_error=False,
+                )
+                return
+
+            # Other slash commands: handled locally
+            else:
+                source_session_id = request.session_id if request.session_id else None
+                logger.info(f"Slash command: request.session_id={request.session_id!r}, source_session_id={source_session_id!r}")
+                async for output in self._handle_slash_command(
+                    cleaned_content, agent_name, output_format, source_session_id
+                ):
+                    yield output
+                return
+
+        # 获取session_id（注意：/chat continue 可能已重写 session_id）
+        session_id = request.session_id if request.session_id else "default"
+        
+        # 检查是否是 inplace 模式（直接在用户指定的目录执行）
+        cwd_mode = getattr(request, "cwd_mode", "") or ""
+        is_inplace = cwd_mode == "inplace"
+
+        # Resolve execution cwd: request.cwd (if provided) > user_dir
+        run_cwd = None
+        try:
+            run_cwd = getattr(request, "cwd", None)
+        except Exception:
+            run_cwd = None
+
+        # 对于 inplace 模式，不创建 session 目录，直接使用指定的 cwd
+        if is_inplace and run_cwd:
+            exec_dir = Path(str(run_cwd))
+            user_dir = str(exec_dir)  # 用于日志记录
+        else:
+            # 确保用户目录存在
+            user_dir = await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
+            exec_dir = Path(str(run_cwd)) if run_cwd else Path(user_dir)
+
+        if run_cwd:
+            # Validate provided cwd
+            try:
+                if not exec_dir.exists() or not exec_dir.is_dir():
+                    raise ValueError(f"cwd 不存在或不是目录: {exec_dir}")
+            except Exception as e:
+                logger.error(f"Invalid cwd: {e}")
+                raise
+
         logger.info(
             f"Using user directory",
             extra={
@@ -100,33 +190,24 @@ class CCRExecutor:
                 "agent_name": agent_name,
                 "session_id": session_id,
                 "user_dir": str(user_dir),
+                "exec_dir": str(exec_dir),
+                "cwd_mode": cwd_mode,
             }
         )
 
-        # 清理输入内容
-        cleaned_content = self._clean_content(request.content)
-
-        # 检查是否为斜杠命令（非/clear）
-        if self._is_slash_command(cleaned_content):
-            async for output in self._handle_slash_command(
-                cleaned_content, agent_name, output_format
-            ):
-                yield output
-            return
-
-        # 检查管理员命令
-        if self._check_for_admin_command(cleaned_content):
-            if cleaned_content.lower() == "/clear":
-                await self.user_dir_manager.clear_directory(agent_name, request.user, user_dir, session_id)
-                user_dir = await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
-
-        # 构建命令
-        cmd = self._build_command(agent_name, cleaned_content)
+        # 构建命令 - 决定是否使用 -c (continue) 选项
+        # - inplace 模式的首次执行：不使用 -c，避免恢复到其他目录的会话
+        # - inplace 模式的续聊（chat_continue）：使用 -c，继续当前目录的会话
+        # - 非 inplace 模式：总是使用 -c
+        run_kind = getattr(request, "run_kind", "") or ""
+        is_chat_continue = run_kind == "chat_continue"
+        use_continue = (not is_inplace) or is_chat_continue
+        cmd = self._build_command(agent_name, cleaned_content, use_continue=use_continue)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
         ccr_cmd_str = ' '.join(shlex.quote(arg) for arg in cmd)
-        full_cmd = f"cd {shlex.quote(str(user_dir))} && {ccr_cmd_str}"
+        full_cmd = f"cd {shlex.quote(str(exec_dir))} && {ccr_cmd_str}"
         
         if current_user == agent_name:
             cmd = ["bash", "-c", full_cmd]
@@ -148,6 +229,11 @@ class CCRExecutor:
             "api_user": request.user,
             "agent_name": agent_name,
             "content_preview": cleaned_content[:100] if len(cleaned_content) > 100 else cleaned_content,
+            "full_cmd": full_cmd,
+            "exec_dir": str(exec_dir),
+            "cwd_mode": cwd_mode,
+            "run_kind": run_kind,
+            "use_continue": use_continue,
         })
 
         try:
@@ -192,7 +278,8 @@ class CCRExecutor:
         self,
         content: str,
         agent_name: str,
-        output_format: str = "raw"
+        output_format: str = "raw",
+        source_session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Handle slash commands and yield formatted response
         
@@ -200,6 +287,7 @@ class CCRExecutor:
             content: The slash command content
             agent_name: Linux agent user name
             output_format: Output format - "raw" or "legacy"
+            source_session_id: Session ID from the source context (for task creation)
             
         Yields:
             Formatted response strings
@@ -208,7 +296,7 @@ class CCRExecutor:
         
         try:
             # Get markdown response from handler
-            response = handler.handle_command(content)
+            response = handler.handle_command(content, source_session_id=source_session_id)
             
             logger.info(f"Slash command handled", extra={
                 "command": content.split()[0] if content else "",
@@ -287,12 +375,18 @@ class CCRExecutor:
             logger.info(f"Stream processing completed, total lines: {line_count}")
 
             if process.stderr:
-                stderr_data = await process.stderr.read()
-                if stderr_data:
-                    stderr_str = stderr_data.decode('utf-8', errors='ignore')[:1000]
-                    logger.warning(f"CCR stderr: {stderr_str}")
-                    if debug_file:
-                        debug_file.write(f"\n=== STDERR ===\n{stderr_str}\n")
+                try:
+                    stderr_data = await process.stderr.read()
+                    # 测试里 stderr 可能是 AsyncMock，读出来不是 bytes；这里做兼容处理
+                    if asyncio.iscoroutine(stderr_data):
+                        stderr_data = await stderr_data
+                    if isinstance(stderr_data, (bytes, bytearray)) and stderr_data:
+                        stderr_str = stderr_data.decode('utf-8', errors='ignore')[:1000]
+                        logger.warning(f"CCR stderr: {stderr_str}")
+                        if debug_file:
+                            debug_file.write(f"\n=== STDERR ===\n{stderr_str}\n")
+                except Exception:
+                    pass
         finally:
             if debug_file:
                 debug_file.write(f"\n=== Stream End: {line_count} lines ===\n")
@@ -431,8 +525,14 @@ class CCRExecutor:
         
         return content, None
 
-    def _build_command(self, agent_name: str, content: str) -> List[str]:
-        """构建CCR命令"""
+    def _build_command(self, agent_name: str, content: str, use_continue: bool = True) -> List[str]:
+        """构建CCR命令
+        
+        Args:
+            agent_name: Agent用户名
+            content: 用户消息内容
+            use_continue: 是否使用 -c (continue) 选项，默认为 True
+        """
         cleaned_content, model_param = self._parse_model_param(content)
         ccr_command = self.config.agent_ccr_command_map.get(agent_name, self.config.ccr_command)
         
@@ -445,7 +545,10 @@ class CCRExecutor:
             cmd.extend(["-p"])
             message = "你好"
         else:
-            cmd.extend(["-c", "-p"])
+            if use_continue:
+                cmd.extend(["-c", "-p"])
+            else:
+                cmd.extend(["-p"])
             message = cleaned_content
         
         cmd.extend([
@@ -462,8 +565,8 @@ class CCRExecutor:
         return cmd
 
     def _sanitize_text(self, text: str) -> str:
-        """剔除文本中的<think>和</think>标签"""
-        return re.sub(r'</?think>', '', text)
+        """Legacy SSE 下保留原始文本（包含 <think> 标签）。"""
+        return text
 
     def _format_error_message(self, error: str, agent_name: str) -> str:
         """格式化错误消息"""

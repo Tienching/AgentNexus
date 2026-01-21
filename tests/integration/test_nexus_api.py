@@ -15,6 +15,7 @@ from src.claude_code_api.models.session import (
     StoredToolCall,
     ToolCallStatus,
 )
+from src.claude_code_api.models.task_models import Task, TaskPriority, TaskStatus
 
 
 class MockSessionStorage:
@@ -72,7 +73,7 @@ class MockSessionStorage:
     def get_session_tool_calls(self, session_id: str):
         return list(self.tool_calls.get(session_id, {}).values())
     
-    def delete_session(self, session_id: str, username: str):
+    def delete_session(self, session_id: str, username: str = None):
         if session_id in self.sessions:
             del self.sessions[session_id]
         if session_id in self.messages:
@@ -517,3 +518,210 @@ class TestAPIEdgeCases:
         
         assert response.status_code == 200
         # Should not cause any errors, just return no matches
+
+
+class MockTaskQueue:
+    """Mock TaskQueue for task API testing"""
+
+    def __init__(self, tasks):
+        self._tasks = {t.id: t for t in tasks}
+        # Most recent first (created_at desc)
+        self._ordered = sorted(tasks, key=lambda t: t.created_at, reverse=True)
+
+    def list_tasks(self, page=1, page_size=20, status=None, project_id=None, workspace=None, search=None):
+        items = list(self._ordered)
+
+        if status:
+            items = [t for t in items if (t.status if isinstance(t.status, str) else t.status.value) == status]
+        if project_id:
+            items = [t for t in items if (t.project_id or "") == project_id]
+        if workspace:
+            items = [t for t in items if (t.workspace or "") == workspace]
+        if search:
+            s = search.lower()
+            def _hay(t):
+                st = t.status if isinstance(t.status, str) else t.status.value
+                return " ".join([
+                    t.id or "",
+                    t.description or "",
+                    t.project_id or "",
+                    t.project_name or "",
+                    t.workspace or "",
+                    st or "",
+                ]).lower()
+            items = [t for t in items if s in _hay(t)]
+
+        total = len(items)
+        start = (page - 1) * page_size
+        end = start + page_size
+        return items[start:end], total
+
+    def get_task(self, task_id):
+        return self._tasks.get(task_id)
+
+    def delete_task_hard(self, task_id: str) -> bool:
+        task_id = str(task_id)
+        if task_id in self._tasks:
+            del self._tasks[task_id]
+        self._ordered = [t for t in self._ordered if str(t.id) != task_id]
+        return True
+
+
+@pytest.fixture
+def mock_task_queue():
+    tasks = [
+        Task(description="Fix login", priority=TaskPriority.SERIOUS, project_id="proj-a", project_name="Project A", workspace="/ws/a", status=TaskStatus.TODO, agent_name="ubuntu"),
+        Task(description="Refactor API", priority=TaskPriority.THOUGHT, project_id="proj-b", project_name="Project B", workspace="/ws/b", status=TaskStatus.DOING, agent_name="ubuntu"),
+        Task(description="Fix checkout", priority=TaskPriority.SERIOUS, project_id="proj-a", project_name="Project A", workspace="/ws/a", status=TaskStatus.DONE, agent_name="ubuntu"),
+    ]
+    return MockTaskQueue(tasks)
+
+
+class TestTaskAPI:
+    """Task API integration tests"""
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_success(self, client, mock_storage, mock_task_queue):
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            response = await client.get("/api/nexus/tasks", params={"agent_name": "ubuntu"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        assert len(data["tasks"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_page_size_200_allowed(self, client, mock_storage, mock_task_queue):
+        """UI 会用 page_size=200 加载看板；后端应允许该值。"""
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            response = await client.get(
+                "/api/nexus/tasks",
+                params={"agent_name": "ubuntu", "page": 1, "page_size": 200},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["page_size"] == 200
+        assert data["total"] == 3
+        assert len(data["tasks"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_filter_by_status(self, client, mock_storage, mock_task_queue):
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            response = await client.get("/api/nexus/tasks", params={"agent_name": "ubuntu", "status": "done"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["tasks"][0]["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_get_task_not_found(self, client, mock_storage, mock_task_queue):
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            response = await client.get("/api/nexus/tasks/nonexistent", params={"agent_name": "ubuntu"})
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_task_agui_messages_missing_log(self, client, mock_storage, mock_task_queue, tmp_path):
+        # Ensure base path is tmp and log file does not exist
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue), \
+             patch('src.claude_code_api.routers.nexus.settings.user_home_base', str(tmp_path)):
+            response = await client.get(
+                "/api/nexus/tasks/abc123/agui/messages",
+                params={"agent_name": "ubuntu"}
+            )
+
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_task_agui_messages_success(self, client, mock_storage, mock_task_queue, tmp_path):
+        task_id = "abc123"
+        log_path = tmp_path / "ubuntu" / "sessions" / f"task_{task_id}" / ".claude" / "conversation.json"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            '[{"role":"user","content":"hi","timestamp":"2026-01-01T00:00:00Z"},{"role":"assistant","content":"hello"}]',
+            encoding="utf-8",
+        )
+
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue), \
+             patch('src.claude_code_api.routers.nexus.settings.user_home_base', str(tmp_path)):
+            response = await client.get(
+                f"/api/nexus/tasks/{task_id}/agui/messages",
+                params={"agent_name": "ubuntu", "tail": 1}
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "MESSAGES_SNAPSHOT"
+        assert len(data["messages"]) == 1
+        assert data["messages"][0]["role"] == "assistant"
+
+
+class TestDeleteTaskAndCascade:
+    """Hard delete + cascade behaviors between task and task_<id> session."""
+
+    @pytest.mark.asyncio
+    async def test_delete_task_also_deletes_task_session(self, client, mock_storage, mock_task_queue):
+        # Pick an existing task
+        task_id = next(iter(mock_task_queue._tasks.keys()))
+        session_id = f"task_{task_id}"
+
+        # Create corresponding session meta so Chat list would include it
+        mock_storage.save_session_meta(SessionMeta(
+            id=session_id,
+            thread_id=session_id,
+            username="testuser",
+            title="Task session",
+            status=SessionStatus.COMPLETED,
+            created_at=1704067200000,
+            updated_at=1704067200000,
+            agent_name="ubuntu",
+        ))
+
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp = await client.delete(f"/api/nexus/tasks/{task_id}", params={"agent_name": "ubuntu"})
+
+        assert resp.status_code == 200
+        assert mock_task_queue.get_task(task_id) is None
+        assert mock_storage.get_session_meta(session_id) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_task_idempotent(self, client, mock_storage, mock_task_queue):
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp = await client.delete("/api/nexus/tasks/nonexistent", params={"agent_name": "ubuntu"})
+
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_delete_task_session_cascades_to_task(self, client, mock_storage, mock_task_queue):
+        task_id = next(iter(mock_task_queue._tasks.keys()))
+        session_id = f"task_{task_id}"
+
+        # Create corresponding session meta
+        mock_storage.save_session_meta(SessionMeta(
+            id=session_id,
+            thread_id=session_id,
+            username="testuser",
+            title="Task session",
+            status=SessionStatus.COMPLETED,
+            created_at=1704067200000,
+            updated_at=1704067200000,
+            agent_name="ubuntu",
+        ))
+
+        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp = await client.delete(f"/api/nexus/sessions/{session_id}")
+
+        assert resp.status_code == 200
+        assert mock_task_queue.get_task(task_id) is None
+        assert mock_storage.get_session_meta(session_id) is None
