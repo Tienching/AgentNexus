@@ -44,9 +44,11 @@ class TestStreamResponse:
 
         with patch('asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
-            mock_process.stdout.__aiter__.return_value = [
-                (line + '\n').encode() for line in mock_ccr_output
-            ]
+            # CCRExecutor._process_stream() uses stdout.readline(), not __aiter__
+            mock_process.stdout.readline = AsyncMock(
+                side_effect=[(line + "\n").encode() for line in mock_ccr_output] + [b""]
+            )
+            mock_process.stderr.read = AsyncMock(return_value=b"")
             mock_process.wait.return_value = None
             mock_subprocess.return_value = mock_process
 
@@ -113,9 +115,11 @@ class TestStreamResponse:
 
         with patch('asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
-            mock_process.stdout.__aiter__.return_value = [
-                (line + '\n').encode() for line in mock_ccr_output
-            ]
+            # CCRExecutor._process_stream() uses stdout.readline(), not __aiter__
+            mock_process.stdout.readline = AsyncMock(
+                side_effect=[(line + "\n").encode() for line in mock_ccr_output] + [b""]
+            )
+            mock_process.stderr.read = AsyncMock(return_value=b"")
             mock_process.wait.return_value = None
             mock_subprocess.return_value = mock_process
 
@@ -164,16 +168,18 @@ class TestStreamResponse:
         with patch('asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
 
-            # 模拟超时
+            # 模拟超时（触发 execute() 对 process.wait 的 timeout 分支）
             async def mock_wait():
                 await asyncio.sleep(200)  # 超过配置的超时时间
 
             mock_process.wait = mock_wait
-            mock_process.stdout.__aiter__.return_value = []
+            # _process_stream uses stdout.readline(); return EOF immediately so it reaches wait()
+            mock_process.stdout.readline = AsyncMock(side_effect=[b""])
+            mock_process.stderr.read = AsyncMock(return_value=b"")
             mock_subprocess.return_value = mock_process
 
             # 需要设置较短的超时以便测试
-            with patch('src.claude_code_api.config.settings.ccr_timeout', 0.1):
+            with patch('src.providers.claude_code_api.config.settings.ccr_timeout', 0.1):
                 async with client.stream("POST", "/chat/stream/testuser", json=sample_request) as response:
                     assert response.status_code == 200
 

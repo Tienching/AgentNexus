@@ -1,10 +1,11 @@
 # session-storage Specification
 
 ## Purpose
-TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after archive.
+Defines the session storage layer for persisting session metadata, messages, and tool calls in Redis.
+
 ## Requirements
 ### Requirement: REQ-SS-001 Session Metadata Storage
-系统必须能够存储和检索会话元信息。
+系统 MUST 能够存储和检索会话元信息。
 
 #### Scenario: Save new session metadata
 - **Given** 一个新的 AGUI 会话开始
@@ -23,7 +24,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回 `None`
 
 ### Requirement: REQ-SS-002 User Sessions Index
-系统必须维护用户的会话索引，支持按时间排序。
+系统 MUST 维护用户的会话索引，支持按时间排序。
 
 #### Scenario: List user sessions
 - **Given** 用户有多个会话
@@ -36,7 +37,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回空列表
 
 ### Requirement: REQ-SS-003 Message Storage
-系统必须能够存储和检索会话消息。
+系统 MUST 能够存储和检索会话消息。
 
 #### Scenario: Add message to session
 - **Given** 一个存在的会话
@@ -51,7 +52,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回按时间顺序排列的消息列表
 
 ### Requirement: REQ-SS-004 Tool Call Storage
-系统必须能够存储和检索工具调用记录。
+系统 MUST 能够存储和检索工具调用记录。
 
 #### Scenario: Save tool call
 - **Given** 一个 AGUI 工具调用事件
@@ -69,7 +70,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回所有工具调用的列表
 
 ### Requirement: REQ-SS-005 Session Status Management
-系统必须能够更新和查询会话状态。
+系统 MUST 能够更新和查询会话状态。
 
 #### Scenario: Update session status
 - **Given** 一个存在的会话
@@ -78,7 +79,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **And** `updated_at` 时间戳更新
 
 ### Requirement: REQ-SS-006 Session Deletion
-系统必须能够删除会话及其所有关联数据。
+系统 MUST 能够删除会话及其所有关联数据。
 
 #### Scenario: Delete session
 - **Given** 一个存在的会话
@@ -89,7 +90,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **And** 从 `aona:user:{username}:sessions` 移除
 
 ### Requirement: REQ-SS-007 Data Expiration
-会话数据必须有 TTL 以避免无限增长。
+会话数据MUST 有 TTL 以避免无限增长。
 
 #### Scenario: Session data expires
 - **Given** 会话数据保存 7 天后

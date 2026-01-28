@@ -8,13 +8,13 @@ import re
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from src.claude_code_api.services.slash_command_handler import (
+from src.providers.claude_code_api.services import (
     SlashCommandHandler,
     SLASH_COMMANDS,
-    slugify_project,
 )
-from src.claude_code_api.models.task_models import TaskPriority, TaskStatus
-from src.claude_code_api.services.worktree import (
+from src.runtime.commands.slash.handler import slugify_project
+from src.providers.claude_code_api.models import TaskPriority, TaskStatus
+from src.runtime.commands.slash.worktree import (
     NotGitRepoError,
     WorktreeDirConflictError,
     WorktreeResult,
@@ -198,7 +198,7 @@ class TestSlashCommandHandler:
     def handler(self, mock_config):
         """Create handler instance (with mocked Redis backend)."""
         mock_redis = MockRedisClient()
-        with patch('src.claude_code_api.services.task_storage.get_redis_client', return_value=mock_redis):
+        with patch('src.runtime.stores.task_storage.get_redis_client', return_value=mock_redis):
             h = SlashCommandHandler("test_agent", mock_config)
             # force queue init and bind redis
             _ = h.task_queue
@@ -244,6 +244,11 @@ class TestSlashCommandHandler:
         assert "Explore async patterns" in response
         assert "#" in response  # Task ID
 
+    def test_task_command_with_provider(self, handler):
+        response = handler.handle_command("/task -r gemini -- Build feature")
+        assert "Task Created" in response
+        assert "Build feature" in response
+
     def test_removed_think_command(self, handler):
         """Test /think is removed (no compatibility)"""
         response = handler.handle_command("/think Explore async patterns")
@@ -263,7 +268,7 @@ class TestSlashCommandHandler:
         ws = str(Path(temp_dir) / "repo")
         Path(ws).mkdir(parents=True, exist_ok=True)
 
-        with patch('src.claude_code_api.services.slash_command_handler.ensure_task_worktree') as m:
+        with patch('src.runtime.commands.slash.handler.ensure_task_worktree') as m:
             response = handler.handle_command(f"/task -w {ws} --inplace -- Do something")
             assert "Task Created" in response
             assert "Exec CWD" in response
@@ -275,7 +280,7 @@ class TestSlashCommandHandler:
         Path(ws).mkdir(parents=True, exist_ok=True)
 
         with patch(
-            'src.claude_code_api.services.slash_command_handler.ensure_task_worktree',
+            'src.runtime.commands.slash.handler.ensure_task_worktree',
             side_effect=NotGitRepoError("not a git repo"),
         ):
             response = handler.handle_command(f"/task -w {ws} -- Do something")
@@ -296,7 +301,7 @@ class TestSlashCommandHandler:
             reused=False,
         )
 
-        with patch('src.claude_code_api.services.slash_command_handler.ensure_task_worktree', return_value=fake):
+        with patch('src.runtime.commands.slash.handler.ensure_task_worktree', return_value=fake):
             response = handler.handle_command(f"/task -w {repo} -- Build in worktree")
             assert "Task Created" in response
             assert "Exec CWD" in response
@@ -347,7 +352,7 @@ class TestSlashCommandHandler:
 
                 return [Msg("user", "hello"), Msg("assistant", "world")]
 
-        with patch('src.claude_code_api.services.slash_command_handler.get_session_storage', return_value=FakeStorage()):
+        with patch('src.runtime.commands.slash.handler.get_session_storage', return_value=FakeStorage()):
             resp = handler.handle_command(f"/chat -t {task_id} -n 2")
             assert "会话状态" in resp
             assert "hello" in resp

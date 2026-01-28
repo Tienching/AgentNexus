@@ -1,10 +1,11 @@
 # web-ui Specification
 
 ## Purpose
-TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after archive.
+Defines the NexusHub web UI for viewing and managing sessions.
+
 ## Requirements
 ### Requirement: REQ-UI-001 Session List Page
-系统必须提供会话列表页面。
+系统 MUST 提供会话列表页面。
 
 #### Scenario: Display session list
 - **Given** 用户访问 `/nexus/`
@@ -29,7 +30,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 显示空状态提示
 
 ### Requirement: REQ-UI-002 Session Search
-系统必须提供会话搜索功能。
+系统 MUST 提供会话搜索功能。
 
 #### Scenario: Search by title
 - **Given** 用户在搜索框输入关键词
@@ -42,7 +43,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 显示所有会话
 
 ### Requirement: REQ-UI-003 Session Detail Page
-系统必须提供会话详情页面。
+系统 MUST 提供会话详情页面。
 
 #### Scenario: View session messages
 - **Given** 用户点击会话
@@ -73,7 +74,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回会话列表页
 
 ### Requirement: REQ-UI-004 Delete Session
-系统必须提供删除会话功能。
+系统 MUST 提供删除会话功能。
 
 #### Scenario: Delete session from list
 - **Given** 用户在会话列表
@@ -87,7 +88,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **And** 后端数据删除
 
 ### Requirement: REQ-UI-005 Responsive Design
-Web UI 必须支持响应式布局。
+Web UI MUST 支持响应式布局。
 
 #### Scenario: Mobile view
 - **Given** 用户使用移动设备访问
@@ -101,7 +102,7 @@ Web UI 必须支持响应式布局。
 - **Then** 充分利用大屏幕空间
 
 ### Requirement: REQ-UI-006 Static File Serving
-Web UI 必须作为 FastAPI 静态文件服务。
+Web UI MUST 作为 FastAPI 静态文件服务。
 
 #### Scenario: Access index page
 - **Given** FastAPI 服务运行中
@@ -115,7 +116,7 @@ Web UI 必须作为 FastAPI 静态文件服务。
 - **And** Content-Type 正确
 
 ### Requirement: REQ-UI-007 Error Handling
-Web UI 必须优雅处理错误。
+Web UI MUST 优雅处理错误。
 
 #### Scenario: API request fails
 - **Given** 后端 API 不可用

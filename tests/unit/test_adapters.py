@@ -2,13 +2,13 @@
 
 import pytest
 import json
-from src.claude_code_api.adapters import (
+from src.providers.claude_code_api.adapters import (
     ProtocolType,
     AGUIAdapter,
     LegacyAdapter,
     detect_protocol_from_body,
 )
-from src.claude_code_api.models.agui_events import AGUIEventType
+from src.providers.claude_code_api.models.agui_events import AGUIEventType
 
 
 class TestProtocolDetection:
@@ -269,7 +269,7 @@ Some text after"""
     
     def test_generate_subagent_tool_events(self, adapter):
         """测试生成 subagent 工具调用事件"""
-        from src.claude_code_api.adapters.agui_adapter import ParsedToolCall
+        from src.runtime.adapters import ParsedToolCall
         
         call = ParsedToolCall(
             tool_name="mcp__NOS-MCP__dify_knowledge_retrieve",
@@ -435,7 +435,7 @@ class TestAGUIRequest:
     
     def test_parse_agui_request(self):
         """测试解析AG-UI请求"""
-        from src.claude_code_api.models.agui_events import AGUIRequest
+        from src.providers.claude_code_api.models.agui_events import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -457,7 +457,7 @@ class TestAGUIRequest:
     
     def test_convert_to_legacy(self):
         """测试转换为Legacy格式"""
-        from src.claude_code_api.models.agui_events import AGUIRequest
+        from src.providers.claude_code_api.models.agui_events import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -481,7 +481,7 @@ class TestAGUIRequest:
     
     def test_get_response_url(self):
         """测试从rawCallback提取response_url"""
-        from src.claude_code_api.models.agui_events import AGUIRequest
+        from src.providers.claude_code_api.models.agui_events import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -502,7 +502,7 @@ class TestAGUIRequest:
     
     def test_get_response_url_missing(self):
         """测试无rawCallback时返回None"""
-        from src.claude_code_api.models.agui_events import AGUIRequest
+        from src.providers.claude_code_api.models.agui_events import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -517,7 +517,7 @@ class TestAGUIRequest:
     
     def test_to_legacy_with_response_url(self):
         """测试转换Legacy格式时包含response_url"""
-        from src.claude_code_api.models.agui_events import AGUIRequest
+        from src.providers.claude_code_api.models.agui_events import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -544,7 +544,7 @@ class TestCallbackHandler:
     
     def test_agui_events_to_markdown(self):
         """测试AG-UI事件转markdown"""
-        from src.claude_code_api.services.callback_handler import CallbackHandler
+        from src.providers.claude_code_api.services.callback_handler import CallbackHandler
         
         handler = CallbackHandler()
         
@@ -565,7 +565,7 @@ class TestCallbackHandler:
     
     def test_agui_events_to_markdown_empty(self):
         """测试空事件列表"""
-        from src.claude_code_api.services.callback_handler import CallbackHandler
+        from src.providers.claude_code_api.services.callback_handler import CallbackHandler
         
         handler = CallbackHandler()
         markdown_parts = handler.agui_events_to_markdown([])
