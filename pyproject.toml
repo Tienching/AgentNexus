@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vhsdk = "agent_runtime.plugins.cli:main"
+vhsdk = "runtime.plugins.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -60,8 +60,8 @@ testpaths = ["tests"]
 pythonpath = ["."]
 
 [tool.coverage.run]
-source = ["src/claude_code_api", "src/agent_runtime"]
+source = ["src/server", "src/runtime", "src/core", "src/providers", "src/protocols"]
 omit = ["*/tests/*"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/claude_code_api", "src/gemini_cli_api", "src/agent_runtime"]
+packages = ["src/server", "src/runtime", "src/core", "src/providers", "src/protocols"]
