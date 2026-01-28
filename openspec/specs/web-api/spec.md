@@ -1,10 +1,10 @@
 # web-api Specification
 
 ## Purpose
-TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after archive.
+Defines the NexusHub Web API for session and task management.
 ## Requirements
 ### Requirement: REQ-API-001 List Sessions
-系统必须提供获取用户会话列表的 API。
+系统 MUST 提供获取用户会话列表的 API。
 
 #### Scenario: Get sessions with pagination
 - **Given** 用户有 50 个会话
@@ -28,7 +28,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回所有用户的会话
 
 ### Requirement: REQ-API-002 Get Session Detail
-系统必须提供获取单个会话详情的 API。
+系统 MUST 提供获取单个会话详情的 API。
 
 #### Scenario: Get existing session
 - **Given** 会话 ID 存在
@@ -41,7 +41,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回 404 错误
 
 ### Requirement: REQ-API-003 Get Session Messages
-系统必须提供获取会话消息的 API。
+系统 MUST 提供获取会话消息的 API。
 
 #### Scenario: Get messages with tool calls
 - **Given** 会话有消息和工具调用
@@ -54,7 +54,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回空的 `messages` 列表
 
 ### Requirement: REQ-API-004 Delete Session
-系统必须提供删除会话的 API。
+系统 MUST 提供删除会话的 API。
 
 #### Scenario: Delete existing session
 - **Given** 会话 ID 存在
@@ -68,7 +68,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回 200 成功（幂等操作）
 
 ### Requirement: REQ-API-005 Cancel Running Session
-系统必须提供取消运行中会话的 API。
+系统 MUST 提供取消运行中会话的 API。
 
 #### Scenario: Cancel running session
 - **Given** 会话状态为 "running"
@@ -82,7 +82,7 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **Then** 返回 `{"success": true, "cancelled": false}`
 
 ### Requirement: REQ-API-006 API Response Format
-所有 API 必须返回统一的 JSON 格式。
+所有 API MUST 返回统一的 JSON 格式。
 
 #### Scenario: Successful response
 - **Given** API 调用成功
@@ -95,4 +95,18 @@ TBD - created by archiving change add-nexushub-web-viewer. Update Purpose after 
 - **When** 返回错误响应
 - **Then** 包含 `error` 字段说明错误原因
 - **And** HTTP 状态码反映错误类型
+
+### Requirement: REQ-API-008 Flattened Runtime Layout
+运行时与 provider 目录结构 MUST 扁平化到 `src/` 下，并保证 Web API 行为与现有规范一致。
+
+#### Scenario: Provider packages reside under src/providers
+- **WHEN** 运行时加载 provider
+- **THEN** provider 包路径 MUST 位于 `src/providers/`
+
+### Requirement: REQ-API-009 Provider/Channel Placement
+Provider 与 Channel 实现 MUST 位于 `src/providers` 下，`src/runtime` 只保留核心框架模块。
+
+#### Scenario: Provider and Channel imports
+- **WHEN** 运行时加载 provider 或 channel
+- **THEN** 其代码路径 MUST 位于 `src/providers/`
 

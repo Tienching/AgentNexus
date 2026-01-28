@@ -4,8 +4,8 @@
 import pytest
 import time
 
-from src.claude_code_api.services.stream_archiver import StreamArchiver, create_archiver
-from src.claude_code_api.models.session import (
+from src.providers.claude_code_api.services.stream_archiver import StreamArchiver, create_archiver
+from src.providers.claude_code_api.models import (
     SessionMeta,
     SessionStatus,
     StoredMessage,

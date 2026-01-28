@@ -5,8 +5,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
-from src.claude_code_api.services.task_storage import TaskQueue
-from src.claude_code_api.models.task_models import Task, TaskPriority, TaskStatus
+from src.providers.claude_code_api.services.task_storage import TaskQueue
+from src.providers.claude_code_api.models import Task, TaskPriority, TaskStatus
 
 
 class MockRedisClient:
@@ -222,7 +222,7 @@ def mock_redis():
 @pytest.fixture
 def task_queue(mock_redis):
     """Create TaskQueue instance with mock Redis"""
-    with patch('src.claude_code_api.services.task_storage.get_redis_client', return_value=mock_redis):
+    with patch('src.providers.claude_code_api.services.task_storage.get_redis_client', return_value=mock_redis):
         queue = TaskQueue(db_path=None, agent_name="test_agent")
         queue._redis = mock_redis
         return queue
@@ -243,6 +243,18 @@ class TestTaskQueue:
         assert task.priority == TaskPriority.THOUGHT
         assert task.status == TaskStatus.TODO
         assert task.agent_name == "test_agent"
+        assert task.provider == "claude"
+
+    def test_add_task_with_provider(self, task_queue):
+        task = task_queue.add_task(
+            description="Gemini task",
+            provider="gemini",
+        )
+        assert task.provider == "gemini"
+
+        stored = task_queue.get_task(task.id)
+        assert stored is not None
+        assert stored.provider == "gemini"
 
     def test_add_task_with_project(self, task_queue):
         """Test adding a task with project"""
@@ -424,6 +436,45 @@ class TestTaskQueue:
         project = task_queue.get_project_by_id("to-delete")
         assert project["todo"] == 0
 
+    def test_archive_unarchive_clear_tasks(self, task_queue):
+        """Test archive/unarchive/clear batch operations"""
+        t = task_queue.add_task(description="To archive")
+        task_queue.start_task(t.id)
+        task_queue.complete_task(t.id)
+
+        # Archive (DONE -> ARCHIVED)
+        before_completed_at = task_queue.get_task(t.id).completed_at
+        result = task_queue.archive_tasks([t.id])
+        assert result["count"] == 1
+        archived = task_queue.get_task(t.id)
+        assert archived.status == TaskStatus.ARCHIVED
+        assert archived.archived_at is not None
+        assert archived.completed_at == before_completed_at
+
+        # Unarchive (ARCHIVED -> DONE) and preserve completed_at
+        result2 = task_queue.unarchive_tasks([t.id])
+        assert result2["count"] == 1
+        unarchived = task_queue.get_task(t.id)
+        assert unarchived.status == TaskStatus.DONE
+        assert unarchived.completed_at == before_completed_at
+
+        # archived_at should be cleared (hash field removed)
+        raw = task_queue._redis.hgetall(task_queue._task_key(t.id))
+        assert "archived_at" not in raw
+
+        # Archive again then clear
+        task_queue.archive_tasks([t.id])
+        result3 = task_queue.clear_tasks([t.id])
+        assert result3["count"] == 1
+        assert task_queue.get_task(t.id) is None
+
+    def test_archive_skips_non_done(self, task_queue):
+        t = task_queue.add_task(description="Not done")
+        res = task_queue.archive_tasks([t.id])
+        assert res["count"] == 0
+        assert t.id in res["skipped"]
+        assert task_queue.get_task(t.id).status == TaskStatus.TODO
+
     def test_start_task(self, task_queue):
         """Test starting a task"""
         task = task_queue.add_task(description="To start")
@@ -508,6 +559,7 @@ class TestTaskModel:
             "priority": "serious",
             "status": "todo",
             "created_at": "2024-01-01T00:00:00+00:00",
+            "archived_at": "2024-01-02T00:00:00+00:00",
             "attempt_count": "0",
         }
         
@@ -517,6 +569,7 @@ class TestTaskModel:
         assert task.description == "Test task"
         assert task.priority == TaskPriority.SERIOUS
         assert task.status == TaskStatus.TODO
+        assert task.archived_at is not None
 
     def test_task_status_from_legacy(self):
         """Test converting legacy status values"""

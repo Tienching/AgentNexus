@@ -6,16 +6,18 @@ from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
 
-from src.claude_code_api.app import app
-from src.claude_code_api.models.session import (
+from src.server.app import app
+from src.providers.claude_code_api.models import (
     SessionMeta,
     SessionStatus,
     StoredMessage,
     MessageStatus,
     StoredToolCall,
     ToolCallStatus,
+    Task,
+    TaskPriority,
+    TaskStatus,
 )
-from src.claude_code_api.models.task_models import Task, TaskPriority, TaskStatus
 
 
 class MockSessionStorage:
@@ -150,7 +152,7 @@ def mock_storage():
 @pytest.fixture
 async def client(mock_storage):
     """Create test client with mocked storage"""
-    with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+    with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
@@ -162,7 +164,7 @@ class TestListSessions:
     @pytest.mark.asyncio
     async def test_list_sessions_success(self, client, mock_storage):
         """Test listing sessions successfully"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions", params={"username": "testuser"})
         
         assert response.status_code == 200
@@ -176,7 +178,7 @@ class TestListSessions:
     @pytest.mark.asyncio
     async def test_list_sessions_with_pagination(self, client, mock_storage):
         """Test listing sessions with pagination"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser", "page": 1, "page_size": 2}
@@ -193,7 +195,7 @@ class TestListSessions:
     @pytest.mark.asyncio
     async def test_list_sessions_with_search(self, client, mock_storage):
         """Test listing sessions with search filter"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser", "search": "Session 1"}
@@ -208,7 +210,7 @@ class TestListSessions:
     @pytest.mark.asyncio
     async def test_list_sessions_with_status_filter(self, client, mock_storage):
         """Test listing sessions with status filter"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser", "status": "running"}
@@ -224,7 +226,7 @@ class TestListSessions:
     @pytest.mark.asyncio
     async def test_list_sessions_empty(self, client, mock_storage):
         """Test listing sessions for user with no sessions"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "nonexistent"}
@@ -239,7 +241,7 @@ class TestListSessions:
     @pytest.mark.asyncio
     async def test_list_sessions_without_username(self, client, mock_storage):
         """Test listing sessions without username returns all sessions"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions")
         
         assert response.status_code == 200
@@ -254,7 +256,7 @@ class TestGetSession:
     @pytest.mark.asyncio
     async def test_get_session_success(self, client, mock_storage):
         """Test getting session details"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions/session-0")
         
         assert response.status_code == 200
@@ -268,7 +270,7 @@ class TestGetSession:
     @pytest.mark.asyncio
     async def test_get_session_not_found(self, client, mock_storage):
         """Test getting non-existent session"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions/nonexistent")
         
         assert response.status_code == 404
@@ -282,7 +284,7 @@ class TestGetSessionMessages:
     @pytest.mark.asyncio
     async def test_get_messages_success(self, client, mock_storage):
         """Test getting session messages"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions/session-0/messages")
         
         assert response.status_code == 200
@@ -302,7 +304,7 @@ class TestGetSessionMessages:
     @pytest.mark.asyncio
     async def test_get_messages_not_found(self, client, mock_storage):
         """Test getting messages for non-existent session"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions/nonexistent/messages")
         
         assert response.status_code == 404
@@ -314,7 +316,7 @@ class TestDeleteSession:
     @pytest.mark.asyncio
     async def test_delete_session_success(self, client, mock_storage):
         """Test deleting session"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.delete(
                 "/api/nexus/sessions/session-0",
                 params={"username": "testuser"}
@@ -332,7 +334,7 @@ class TestDeleteSession:
     @pytest.mark.asyncio
     async def test_delete_session_idempotent(self, client, mock_storage):
         """Test deleting non-existent session (idempotent)"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.delete(
                 "/api/nexus/sessions/nonexistent",
                 params={"username": "testuser"}
@@ -346,7 +348,7 @@ class TestDeleteSession:
     @pytest.mark.asyncio
     async def test_delete_session_without_username(self, client, mock_storage):
         """Test deleting session without username still works (username is optional)"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.delete("/api/nexus/sessions/session-0")
         
         # Username is optional, so this should succeed
@@ -361,7 +363,7 @@ class TestCancelSession:
     @pytest.mark.asyncio
     async def test_cancel_running_session(self, client, mock_storage):
         """Test cancelling a running session"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             # session-3 and session-4 are RUNNING
             response = await client.post("/api/nexus/sessions/session-3/cancel")
         
@@ -378,7 +380,7 @@ class TestCancelSession:
     @pytest.mark.asyncio
     async def test_cancel_completed_session(self, client, mock_storage):
         """Test cancelling already completed session"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             # session-0 is COMPLETED
             response = await client.post("/api/nexus/sessions/session-0/cancel")
         
@@ -391,7 +393,7 @@ class TestCancelSession:
     @pytest.mark.asyncio
     async def test_cancel_session_not_found(self, client, mock_storage):
         """Test cancelling non-existent session"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.post("/api/nexus/sessions/nonexistent/cancel")
         
         assert response.status_code == 404
@@ -403,7 +405,7 @@ class TestAPIResponseFormats:
     @pytest.mark.asyncio
     async def test_session_list_response_format(self, client, mock_storage):
         """Test session list response matches expected format"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser"}
@@ -432,7 +434,7 @@ class TestAPIResponseFormats:
     @pytest.mark.asyncio
     async def test_session_messages_response_format(self, client, mock_storage):
         """Test session messages response matches expected format"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions/session-0/messages")
         
         data = response.json()
@@ -476,7 +478,7 @@ class TestAPIEdgeCases:
         )
         mock_storage.save_session_meta(session)
         
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get("/api/nexus/sessions/unicode-session")
         
         assert response.status_code == 200
@@ -486,7 +488,7 @@ class TestAPIEdgeCases:
     @pytest.mark.asyncio
     async def test_large_page_size(self, client, mock_storage):
         """Test page size limit enforcement"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser", "page_size": 1000}
@@ -498,7 +500,7 @@ class TestAPIEdgeCases:
     @pytest.mark.asyncio
     async def test_invalid_page_number(self, client, mock_storage):
         """Test invalid page number"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser", "page": 0}
@@ -510,7 +512,7 @@ class TestAPIEdgeCases:
     @pytest.mark.asyncio
     async def test_special_characters_in_search(self, client, mock_storage):
         """Test special characters in search query"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage):
             response = await client.get(
                 "/api/nexus/sessions",
                 params={"username": "testuser", "search": "test & <script>"}
@@ -566,6 +568,62 @@ class MockTaskQueue:
         self._ordered = [t for t in self._ordered if str(t.id) != task_id]
         return True
 
+    def archive_tasks(self, task_ids):
+        from datetime import datetime, timezone
+
+        archived = []
+        skipped = {}
+        now = datetime.now(timezone.utc)
+        for raw_id in task_ids or []:
+            task_id = str(raw_id)
+            t = self._tasks.get(task_id)
+            if not t:
+                skipped[task_id] = "not_found"
+                continue
+            st = t.status if isinstance(t.status, str) else t.status.value
+            if st != TaskStatus.DONE.value:
+                skipped[task_id] = f"invalid_status:{st}"
+                continue
+            t.status = TaskStatus.ARCHIVED
+            t.archived_at = now
+            archived.append(task_id)
+        return {"count": len(archived), "archived": archived, "skipped": skipped}
+
+    def unarchive_tasks(self, task_ids):
+        unarchived = []
+        skipped = {}
+        for raw_id in task_ids or []:
+            task_id = str(raw_id)
+            t = self._tasks.get(task_id)
+            if not t:
+                skipped[task_id] = "not_found"
+                continue
+            st = t.status if isinstance(t.status, str) else t.status.value
+            if st != TaskStatus.ARCHIVED.value:
+                skipped[task_id] = f"invalid_status:{st}"
+                continue
+            t.status = TaskStatus.DONE
+            t.archived_at = None
+            unarchived.append(task_id)
+        return {"count": len(unarchived), "unarchived": unarchived, "skipped": skipped}
+
+    def clear_tasks(self, task_ids):
+        cleared = []
+        skipped = {}
+        for raw_id in task_ids or []:
+            task_id = str(raw_id)
+            t = self._tasks.get(task_id)
+            if not t:
+                skipped[task_id] = "not_found"
+                continue
+            st = t.status if isinstance(t.status, str) else t.status.value
+            if st != TaskStatus.ARCHIVED.value:
+                skipped[task_id] = f"invalid_status:{st}"
+                continue
+            self.delete_task_hard(task_id)
+            cleared.append(task_id)
+        return {"count": len(cleared), "cleared": cleared, "skipped": skipped}
+
 
 @pytest.fixture
 def mock_task_queue():
@@ -582,8 +640,8 @@ class TestTaskAPI:
 
     @pytest.mark.asyncio
     async def test_list_tasks_success(self, client, mock_storage, mock_task_queue):
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             response = await client.get("/api/nexus/tasks", params={"agent_name": "ubuntu"})
 
         assert response.status_code == 200
@@ -594,8 +652,8 @@ class TestTaskAPI:
     @pytest.mark.asyncio
     async def test_list_tasks_page_size_200_allowed(self, client, mock_storage, mock_task_queue):
         """UI 会用 page_size=200 加载看板；后端应允许该值。"""
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             response = await client.get(
                 "/api/nexus/tasks",
                 params={"agent_name": "ubuntu", "page": 1, "page_size": 200},
@@ -609,8 +667,8 @@ class TestTaskAPI:
 
     @pytest.mark.asyncio
     async def test_list_tasks_filter_by_status(self, client, mock_storage, mock_task_queue):
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             response = await client.get("/api/nexus/tasks", params={"agent_name": "ubuntu", "status": "done"})
 
         assert response.status_code == 200
@@ -620,8 +678,8 @@ class TestTaskAPI:
 
     @pytest.mark.asyncio
     async def test_get_task_not_found(self, client, mock_storage, mock_task_queue):
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             response = await client.get("/api/nexus/tasks/nonexistent", params={"agent_name": "ubuntu"})
 
         assert response.status_code == 404
@@ -629,9 +687,9 @@ class TestTaskAPI:
     @pytest.mark.asyncio
     async def test_task_agui_messages_missing_log(self, client, mock_storage, mock_task_queue, tmp_path):
         # Ensure base path is tmp and log file does not exist
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue), \
-             patch('src.claude_code_api.routers.nexus.settings.user_home_base', str(tmp_path)):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue), \
+             patch('src.server.routers.nexus.settings.user_home_base', str(tmp_path)):
             response = await client.get(
                 "/api/nexus/tasks/abc123/agui/messages",
                 params={"agent_name": "ubuntu"}
@@ -649,9 +707,9 @@ class TestTaskAPI:
             encoding="utf-8",
         )
 
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue), \
-             patch('src.claude_code_api.routers.nexus.settings.user_home_base', str(tmp_path)):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue), \
+             patch('src.server.routers.nexus.settings.user_home_base', str(tmp_path)):
             response = await client.get(
                 f"/api/nexus/tasks/{task_id}/agui/messages",
                 params={"agent_name": "ubuntu", "tail": 1}
@@ -662,6 +720,82 @@ class TestTaskAPI:
         assert data["type"] == "MESSAGES_SNAPSHOT"
         assert len(data["messages"]) == 1
         assert data["messages"][0]["role"] == "assistant"
+
+
+class TestTaskBulkAPI:
+    """Bulk task operations API integration tests"""
+
+    @pytest.mark.asyncio
+    async def test_bulk_archive_and_unarchive(self, client, mock_storage, mock_task_queue):
+        done_task = next(t for t in mock_task_queue._tasks.values() if (t.status if isinstance(t.status, str) else t.status.value) == TaskStatus.DONE.value)
+
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp = await client.post(
+                "/api/nexus/tasks/bulk_archive",
+                params={"agent_name": "ubuntu"},
+                json={"task_ids": [done_task.id]},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["result"]["count"] == 1
+        assert (mock_task_queue.get_task(done_task.id).status if isinstance(mock_task_queue.get_task(done_task.id).status, str) else mock_task_queue.get_task(done_task.id).status.value) == TaskStatus.ARCHIVED.value
+
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp2 = await client.post(
+                "/api/nexus/tasks/bulk_unarchive",
+                params={"agent_name": "ubuntu"},
+                json={"task_ids": [done_task.id]},
+            )
+
+        assert resp2.status_code == 200
+        assert (mock_task_queue.get_task(done_task.id).status if isinstance(mock_task_queue.get_task(done_task.id).status, str) else mock_task_queue.get_task(done_task.id).status.value) == TaskStatus.DONE.value
+
+    @pytest.mark.asyncio
+    async def test_bulk_clear_deletes_task_and_session(self, client, mock_storage, mock_task_queue):
+        done_task = next(t for t in mock_task_queue._tasks.values() if (t.status if isinstance(t.status, str) else t.status.value) == TaskStatus.DONE.value)
+
+        # Archive it first
+        mock_task_queue.archive_tasks([done_task.id])
+
+        session_id = f"task_{done_task.id}"
+        mock_storage.save_session_meta(SessionMeta(
+            id=session_id,
+            thread_id=session_id,
+            username="testuser",
+            title="Task session",
+            status=SessionStatus.COMPLETED,
+            created_at=1704067200000,
+            updated_at=1704067200000,
+            agent_name="ubuntu",
+        ))
+
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp = await client.post(
+                "/api/nexus/tasks/bulk_clear",
+                params={"agent_name": "ubuntu"},
+                json={"task_ids": [done_task.id]},
+            )
+
+        assert resp.status_code == 200
+        assert mock_task_queue.get_task(done_task.id) is None
+        assert mock_storage.get_session_meta(session_id) is None
+
+    @pytest.mark.asyncio
+    async def test_bulk_archive_requires_task_ids(self, client, mock_storage, mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            resp = await client.post(
+                "/api/nexus/tasks/bulk_archive",
+                params={"agent_name": "ubuntu"},
+                json={"task_ids": []},
+            )
+
+        assert resp.status_code == 400
 
 
 class TestDeleteTaskAndCascade:
@@ -685,8 +819,8 @@ class TestDeleteTaskAndCascade:
             agent_name="ubuntu",
         ))
 
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp = await client.delete(f"/api/nexus/tasks/{task_id}", params={"agent_name": "ubuntu"})
 
         assert resp.status_code == 200
@@ -695,8 +829,8 @@ class TestDeleteTaskAndCascade:
 
     @pytest.mark.asyncio
     async def test_delete_task_idempotent(self, client, mock_storage, mock_task_queue):
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp = await client.delete("/api/nexus/tasks/nonexistent", params={"agent_name": "ubuntu"})
 
         assert resp.status_code == 200
@@ -718,8 +852,8 @@ class TestDeleteTaskAndCascade:
             agent_name="ubuntu",
         ))
 
-        with patch('src.claude_code_api.routers.nexus.get_session_storage', return_value=mock_storage), \
-             patch('src.claude_code_api.routers.nexus._get_task_queue', return_value=mock_task_queue):
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp = await client.delete(f"/api/nexus/sessions/{session_id}")
 
         assert resp.status_code == 200
