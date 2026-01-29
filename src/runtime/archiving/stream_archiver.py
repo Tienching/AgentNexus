@@ -201,6 +201,10 @@ class StreamArchiver:
         """
         try:
             event_type = event_data.get("type", "")
+            
+            # Log all events for debugging
+            if event_type in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"):
+                logger.info(f"[Archiver] archive_event: type={event_type}, messageId={event_data.get('messageId')}, session={self.session_id}")
 
             # ================= AG-UI events =================
             # We archive based on the already-converted AG-UI event stream to ensure
@@ -445,16 +449,19 @@ class StreamArchiver:
     async def _finalize_current_message(self):
         """Finalize the current message being streamed"""
         if not self._current_message_id:
+            logger.debug(f"[Archiver] _finalize_current_message called but no current_message_id")
             return
         
         try:
             # Get final content
             content = self._current_message_content
+            logger.info(f"[Archiver] Finalizing message: id={self._current_message_id}, content_len={len(content)}, session={self.session_id}")
             if not content:
                 # Try to recover from streaming content
                 content = self._storage.get_streaming_content(
                     self.session_id, self._current_message_id
                 ) or ""
+                logger.info(f"[Archiver] Recovered streaming content: len={len(content)}")
             
             # Add remaining text content as final segment if any
             if content and content != self._last_text_content:

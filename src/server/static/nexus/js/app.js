@@ -1,1774 +1,2332 @@
 /**
- * NexusHub Main Application
+ * Nexus Application - Enhanced UI
+ * Supports split-view layouts, multi-tab panes, chat and task views
  */
 
-class NexusApp {
+// ============================================================
+// Theme Manager
+// ============================================================
+class ThemeManager {
     constructor() {
-        this.currentView = 'chat'; // 'chat' | 'task'
-        this.agentName = 'ubuntu';
-
-        this.currentSessionId = null;
-        this.sessions = [];
-
-        this.currentTaskId = null;
-        this.tasks = [];
-        this.taskConversationStream = null;
-
-        // Task board UI state
-        this.taskMultiSelectMode = false;
-        this.selectedTaskIds = new Set();
-        this.archivedGroupOpenKeys = new Set();
-
-        // For task session (session_id = task_<taskId>) unified rendering
-        this.taskConversationRefreshTimeout = null;
-
-        // Create task modal
-        this.createTaskModal = null;
-
-        this.taskAutoRefreshTimer = null;
-        this.taskDetailRefreshTimer = null;
-
-        this.sessionAutoRefreshTimer = null;
-
-        this.deleteTarget = null;
-
-        this.searchTimeout = null;
-
-        this.init();
+        this.theme = localStorage.getItem('nexus-theme') || 'dark';
+        this.apply();
     }
 
-    init() {
-        // Get DOM elements
-        this.searchInput = document.getElementById('searchInput');
-        this.usernameFilter = document.getElementById('usernameFilter');
-        this.usernameFilterWrap = document.getElementById('usernameFilterWrap');
-        this.refreshBtn = document.getElementById('refreshBtn');
-
-        this.viewChatBtn = document.getElementById('viewChatBtn');
-        this.viewTaskBtn = document.getElementById('viewTaskBtn');
-        this.chatView = document.getElementById('chatView');
-        this.taskView = document.getElementById('taskView');
-        this.taskBoard = document.getElementById('taskBoard');
-        this.taskToolbar = document.getElementById('taskToolbar');
-        this.taskDetail = document.getElementById('taskDetail');
-        this.createTaskModal = document.getElementById('createTaskModal');
-
-        this.sessionList = document.getElementById('sessionList');
-        this.sessionDetail = document.getElementById('sessionDetail');
-        this.deleteModal = document.getElementById('deleteModal');
-        this.deleteModalMessage = document.getElementById('deleteModalMessage');
-        this.cancelDeleteBtn = document.getElementById('cancelDeleteBtn');
-        this.confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
-        this.errorToast = document.getElementById('errorToast');
-        this.errorMessage = document.getElementById('errorMessage');
-
-        // Bind events
-        this.searchInput.addEventListener('input', () => {
-            clearTimeout(this.searchTimeout);
-            this.searchTimeout = setTimeout(() => {
-                if (this.currentView === 'task') {
-                    this.loadTasks();
-                } else {
-                    this.loadSessions();
-                }
-            }, 300);
-        });
-
-        this.usernameFilter.addEventListener('change', () => {
-            if (this.currentView === 'chat') {
-                this.loadSessions();
-            }
-        });
-
-        this.refreshBtn.addEventListener('click', () => {
-            if (this.currentView === 'task') {
-                this.loadTasks();
-            } else {
-                this.loadUsernames();
-                this.loadSessions();
-            }
-        });
-
-        this.cancelDeleteBtn.addEventListener('click', () => this.hideDeleteModal());
-        this.confirmDeleteBtn.addEventListener('click', () => this.confirmDelete());
-
-        // View switcher
-        this.viewChatBtn.addEventListener('click', () => this.switchView('chat'));
-        this.viewTaskBtn.addEventListener('click', () => this.switchView('task'));
-
-        // Initial load
-        this.switchView('chat');
+    apply() {
+        document.documentElement.setAttribute('data-theme', this.theme);
     }
 
-    async loadUsernames() {
-        try {
-            const data = await NexusAPI.getUsernames();
-            const select = this.usernameFilter;
-            const currentValue = select.value;
-            
-            // Clear existing options except the first one
-            while (select.options.length > 1) {
-                select.remove(1);
+    toggle() {
+        this.theme = this.theme === 'dark' ? 'light' : 'dark';
+        localStorage.setItem('nexus-theme', this.theme);
+        this.apply();
+    }
+
+    get current() {
+        return this.theme;
+    }
+}
+
+// ============================================================
+// Layout Manager
+// ============================================================
+class LayoutManager {
+    constructor(app) {
+        this.app = app;
+        this.mode = localStorage.getItem('nexus-layout') || 'single';
+        this.wrapper = document.getElementById('layoutWrapper');
+        this.panes = [
+            document.getElementById('pane-0'),
+            document.getElementById('pane-1'),
+            document.getElementById('pane-2'),
+            document.getElementById('pane-3'),
+        ];
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        document.querySelectorAll('.layout-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.setMode(btn.dataset.mode);
+            });
+        });
+    }
+
+    setMode(mode) {
+        this.mode = mode;
+        localStorage.setItem('nexus-layout', mode);
+        this.wrapper.setAttribute('data-mode', mode);
+
+        // Update button states
+        document.querySelectorAll('.layout-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+
+        // Show/hide panes based on mode
+        const panesNeeded = { single: 1, horizontal: 2, vertical: 2, quad: 4 }[mode];
+        this.panes.forEach((pane, i) => {
+            pane.style.display = i < panesNeeded ? '' : 'none';
+        });
+
+        // Initialize panes that don't have tabs yet
+        for (let i = 0; i < panesNeeded; i++) {
+            if (!this.app.tabManager.panes[i] || this.app.tabManager.panes[i].tabs.length === 0) {
+                this.app.tabManager.initPane(i);
             }
-            
-            // Add new options
-            for (const username of data.usernames) {
-                const option = document.createElement('option');
-                option.value = username;
-                option.textContent = username;
-                select.appendChild(option);
-            }
-            
-            // Restore selection if still valid
-            if (currentValue && data.usernames.includes(currentValue)) {
-                select.value = currentValue;
-            }
-        } catch (error) {
-            console.error('Failed to load usernames:', error);
         }
     }
 
-    async loadSessions(options = {}) {
-        if (this.currentView !== 'chat') return;
+    getPanesCount() {
+        return { single: 1, horizontal: 2, vertical: 2, quad: 4 }[this.mode];
+    }
+}
+
+// ============================================================
+// Tab Manager
+// ============================================================
+class TabManager {
+    constructor(app) {
+        this.app = app;
+        this.panes = {}; // { paneId: { tabs: [], activeTabId: '' } }
+        this.tabIdCounter = 0;
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        // Use event delegation on document for tab-add buttons
+        // This ensures buttons work even after layout changes show/hide panes
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.tab-add');
+            if (btn) {
+                e.stopPropagation();
+                const paneId = parseInt(btn.dataset.pane);
+                this.app.showAddTabDropdown(btn, paneId);
+            }
+        });
+
+        // View switcher buttons
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.view-btn');
+            if (btn) {
+                const switcher = btn.closest('.view-switcher');
+                const paneId = parseInt(switcher.dataset.pane);
+                const viewType = btn.dataset.view;
+                this.switchView(paneId, viewType);
+                
+                // Update button states
+                switcher.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            }
+        });
+    }
+
+    switchView(paneId, viewType) {
+        const pane = this.panes[paneId];
+        if (!pane || !pane.activeTabId) return;
+
+        // Switch the current active tab's type (not create new tab)
+        const tab = pane.tabs.find(t => t.id === pane.activeTabId);
+        if (tab && tab.type !== viewType) {
+            tab.type = viewType;
+            tab.title = viewType === 'chat' ? 'Chat' : 'Tasks';
+            tab.data = {}; // Reset data when switching type
+            this.renderTabs(paneId);
+            this.renderContent(paneId);
+        }
+    }
+
+    updateViewSwitcher(paneId) {
+        const pane = this.panes[paneId];
+        const switcher = document.querySelector(`.view-switcher[data-pane="${paneId}"]`);
+        if (!pane || !switcher) return;
+
+        const activeTab = pane.tabs.find(t => t.id === pane.activeTabId);
+        if (activeTab) {
+            switcher.querySelectorAll('.view-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.view === activeTab.type);
+            });
+        }
+    }
+
+    initPane(paneId) {
+        if (!this.panes[paneId]) {
+            this.panes[paneId] = { tabs: [], activeTabId: null };
+        }
+        if (this.panes[paneId].tabs.length === 0) {
+            // All new panes default to Chat view
+            this.addTab(paneId, 'chat');
+        }
+    }
+
+    generateTabId() {
+        return `tab-${++this.tabIdCounter}`;
+    }
+
+    addTab(paneId, type = 'chat', title = null) {
+        const pane = this.panes[paneId] || { tabs: [], activeTabId: null };
+        this.panes[paneId] = pane;
+
+        const tabId = this.generateTabId();
+        const tab = {
+            id: tabId,
+            type: type,
+            title: title || (type === 'chat' ? 'Chat' : 'Tasks'),
+            data: {}
+        };
+
+        pane.tabs.push(tab);
+        pane.activeTabId = tabId;
+
+        this.renderTabs(paneId);
+        this.renderContent(paneId);
+        this.updateViewSwitcher(paneId);
+        return tabId;
+    }
+
+    removeTab(paneId, tabId) {
+        const pane = this.panes[paneId];
+        if (!pane) return;
+
+        const index = pane.tabs.findIndex(t => t.id === tabId);
+        if (index === -1) return;
+
+        pane.tabs.splice(index, 1);
+
+        // If no tabs left, create a new default one
+        if (pane.tabs.length === 0) {
+            this.addTab(paneId, 'chat');
+            return;
+        }
+
+        // Update active tab if needed
+        if (pane.activeTabId === tabId) {
+            pane.activeTabId = pane.tabs[Math.max(0, index - 1)]?.id || pane.tabs[0]?.id;
+        }
+
+        this.renderTabs(paneId);
+        this.renderContent(paneId);
+    }
+
+    setActiveTab(paneId, tabId) {
+        const pane = this.panes[paneId];
+        if (!pane) return;
+
+        pane.activeTabId = tabId;
+        this.renderTabs(paneId);
+        this.renderContent(paneId);
+        this.updateViewSwitcher(paneId);
+    }
+
+    getActiveTab(paneId) {
+        const pane = this.panes[paneId];
+        if (!pane) return null;
+        return pane.tabs.find(t => t.id === pane.activeTabId);
+    }
+
+    renameTab(paneId, tabId, newTitle) {
+        const pane = this.panes[paneId];
+        if (!pane) return;
+
+        const tab = pane.tabs.find(t => t.id === tabId);
+        if (tab) {
+            tab.title = newTitle;
+            this.renderTabs(paneId);
+        }
+    }
+
+    switchTabType(paneId, tabId, newType) {
+        const pane = this.panes[paneId];
+        if (!pane) return;
+
+        const tab = pane.tabs.find(t => t.id === tabId);
+        if (tab && tab.type !== newType) {
+            tab.type = newType;
+            tab.title = newType === 'chat' ? 'Chat' : 'Tasks';
+            tab.data = {};
+            this.renderTabs(paneId);
+            this.renderContent(paneId);
+        }
+    }
+
+    renderTabs(paneId) {
+        const pane = this.panes[paneId];
+        const container = document.getElementById(`pane-${paneId}-tabs`);
+        if (!pane || !container) return;
+
+        container.innerHTML = pane.tabs.map(tab => `
+            <div class="tab ${tab.id === pane.activeTabId ? 'active' : ''}" 
+                    data-tab-id="${tab.id}" 
+                    data-pane-id="${paneId}">
+                <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    ${tab.type === 'chat' 
+                        ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>'
+                        : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>'}
+                </svg>
+                <span class="tab-title">${this.escapeHtml(tab.title)}</span>
+                <span class="tab-close" data-tab-id="${tab.id}" data-pane-id="${paneId}" title="Close tab">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="10" height="10">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </span>
+            </div>
+        `).join('');
+
+        // Bind tab click events
+        container.querySelectorAll('.tab').forEach(tabEl => {
+            tabEl.addEventListener('click', (e) => {
+                if (e.target.closest('.tab-close')) return;
+                this.setActiveTab(parseInt(tabEl.dataset.paneId), tabEl.dataset.tabId);
+            });
+
+            // Double-click to rename
+            tabEl.addEventListener('dblclick', (e) => {
+                if (e.target.closest('.tab-close')) return;
+                this.app.showRenameTabModal(parseInt(tabEl.dataset.paneId), tabEl.dataset.tabId);
+            });
+        });
+
+        // Bind close button events
+        container.querySelectorAll('.tab-close').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.removeTab(parseInt(btn.dataset.paneId), btn.dataset.tabId);
+            });
+        });
+    }
+
+    renderContent(paneId) {
+        const tab = this.getActiveTab(paneId);
+        const container = document.getElementById(`pane-${paneId}-content`);
+        if (!tab || !container) return;
+
+        if (tab.type === 'chat') {
+            this.app.chatView.render(paneId, tab, container);
+        } else {
+            this.app.taskView.render(paneId, tab, container);
+        }
+    }
+
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+}
+
+// ============================================================
+// Chat View
+// ============================================================
+class ChatView {
+    constructor(app) {
+        this.app = app;
+        this.sessions = {};
+        this.currentSession = {};
+    }
+
+    async render(paneId, tab, container) {
+        container.innerHTML = `
+            <div class="chat-container">
+                <div class="session-list" id="sessionList-${paneId}">
+                    <div class="session-list-header">
+                        <div class="session-header-row">
+                            <span class="session-header-title">会话列表</span>
+                            <button class="action-btn compact" data-action="new-session" data-pane="${paneId}">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                新建会话
+                            </button>
+                        </div>
+                        <div class="session-search">
+                            <svg class="session-search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                            </svg>
+                            <input type="text" class="session-search-input" placeholder="搜索会话..." data-pane="${paneId}">
+                        </div>
+                        <div class="session-filter">
+                            <select class="session-filter-select" data-pane="${paneId}" data-filter="status">
+                                <option value="">所有状态</option>
+                                <option value="running">运行中</option>
+                                <option value="completed">已完成</option>
+                                <option value="error">错误</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="session-items" id="sessionItems-${paneId}">
+                        <div class="empty-state">
+                            <div class="loading-spinner"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-detail" id="chatDetail-${paneId}">
+                    <div class="empty-state">
+                        <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                        </svg>
+                        <p class="empty-state-title">选择一个会话</p>
+                        <p class="empty-state-text">从左侧列表选择会话查看消息</p>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        this.bindEvents(paneId);
+        await this.loadSessions(paneId);
+    }
+
+    bindEvents(paneId) {
+        const searchInput = document.querySelector(`.session-search-input[data-pane="${paneId}"]`);
+        if (searchInput) {
+            let timeout;
+            searchInput.addEventListener('input', () => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => this.loadSessions(paneId), 300);
+            });
+        }
+
+        const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"]`);
+        if (statusFilter) {
+            statusFilter.addEventListener('change', () => this.loadSessions(paneId));
+        }
+
+        // New session button
+        const newSessionBtn = document.querySelector(`[data-action="new-session"][data-pane="${paneId}"]`);
+        if (newSessionBtn) {
+            newSessionBtn.addEventListener('click', () => this.showNewSessionView(paneId));
+        }
+    }
+
+    showNewSessionView(paneId) {
+        const detail = document.getElementById(`chatDetail-${paneId}`);
+        if (!detail) return;
+
+        // Clear current session selection
+        this.currentSession[paneId] = null;
+        const container = document.getElementById(`sessionItems-${paneId}`);
+        container?.querySelectorAll('.session-item').forEach(item => {
+            item.classList.remove('active');
+        });
+
+        // Get agent options from global user filter
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const options = globalUserFilter ? globalUserFilter.innerHTML : '<option value="ubuntu">ubuntu</option>';
+
+        // Render new session view with input and agent selector
+        detail.innerHTML = `
+            <div class="new-session-view">
+                <div class="new-session-content">
+                    <div class="new-session-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="64" height="64">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                        </svg>
+                    </div>
+                    <h2 class="new-session-title">开始新对话</h2>
+                    <p class="new-session-hint">选择 Agent 并输入您的问题或需求</p>
+                </div>
+                <div class="new-session-agent-selector">
+                    <label for="newSessionAgent-${paneId}">选择 Agent:</label>
+                    <select id="newSessionAgent-${paneId}" class="new-session-agent-select">
+                        ${options.replace('<option value="">All Users</option>', '')}
+                    </select>
+                </div>
+                <div class="new-session-input-container">
+                    <textarea 
+                        id="newSessionInput-${paneId}" 
+                        class="new-session-input" 
+                        placeholder="输入您的消息..."
+                        rows="3"
+                    ></textarea>
+                    <button class="new-session-send-btn" data-pane="${paneId}">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                        </svg>
+                        发送
+                    </button>
+                </div>
+            </div>
+        `;
+
+        // Set default agent to ubuntu
+        const agentSelect = document.getElementById(`newSessionAgent-${paneId}`);
+        if (agentSelect) {
+            agentSelect.value = 'ubuntu';
+        }
+
+        // Bind events
+        const textarea = document.getElementById(`newSessionInput-${paneId}`);
+        const sendBtn = detail.querySelector('.new-session-send-btn');
+
+        if (textarea) {
+            textarea.focus();
+            textarea.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    const selectedAgent = agentSelect?.value || 'ubuntu';
+                    this.createNewSession(paneId, textarea.value, selectedAgent);
+                }
+            });
+        }
+
+        if (sendBtn) {
+            sendBtn.addEventListener('click', () => {
+                const selectedAgent = agentSelect?.value || 'ubuntu';
+                this.createNewSession(paneId, textarea?.value || '', selectedAgent);
+            });
+        }
+    }
+
+    async createNewSession(paneId, message, agentName = 'ubuntu') {
+        if (!message.trim()) {
+            this.app.showToast('请输入消息内容', 'warning');
+            return;
+        }
+
+        const detail = document.getElementById(`chatDetail-${paneId}`);
+        if (!detail) return;
+        
+        // Generate a unique session ID
+        const sessionId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        const sessionTitle = message.substring(0, 50) + (message.length > 50 ? '...' : '');
+
+        // Immediately show the chat view with user message and thinking indicator
+        detail.innerHTML = `
+            <div class="chat-header">
+                <div class="chat-header-info">
+                    <h2 class="chat-header-title">${this.escapeHtml(sessionTitle)}</h2>
+                    <span class="chat-header-meta">新会话 - ${agentName}</span>
+                </div>
+            </div>
+            <div class="chat-messages" id="chatMessages-${paneId}">
+                <div class="message user">
+                    <div class="message-avatar user">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                        </svg>
+                    </div>
+                    <div class="message-content">
+                        <div class="message-text">${this.escapeHtml(message)}</div>
+                    </div>
+                </div>
+                <div class="message assistant" id="thinking-${paneId}">
+                    <div class="message-avatar assistant">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <div class="message-content">
+                        <div class="thinking-indicator">
+                            <span class="thinking-dot"></span>
+                            <span class="thinking-dot"></span>
+                            <span class="thinking-dot"></span>
+                            <span class="thinking-text">思考中...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="chat-input-container">
+                <textarea 
+                    id="chatInput-${paneId}" 
+                    class="chat-input" 
+                    placeholder="输入消息继续对话..."
+                    rows="1"
+                    disabled
+                ></textarea>
+                <button class="chat-send-btn" data-pane="${paneId}" disabled>
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+
+        // Scroll to bottom
+        const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
 
         try {
-            const search = this.searchInput.value;
-            const username = this.usernameFilter.value;
-            const data = await NexusAPI.getSessions({ search, username });
-            this.sessions = data.sessions;
-            this.renderSessionList();
+            // Build legacy (易事厅) request payload 
+            // The backend auto-detects protocol, default is legacy format
+            const payload = {
+                content: message,
+                user: agentName,
+                session_id: sessionId,
+                msg_type: 'text'
+            };
+
+            // Call streaming API
+            await this.streamChatResponse(paneId, agentName, payload, `thinking-${paneId}`);
+            
+            // After successful response, set current session and reload everything
+            this.currentSession[paneId] = sessionId;
+            
+            // Reload sessions list first, then load messages after a delay to ensure backend has saved them
+            await this.loadSessions(paneId);
+            setTimeout(() => {
+                this.loadMessages(paneId, sessionId);
+            }, 500);
+            
         } catch (error) {
-            if (!options.silent) {
-                this.showError(error.message);
-                this.sessionList.innerHTML = `
-                    <div class="text-center text-gray-500 py-8">
-                        <p>加载失败</p>
-                        <button onclick="app.loadSessions()" class="text-blue-400 hover:text-blue-300 mt-2">重试</button>
+            console.error('Failed to create session:', error);
+            this.app.showToast(error.message || '创建会话失败', 'error');
+            
+            // Show error in thinking area
+            const thinkingEl = document.getElementById(`thinking-${paneId}`);
+            if (thinkingEl) {
+                thinkingEl.innerHTML = `
+                    <div class="message-avatar assistant">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <div class="message-content">
+                        <div class="message-error">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span>${this.escapeHtml(error.message || '请求失败')}</span>
+                            <button class="retry-btn" onclick="nexusApp.chatView.showNewSessionView('${paneId}')">重试</button>
+                        </div>
                     </div>
                 `;
             }
         }
     }
 
-    renderSessionList() {
-        if (this.sessions.length === 0) {
-            this.sessionList.innerHTML = `
-                <div class="text-center text-gray-500 py-8">
-                    <svg class="w-12 h-12 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+    async streamChatResponse(paneId, agentName, payload, thinkingId) {
+        const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
+        const thinkingEl = document.getElementById(thinkingId);
+        
+        // Replace thinking indicator with streaming response container
+        if (thinkingEl) {
+            thinkingEl.innerHTML = `
+                <div class="message-avatar assistant">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                     </svg>
-                    <p>暂无会话</p>
+                </div>
+                <div class="message-content">
+                    <div class="message-text streaming" id="streaming-content-${thinkingId}"></div>
+                </div>
+            `;
+        }
+        
+        const contentEl = document.getElementById(`streaming-content-${thinkingId}`);
+        let fullContent = '';
+        
+        // Call streaming API
+        const response = await NexusAPI.chatStream(agentName, payload);
+        
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        
+        if (!reader) {
+            throw new Error('No response body');
+        }
+        
+        let buffer = '';
+        
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                
+                // Process complete SSE events
+                const events = buffer.split('\n\n');
+                buffer = events.pop() || ''; // Keep incomplete event in buffer
+                
+                for (const event of events) {
+                    if (!event.trim()) continue;
+                    
+                    // Parse legacy SSE format: event:delta\ndata:{"delta":"...","finished":false}
+                    const lines = event.split('\n');
+                    let eventType = '';
+                    let eventData = '';
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('event:')) {
+                            eventType = line.slice(6).trim();
+                        } else if (line.startsWith('data:')) {
+                            eventData = line.slice(5).trim();
+                        } else if (line.startsWith('data: ')) {
+                            eventData = line.slice(6).trim();
+                        }
+                    }
+                    
+                    if (!eventData) continue;
+                    if (eventData === '[DONE]') continue;
+                    
+                    try {
+                        const data = JSON.parse(eventData);
+                        
+                        // Handle legacy format with response field (event:delta, data.response)
+                        if (eventType === 'delta' && data.response !== undefined) {
+                            if (data.response) {
+                                fullContent += data.response;
+                                if (contentEl) {
+                                    contentEl.innerHTML = this.formatMessageContent(fullContent);
+                                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                                }
+                            }
+                            // Check if stream is finished
+                            if (data.finished === true) {
+                                // Stream completed, remove streaming indicator
+                                if (contentEl) {
+                                    contentEl.classList.remove('streaming');
+                                }
+                            }
+                        }
+                        // Handle legacy format (event:delta, data.delta)
+                        else if (eventType === 'delta' && data.delta) {
+                            fullContent += data.delta;
+                            if (contentEl) {
+                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle AGUI format
+                        else if (data.type === 'TEXT_MESSAGE_CONTENT' && data.delta) {
+                            fullContent += data.delta;
+                            if (contentEl) {
+                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle generic delta
+                        else if (data.delta && !data.type) {
+                            fullContent += data.delta;
+                            if (contentEl) {
+                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle errors
+                        else if (data.type === 'RUN_ERROR' || data.error) {
+                            throw new Error(data.message || data.error || 'Stream error');
+                        }
+                    } catch (e) {
+                        if (e.message && (e.message.includes('Stream error') || e.message.includes('RUN_ERROR'))) {
+                            throw e;
+                        }
+                        // Skip invalid JSON
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+        
+        // Remove streaming class when done
+        if (contentEl) {
+            contentEl.classList.remove('streaming');
+        }
+        
+        // Re-enable input
+        const textarea = document.getElementById(`chatInput-${paneId}`);
+        const sendBtn = document.querySelector(`.chat-send-btn[data-pane="${paneId}"]`);
+        if (textarea) textarea.disabled = false;
+        if (sendBtn) sendBtn.disabled = false;
+    }
+
+    async loadSessions(paneId) {
+        const container = document.getElementById(`sessionItems-${paneId}`);
+        if (!container) return;
+
+        const searchInput = document.querySelector(`.session-search-input[data-pane="${paneId}"]`);
+        const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"]`);
+        const globalUserFilter = document.getElementById('globalUserFilter');
+
+        try {
+            const options = {
+                pageSize: 50,
+                search: searchInput?.value || '',
+                status: statusFilter?.value || '',
+                username: globalUserFilter?.value || ''
+            };
+
+            const data = await NexusAPI.getSessions(options);
+            this.sessions[paneId] = data.sessions || [];
+            this.renderSessionList(paneId);
+        } catch (error) {
+            console.error('Failed to load sessions:', error);
+            container.innerHTML = `
+                <div class="empty-state">
+                    <p class="empty-state-text" style="color: var(--error)">Failed to load sessions</p>
+                </div>
+            `;
+        }
+    }
+
+    renderSessionList(paneId) {
+        const container = document.getElementById(`sessionItems-${paneId}`);
+        if (!container) return;
+
+        const sessions = this.sessions[paneId] || [];
+        
+        if (sessions.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
+                    </svg>
+                    <p class="empty-state-title">No sessions found</p>
+                    <p class="empty-state-text">Sessions will appear here</p>
                 </div>
             `;
             return;
         }
 
         // Group sessions by date
-        const groups = this.groupSessionsByDate(this.sessions);
+        const groups = this.groupSessionsByDate(sessions);
         
-        let html = '';
-        for (const [label, sessions] of Object.entries(groups)) {
-            html += `<div class="mb-4">
-                <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">${label}</h3>
-                <div class="space-y-1">
-            `;
-            
-            for (const session of sessions) {
-                const isActive = session.id === this.currentSessionId;
-                const statusClass = this.getStatusClass(session.status);
-                const statusLabel = this.getStatusLabel(session.status);
-                
-                html += `
-                    <div 
-                        class="session-item p-3 rounded-lg cursor-pointer transition-colors ${isActive ? 'bg-gray-700' : 'hover:bg-gray-800'}"
-                        data-session-id="${session.id}"
-                        onclick="app.selectSession('${session.id}')"
-                    >
-                        <div class="flex items-start justify-between">
-                            <div class="flex-1 min-w-0">
-                                <p class="text-sm font-medium truncate">${this.escapeHtml(session.title)}</p>
-                                <div class="flex items-center space-x-2 mt-1">
-                                    ${session.username ? `<span class="text-xs text-blue-400">@${this.escapeHtml(session.username)}</span>` : ''}
-                                    <span class="text-xs text-gray-500">${this.formatTime(session.updated_at)}</span>
-                                </div>
-                            </div>
-                            <div class="flex items-center space-x-2 ml-2">
-                                <span class="px-2 py-0.5 text-xs rounded-full ${statusClass}">${statusLabel}</span>
-                                <button 
-                                    class="text-gray-500 hover:text-red-400 transition-colors p-1"
-                                    onclick="event.stopPropagation(); app.showDeleteModal('${session.id}')"
-                                >
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            html += '</div></div>';
-        }
-        
-        this.sessionList.innerHTML = html;
+        container.innerHTML = Object.entries(groups).map(([label, items]) => `
+            <div class="session-group">
+                <div class="session-group-title">${label}</div>
+                ${items.map(session => this.renderSessionItem(session, paneId)).join('')}
+            </div>
+        `).join('');
+
+        // Bind click events
+        container.querySelectorAll('.session-item').forEach(item => {
+            item.addEventListener('click', () => {
+                this.selectSession(paneId, item.dataset.sessionId);
+            });
+        });
     }
 
-    groupSessionsByDate(sessions) {
-        const groups = {};
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
-        const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    renderSessionItem(session, paneId) {
+        const statusClass = session.status === 'running' ? 'running' : 
+                           session.status === 'error' ? 'error' : 'completed';
+        const timeStr = this.formatTime(session.updated_at || session.created_at);
+        const isActive = this.currentSession[paneId] === session.id;
 
-        for (const session of sessions) {
-            const date = new Date(session.updated_at);
-            let label;
-            
-            if (date >= today) {
-                label = '今天';
-            } else if (date >= yesterday) {
-                label = '昨天';
-            } else if (date >= weekAgo) {
-                label = '本周';
-            } else {
-                label = '更早';
-            }
-            
-            if (!groups[label]) {
-                groups[label] = [];
-            }
-            groups[label].push(session);
-        }
-        
-        return groups;
-    }
-
-    async selectSession(sessionId) {
-        this.currentSessionId = sessionId;
-        this.renderSessionList(); // Update active state
-        
-        try {
-            const [session, messagesData] = await Promise.all([
-                NexusAPI.getSession(sessionId),
-                NexusAPI.getSessionMessages(sessionId),
-            ]);
-            
-            let provider = (session && session.provider) ? session.provider : '';
-            if (!provider && messagesData && Array.isArray(messagesData.messages)) {
-                const hasGemini = messagesData.messages.some(
-                    (msg) => typeof msg.id === 'string' && msg.id.startsWith('gemini-msg-')
-                );
-                if (hasGemini) provider = 'gemini';
-            }
-            this.currentSessionProvider = provider;
-            this.renderSessionDetail(session, messagesData);
-        } catch (error) {
-            this.showError(error.message);
-        }
-    }
-
-    renderSessionDetail(session, messagesData) {
-        const { messages, tool_calls } = messagesData;
-        
-        // Create tool calls map for quick lookup
-        const toolCallsMap = {};
-        for (const tc of tool_calls) {
-            toolCallsMap[tc.id] = tc;
-        }
-        
-        // 获取用户名和 agent 名称
-        const username = session.username || '用户';
-        const agentName = session.agent_name || '助手';
-        
-        let html = `
-            <div class="max-w-4xl mx-auto">
-                <div class="mb-6">
-                    <div class="flex items-center justify-between">
-                        <h2 class="text-xl font-semibold">${this.escapeHtml(session.title)}</h2>
-                        <span class="px-3 py-1 text-sm rounded-full ${this.getStatusClass(session.status)}">${this.getStatusLabel(session.status)}</span>
-                    </div>
-                    <p class="text-sm text-gray-500 mt-1">
-                        ${session.username ? `<span class="text-blue-400">@${this.escapeHtml(session.username)}</span> · ` : ''}
-                        创建于 ${this.formatTime(session.created_at)} · ${session.message_count} 条消息
-                    </p>
+        return `
+            <div class="session-item ${isActive ? 'active' : ''}" data-session-id="${session.id}">
+                <div class="session-item-header">
+                    <span class="session-item-title">${this.escapeHtml(session.title || session.id)}</span>
+                    <span class="session-item-time">${timeStr}</span>
                 </div>
-                
-                <div id="sessionMessageList" class="space-y-4">
+                ${session.last_message ? `<p class="session-item-preview">${this.escapeHtml(session.last_message)}</p>` : ''}
+                <div class="session-item-meta">
+                    <span class="session-item-status ${statusClass}">
+                        <span class="status-dot"></span>
+                        ${session.status || 'idle'}
+                    </span>
+                    ${session.username ? `<span>@${session.username}</span>` : ''}
+                </div>
+            </div>
         `;
+    }
+
+    async selectSession(paneId, sessionId) {
+        this.currentSession[paneId] = sessionId;
         
-        for (const msg of messages) {
-            const isUser = msg.role === 'user';
-            const alignClass = isUser ? 'ml-auto' : 'mr-auto';
-            const bgClass = isUser ? 'bg-blue-600' : 'bg-gray-700';
-            const maxWidth = isUser ? 'max-w-[80%]' : 'max-w-[90%]';
-            const roleLabel = isUser ? username : agentName;
-            const roleLabelClass = isUser ? 'text-blue-200' : 'text-green-400';
-            
-            html += `
-                <div class="${alignClass} ${maxWidth}">
-                    <div class="${bgClass} rounded-lg p-4">
-                        <div class="flex items-center space-x-2 mb-2">
-                            <span class="text-xs font-medium ${roleLabelClass}">
-                                ${this.escapeHtml(roleLabel)}
-                            </span>
-                            <span class="text-xs text-gray-500">${this.formatTime(msg.timestamp)}</span>
-                        </div>
-                        <div class="message-content">
+        // Update active state in list
+        const container = document.getElementById(`sessionItems-${paneId}`);
+        container?.querySelectorAll('.session-item').forEach(item => {
+            item.classList.toggle('active', item.dataset.sessionId === sessionId);
+        });
+
+        // Load and display messages
+        await this.loadMessages(paneId, sessionId);
+    }
+
+    async loadMessages(paneId, sessionId) {
+        const detail = document.getElementById(`chatDetail-${paneId}`);
+        if (!detail) return;
+
+        detail.innerHTML = `
+            <div class="empty-state">
+                <div class="loading-spinner"></div>
+            </div>
+        `;
+
+        try {
+            const data = await NexusAPI.getSessionMessages(sessionId);
+            this.renderMessages(paneId, sessionId, data);
+        } catch (error) {
+            console.error('Failed to load messages:', error);
+            detail.innerHTML = `
+                <div class="empty-state">
+                    <p class="empty-state-text" style="color: var(--error)">Failed to load messages</p>
+                </div>
             `;
+        }
+    }
+
+    renderMessages(paneId, sessionId, data) {
+        const detail = document.getElementById(`chatDetail-${paneId}`);
+        if (!detail) return;
+
+        const messages = data.messages || [];
+        const toolCalls = data.tool_calls || [];
+
+        detail.innerHTML = `
+            <div class="chat-header">
+                <div class="chat-header-info">
+                    <h2 class="chat-header-title">${this.escapeHtml(data.session?.title || sessionId)}</h2>
+                    <span class="chat-header-meta">${messages.length} messages</span>
+                </div>
+                <div class="chat-header-actions">
+                    <button class="action-btn" data-action="delete-session" data-session-id="${sessionId}">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="chat-messages" id="chatMessages-${paneId}">
+                ${messages.length === 0 
+                    ? '<div class="empty-state"><p class="empty-state-text">No messages yet</p></div>'
+                    : messages.map(msg => this.renderMessage(msg, toolCalls)).join('')}
+            </div>
+            <div class="chat-input-container">
+                <textarea 
+                    id="chatInput-${paneId}" 
+                    class="chat-input" 
+                    placeholder="输入消息继续对话..."
+                    rows="1"
+                    data-session-id="${sessionId}"
+                ></textarea>
+                <button class="chat-send-btn" data-pane="${paneId}" data-session-id="${sessionId}">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+
+        // Bind delete action
+        const deleteBtn = detail.querySelector('[data-action="delete-session"]');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', () => {
+                this.app.showDeleteModal('session', sessionId, () => {
+                    this.deleteSession(paneId, sessionId);
+                });
+            });
+        }
+
+        // Bind input events
+        const textarea = document.getElementById(`chatInput-${paneId}`);
+        const sendBtn = detail.querySelector('.chat-send-btn');
+        
+        if (textarea) {
+            // Auto-resize textarea
+            textarea.addEventListener('input', () => {
+                textarea.style.height = 'auto';
+                textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+            });
             
-            // Render by content_segments if available (preserves tool call order)
-            if (msg.content_segments && msg.content_segments.length > 0) {
-                // Sort segments by sequence
-                const sortedSegments = [...msg.content_segments].sort((a, b) => a.sequence - b.sequence);
-                
-                for (const seg of sortedSegments) {
-                    if (seg.type === 'text' && seg.content) {
-                        html += `<div class="prose prose-invert prose-sm max-w-none">${this.renderMarkdown(seg.content)}</div>`;
-                    } else if (seg.type === 'tool_call' && seg.tool_call_id) {
-                        const tc = toolCallsMap[seg.tool_call_id];
-                        if (tc) {
-                            html += `<div class="my-2">${this.renderToolCall(tc)}</div>`;
-                        }
-                    }
+            // Enter to send (Shift+Enter for newline)
+            textarea.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this.sendMessage(paneId, sessionId, textarea.value);
                 }
-            } else {
-                // Legacy: render content first, then tool calls at bottom
-                html += `<div class="prose prose-invert prose-sm max-w-none">${this.renderMarkdown(msg.content)}</div>`;
-                
-                // Render tool calls if any (legacy behavior - at bottom)
-                if (msg.tool_call_ids && msg.tool_call_ids.length > 0) {
-                    html += '<div class="mt-3 space-y-2">';
-                    for (const tcId of msg.tool_call_ids) {
-                        const tc = toolCallsMap[tcId];
-                        if (tc) {
-                            html += this.renderToolCall(tc);
-                        }
-                    }
-                    html += '</div>';
-                }
-            }
-            
-            html += '</div></div></div>';
+            });
         }
         
-        html += `
-                </div>
+        if (sendBtn) {
+            sendBtn.addEventListener('click', () => {
+                this.sendMessage(paneId, sessionId, textarea?.value || '');
+            });
+        }
 
-                <div class="mt-6 border-t border-gray-700 pt-4">
-                    <h3 class="text-sm font-medium text-gray-300 mb-2">继续提问</h3>
-                    <div class="flex items-start space-x-2">
-                        <textarea
-                            id="followupInput"
-                            rows="3"
-                            placeholder="在当前会话里继续提问..."
-                            class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
-                        ></textarea>
-                        <button
-                            id="sendFollowupBtn"
-                            class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                        >
-                            发送
-                        </button>
-                    </div>
-                    <p id="followupStatus" class="text-xs text-gray-500 mt-2"></p>
-                    <pre id="liveAssistantResponse" class="hidden mt-3 text-xs bg-gray-900 p-3 rounded-lg overflow-x-auto max-h-56"></pre>
+        // Scroll to bottom
+        const messagesContainer = detail.querySelector('.chat-messages');
+        if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    }
+
+    async sendMessage(paneId, sessionId, message) {
+        if (!message.trim()) return;
+
+        const textarea = document.getElementById(`chatInput-${paneId}`);
+        const sendBtn = document.querySelector(`.chat-send-btn[data-pane="${paneId}"]`);
+        const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
+        
+        if (!messagesContainer) return;
+
+        // Clear input and disable
+        if (textarea) {
+            textarea.value = '';
+            textarea.style.height = 'auto';
+            textarea.disabled = true;
+        }
+        if (sendBtn) sendBtn.disabled = true;
+
+        // Add user message to UI immediately
+        const userMsgHtml = `
+            <div class="message user">
+                <div class="message-avatar user">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                    </svg>
+                </div>
+                <div class="message-content">
+                    <div class="message-text">${this.escapeHtml(message)}</div>
                 </div>
             </div>
         `;
         
-        this.sessionDetail.innerHTML = html;
+        // Remove empty state if present
+        const emptyState = messagesContainer.querySelector('.empty-state');
+        if (emptyState) emptyState.remove();
+        
+        messagesContainer.insertAdjacentHTML('beforeend', userMsgHtml);
 
-        const followupInput = document.getElementById('followupInput');
-        const sendBtn = document.getElementById('sendFollowupBtn');
-        const statusEl = document.getElementById('followupStatus');
-        const liveEl = document.getElementById('liveAssistantResponse');
+        // Add thinking indicator
+        const thinkingId = `thinking-${Date.now()}`;
+        const thinkingHtml = `
+            <div class="message assistant" id="${thinkingId}">
+                <div class="message-avatar assistant">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                </div>
+                <div class="message-content">
+                    <div class="thinking-indicator">
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-text">思考中...</span>
+                    </div>
+                </div>
+            </div>
+        `;
+        messagesContainer.insertAdjacentHTML('beforeend', thinkingHtml);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-        const send = async () => {
-            const prompt = (followupInput.value || '').trim();
-            if (!prompt) return;
-            if (!this.currentSessionId) return;
-
-            sendBtn.disabled = true;
-            sendBtn.classList.add('opacity-50', 'cursor-not-allowed');
-            statusEl.textContent = '发送中...';
-            liveEl.textContent = '';
-            liveEl.classList.add('hidden');
-
-            followupInput.value = '';
-
-            const messageList = document.getElementById('sessionMessageList');
-            const localUserId = this._randomId('local-user');
-            const localAssistantId = this._randomId('local-assistant');
-            const placeholderId = this._randomId('thinking');
-            const nowLabel = this.formatTime(Date.now());
-
-            if (messageList) {
-                const userHtml = `
-                    <div class="ml-auto max-w-[80%]" data-local-id="${localUserId}">
-                        <div class="bg-blue-600 rounded-lg p-4">
-                            <div class="flex items-center space-x-2 mb-2">
-                                <span class="text-xs font-medium text-blue-200">${this.escapeHtml(username)}</span>
-                                <span class="text-xs text-gray-500">${nowLabel}</span>
-                            </div>
-                            <div class="message-content">
-                                <div class="prose prose-invert prose-sm max-w-none"></div>
-                            </div>
+        try {
+            // Send message via streaming API
+            await this.streamMessage(paneId, sessionId, message, thinkingId);
+            
+            // Note: Don't reload messages immediately after streaming because
+            // the backend may not have saved the final content yet.
+            // The streaming content is already displayed in the UI.
+        } catch (error) {
+            console.error('Failed to send message:', error);
+            this.app.showToast(error.message || '发送消息失败', 'error');
+            
+            // Replace thinking with error
+            const thinkingEl = document.getElementById(thinkingId);
+            if (thinkingEl) {
+                thinkingEl.innerHTML = `
+                    <div class="message-avatar assistant">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <div class="message-content">
+                        <div class="message-error">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span>${this.escapeHtml(error.message || '发送失败')}</span>
                         </div>
                     </div>
                 `;
-                messageList.insertAdjacentHTML('beforeend', userHtml);
-                const userNode = messageList.querySelector(`[data-local-id="${localUserId}"] .message-content .prose`);
-                if (userNode) {
-                    userNode.textContent = prompt;
-                }
-
-                const thinkingHtml = `
-                    <div class="mr-auto max-w-[90%]" data-local-id="${placeholderId}">
-                        <div class="text-xs text-gray-400 italic">思考中...</div>
-                    </div>
-                `;
-                messageList.insertAdjacentHTML('beforeend', thinkingHtml);
             }
+        } finally {
+            // Re-enable input
+            if (textarea) textarea.disabled = false;
+            if (sendBtn) sendBtn.disabled = false;
+            textarea?.focus();
+        }
+    }
 
-            let assistantReady = false;
-            const createAssistantBubble = () => {
-                if (assistantReady) return;
-                const list = document.getElementById('sessionMessageList');
-                if (!list) return;
-                const placeholder = list.querySelector(`[data-local-id="${placeholderId}"]`);
-                if (placeholder) placeholder.remove();
-                const assistantHtml = `
-                    <div class="mr-auto max-w-[90%]" data-local-id="${localAssistantId}">
-                        <div class="bg-gray-700 rounded-lg p-4">
-                            <div class="flex items-center space-x-2 mb-2">
-                                <span class="text-xs font-medium text-green-400">${this.escapeHtml(agentName)}</span>
-                                <span class="text-xs text-gray-500">${nowLabel}</span>
-                            </div>
-                            <div class="message-content">
-                                <div class="prose prose-invert prose-sm max-w-none"><div id="${localAssistantId}-content" class="space-y-2"></div></div>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                list.insertAdjacentHTML('beforeend', assistantHtml);
-                assistantReady = true;
-            };
-
-            const streamState = {
-                lastTextNode: null,
-                toolBlocks: {},
-            };
-
-            const appendTextDelta = (delta) => {
-                createAssistantBubble();
-                const root = document.getElementById(`${localAssistantId}-content`);
-                if (!root) return;
-                if (!streamState.lastTextNode) {
-                    const div = document.createElement('div');
-                    div.setAttribute('data-seg', 'text');
-                    root.appendChild(div);
-                    streamState.lastTextNode = div;
-                }
-                streamState.lastTextNode.textContent += delta;
-            };
-
-            const ensureToolBlock = (toolId, toolName) => {
-                createAssistantBubble();
-                const root = document.getElementById(`${localAssistantId}-content`);
-                if (!root) return null;
-                if (streamState.toolBlocks[toolId]) return streamState.toolBlocks[toolId];
-
-                const tc = {
-                    id: toolId,
-                    tool_name: toolName || toolId,
-                    status: 'executing',
-                    start_time: Date.now(),
-                    args_string: '',
-                    args: {},
-                    result: '',
-                };
-                const wrapper = document.createElement('div');
-                wrapper.innerHTML = this.renderToolCall(tc).trim();
-                const details = wrapper.firstElementChild;
-                if (!details) return null;
-                details.setAttribute('data-seg', 'tool');
-                details.open = true;
-
-                root.appendChild(details);
-                const block = { node: details, startTime: Date.now() };
-                streamState.toolBlocks[toolId] = block;
-                streamState.lastTextNode = null;
-                return block;
-            };
-
-            const handleStreamEvent = (evt) => {
-                if (!evt || !evt.type) return;
-                if (evt.type === 'TOOL_CALL_START') {
-                    ensureToolBlock(evt.toolCallId, evt.toolCallName);
-                } else if (evt.type === 'TOOL_CALL_ARGS') {
-                    const block = ensureToolBlock(evt.toolCallId, evt.toolCallName);
-                    const node = block ? block.node : null;
-                    if (node) {
-                        const args = node.querySelector('[data-role="args"]');
-                        if (args && typeof evt.delta === 'string') {
-                            args.textContent += evt.delta;
-                        }
-                    }
-                } else if (evt.type === 'TOOL_CALL_END' || evt.type === 'TOOL_CALL_RESULT') {
-                    const block = ensureToolBlock(evt.toolCallId, evt.toolCallName);
-                    const node = block ? block.node : null;
-                    if (node) {
-                        const result = node.querySelector('[data-role="result"]');
-                        const resultWrap = node.querySelector('[data-role="result-wrap"]');
-                        if (result && (evt.result || evt.content)) {
-                            result.textContent = String(evt.result || evt.content);
-                            if (resultWrap) resultWrap.classList.remove('hidden');
-                        }
-                        const status = node.querySelector('[data-role="status"]');
-                        if (status) {
-                            status.classList.remove('text-yellow-400');
-                            status.classList.add('text-green-400');
-                            status.textContent = '✓';
-                        }
-                        const duration = node.querySelector('[data-role="duration"]');
-                        if (duration && block && block.startTime) {
-                            duration.textContent = `${((Date.now() - block.startTime) / 1000).toFixed(1)}s`;
-                        }
-                        node.removeAttribute('open');
-                    }
-                }
-            };
-
-            try {
-                const result = await this.sendFollowupMessage(this.currentSessionId, prompt, {
-                    onDelta: (delta) => {
-                        const el = document.getElementById(`${localAssistantId}-content`);
-                        if (el) {
-                            appendTextDelta(delta);
-                        } else {
-                            createAssistantBubble();
-                            const el2 = document.getElementById(`${localAssistantId}-content`);
-                            if (el2) {
-                                appendTextDelta(delta);
-                            } else {
-                                liveEl.classList.remove('hidden');
-                                liveEl.textContent += delta;
-                            }
-                        }
-                    },
-                    onEvent: handleStreamEvent,
-                });
-
-                statusEl.textContent = '完成。正在刷新会话...';
-                if (result && result.userMessageId) {
-                    await this.waitForSessionAssistant(this.currentSessionId, result.userMessageId);
-                }
-                await this.selectSession(this.currentSessionId);
-                statusEl.textContent = '';
-            } catch (err) {
-                statusEl.textContent = `发送失败：${err.message || err}`;
-                this.showError(err.message || String(err));
-            } finally {
-                sendBtn.disabled = false;
-                sendBtn.classList.remove('opacity-50', 'cursor-not-allowed');
-            }
+    async streamMessage(paneId, sessionId, message, thinkingId) {
+        // Get agent name from global filter
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const agentName = globalUserFilter?.value || 'ubuntu';
+        
+        // Build legacy (易事厅) request payload with session_id to continue conversation
+        const payload = {
+            content: message,
+            user: agentName,
+            session_id: sessionId,
+            msg_type: 'text'
         };
+        
+        // Use the shared streaming method
+        await this.streamChatResponse(paneId, agentName, payload, thinkingId);
+        
+        // Refresh session list to update last_message
+        this.loadSessions(paneId);
+    }
 
-        sendBtn.addEventListener('click', send);
-        followupInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                send();
+    renderMessage(msg, toolCalls) {
+        const isUser = msg.role === 'user';
+        const avatar = isUser ? 'U' : 'A';
+        const timeStr = this.formatTime(msg.timestamp);
+        const hasContent = msg.content && msg.content.trim();
+
+        // Find tool calls for this message
+        const messageToolCalls = toolCalls.filter(tc => tc.parent_message_id === msg.id || tc.message_id === msg.id);
+
+        // Build message bubble content
+        let bubbleContent = '';
+        
+        // Check if message has content_segments for ordered rendering
+        if (msg.content_segments && msg.content_segments.length > 0) {
+            // Sort segments by sequence number
+            const sortedSegments = [...msg.content_segments].sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+            
+            for (const segment of sortedSegments) {
+                if (segment.type === 'text' && segment.content) {
+                    bubbleContent += this.formatMessageContent(segment.content);
+                } else if (segment.type === 'tool_call' && segment.tool_call_id) {
+                    // Find the tool call by ID
+                    const tc = messageToolCalls.find(t => t.id === segment.tool_call_id);
+                    if (tc) {
+                        bubbleContent += this.renderToolCall(tc);
+                    }
+                }
+            }
+        } else {
+            // Fallback: render content + tool calls at the end (legacy behavior)
+            if (hasContent) {
+                bubbleContent += this.formatMessageContent(msg.content);
+            }
+            
+            if (messageToolCalls.length > 0) {
+                bubbleContent += messageToolCalls.map(tc => this.renderToolCall(tc)).join('');
+            }
+        }
+        
+        // If no content and no tool calls, show empty placeholder
+        if (!bubbleContent) {
+            bubbleContent = '<span class="message-empty">(空消息)</span>';
+        }
+
+        return `
+            <div class="message ${isUser ? 'user' : 'assistant'}">
+                <div class="message-avatar">${avatar}</div>
+                <div class="message-content">
+                    <div class="message-bubble">${bubbleContent}</div>
+                    <span class="message-time">${timeStr}</span>
+                </div>
+            </div>
+        `;
+    }
+    
+    renderToolCallStandalone(tc, isFromUser = false) {
+        const status = tc.status || 'pending';
+        const statusConfig = {
+            pending: { icon: '⏳', color: 'var(--text-muted)', bgColor: 'rgba(148, 163, 184, 0.1)', label: '等待中' },
+            executing: { icon: '▶️', color: 'var(--primary-500)', bgColor: 'rgba(59, 130, 246, 0.1)', label: '执行中' },
+            completed: { icon: '✓', color: 'var(--success)', bgColor: 'rgba(16, 185, 129, 0.1)', label: '已完成' },
+            failed: { icon: '✗', color: 'var(--error)', bgColor: 'rgba(239, 68, 68, 0.1)', label: '失败' }
+        };
+        const cfg = statusConfig[status] || statusConfig.pending;
+        
+        // Calculate execution time
+        let execTime = '';
+        if (tc.start_time && tc.end_time) {
+            const ms = tc.end_time - tc.start_time;
+            execTime = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
+        }
+        
+        // Format args and result
+        const argsContent = tc.args ? JSON.stringify(tc.args, null, 2) : tc.args_string || '';
+        const resultContent = tc.result !== undefined ? 
+            (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
+        
+        // Generate unique IDs for copy buttons
+        const toolId = `tool-${tc.id || Math.random().toString(36).substr(2, 9)}`;
+        
+        return `
+            <div class="tool-call-standalone" data-tool-id="${toolId}">
+                <div class="tool-call-standalone-inner">
+                    <div class="tool-call-standalone-header" onclick="this.closest('.tool-call-standalone').classList.toggle('expanded')">
+                        <div class="tool-call-standalone-status" style="background: ${cfg.bgColor}; color: ${cfg.color}">
+                            <span class="tool-call-status-icon">${cfg.icon}</span>
+                            <span class="tool-call-status-label">${cfg.label}</span>
+                        </div>
+                        <svg class="tool-call-standalone-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        <span class="tool-call-standalone-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                        ${execTime ? `<span class="tool-call-standalone-time">⏱ ${execTime}</span>` : ''}
+                        ${tc.error ? `<span class="tool-call-standalone-error-badge">⚠ 错误</span>` : ''}
+                        <svg class="tool-call-standalone-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                    <div class="tool-call-standalone-body">
+                        ${argsContent ? `
+                            <div class="tool-call-standalone-section">
+                                <div class="tool-call-standalone-section-header">
+                                    <span class="tool-call-standalone-section-title">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                        </svg>
+                                        输入参数
+                                    </span>
+                                    <button class="tool-call-standalone-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-args')">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                        </svg>
+                                        复制
+                                    </button>
+                                </div>
+                                <div class="tool-call-standalone-content" id="${toolId}-args">${this.escapeHtml(argsContent)}</div>
+                            </div>
+                        ` : ''}
+                        ${resultContent ? `
+                            <div class="tool-call-standalone-section">
+                                <div class="tool-call-standalone-section-header">
+                                    <span class="tool-call-standalone-section-title">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        执行结果
+                                    </span>
+                                    <button class="tool-call-standalone-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-result')">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                        </svg>
+                                        复制
+                                    </button>
+                                </div>
+                                <div class="tool-call-standalone-content tool-call-standalone-result" id="${toolId}-result">${this.escapeHtml(resultContent)}</div>
+                            </div>
+                        ` : ''}
+                        ${tc.error ? `
+                            <div class="tool-call-standalone-section">
+                                <div class="tool-call-standalone-section-header">
+                                    <span class="tool-call-standalone-section-title" style="color: var(--error);">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                        </svg>
+                                        错误信息
+                                    </span>
+                                    <button class="tool-call-standalone-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-error')">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                        </svg>
+                                        复制
+                                    </button>
+                                </div>
+                                <div class="tool-call-standalone-content tool-call-standalone-error" id="${toolId}-error">${this.escapeHtml(tc.error)}</div>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    renderToolCall(tc) {
+        const status = tc.status || 'pending';
+        const statusConfig = {
+            pending: { icon: '⏳', color: 'var(--text-muted)', label: '等待中' },
+            executing: { icon: '▶️', color: 'var(--primary-500)', label: '执行中' },
+            completed: { icon: '✓', color: 'var(--success)', label: '已完成' },
+            failed: { icon: '✗', color: 'var(--error)', label: '失败' }
+        };
+        const cfg = statusConfig[status] || statusConfig.pending;
+        
+        // Calculate execution time
+        let execTime = '';
+        if (tc.start_time && tc.end_time) {
+            const ms = tc.end_time - tc.start_time;
+            execTime = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
+        }
+        
+        // Format args and result
+        const argsContent = tc.args ? JSON.stringify(tc.args, null, 2) : tc.args_string || '';
+        const resultContent = tc.result !== undefined ? 
+            (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
+        
+        // Generate unique IDs for copy buttons
+        const toolId = `tool-${tc.id || Math.random().toString(36).substr(2, 9)}`;
+        
+        return `
+            <div class="tool-call" data-tool-id="${toolId}">
+                <div class="tool-call-header" onclick="this.closest('.tool-call').classList.toggle('expanded')">
+                    <div class="tool-call-status" style="color: ${cfg.color}">
+                        <span class="tool-call-status-icon">${cfg.icon}</span>
+                    </div>
+                    <svg class="tool-call-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    <span class="tool-call-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                    ${execTime ? `<span class="tool-call-time">${execTime}</span>` : ''}
+                    ${tc.error ? `<span class="tool-call-error-badge">错误</span>` : ''}
+                    <svg class="tool-call-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                    </svg>
+                </div>
+                <div class="tool-call-body">
+                    ${argsContent ? `
+                        <div class="tool-call-section">
+                            <div class="tool-call-section-header">
+                                <span class="tool-call-section-title">输入参数</span>
+                                <button class="tool-call-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-args')">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                    </svg>
+                                    复制
+                                </button>
+                            </div>
+                            <div class="tool-call-content" id="${toolId}-args">${this.escapeHtml(argsContent)}</div>
+                        </div>
+                    ` : ''}
+                    ${resultContent ? `
+                        <div class="tool-call-section">
+                            <div class="tool-call-section-header">
+                                <span class="tool-call-section-title">执行结果</span>
+                                <button class="tool-call-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-result')">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                    </svg>
+                                    复制
+                                </button>
+                            </div>
+                            <div class="tool-call-content tool-call-result" id="${toolId}-result">${this.escapeHtml(resultContent)}</div>
+                        </div>
+                    ` : ''}
+                    ${tc.error ? `
+                        <div class="tool-call-section">
+                            <div class="tool-call-section-header">
+                                <span class="tool-call-section-title" style="color: var(--error);">错误信息</span>
+                                <button class="tool-call-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-error')">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                                    </svg>
+                                    复制
+                                </button>
+                            </div>
+                            <div class="tool-call-content tool-call-error" id="${toolId}-error">${this.escapeHtml(tc.error)}</div>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    }
+    
+    copyToClipboard(elementId) {
+        const element = document.getElementById(elementId);
+        if (!element) return;
+        
+        const text = element.textContent || '';
+        navigator.clipboard.writeText(text).then(() => {
+            this.app.showToast('已复制到剪贴板', 'success');
+        }).catch(err => {
+            console.error('复制失败:', err);
+            this.app.showToast('复制失败', 'error');
+        });
+    }
+
+    async deleteSession(paneId, sessionId) {
+        try {
+            await NexusAPI.deleteSession(sessionId);
+            this.app.showToast('Session deleted', 'success');
+            this.currentSession[paneId] = null;
+            await this.loadSessions(paneId);
+            
+            // Clear detail view
+            const detail = document.getElementById(`chatDetail-${paneId}`);
+            if (detail) {
+                detail.innerHTML = `
+                    <div class="empty-state">
+                        <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                        </svg>
+                        <p class="empty-state-title">Select a session</p>
+                        <p class="empty-state-text">Choose a session from the list to view messages</p>
+                    </div>
+                `;
+            }
+        } catch (error) {
+            console.error('Failed to delete session:', error);
+            this.app.showToast('Failed to delete session', 'error');
+        }
+    }
+
+    groupSessionsByDate(sessions) {
+        const groups = {};
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const weekAgo = new Date(today);
+        weekAgo.setDate(weekAgo.getDate() - 7);
+
+        sessions.forEach(session => {
+            const date = new Date(session.updated_at || session.created_at);
+            date.setHours(0, 0, 0, 0);
+
+            let label;
+            if (date >= today) label = 'Today';
+            else if (date >= yesterday) label = 'Yesterday';
+            else if (date >= weekAgo) label = 'This Week';
+            else label = 'Earlier';
+
+            if (!groups[label]) groups[label] = [];
+            groups[label].push(session);
+        });
+
+        return groups;
+    }
+
+    formatTime(timestamp) {
+        if (!timestamp) return '';
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diff = now - date;
+
+        if (diff < 60000) return 'Just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+        return date.toLocaleDateString();
+    }
+
+    formatMessageContent(content) {
+        if (!content) return '';
+        // Basic markdown-like formatting
+        return this.escapeHtml(content)
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            .replace(/`([^`]+)`/g, '<code style="background: var(--bg-tertiary); padding: 2px 4px; border-radius: 4px;">$1</code>')
+            .replace(/\n/g, '<br>');
+    }
+
+    escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+}
+
+// ============================================================
+// Task View
+// ============================================================
+class TaskView {
+    constructor(app) {
+        this.app = app;
+        this.tasks = {};
+        this.selectedTask = {};
+        this.statusColumns = [
+            { key: 'todo', title: 'To Do', color: 'var(--status-todo)' },
+            { key: 'doing', title: 'Doing', color: 'var(--status-doing)' },
+            { key: 'done', title: 'Done', color: 'var(--status-done)' },
+            { key: 'failed', title: 'Failed', color: 'var(--status-failed)' },
+            { key: 'cancelled', title: 'Cancelled', color: 'var(--status-cancelled)' },
+            { key: 'archived', title: 'Archived', color: 'var(--status-archived)' },
+        ];
+    }
+
+    async render(paneId, tab, container) {
+        container.innerHTML = `
+            <div class="task-container">
+                <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                    <div class="task-toolbar">
+                        <div class="task-toolbar-left">
+                            <button class="action-btn primary" data-action="create-task">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                <span>New Task</span>
+                            </button>
+                        </div>
+                        <div class="task-toolbar-right">
+                            <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" data-pane="${paneId}" id="taskSearch-${paneId}">
+                        </div>
+                    </div>
+                    <div class="kanban-board" id="kanbanBoard-${paneId}">
+                        ${this.statusColumns.map(col => `
+                            <div class="kanban-column" data-status="${col.key}">
+                                <div class="kanban-column-header">
+                                    <span class="kanban-column-title">
+                                        <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
+                                        ${col.title}
+                                    </span>
+                                    <span class="kanban-column-count" id="count-${paneId}-${col.key}">0</span>
+                                </div>
+                                <div class="kanban-column-items" id="items-${paneId}-${col.key}">
+                                    <div class="empty-state" style="padding: 24px 16px;">
+                                        <div class="loading-spinner" style="width: 20px; height: 20px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="task-detail hidden" id="taskDetail-${paneId}">
+                    <!-- Task detail will be rendered here -->
+                </div>
+            </div>
+        `;
+
+        this.bindEvents(paneId);
+        await this.loadTasks(paneId);
+    }
+
+    bindEvents(paneId) {
+        // Create task button
+        const createBtn = document.querySelector(`#pane-${paneId}-content [data-action="create-task"]`);
+        if (createBtn) {
+            createBtn.addEventListener('click', () => {
+                this.app.showCreateTaskModal('single');
+            });
+        }
+
+        // Search input
+        const searchInput = document.getElementById(`taskSearch-${paneId}`);
+        if (searchInput) {
+            let timeout;
+            searchInput.addEventListener('input', () => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => this.loadTasks(paneId), 300);
+            });
+        }
+    }
+
+    async loadTasks(paneId) {
+        const searchInput = document.getElementById(`taskSearch-${paneId}`);
+        const globalUserFilter = document.getElementById('globalUserFilter');
+
+        try {
+            const options = {
+                agentName: globalUserFilter?.value || 'ubuntu',
+                pageSize: 100,
+                search: searchInput?.value || ''
+            };
+
+            const data = await NexusAPI.getTasks(options);
+            this.tasks[paneId] = data.tasks || [];
+            this.renderKanban(paneId);
+        } catch (error) {
+            console.error('Failed to load tasks:', error);
+            this.statusColumns.forEach(col => {
+                const container = document.getElementById(`items-${paneId}-${col.key}`);
+                if (container) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="padding: 16px;">
+                            <p style="font-size: 12px; color: var(--error);">Failed to load</p>
+                        </div>
+                    `;
+                }
+            });
+        }
+    }
+
+    renderKanban(paneId) {
+        const tasks = this.tasks[paneId] || [];
+        
+        // Group tasks by status
+        const grouped = {};
+        this.statusColumns.forEach(col => {
+            grouped[col.key] = [];
+        });
+
+        tasks.forEach(task => {
+            const status = (task.status || 'todo').toLowerCase();
+            if (grouped[status]) {
+                grouped[status].push(task);
+            } else {
+                grouped['todo'].push(task);
+            }
+        });
+
+        // Render each column
+        this.statusColumns.forEach(col => {
+            const items = grouped[col.key] || [];
+            const container = document.getElementById(`items-${paneId}-${col.key}`);
+            const countEl = document.getElementById(`count-${paneId}-${col.key}`);
+
+            if (countEl) countEl.textContent = items.length;
+
+            if (container) {
+                if (items.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state" style="padding: 24px 16px;">
+                            <p style="font-size: 12px; color: var(--text-muted);">No tasks</p>
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = items.map(task => this.renderTaskCard(task, paneId)).join('');
+                    
+                    // Bind click events
+                    container.querySelectorAll('.task-card').forEach(card => {
+                        card.addEventListener('click', () => {
+                            this.selectTask(paneId, card.dataset.taskId);
+                        });
+                    });
+                }
             }
         });
     }
 
-    switchView(view) {
-        this.currentView = view;
+    renderTaskCard(task, paneId) {
+        const priorityClass = task.priority === 'critical' ? 'critical' : 
+                             task.priority === 'serious' ? 'serious' : 'normal';
+        const timeStr = this.formatTime(task.updated_at || task.created_at);
+        const isSelected = this.selectedTask[paneId] === task.id;
 
-        // Stop any timers when switching views
-        if (this.taskAutoRefreshTimer) {
-            try { clearInterval(this.taskAutoRefreshTimer); } catch (e) {}
-            this.taskAutoRefreshTimer = null;
-        }
-        if (this.taskDetailRefreshTimer) {
-            try { clearInterval(this.taskDetailRefreshTimer); } catch (e) {}
-            this.taskDetailRefreshTimer = null;
-        }
-        if (this.sessionAutoRefreshTimer) {
-            try { clearInterval(this.sessionAutoRefreshTimer); } catch (e) {}
-            this.sessionAutoRefreshTimer = null;
-
-        this.deleteTarget = null;
-        }
-
-        if (view === 'task') {
-            this.chatView.classList.add('hidden');
-            this.taskView.classList.remove('hidden');
-
-            // Toggle buttons
-            this.viewTaskBtn.classList.add('bg-gray-900', 'text-white');
-            this.viewTaskBtn.classList.remove('text-gray-300');
-            this.viewChatBtn.classList.remove('bg-gray-900', 'text-white');
-            this.viewChatBtn.classList.add('text-gray-300');
-
-            // Controls
-            if (this.usernameFilterWrap) this.usernameFilterWrap.classList.add('hidden');
-            this.searchInput.placeholder = '搜索任务...';
-
-            // Load tasks
-            this.loadTasks({ preserveDetail: true });
-
-            // Auto refresh task board (so you don't need to manually refresh)
-            this.taskAutoRefreshTimer = setInterval(() => {
-                if (this.currentView !== 'task') return;
-                this.loadTasks({ preserveDetail: true, silent: true });
-            }, 2000);
-        } else {
-            // Leaving task view: stop any live task conversation stream
-            this.stopTaskConversationStream();
-            this.chatView.classList.remove('hidden');
-            this.taskView.classList.add('hidden');
-
-            this.viewChatBtn.classList.add('bg-gray-900', 'text-white');
-            this.viewChatBtn.classList.remove('text-gray-300');
-            this.viewTaskBtn.classList.remove('bg-gray-900', 'text-white');
-            this.viewTaskBtn.classList.add('text-gray-300');
-
-            if (this.usernameFilterWrap) this.usernameFilterWrap.classList.remove('hidden');
-            this.searchInput.placeholder = '搜索会话...';
-
-            // Load chat data
-            this.loadUsernames();
-            this.loadSessions({ silent: true });
-
-            // Auto refresh session list/status (so you don't need to refresh page)
-            this.sessionAutoRefreshTimer = setInterval(() => {
-                if (this.currentView !== 'chat') return;
-                this.loadSessions({ silent: true });
-            }, 2000);
-        }
-    }
-
-    async loadTasks(options = {}) {
-        if (this.currentView !== 'task') return;
-
-        try {
-            const search = this.searchInput.value;
-            const data = await NexusAPI.getTasks({
-                agentName: this.agentName,
-                search,
-                page: 1,
-                pageSize: 200,
-            });
-            this.tasks = data.tasks || [];
-            this.renderTaskBoard({ preserveDetail: !!options.preserveDetail });
-        } catch (error) {
-            if (!options.silent) {
-                this.showError(error.message);
-                if (this.taskBoard) {
-                    this.taskBoard.innerHTML = `
-                        <div class="text-center text-gray-500 py-8 w-full">
-                            <p>加载任务失败</p>
-                            <button onclick="app.loadTasks()" class="text-blue-400 hover:text-blue-300 mt-2">重试</button>
-                        </div>
-                    `;
-                }
-            }
-        }
-    }
-
-    renderTaskBoard() {
-        const columns = [
-            { key: 'todo', title: 'To Do', badge: 'bg-gray-500/20 text-gray-300' },
-            { key: 'doing', title: 'Doing', badge: 'bg-yellow-500/20 text-yellow-300' },
-            { key: 'done', title: 'Done', badge: 'bg-green-500/20 text-green-300' },
-            { key: 'failed', title: 'Failed', badge: 'bg-red-500/20 text-red-300' },
-            { key: 'cancelled', title: 'Cancelled', badge: 'bg-gray-600/20 text-gray-400' },
-            { key: 'archived', title: 'Archived', badge: 'bg-slate-500/20 text-slate-200' },
-        ];
-
-        const tasks = Array.isArray(this.tasks) ? this.tasks : [];
-
-        if (!this.taskBoard) return;
-
-        if (tasks.length === 0) {
-            this.taskBoard.innerHTML = `
-                <div class="text-center text-gray-500 py-8 w-full">
-                    <p>暂无任务</p>
+        return `
+            <div class="task-card ${isSelected ? 'selected' : ''}" data-task-id="${task.id}">
+                <div class="task-card-header">
+                    <span class="task-card-id">#${task.id.slice(0, 8)}</span>
+                    ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
                 </div>
-            `;
-            return;
-        }
-
-        const renderTaskCard = (task, { muted = false } = {}) => {
-            const project = task.project_name || task.project_id || '';
-            const workspace = task.workspace || '';
-            const provider = (task.provider || '').toLowerCase();
-            const updatedAt = task.updated_at || task.completed_at || task.started_at || task.created_at;
-            const updatedLabel = updatedAt ? this.formatTime(updatedAt) : '';
-
-            const taskId = String(task.id || '');
-            const statusVal = String(task.status || '').toLowerCase();
-
-            const isMulti = !!this.taskMultiSelectMode;
-            const isSelected = this.selectedTaskIds.has(taskId);
-            const cardClass = muted
-                ? 'bg-gray-900/40 border-gray-800 hover:bg-gray-900/60'
-                : 'bg-gray-800 border-gray-700 hover:bg-gray-750';
-
-            const clickHandler = isMulti
-                ? `app.toggleTaskSelectionFromCard('${this.escapeHtml(taskId)}')`
-                : `app.selectTask('${this.escapeHtml(taskId)}')`;
-
-            const selectBox = isMulti ? `
-                <input
-                    type="checkbox"
-                    class="mt-0.5 h-4 w-4 rounded border-gray-600 bg-gray-900 text-blue-500 focus:ring-blue-500"
-                    ${isSelected ? 'checked' : ''}
-                    onclick="event.stopPropagation();"
-                    onchange="app.toggleTaskSelection('${this.escapeHtml(taskId)}', this.checked)"
-                    aria-label="选择任务 ${this.escapeHtml(taskId)}"
-                />
-            ` : '';
-
-            const statusHint = isMulti ? `<span class="text-[10px] text-gray-600">${this.escapeHtml(statusVal)}</span>` : '';
-
-            return `
-                <div
-                    class="${cardClass} border rounded-lg p-3 cursor-pointer transition-colors"
-                    onclick="${clickHandler}"
-                    data-task-id="${this.escapeHtml(taskId)}"
-                >
-                    <div class="flex items-start justify-between">
-                        <div class="flex items-start space-x-2 min-w-0">
-                            ${selectBox}
-                            <div class="min-w-0">
-                                <div class="flex items-center space-x-2">
-                                    <div class="text-xs text-gray-500">#${this.escapeHtml(taskId)}</div>
-                                    ${statusHint}
-                                </div>
-                                <div class="text-sm font-medium mt-1 line-clamp-2">${this.escapeHtml(task.description || '')}</div>
-                            </div>
-                        </div>
-                        <div class="flex items-center space-x-2 ml-3">
-                            <div class="text-xs text-gray-500 whitespace-nowrap">${updatedLabel}</div>
-                            <button
-                                class="text-gray-500 hover:text-red-400 transition-colors p-1"
-                                onclick="event.stopPropagation(); app.showDeleteTaskModal('${this.escapeHtml(taskId)}')"
-                                title="删除任务"
-                            >
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-
-                    ${(project || workspace || provider) ? `
-                        <div class="mt-2 space-y-1">
-                            ${provider ? `<div class="text-[11px] text-emerald-300 truncate">provider: ${this.escapeHtml(provider)}</div>` : ''}
-                            ${project ? `<div class="text-xs text-purple-300 truncate">${this.escapeHtml(project)}</div>` : ''}
-                            ${workspace ? `<div class="text-xs text-gray-400 truncate">${this.escapeHtml(workspace)}</div>` : ''}
-                        </div>
+                <p class="task-card-title">${this.escapeHtml(task.description || 'No description')}</p>
+                <div class="task-card-meta">
+                    <span class="task-card-meta-item">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        ${timeStr}
+                    </span>
+                    ${task.provider ? `
+                        <span class="task-card-meta-item">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                            </svg>
+                            ${task.provider}
+                        </span>
                     ` : ''}
                 </div>
-            `;
-        };
-
-        const toDateKey = (ts) => {
-            try {
-                const d = new Date(ts);
-                if (isNaN(d.getTime())) return 'Unknown';
-                return d.toISOString().slice(0, 10);
-            } catch (e) {
-                return 'Unknown';
-            }
-        };
-
-        // Prune selection (tasks list updates frequently)
-        const currentIds = new Set(tasks.map(t => String(t && t.id)));
-        for (const id of Array.from(this.selectedTaskIds)) {
-            if (!currentIds.has(id)) this.selectedTaskIds.delete(id);
-        }
-
-        let html = '';
-        for (const col of columns) {
-            const colTasks = tasks.filter(t => (t.status || '').toLowerCase() === col.key);
-
-            html += `
-                <div class="w-72 flex-shrink-0">
-                    <div class="flex items-center justify-between mb-3 px-1">
-                        <div class="flex items-center space-x-2">
-                            <span class="text-sm font-semibold">${col.title}</span>
-                            <span class="px-2 py-0.5 text-xs rounded-full ${col.badge}">${colTasks.length}</span>
-                        </div>
-                    </div>
-
-                    <div class="space-y-3">
-            `;
-
-            if (colTasks.length === 0) {
-                html += `<div class="text-xs text-gray-600 px-2 py-3">空</div>`;
-            } else if (col.key === 'archived') {
-                // Group archived tasks by updated_at date (YYYY-MM-DD)
-                const groups = {};
-                for (const task of colTasks) {
-                    const updatedAt = task.updated_at || task.completed_at || task.started_at || task.created_at;
-                    const key = toDateKey(updatedAt);
-                    if (!groups[key]) groups[key] = [];
-                    groups[key].push(task);
-                }
-
-                const dateKeys = Object.keys(groups).sort((a, b) => String(b).localeCompare(String(a)));
-                dateKeys.forEach((dateKey, idx) => {
-                    const groupTasks = groups[dateKey] || [];
-                    const shouldOpen = this.archivedGroupOpenKeys.has(dateKey) || (this.archivedGroupOpenKeys.size === 0 && idx === 0);
-                    const openAttr = shouldOpen ? 'open' : '';
-
-                    html += `
-                        <details
-                            class="group rounded-lg border border-gray-800 bg-gray-950/40"
-                            ${openAttr}
-                            ontoggle="app.onArchivedGroupToggle('${dateKey}', this.open)"
-                        >
-                            <summary class="flex items-center justify-between cursor-pointer select-none px-3 py-2">
-                                <div class="flex items-center space-x-2">
-                                    <span class="text-xs font-semibold text-slate-200">${this.escapeHtml(dateKey)}</span>
-                                    <span class="text-[11px] px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-200">${groupTasks.length}</span>
-                                </div>
-                                <svg class="w-4 h-4 text-slate-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                                </svg>
-                            </summary>
-                            <div class="px-3 pb-3 space-y-2">
-                                ${groupTasks.map(t => renderTaskCard(t, { muted: true })).join('')}
-                            </div>
-                        </details>
-                    `;
-                });
-            } else {
-                for (const task of colTasks) {
-                    html += renderTaskCard(task);
-                }
-            }
-
-            html += `
-                    </div>
-                </div>
-            `;
-        }
-
-        this.taskBoard.innerHTML = html;
-        this.renderTaskToolbar();
-    }
-
-    onArchivedGroupToggle(dateKey, isOpen) {
-        const key = String(dateKey || 'Unknown');
-        if (isOpen) {
-            this.archivedGroupOpenKeys.add(key);
-        } else {
-            this.archivedGroupOpenKeys.delete(key);
-        }
-    }
-
-    toggleTaskMultiSelect() {
-        this.setTaskMultiSelectMode(!this.taskMultiSelectMode);
-    }
-
-    setTaskMultiSelectMode(enabled) {
-        this.taskMultiSelectMode = !!enabled;
-        if (!this.taskMultiSelectMode) {
-            this.selectedTaskIds.clear();
-        }
-        this.renderTaskBoard();
-    }
-
-    toggleTaskSelection(taskId, checked) {
-        const id = String(taskId || '');
-        if (!id) return;
-        if (checked) {
-            this.selectedTaskIds.add(id);
-        } else {
-            this.selectedTaskIds.delete(id);
-        }
-        this.renderTaskToolbar();
-    }
-
-    toggleTaskSelectionFromCard(taskId) {
-        const id = String(taskId || '');
-        if (!id) return;
-        if (this.selectedTaskIds.has(id)) {
-            this.selectedTaskIds.delete(id);
-        } else {
-            this.selectedTaskIds.add(id);
-        }
-        this.renderTaskBoard();
-    }
-
-    clearTaskSelection() {
-        this.selectedTaskIds.clear();
-        this.renderTaskBoard();
-    }
-
-    _getSelectedTasksByStatus(status) {
-        const st = String(status || '').toLowerCase();
-        const tasks = Array.isArray(this.tasks) ? this.tasks : [];
-        return tasks.filter(t => this.selectedTaskIds.has(String(t && t.id)) && String(t && t.status || '').toLowerCase() === st);
-    }
-
-    async archiveSelectedTasks() {
-        const items = this._getSelectedTasksByStatus('done');
-        const ids = items.map(t => String(t.id));
-        if (!ids.length) return;
-
-        try {
-            const res = await NexusAPI.bulkArchiveTasks(ids, { agentName: this.agentName });
-            this.showToast(res.message || `已归档 ${ids.length} 个任务`, 'success');
-            this.clearTaskSelection();
-            this.loadTasks({ preserveDetail: true, silent: true });
-        } catch (e) {
-            this.showError(e.message || String(e));
-        }
-    }
-
-    async unarchiveSelectedTasks() {
-        const items = this._getSelectedTasksByStatus('archived');
-        const ids = items.map(t => String(t.id));
-        if (!ids.length) return;
-
-        try {
-            const res = await NexusAPI.bulkUnarchiveTasks(ids, { agentName: this.agentName });
-            this.showToast(res.message || `已取消归档 ${ids.length} 个任务`, 'success');
-            this.clearTaskSelection();
-            this.loadTasks({ preserveDetail: true, silent: true });
-        } catch (e) {
-            this.showError(e.message || String(e));
-        }
-    }
-
-    async clearSelectedTasks() {
-        const items = this._getSelectedTasksByStatus('archived');
-        const ids = items.map(t => String(t.id));
-        if (!ids.length) return;
-
-        const ok = confirm(`确定要永久清理 ${ids.length} 个已归档任务吗？此操作不可撤销。`);
-        if (!ok) return;
-
-        try {
-            const res = await NexusAPI.bulkClearTasks(ids, { agentName: this.agentName });
-            this.showToast(res.message || `已清理 ${ids.length} 个任务`, 'success');
-            this.clearTaskSelection();
-            this.loadTasks({ preserveDetail: true, silent: true });
-        } catch (e) {
-            this.showError(e.message || String(e));
-        }
-    }
-
-    renderTaskToolbar() {
-        if (!this.taskToolbar) return;
-
-        const enabled = !!this.taskMultiSelectMode;
-        const selectedCount = this.selectedTaskIds.size;
-        const doneCount = this._getSelectedTasksByStatus('done').length;
-        const archivedCount = this._getSelectedTasksByStatus('archived').length;
-
-        const btnBase = 'px-3 py-1.5 text-xs rounded-lg border transition-colors';
-        const primary = 'bg-blue-600 hover:bg-blue-700 border-blue-500/30 text-white';
-        const ghost = 'bg-gray-900/40 hover:bg-gray-900/60 border-gray-700 text-gray-200';
-        const danger = 'bg-red-600 hover:bg-red-700 border-red-500/30 text-white';
-        const success = 'bg-emerald-600 hover:bg-emerald-700 border-emerald-500/30 text-white';
-        const disabled = 'opacity-40 cursor-not-allowed';
-
-        const canArchive = enabled && doneCount > 0;
-        const canUnarchive = enabled && archivedCount > 0;
-        const canClear = enabled && archivedCount > 0;
-
-        this.taskToolbar.innerHTML = `
-            <div class="px-4 py-3 flex items-center justify-between">
-                <div class="flex items-center space-x-3">
-                    <button
-                        class="${btnBase} ${success}"
-                        onclick="app.showCreateTaskModal()"
-                        title="新建任务"
-                    >
-                        新建
-                    </button>
-                    <button
-                        class="${btnBase} ${enabled ? primary : ghost}"
-                        onclick="app.toggleTaskMultiSelect()"
-                        title="多选"
-                    >
-                        ${enabled ? '退出多选' : '多选'}
-                    </button>
-                    ${enabled
-                        ? `<div class="text-xs text-gray-400">已选 <span class=\"text-gray-200 font-semibold\">${selectedCount}</span>（Done: ${doneCount} / Archived: ${archivedCount}）</div>`
-                        : `<div class="text-xs text-gray-500">开启多选后可批量归档 / 取消归档 / 清理</div>`
-                    }
-                </div>
-
-                ${enabled ? `
-                    <div class="flex items-center space-x-2">
-                        <button class="${btnBase} ${ghost} ${canArchive ? '' : disabled}" onclick="app.archiveSelectedTasks()" ${canArchive ? '' : 'disabled'}>归档</button>
-                        <button class="${btnBase} ${ghost} ${canUnarchive ? '' : disabled}" onclick="app.unarchiveSelectedTasks()" ${canUnarchive ? '' : 'disabled'}>取消归档</button>
-                        <button class="${btnBase} ${danger} ${canClear ? '' : disabled}" onclick="app.clearSelectedTasks()" ${canClear ? '' : 'disabled'}>清理</button>
-                        <button class="${btnBase} ${ghost}" onclick="app.clearTaskSelection()">清空选择</button>
+                ${task.depends_on && task.depends_on.length > 0 ? `
+                    <div class="task-card-deps">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 12px; height: 12px; color: var(--text-muted);">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                        </svg>
+                        ${task.depends_on.map(dep => `<span class="task-card-dep">${dep.slice(0, 8)}</span>`).join('')}
                     </div>
                 ` : ''}
             </div>
         `;
     }
 
-    async selectTask(taskId) {
-        this.currentTaskId = taskId;
-        if (!this.taskDetail) return;
+    async selectTask(paneId, taskId) {
+        this.selectedTask[paneId] = taskId;
 
-        this.stopTaskConversationStream();
-
-        this.taskDetail.classList.remove('hidden');
-        this.taskDetail.innerHTML = `
-            <div class="text-gray-500">加载中...</div>
-        `;
-
-        try {
-            const task = await NexusAPI.getTask(taskId, { agentName: this.agentName });
-
-            // Use task.session_id (format: {source_session_id}_{task_id} or task_{task_id} for legacy)
-            const sessionId = task.session_id || `task_${taskId}`;
-            this.currentTaskSessionId = sessionId;
-
-            let session = null;
-            let messagesData = { messages: [], tool_calls: [] };
-
-            try {
-                session = await NexusAPI.getSession(sessionId);
-                messagesData = await NexusAPI.getSessionMessages(sessionId);
-            } catch (e) {
-                // Session may not be archived yet; keep it empty and let UI show placeholder.
-                session = null;
-                messagesData = { messages: [], tool_calls: [] };
-            }
-
-            this.currentTaskSession = session;
-            this.currentTaskSessionMessagesData = messagesData;
-
-            this.renderTaskDetail(task, { session, messagesData });
-            this.startTaskConversationStream(taskId);
-
-            // Poll task metadata while running (status/updated_at), so UI updates without refresh
-            const st = String(task.status || '').toLowerCase();
-            if (st === 'todo' || st === 'doing') {
-                this.taskDetailRefreshTimer = setInterval(async () => {
-                    if (this.currentView !== 'task') return;
-                    if (this.currentTaskId !== taskId) return;
-
-                    try {
-                        const latest = await NexusAPI.getTask(taskId, { agentName: this.agentName });
-                        const latestStatus = String(latest.status || '').toLowerCase();
-                        const updatedAt = latest.updated_at || latest.completed_at || latest.started_at || latest.created_at;
-                        const updatedLabel = updatedAt ? this.formatTime(updatedAt) : 'N/A';
-
-                        const statusEl = document.getElementById('taskDetailStatus');
-                        if (statusEl) statusEl.textContent = `状态：${latestStatus}`;
-                        const updatedEl = document.getElementById('taskDetailUpdatedAt');
-                        if (updatedEl) updatedEl.textContent = `更新时间：${updatedLabel}`;
-
-                        if (latestStatus === 'done' || latestStatus === 'failed' || latestStatus === 'cancelled' || latestStatus === 'archived') {
-                            if (this.taskDetailRefreshTimer) {
-                                try { clearInterval(this.taskDetailRefreshTimer); } catch (e) {}
-                                this.taskDetailRefreshTimer = null;
-                            }
-                        }
-                    } catch (e) {
-                        // ignore transient errors
-                    }
-                }, 1500);
-            }
-        } catch (error) {
-            this.taskDetail.innerHTML = `
-                <div class="text-red-400 text-sm">加载失败：${this.escapeHtml(error.message)}</div>
-            `;
-        }
-    }
-
-    renderTaskDetail(task, agui) {
-        const project = task.project_name || task.project_id || '';
-        const workspace = task.workspace || '';
-        const provider = (task.provider || '').toLowerCase();
-        const status = (task.status || '').toLowerCase();
-
-        const updatedAt = task.updated_at || task.completed_at || task.started_at || task.created_at;
-        const updatedLabel = updatedAt ? this.formatTime(updatedAt) : 'N/A';
-
-        const session = (agui && agui.session) ? agui.session : this.currentTaskSession;
-        const messagesData = (agui && agui.messagesData) ? agui.messagesData : this.currentTaskSessionMessagesData;
-
-        let html = `
-            <div class="flex items-center justify-between mb-4">
-                <div>
-                    <div class="text-xs text-gray-500">Task</div>
-                    <div class="text-lg font-semibold">#${this.escapeHtml(task.id)}</div>
-                </div>
-                <div class="flex items-center space-x-2">
-                    <button
-                        class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 rounded-lg transition-colors"
-                        onclick="app.showDeleteTaskModal('${this.escapeHtml(task.id)}')"
-                        title="删除任务"
-                    >
-                        删除
-                    </button>
-                    <button
-                        class="text-gray-400 hover:text-white text-sm"
-                        onclick="app.closeTaskDetail()"
-                        title="关闭"
-                    >
-                        关闭
-                    </button>
-                </div>
-            </div>
-
-            <div class="space-y-2 mb-4">
-                <div class="text-sm">${this.escapeHtml(task.description || '')}</div>
-                <div id="taskDetailStatus" class="text-xs text-gray-500">状态：${this.escapeHtml(status)}</div>
-                <div id="taskDetailUpdatedAt" class="text-xs text-gray-500">更新时间：${this.escapeHtml(updatedLabel)}</div>
-                ${provider ? `<div class="text-xs text-emerald-300">provider：${this.escapeHtml(provider)}</div>` : ''}
-                ${project ? `<div class="text-xs text-purple-300">项目：${this.escapeHtml(project)}</div>` : ''}
-                ${workspace ? `<div class="text-xs text-gray-400">工作目录：<code class="bg-gray-800 px-1 py-0.5 rounded">${this.escapeHtml(workspace)}</code></div>` : ''}
-                ${task.error_message ? `<div class="text-xs text-red-300">错误：<pre class="mt-1 text-xs bg-gray-900 p-2 rounded overflow-x-auto">${this.escapeHtml(task.error_message)}</pre></div>` : ''}
-            </div>
-
-            <div class="border-t border-gray-700 pt-4">
-                <div class="flex items-center justify-between mb-3">
-                    <div class="text-sm font-medium">对话记录</div>
-                    <div id="taskConversationStatus" class="text-xs text-gray-500">实时更新中...</div>
-                </div>
-                <div id="taskConversationMessages" class="space-y-3">
-                    ${this.renderTaskConversationFromSession(session, messagesData, status)}
-                </div>
-            </div>
-        `;
-
-        this.taskDetail.innerHTML = html;
-    }
-
-    closeTaskDetail() {
-        if (!this.taskDetail) return;
-        this.stopTaskConversationStream();
-        this.taskDetail.classList.add('hidden');
-        this.taskDetail.innerHTML = '';
-        this.currentTaskId = null;
-    }
-
-    stopTaskConversationStream() {
-        if (this.taskConversationStream) {
-            try { this.taskConversationStream.close(); } catch (e) {}
-            this.taskConversationStream = null;
-        }
-        if (this.taskDetailRefreshTimer) {
-            try { clearInterval(this.taskDetailRefreshTimer); } catch (e) {}
-            this.taskDetailRefreshTimer = null;
-        }
-        if (this.taskConversationRefreshTimeout) {
-            try { clearTimeout(this.taskConversationRefreshTimeout); } catch (e) {}
-            this.taskConversationRefreshTimeout = null;
-        }
-
-    }
-
-    scheduleTaskConversationRefresh() {
-        if (this.taskConversationRefreshTimeout) return;
-        this.taskConversationRefreshTimeout = setTimeout(async () => {
-            this.taskConversationRefreshTimeout = null;
-            await this.refreshTaskConversationFromSession();
-        }, 250);
-    }
-
-    async refreshTaskConversationFromSession() {
-        if (this.currentView !== 'task') return;
-        if (!this.currentTaskId) return;
-        if (!this.currentTaskSessionId) return;
-
-        try {
-            const [session, messagesData] = await Promise.all([
-                NexusAPI.getSession(this.currentTaskSessionId),
-                NexusAPI.getSessionMessages(this.currentTaskSessionId),
-            ]);
-
-            this.currentTaskSession = session;
-            this.currentTaskSessionMessagesData = messagesData;
-
-            const box = document.getElementById('taskConversationMessages');
-            if (box) {
-                box.innerHTML = this.renderTaskConversationFromSession(session, messagesData);
-            }
-        } catch (e) {
-            // ignore transient errors
-        }
-    }
-
-    startTaskConversationStream(taskId) {
-        this.stopTaskConversationStream();
-        if (!taskId) return;
-
-        const es = NexusAPI.streamTaskMessages(taskId, {
-            agentName: this.agentName,
-            tail: 200,
-            pollIntervalMs: 600,
+        // Update selection state
+        const board = document.getElementById(`kanbanBoard-${paneId}`);
+        board?.querySelectorAll('.task-card').forEach(card => {
+            card.classList.toggle('selected', card.dataset.taskId === taskId);
         });
-        this.taskConversationStream = es;
 
-        es.onmessage = (ev) => {
-            // 只更新当前打开的任务
-            if (this.currentTaskId !== taskId) return;
-
-            let evt;
-            try {
-                evt = JSON.parse(ev.data);
-            } catch (e) {
-                return;
-            }
-            if (!evt || !evt.type) return;
-
-            // Keep Task conversation consistent with Chat: refresh from the same session storage.
-            // Debounce to avoid too many fetches.
-            this.scheduleTaskConversationRefresh();
-
-            const statusEl = document.getElementById('taskConversationStatus');
-            if (statusEl && statusEl.textContent !== '已完成（仍会自动保持连接）') {
-                statusEl.textContent = '实时更新中...';
-            }
-
-            if (evt.type === 'RUN_FINISHED') {
-                if (statusEl) statusEl.textContent = '已完成（仍会自动保持连接）';
-            }
-        };
-
-        es.onerror = () => {
-            if (this.currentTaskId !== taskId) return;
-            const statusEl = document.getElementById('taskConversationStatus');
-            if (statusEl) {
-                statusEl.textContent = '实时连接已断开（将自动重连）';
-            }
-            // EventSource 会自动重连；不手动 close
-        };
+        // Show detail panel
+        await this.showTaskDetail(paneId, taskId);
     }
 
-    renderTaskConversationFromSession(session, messagesData, status = '') {
-        const st = (status || '').toLowerCase();
-        const data = messagesData || {};
-        const messages = Array.isArray(data.messages) ? data.messages : [];
-        const toolCalls = Array.isArray(data.tool_calls) ? data.tool_calls : [];
+    async showTaskDetail(paneId, taskId) {
+        const detailPanel = document.getElementById(`taskDetail-${paneId}`);
+        if (!detailPanel) return;
 
-        if (!messages || messages.length === 0) {
-            if (st === 'doing' || st === 'todo') {
-                return `<div class="text-xs text-gray-500">等待对话记录生成...</div>`;
-            }
-            return `<div class="text-xs text-gray-500">暂无对话记录</div>`;
-        }
-
-        // Tool calls map
-        const toolCallsMap = {};
-        for (const tc of toolCalls) {
-            if (tc && tc.id) toolCallsMap[tc.id] = tc;
-        }
-
-        const username = (session && session.username) ? session.username : '用户';
-        const agentName = (session && session.agent_name) ? session.agent_name : '助手';
-
-        let html = '';
-        for (const msg of messages) {
-            const isUser = msg.role === 'user';
-            const alignClass = isUser ? 'ml-auto' : 'mr-auto';
-            const bgClass = isUser ? 'bg-blue-600' : 'bg-gray-700';
-            const maxWidth = isUser ? 'max-w-[80%]' : 'max-w-[90%]';
-            const roleLabel = isUser ? username : agentName;
-            const roleLabelClass = isUser ? 'text-blue-200' : 'text-green-400';
-
-            html += `
-                <div class="${alignClass} ${maxWidth}">
-                    <div class="${bgClass} rounded-lg p-4">
-                        <div class="flex items-center space-x-2 mb-2">
-                            <span class="text-xs font-medium ${roleLabelClass}">
-                                ${this.escapeHtml(roleLabel)}
-                            </span>
-                            <span class="text-xs text-gray-500">${this.formatTime(msg.timestamp)}</span>
-                        </div>
-                        <div class="message-content">
-            `;
-
-            if (msg.content_segments && msg.content_segments.length > 0) {
-                const sortedSegments = [...msg.content_segments].sort((a, b) => a.sequence - b.sequence);
-                for (const seg of sortedSegments) {
-                    if (seg.type === 'text' && seg.content) {
-                        html += `<div class="prose prose-invert prose-sm max-w-none">${this.renderMarkdown(seg.content)}</div>`;
-                    } else if (seg.type === 'tool_call' && seg.tool_call_id) {
-                        const tc = toolCallsMap[seg.tool_call_id];
-                        if (tc) {
-                            html += `<div class="my-2">${this.renderToolCall(tc)}</div>`;
-                        }
-                    }
-                }
-            } else {
-                html += `<div class="prose prose-invert prose-sm max-w-none">${this.renderMarkdown(msg.content)}</div>`;
-
-                if (msg.tool_call_ids && msg.tool_call_ids.length > 0) {
-                    html += '<div class="mt-3 space-y-2">';
-                    for (const tcId of msg.tool_call_ids) {
-                        const tc = toolCallsMap[tcId];
-                        if (tc) {
-                            html += this.renderToolCall(tc);
-                        }
-                    }
-                    html += '</div>';
-                }
-            }
-
-            html += '</div></div></div>';
-        }
-
-        return html;
-    }
-
-    renderTaskConversationMessages(messages, status = '') {
-        const items = Array.isArray(messages) ? messages : [];
-        const st = (status || '').toLowerCase();
-
-        if (!items || items.length === 0) {
-            if (st === 'doing' || st === 'todo') {
-                return `<div class="text-xs text-gray-500">等待对话记录生成...</div>`;
-            }
-            return `<div class="text-xs text-gray-500">暂无对话记录</div>`;
-        }
-
-        let html = '';
-        for (const msg of items) {
-            const role = (msg.role || 'assistant').toLowerCase();
-            const isUser = role === 'user';
-            const alignClass = isUser ? 'ml-auto' : 'mr-auto';
-            const bgClass = isUser ? 'bg-blue-600' : 'bg-gray-700';
-            const maxWidth = isUser ? 'max-w-[80%]' : 'max-w-[90%]';
-            const roleLabel = isUser ? '用户' : '助手';
-            const roleLabelClass = isUser ? 'text-blue-200' : 'text-green-400';
-
-            html += `
-                <div class="${alignClass} ${maxWidth}">
-                    <div class="${bgClass} rounded-lg p-3">
-                        <div class="flex items-center space-x-2 mb-1">
-                            <span class="text-xs font-medium ${roleLabelClass}">${roleLabel}</span>
-                            ${msg.createdAt ? `<span class="text-xs text-gray-500">${this.escapeHtml(this.formatTime(msg.createdAt))}</span>` : ''}
-                        </div>
-                        <div class="prose prose-invert prose-sm max-w-none">${this.renderMarkdown(msg.content || '')}</div>
-                    </div>
-                </div>
-            `;
-        }
-
-        return html;
-    }
-
-    renderToolCall(tc) {
-        const statusClass = tc.status === 'completed' ? 'text-green-400' : 
-                           tc.status === 'failed' ? 'text-red-400' : 'text-yellow-400';
-        const statusIcon = tc.status === 'completed' ? '✓' : 
-                          tc.status === 'failed' ? '✗' : '⋯';
-        const argsText = tc.args_string || JSON.stringify(tc.args, null, 2) || '';
-        const resultText = tc.result ? (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
-        const resultHidden = tc.result ? '' : 'hidden';
-        
-        return `
-            <details class="bg-gray-800 rounded-lg overflow-hidden">
-                <summary class="px-3 py-2 cursor-pointer hover:bg-gray-750 flex items-center justify-between">
-                    <div class="flex items-center space-x-2">
-                        <span class="${statusClass}" data-role="status">${statusIcon}</span>
-                        <span class="text-sm font-mono">${this.escapeHtml(tc.tool_name)}</span>
-                    </div>
-                    <span class="text-xs text-gray-500" data-role="duration">${tc.end_time ? ((tc.end_time - tc.start_time) / 1000).toFixed(1) + 's' : '...'}</span>
-                </summary>
-                <div class="px-3 py-2 border-t border-gray-700">
-                    <div class="mb-2">
-                        <p class="text-xs text-gray-500 mb-1">参数:</p>
-                        <pre class="text-xs bg-gray-900 p-2 rounded overflow-x-auto" data-role="args">${this.escapeHtml(argsText)}</pre>
-                    </div>
-                    <div class="${resultHidden}" data-role="result-wrap">
-                        <p class="text-xs text-gray-500 mb-1">结果:</p>
-                        <pre class="text-xs bg-gray-900 p-2 rounded overflow-x-auto max-h-40" data-role="result">${this.escapeHtml(resultText)}</pre>
-                    </div>
-                    ${tc.error ? `
-                        <div>
-                            <p class="text-xs text-red-400 mb-1">错误:</p>
-                            <pre class="text-xs bg-gray-900 p-2 rounded overflow-x-auto text-red-300">${this.escapeHtml(tc.error)}</pre>
-                        </div>
-                    ` : ''}
-                </div>
-            </details>
+        detailPanel.classList.remove('hidden');
+        detailPanel.innerHTML = `
+            <div class="empty-state">
+                <div class="loading-spinner"></div>
+            </div>
         `;
-    }
-
-    renderMarkdown(content) {
-        if (!content) return '';
-        
-        // Simple markdown rendering (basic support)
-        let html = this.escapeHtml(content);
-        
-        // Code blocks
-        html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-            return `<pre class="bg-gray-900 p-3 rounded-lg overflow-x-auto"><code class="language-${lang}">${code.trim()}</code></pre>`;
-        });
-        
-        // Inline code
-        html = html.replace(/`([^`]+)`/g, '<code class="bg-gray-800 px-1 py-0.5 rounded text-sm">$1</code>');
-        
-        // Bold
-        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        
-        // Italic
-        html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-        
-        // Line breaks
-        html = html.replace(/\n/g, '<br>');
-        
-        return html;
-    }
-
-    showDeleteModal(id, type = 'session') {
-        this.deleteTarget = { type, id };
-
-        if (this.deleteModalMessage) {
-            if (type === 'task') {
-                this.deleteModalMessage.textContent = '确定要删除这个任务吗？此操作不可撤销。';
-            } else {
-                this.deleteModalMessage.textContent = '确定要删除这个会话吗？此操作不可撤销。';
-            }
-        }
-
-        this.deleteModal.classList.remove('hidden');
-        this.deleteModal.classList.add('flex');
-    }
-
-    showDeleteTaskModal(taskId) {
-        this.showDeleteModal(taskId, 'task');
-    }
-
-    hideDeleteModal() {
-        this.deleteModal.classList.add('hidden');
-        this.deleteModal.classList.remove('flex');
-        this.deleteTarget = null;
-
-        if (this.deleteModalMessage) {
-            this.deleteModalMessage.textContent = '确定要删除这个会话吗？此操作不可撤销。';
-        }
-    }
-
-    showCreateTaskModal() {
-        if (!this.createTaskModal) return;
-
-        // Reset fields
-        const providerEl = document.getElementById('createTaskProvider');
-        const descEl = document.getElementById('createTaskDescription');
-        const wsEl = document.getElementById('createTaskWorkspace');
-        const agentEl = document.getElementById('createTaskAgent');
-
-        if (providerEl) providerEl.value = 'claude';
-        if (descEl) descEl.value = '';
-        if (wsEl) wsEl.value = '';
-        if (agentEl) agentEl.value = this.agentName || '';
-
-        this.createTaskModal.classList.remove('hidden');
-        this.createTaskModal.classList.add('flex');
-
-        // focus description
-        try { if (descEl) descEl.focus(); } catch (e) {}
-    }
-
-    hideCreateTaskModal() {
-        if (!this.createTaskModal) return;
-        this.createTaskModal.classList.add('hidden');
-        this.createTaskModal.classList.remove('flex');
-    }
-
-    async submitCreateTask() {
-        try {
-            const provider = (document.getElementById('createTaskProvider')?.value || 'claude').trim();
-            const description = (document.getElementById('createTaskDescription')?.value || '').trim();
-            const workspace = (document.getElementById('createTaskWorkspace')?.value || '').trim();
-            const agent = (document.getElementById('createTaskAgent')?.value || '').trim();
-
-            if (!description) {
-                this.showToast('请填写任务描述', 'error');
-                return;
-            }
-
-            const payload = {
-                provider,
-                description,
-                workspace: workspace || undefined,
-                agent: agent || undefined,
-            };
-
-            const created = await NexusAPI.createTask(payload, { agentName: this.agentName });
-            this.hideCreateTaskModal();
-            this.showToast('任务已创建', 'success');
-
-            // Refresh task board and auto-select newly created task
-            await this.loadTasks({ preserveDetail: false, silent: true });
-            if (created && created.id) {
-                this.selectTask(String(created.id));
-            }
-        } catch (e) {
-            this.showError(e.message || String(e));
-        }
-    }
-
-    async confirmDelete() {
-        if (!this.deleteTarget) return;
-
-        const { type, id } = this.deleteTarget;
 
         try {
-            if (type === 'task') {
-                await NexusAPI.deleteTask(id, { agentName: this.agentName });
-
-                // Close task detail if needed
-                if (this.currentTaskId === id) {
-                    this.closeTaskDetail();
-                }
-
-                // If chat is currently showing the task session, clear it too
-                const sid = `task_${id}`;
-                if (this.currentSessionId === sid) {
-                    this.currentSessionId = null;
-                    this.sessionDetail.innerHTML = `
-                        <div class="flex items-center justify-center h-full text-gray-500">
-                            <div class="text-center">
-                                <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
-                                </svg>
-                                <p>选择一个会话查看详情</p>
-                            </div>
-                        </div>
-                    `;
-                }
-
-                // Refresh both sides
-                this.loadTasks({ preserveDetail: true, silent: true });
-                this.loadSessions({ silent: true });
-            } else {
-                await NexusAPI.deleteSession(id);
-
-                // Clear detail if deleted session was selected
-                if (this.currentSessionId === id) {
-                    this.currentSessionId = null;
-                    this.sessionDetail.innerHTML = `
-                        <div class="flex items-center justify-center h-full text-gray-500">
-                            <div class="text-center">
-                                <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
-                                </svg>
-                                <p>选择一个会话查看详情</p>
-                            </div>
-                        </div>
-                    `;
-                }
-
-                // Keep UI consistent: session delete might also delete a task (when id starts with task_)
-                this.loadSessions({ silent: true });
-                this.loadTasks({ preserveDetail: true, silent: true });
-            }
-
-            this.hideDeleteModal();
+            const globalUserFilter = document.getElementById('globalUserFilter');
+            const task = await NexusAPI.getTask(taskId, { 
+                agentName: globalUserFilter?.value || 'ubuntu' 
+            });
+            this.renderTaskDetail(paneId, task);
         } catch (error) {
-            this.showError(error.message);
+            console.error('Failed to load task:', error);
+            detailPanel.innerHTML = `
+                <div class="empty-state">
+                    <p style="color: var(--error);">Failed to load task details</p>
+                </div>
+            `;
         }
     }
 
-    showToast(message, variant = 'error') {
-        const toast = this.errorToast;
-        const msg = this.errorMessage;
-        if (!toast || !msg) return;
+    renderTaskDetail(paneId, task) {
+        const detailPanel = document.getElementById(`taskDetail-${paneId}`);
+        if (!detailPanel) return;
 
-        msg.textContent = message;
+        const statusClass = task.status?.toLowerCase() || 'todo';
 
-        toast.classList.remove('hidden');
-        toast.classList.remove('bg-red-600', 'bg-green-600', 'bg-yellow-600', 'bg-slate-700');
+        detailPanel.innerHTML = `
+            <div class="task-detail-header">
+                <span class="task-detail-title">#${task.id.slice(0, 8)}</span>
+                <button class="task-detail-close" data-action="close-detail">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="task-detail-content">
+                <div class="task-detail-section">
+                    <div class="task-detail-section-title">Status</div>
+                    <div class="task-detail-section-content">
+                        <span class="status-badge ${statusClass}">
+                            <span class="status-dot"></span>
+                            ${task.status || 'TODO'}
+                        </span>
+                    </div>
+                </div>
 
-        if (variant === 'success') {
-            toast.classList.add('bg-green-600');
-        } else if (variant === 'warning') {
-            toast.classList.add('bg-yellow-600');
-        } else {
-            toast.classList.add('bg-red-600');
+                <div class="task-detail-section">
+                    <div class="task-detail-section-title">Description</div>
+                    <div class="task-detail-section-content">${this.escapeHtml(task.description || 'No description')}</div>
+                </div>
+
+                ${task.workspace ? `
+                    <div class="task-detail-section">
+                        <div class="task-detail-section-title">Workspace</div>
+                        <div class="task-detail-section-content" style="font-family: var(--font-mono); font-size: 12px;">${this.escapeHtml(task.workspace)}</div>
+                    </div>
+                ` : ''}
+
+                ${task.provider ? `
+                    <div class="task-detail-section">
+                        <div class="task-detail-section-title">Provider</div>
+                        <div class="task-detail-section-content">${this.escapeHtml(task.provider)}</div>
+                    </div>
+                ` : ''}
+
+                ${task.depends_on && task.depends_on.length > 0 ? `
+                    <div class="task-detail-section">
+                        <div class="task-detail-section-title">Dependencies</div>
+                        <div class="task-detail-section-content">
+                            ${task.depends_on.map(dep => `<span class="task-card-dep" style="margin-right: 4px;">${dep}</span>`).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${task.error_message ? `
+                    <div class="task-detail-section">
+                        <div class="task-detail-section-title">Error</div>
+                        <div class="task-detail-section-content" style="color: var(--error);">${this.escapeHtml(task.error_message)}</div>
+                    </div>
+                ` : ''}
+
+                <div class="task-detail-section">
+                    <div class="task-detail-section-title">Actions</div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color: var(--error);">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                            </svg>
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Bind events
+        const closeBtn = detailPanel.querySelector('[data-action="close-detail"]');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => {
+                detailPanel.classList.add('hidden');
+                this.selectedTask[paneId] = null;
+                
+                // Clear selection
+                const board = document.getElementById(`kanbanBoard-${paneId}`);
+                board?.querySelectorAll('.task-card').forEach(card => {
+                    card.classList.remove('selected');
+                });
+            });
         }
 
-        setTimeout(() => {
-            toast.classList.add('hidden');
-        }, 5000);
-    }
-
-    showError(message) {
-        this.showToast(message, 'error');
-    }
-
-    getStatusClass(status) {
-        switch (status) {
-            case 'running': return 'bg-yellow-500/20 text-yellow-400';
-            case 'completed': return 'bg-green-500/20 text-green-400';
-            case 'error': return 'bg-red-500/20 text-red-400';
-            default: return 'bg-gray-500/20 text-gray-400';
+        const deleteBtn = detailPanel.querySelector('[data-action="delete-task"]');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', () => {
+                this.app.showDeleteModal('task', task.id, async () => {
+                    await this.deleteTask(paneId, task.id);
+                });
+            });
         }
     }
 
-    getStatusLabel(status) {
-        switch (status) {
-            case 'running': return '运行中';
-            case 'completed': return '已完成';
-            case 'error': return '错误';
-            default: return '空闲';
+    async deleteTask(paneId, taskId) {
+        try {
+            const globalUserFilter = document.getElementById('globalUserFilter');
+            await NexusAPI.deleteTask(taskId, { 
+                agentName: globalUserFilter?.value || 'ubuntu' 
+            });
+            this.app.showToast('Task deleted', 'success');
+            this.selectedTask[paneId] = null;
+            
+            const detailPanel = document.getElementById(`taskDetail-${paneId}`);
+            if (detailPanel) detailPanel.classList.add('hidden');
+
+            await this.loadTasks(paneId);
+        } catch (error) {
+            console.error('Failed to delete task:', error);
+            this.app.showToast('Failed to delete task', 'error');
         }
     }
 
     formatTime(timestamp) {
+        if (!timestamp) return '';
         const date = new Date(timestamp);
         const now = new Date();
         const diff = now - date;
-        
-        if (diff < 60000) {
-            return '刚刚';
-        } else if (diff < 3600000) {
-            return `${Math.floor(diff / 60000)} 分钟前`;
-        } else if (diff < 86400000) {
-            return `${Math.floor(diff / 3600000)} 小时前`;
-        } else if (diff < 604800000) {
-            return `${Math.floor(diff / 86400000)} 天前`;
-        } else {
-            return date.toLocaleDateString('zh-CN');
-        }
+
+        if (diff < 60000) return 'Just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+        return date.toLocaleDateString();
     }
 
-    escapeHtml(text) {
-        if (!text) return '';
+    escapeHtml(str) {
+        if (!str) return '';
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = str;
         return div.innerHTML;
-    }
-
-    _randomId(prefix) {
-        return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    }
-
-    async waitForSessionAssistant(sessionId, userMessageId, maxRetries = 6, delayMs = 500) {
-        for (let i = 0; i < maxRetries; i++) {
-            try {
-                const data = await NexusAPI.getSessionMessages(sessionId);
-                const messages = (data && data.messages) ? data.messages : [];
-                const userIdx = messages.findIndex((msg) => msg.id === userMessageId);
-                if (userIdx >= 0) {
-                    const followup = messages.slice(userIdx + 1);
-                    const hasAssistant = followup.some(
-                        (msg) => msg.role === 'assistant' && msg.status === 'complete' && msg.content
-                    );
-                    if (hasAssistant) {
-                        return true;
-                    }
-                }
-            } catch (e) {
-                // ignore and retry
-            }
-
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-        }
-
-        return false;
-    }
-
-    async sendFollowupMessage(sessionId, prompt, { onDelta, onEvent } = {}) {
-        const userMessageId = this._randomId('user');
-        const body = {
-            threadId: sessionId,
-            runId: this._randomId('run'),
-            messages: [
-                {
-                    id: userMessageId,
-                    role: 'user',
-                    content: prompt,
-                }
-            ],
-            tools: [],
-            context: [],
-            forwardedProps: {
-                provider: this.currentSessionProvider || undefined,
-            },
-            provider: this.currentSessionProvider || undefined,
-            state: {},
-        };
-
-        const response = await fetch('/chat/stream/ubuntu', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream',
-            },
-            body: JSON.stringify(body),
-        });
-
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(text || `HTTP ${response.status}`);
-        }
-
-        if (!response.body) {
-            throw new Error('Streaming not supported in this browser');
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        try {
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-
-                buffer += decoder.decode(value, { stream: true });
-
-                // Parse SSE blocks separated by blank line
-                while (true) {
-                    const idx = buffer.indexOf('\n\n');
-                    if (idx === -1) break;
-
-                    const chunk = buffer.slice(0, idx);
-                    buffer = buffer.slice(idx + 2);
-
-                    const lines = chunk.split('\n');
-                    for (const line of lines) {
-                        if (!line.startsWith('data:')) continue;
-                        const payload = line.replace(/^data:\s*/, '').trim();
-                        if (!payload) continue;
-
-                        let evt;
-                        try {
-                            evt = JSON.parse(payload);
-                        } catch (e) {
-                            continue;
-                        }
-
-                        if (evt.type === 'TEXT_MESSAGE_CONTENT' && typeof evt.delta === 'string') {
-                            if (onDelta) onDelta(evt.delta);
-                        } else if (evt.type === 'TOOL_CALL_START' || evt.type === 'TOOL_CALL_ARGS' || evt.type === 'TOOL_CALL_END' || evt.type === 'TOOL_CALL_RESULT') {
-                            if (onEvent) onEvent(evt);
-                        }
-                    }
-                }
-            }
-        } finally {
-            try { reader.releaseLock(); } catch (e) {}
-        }
-
-        return { userMessageId };
     }
 }
 
-// Initialize app
-const app = new NexusApp();
-// Expose to inline handlers (and avoid collision with <div id="app"> global)
-window.app = app;
+// ============================================================
+// Main Application
+// ============================================================
+class NexusApp {
+    constructor() {
+        this.themeManager = new ThemeManager();
+        this.chatView = new ChatView(this);
+        this.taskView = new TaskView(this);
+        this.tabManager = new TabManager(this);
+        this.layoutManager = new LayoutManager(this);
+
+        this.deleteCallback = null;
+        this.renameTabCallback = null;
+        this.activeModalTab = 'single';
+
+        this.init();
+    }
+
+    init() {
+        // Initialize layout
+        this.layoutManager.setMode(this.layoutManager.mode);
+
+        // Load usernames for filter
+        this.loadUsernames();
+
+        // Bind global events
+        this.bindEvents();
+    }
+
+    async loadUsernames() {
+        try {
+            const data = await NexusAPI.getUsernames();
+            const select = document.getElementById('globalUserFilter');
+            if (select && data.usernames) {
+                select.innerHTML = '<option value="">All Users</option>' +
+                    data.usernames.map(u => `<option value="${u}">${u}</option>`).join('');
+            }
+        } catch (error) {
+            console.error('Failed to load usernames:', error);
+        }
+    }
+
+    bindEvents() {
+        // Theme toggle
+        const themeToggle = document.getElementById('themeToggle');
+        if (themeToggle) {
+            themeToggle.addEventListener('click', () => this.themeManager.toggle());
+        }
+
+        // Refresh button
+        const refreshBtn = document.getElementById('refreshBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => this.refresh());
+        }
+
+        // Global user filter
+        const userFilter = document.getElementById('globalUserFilter');
+        if (userFilter) {
+            userFilter.addEventListener('change', () => this.refresh());
+        }
+
+        // Modal events
+        this.setupModals();
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Escape to close modals
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal-backdrop.open').forEach(modal => {
+                    modal.classList.remove('open');
+                });
+            }
+
+            // Ctrl/Cmd + 1-4 for layout switching
+            if ((e.ctrlKey || e.metaKey) && e.key >= '1' && e.key <= '4') {
+                e.preventDefault();
+                const modes = ['single', 'horizontal', 'vertical', 'quad'];
+                this.layoutManager.setMode(modes[parseInt(e.key) - 1]);
+            }
+        });
+    }
+
+    setupModals() {
+        // Close modal buttons
+        document.querySelectorAll('[data-close-modal]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.closest('.modal-backdrop')?.classList.remove('open');
+            });
+        });
+
+        // Modal tab switching
+        document.querySelectorAll('.modal-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const tabId = tab.dataset.tab;
+                this.activeModalTab = tabId;
+
+                // Update tab states
+                tab.closest('.modal-tabs').querySelectorAll('.modal-tab').forEach(t => {
+                    t.classList.toggle('active', t.dataset.tab === tabId);
+                });
+
+                // Update content visibility
+                tab.closest('.modal-body').querySelectorAll('.modal-tab-content').forEach(content => {
+                    content.classList.toggle('active', content.dataset.tabContent === tabId);
+                });
+            });
+        });
+
+        // Submit task button
+        const submitBtn = document.getElementById('submitTaskBtn');
+        if (submitBtn) {
+            submitBtn.addEventListener('click', () => this.submitTask());
+        }
+
+        // Confirm delete button
+        const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
+        if (confirmDeleteBtn) {
+            confirmDeleteBtn.addEventListener('click', () => {
+                if (this.deleteCallback) {
+                    this.deleteCallback();
+                    this.deleteCallback = null;
+                }
+                document.getElementById('deleteModal')?.classList.remove('open');
+            });
+        }
+
+        // Confirm rename button
+        const confirmRenameBtn = document.getElementById('confirmRenameBtn');
+        if (confirmRenameBtn) {
+            confirmRenameBtn.addEventListener('click', () => {
+                const input = document.getElementById('renameTabInput');
+                if (this.renameTabCallback && input?.value.trim()) {
+                    this.renameTabCallback(input.value.trim());
+                    this.renameTabCallback = null;
+                }
+                document.getElementById('renameTabModal')?.classList.remove('open');
+            });
+        }
+    }
+
+    refresh() {
+        const panesCount = this.layoutManager.getPanesCount();
+        for (let i = 0; i < panesCount; i++) {
+            const tab = this.tabManager.getActiveTab(i);
+            if (tab) {
+                if (tab.type === 'chat') {
+                    this.chatView.loadSessions(i);
+                } else {
+                    this.taskView.loadTasks(i);
+                }
+            }
+        }
+    }
+
+    showCreateTaskModal(mode = 'single') {
+        const modal = document.getElementById('createTaskModal');
+        if (!modal) return;
+
+        // Reset form
+        document.getElementById('taskDescription').value = '';
+        document.getElementById('taskWorkspace').value = '';
+        document.getElementById('taskDependsOn').value = '';
+        document.getElementById('bulkTasks').value = '';
+        document.getElementById('chainTasks').value = '';
+
+        // Set active tab
+        this.activeModalTab = mode;
+        modal.querySelectorAll('.modal-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.tab === mode);
+        });
+        modal.querySelectorAll('.modal-tab-content').forEach(content => {
+            content.classList.toggle('active', content.dataset.tabContent === mode);
+        });
+
+        modal.classList.add('open');
+    }
+
+    async submitTask() {
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const agentName = document.getElementById('taskAgent')?.value || 
+                         globalUserFilter?.value || 'ubuntu';
+
+        try {
+            if (this.activeModalTab === 'single') {
+                await this.submitSingleTask(agentName);
+            } else if (this.activeModalTab === 'bulk') {
+                await this.submitBulkTasks(agentName);
+            } else if (this.activeModalTab === 'chain') {
+                await this.submitTaskChain(agentName);
+            }
+
+            document.getElementById('createTaskModal')?.classList.remove('open');
+            this.refresh();
+        } catch (error) {
+            console.error('Failed to create task:', error);
+            this.showToast(error.message || 'Failed to create task', 'error');
+        }
+    }
+
+    async submitSingleTask(agentName) {
+        const description = document.getElementById('taskDescription')?.value.trim();
+        const workspace = document.getElementById('taskWorkspace')?.value.trim();
+        const provider = document.getElementById('taskProvider')?.value || 'claude';
+        const dependsOnStr = document.getElementById('taskDependsOn')?.value.trim();
+
+        if (!description) {
+            throw new Error('Description is required');
+        }
+
+        const payload = {
+            description,
+            provider,
+            workspace: workspace || undefined,
+            depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
+        };
+
+        await NexusAPI.createTask(payload, { agentName });
+        this.showToast('Task created successfully', 'success');
+    }
+
+    async submitBulkTasks(agentName) {
+        const tasksText = document.getElementById('bulkTasks')?.value.trim();
+        const workspace = document.getElementById('bulkWorkspace')?.value.trim();
+        const provider = document.getElementById('bulkProvider')?.value || 'claude';
+
+        if (!tasksText) {
+            throw new Error('Please enter at least one task');
+        }
+
+        const taskDescriptions = tasksText.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0);
+
+        if (taskDescriptions.length === 0) {
+            throw new Error('Please enter at least one task');
+        }
+
+        // Use bulk create API
+        const tasks = taskDescriptions.map(description => ({
+            description,
+            provider,
+            workspace: workspace || undefined
+        }));
+
+        const result = await NexusAPI.bulkCreateTasks(tasks, { agentName });
+        
+        if (result.errors && result.errors.length > 0) {
+            this.showToast(`Created ${result.created.length} tasks, ${result.errors.length} failed`, 'warning');
+        } else {
+            this.showToast(`Created ${result.created.length} tasks`, 'success');
+        }
+    }
+
+    async submitTaskChain(agentName) {
+        const tasksText = document.getElementById('chainTasks')?.value.trim();
+        const workspace = document.getElementById('chainWorkspace')?.value.trim();
+        const provider = document.getElementById('chainProvider')?.value || 'claude';
+
+        if (!tasksText) {
+            throw new Error('Please enter at least one task');
+        }
+
+        const taskDescriptions = tasksText.split('\n')
+            .map(line => line.trim().replace(/^\d+\.\s*/, '')) // Remove numbering
+            .filter(line => line.length > 0);
+
+        if (taskDescriptions.length === 0) {
+            throw new Error('Please enter at least one task');
+        }
+
+        // Use bulk create API with temp_id dependencies for chain
+        const tasks = taskDescriptions.map((description, index) => ({
+            description,
+            provider,
+            workspace: workspace || undefined,
+            depends_on: index > 0 ? [`temp_${index - 1}`] : undefined
+        }));
+
+        const result = await NexusAPI.bulkCreateTasks(tasks, { agentName });
+        
+        if (result.errors && result.errors.length > 0) {
+            this.showToast(`Created ${result.created.length} tasks in chain, ${result.errors.length} failed`, 'warning');
+        } else {
+            this.showToast(`Created task chain with ${result.created.length} tasks`, 'success');
+        }
+    }
+
+    showDeleteModal(type, id, callback) {
+        const modal = document.getElementById('deleteModal');
+        const message = document.getElementById('deleteModalMessage');
+        
+        if (!modal || !message) return;
+
+        message.textContent = type === 'session' 
+            ? 'Are you sure you want to delete this session? This action cannot be undone.'
+            : 'Are you sure you want to delete this task? This action cannot be undone.';
+
+        this.deleteCallback = callback;
+        modal.classList.add('open');
+    }
+
+    showRenameTabModal(paneId, tabId) {
+        const modal = document.getElementById('renameTabModal');
+        const input = document.getElementById('renameTabInput');
+        
+        if (!modal || !input) return;
+
+        const tab = this.tabManager.panes[paneId]?.tabs.find(t => t.id === tabId);
+        if (tab) {
+            input.value = tab.title;
+        }
+
+        this.renameTabCallback = (newTitle) => {
+            this.tabManager.renameTab(paneId, tabId, newTitle);
+        };
+
+        modal.classList.add('open');
+        input.focus();
+        input.select();
+    }
+
+    showNewSessionModal(paneId) {
+        const modal = document.getElementById('newSessionModal');
+        if (!modal) {
+            // Create modal if it doesn't exist
+            this.createNewSessionModal();
+        }
+        
+        const modalEl = document.getElementById('newSessionModal');
+        if (modalEl) {
+            // Reset form
+            const titleInput = document.getElementById('newSessionTitle');
+            if (titleInput) titleInput.value = '';
+            
+            this.newSessionPaneId = paneId;
+            modalEl.classList.add('open');
+            titleInput?.focus();
+        }
+    }
+
+    createNewSessionModal() {
+        const modal = document.createElement('div');
+        modal.id = 'newSessionModal';
+        modal.className = 'modal-backdrop';
+        modal.innerHTML = `
+            <div class="modal" style="max-width: 400px;">
+                <div class="modal-header">
+                    <h3 class="modal-title">新建会话</h3>
+                    <button class="modal-close" data-close-modal>
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label class="form-label">会话标题</label>
+                        <input id="newSessionTitle" type="text" class="form-input" placeholder="输入会话标题（可选）">
+                    </div>
+                    <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
+                        注意：新建会话将通过 API 创建。如果您的系统不支持创建会话，此功能可能不可用。
+                    </p>
+                </div>
+                <div class="modal-footer">
+                    <button class="action-btn" data-close-modal>取消</button>
+                    <button id="confirmNewSessionBtn" class="action-btn primary">创建</button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // Bind events
+        modal.querySelectorAll('[data-close-modal]').forEach(btn => {
+            btn.addEventListener('click', () => modal.classList.remove('open'));
+        });
+
+        modal.querySelector('#confirmNewSessionBtn').addEventListener('click', async () => {
+            const title = document.getElementById('newSessionTitle')?.value.trim();
+            await this.createNewSession(this.newSessionPaneId, title);
+            modal.classList.remove('open');
+        });
+
+        // Enter key to submit
+        modal.querySelector('#newSessionTitle').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                modal.querySelector('#confirmNewSessionBtn').click();
+            }
+        });
+    }
+
+    async createNewSession(paneId, title) {
+        try {
+            // Try to create a new session via API
+            const globalUserFilter = document.getElementById('globalUserFilter');
+            const result = await NexusAPI.createSession({
+                title: title || `New Session ${new Date().toLocaleTimeString()}`,
+                username: globalUserFilter?.value || 'ubuntu'
+            });
+            
+            this.showToast('会话创建成功', 'success');
+            
+            // Reload sessions
+            this.chatView.loadSessions(paneId);
+        } catch (error) {
+            console.error('Failed to create session:', error);
+            this.showToast('创建会话失败：' + (error.message || '未知错误'), 'error');
+        }
+    }
+
+    showToast(message, type = 'info') {
+        const container = document.getElementById('toastContainer');
+        if (!container) return;
+
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `
+            <svg class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                ${type === 'success' 
+                    ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>'
+                    : type === 'error'
+                    ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>'
+                    : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>'}
+            </svg>
+            <span class="toast-message">${message}</span>
+            <button class="toast-close">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        `;
+
+        toast.querySelector('.toast-close').addEventListener('click', () => {
+            toast.remove();
+        });
+
+        container.appendChild(toast);
+
+        // Auto remove after 5 seconds
+        setTimeout(() => {
+            toast.style.animation = 'fadeOut 0.3s forwards';
+            setTimeout(() => toast.remove(), 300);
+        }, 5000);
+    }
+
+    showAddTabDropdown(btn, paneId) {
+        // Remove any existing dropdown
+        const existing = document.querySelector('.tab-add-dropdown');
+        if (existing) existing.remove();
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'tab-add-dropdown';
+        dropdown.innerHTML = `
+            <div class="tab-add-dropdown-header">新建标签页</div>
+            <button class="tab-add-option" data-type="chat">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                </svg>
+                <span>新建 Chat</span>
+                <span class="tab-add-option-desc">对话会话视图</span>
+            </button>
+            <button class="tab-add-option" data-type="task">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                </svg>
+                <span>新建 Task</span>
+                <span class="tab-add-option-desc">任务看板视图</span>
+            </button>
+        `;
+
+        document.body.appendChild(dropdown);
+
+        // Position dropdown below button with proper alignment
+        this.positionDropdown(dropdown, btn);
+
+        // Bind option clicks
+        dropdown.querySelectorAll('.tab-add-option').forEach(option => {
+            option.addEventListener('click', () => {
+                const type = option.dataset.type;
+                this.tabManager.addTab(paneId, type);
+                dropdown.remove();
+            });
+        });
+
+        // Close on outside click
+        const closeHandler = (e) => {
+            if (!dropdown.contains(e.target) && e.target !== btn) {
+                dropdown.remove();
+                document.removeEventListener('click', closeHandler);
+            }
+        };
+        setTimeout(() => document.addEventListener('click', closeHandler), 0);
+    }
+
+    positionDropdown(dropdown, anchorEl) {
+        const rect = anchorEl.getBoundingClientRect();
+        const viewportWidth = window.innerWidth;
+        const viewportHeight = window.innerHeight;
+
+        // First, set position fixed and make visible to get accurate dimensions
+        dropdown.style.cssText = `
+            position: fixed;
+            visibility: hidden;
+            z-index: 1000;
+        `;
+
+        // Use requestAnimationFrame to ensure the dropdown is rendered
+        requestAnimationFrame(() => {
+            const dropdownRect = dropdown.getBoundingClientRect();
+
+            // Calculate position - align dropdown right edge with button right edge
+            let top = rect.bottom + 4;
+            let left = rect.right - dropdownRect.width;
+
+            // Adjust if dropdown goes off the left edge
+            if (left < 8) {
+                left = 8;
+            }
+
+            // Adjust if dropdown goes off the right edge
+            if (left + dropdownRect.width > viewportWidth - 8) {
+                left = viewportWidth - dropdownRect.width - 8;
+            }
+
+            // Adjust if dropdown goes off the bottom edge
+            if (top + dropdownRect.height > viewportHeight - 8) {
+                top = rect.top - dropdownRect.height - 4;
+            }
+
+            dropdown.style.cssText = `
+                position: fixed;
+                top: ${top}px;
+                left: ${left}px;
+                z-index: 1000;
+            `;
+        });
+    }
+}
+
+// Initialize app when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new NexusApp();
+});

@@ -7,7 +7,7 @@ Uses Pydantic models for Redis serialization.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 import uuid
 
@@ -109,6 +109,9 @@ class Task(BaseModel):
     # Session ID for conversation storage (format: {session_id}_{task_id})
     session_id: Optional[str] = None
     
+    # Task dependencies - list of task IDs that must complete before this task runs
+    depends_on: List[str] = Field(default_factory=list)
+    
     model_config = ConfigDict(use_enum_values=True)
     
     def to_redis_hash(self) -> Dict[str, str]:
@@ -121,6 +124,8 @@ class Task(BaseModel):
             elif isinstance(value, datetime):
                 result[key] = value.isoformat()
             elif isinstance(value, dict):
+                result[key] = json.dumps(value)
+            elif isinstance(value, list):
                 result[key] = json.dumps(value)
             elif isinstance(value, Enum):
                 result[key] = value.value
@@ -140,6 +145,8 @@ class Task(BaseModel):
                 parsed[key] = datetime.fromisoformat(value) if value else None
             elif key == "context":
                 parsed[key] = json.loads(value) if value else None
+            elif key == "depends_on":
+                parsed[key] = json.loads(value) if value else []
             elif key == "attempt_count":
                 parsed[key] = int(value)
             elif key == "priority":

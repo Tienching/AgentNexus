@@ -75,9 +75,15 @@ class AGUIAdapter(BaseAdapter):
         
         使用 run_id + 计数器 确保每次请求的消息 ID 全局唯一，
         避免同一会话多次请求时消息 ID 冲突导致覆盖。
+        
+        注意：run_id 可能以 "legacy-run-" 前缀开头，需要跳过这个前缀以获取唯一部分
         """
         self._message_id_counter += 1
-        run_id_suffix = self.state.run_id[:8] if self.state and self.state.run_id else uuid.uuid4().hex[:8]
+        run_id = self.state.run_id if self.state and self.state.run_id else uuid.uuid4().hex
+        # Skip "legacy-run-" prefix if present to get the unique UUID part
+        if run_id.startswith("legacy-run-"):
+            run_id = run_id[11:]  # Skip "legacy-run-" (11 chars)
+        run_id_suffix = run_id[:12] if len(run_id) >= 12 else run_id
         return f"msg_{run_id_suffix}_{self._message_id_counter:04d}"
     
     def _sanitize_text(self, text: str) -> str:

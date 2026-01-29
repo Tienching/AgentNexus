@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Set, Callable, Awaitable, Any
+from typing import Dict, Optional, Set, Callable, Awaitable, Any, List
 from datetime import datetime, timezone
 
 from ..models.task_models import Task, TaskStatus, ExecutorConfig
@@ -116,6 +116,8 @@ class WorkspaceQueueManager:
         """Get next task that can be executed
         
         Checks all workspaces and returns a task from one that has available capacity.
+        Also checks task dependencies - a task won't be returned if its dependencies
+        haven't completed (status != DONE).
         
         Returns:
             Task to execute, or None if no tasks available
@@ -125,12 +127,44 @@ class WorkspaceQueueManager:
             todo_tasks = self._task_queue.get_pending_tasks(limit=100)
             
             for task in todo_tasks:
+                # Check dependencies first
+                if not self._check_dependencies_satisfied(task):
+                    logger.debug(f"Task {task.id} blocked by unsatisfied dependencies: {task.depends_on}")
+                    continue
+                
                 state = self._get_or_create_workspace(task.workspace)
                 if state.is_available:
                     # Found an executable task
                     return task
             
             return None
+    
+    def _check_dependencies_satisfied(self, task: Task) -> bool:
+        """Check if all task dependencies are satisfied (status == DONE)
+        
+        Args:
+            task: Task to check dependencies for
+            
+        Returns:
+            True if all dependencies are satisfied (or no dependencies), False otherwise
+        """
+        depends_on: List[str] = getattr(task, "depends_on", None) or []
+        if not depends_on:
+            return True
+        
+        for dep_task_id in depends_on:
+            dep_task = self._task_queue.get_task(dep_task_id)
+            if not dep_task:
+                # Dependency task not found - treat as unsatisfied
+                logger.warning(f"Dependency task {dep_task_id} not found for task {task.id}")
+                return False
+            
+            dep_status = dep_task.status if isinstance(dep_task.status, str) else dep_task.status.value
+            if dep_status != TaskStatus.DONE.value:
+                # Dependency not completed
+                return False
+        
+        return True
     
     async def get_available_workspaces(self) -> Dict[str, int]:
         """Get workspaces with available slots
