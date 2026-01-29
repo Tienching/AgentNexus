@@ -93,6 +93,7 @@ class TaskQueue:
         task_id: Optional[str] = None,
         source_session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
+        depends_on: Optional[list] = None,
     ) -> Task:
         """Add new task to queue
         
@@ -130,6 +131,7 @@ class TaskQueue:
             agent_name=effective_agent,
             provider=normalized_provider,
             session_id=session_id,
+            depends_on=depends_on or [],
         )
         
         # Store task data
@@ -310,6 +312,39 @@ class TaskQueue:
             # Update status
             self._update_task_status(task, TaskStatus.CANCELLED)
             logger.info(f"Task {task_id} cancelled and moved to trash")
+        
+        return task
+
+    def update_task_status(self, task_id: str, new_status: TaskStatus) -> Optional[Task]:
+        """Manually update task status.
+        
+        Used to unblock dependent tasks or change task state manually.
+        Handles queue membership changes based on status transitions.
+        """
+        task_id = str(task_id)
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        
+        old_status_val = task.status if isinstance(task.status, str) else task.status.value
+        old_status = TaskStatus(old_status_val)
+        
+        # Handle queue transitions
+        if old_status == TaskStatus.TODO and new_status != TaskStatus.TODO:
+            # Remove from TODO queue if leaving TODO
+            self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
+        elif old_status != TaskStatus.TODO and new_status == TaskStatus.TODO:
+            # Add back to TODO queue if returning to TODO
+            self._redis.rpush(self._queue_key(task.workspace), task.id)
+        
+        # Handle executing set
+        if old_status == TaskStatus.DOING and new_status != TaskStatus.DOING:
+            self._redis.srem(self._executing_key(task.workspace), task.id)
+        elif old_status != TaskStatus.DOING and new_status == TaskStatus.DOING:
+            self._redis.sadd(self._executing_key(task.workspace), task.id)
+        
+        self._update_task_status(task, new_status)
+        logger.info(f"Task {task_id} status manually updated: {old_status_val} -> {new_status.value}")
         
         return task
 

@@ -1,185 +1,350 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NexusHub - Session Viewer</title>
+    <title>Nexus - Session & Task Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/styles.css?v=20">
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen">
-    <div id="app" class="flex flex-col h-screen">
+<body>
+    <div id="app" class="layout-container">
         <!-- Header -->
-        <header class="bg-gray-800 border-b border-gray-700 px-6 py-4">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-3">
-                    <div class="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-                        <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <header class="header">
+            <div class="header-left">
+                <a href="#" class="logo">
+                    <div class="logo-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
                         </svg>
                     </div>
-                    <h1 class="text-xl font-semibold">NexusHub</h1>
-                </div>
-                <div class="flex items-center space-x-4">
-                    <!-- View Switcher -->
-                    <div class="bg-gray-700 border border-gray-600 rounded-lg p-1 flex items-center">
-                        <button
-                            id="viewChatBtn"
-                            class="px-3 py-1.5 rounded-md text-sm font-medium bg-gray-900 text-white"
-                        >
-                            Chat
-                        </button>
-                        <button
-                            id="viewTaskBtn"
-                            class="px-3 py-1.5 rounded-md text-sm font-medium text-gray-300 hover:text-white"
-                        >
-                            Task
-                        </button>
-                    </div>
+                    <span>Nexus</span>
+                </a>
+            </div>
 
-                    <div class="relative" id="usernameFilterWrap">
-                        <select 
-                            id="usernameFilter" 
-                            class="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 pl-10 w-48 focus:outline-none focus:border-blue-500 text-sm appearance-none cursor-pointer"
-                        >
-                            <option value="">全部用户</option>
-                        </select>
-                        <svg class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path>
+            <div class="header-center">
+                <!-- Layout Switcher -->
+                <div class="layout-switcher">
+                    <button class="layout-btn active" data-mode="single" title="Single View">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/>
                         </svg>
-                        <svg class="w-4 h-4 text-gray-400 absolute right-3 top-1/2 transform -translate-y-1/2 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                    </button>
+                    <button class="layout-btn" data-mode="horizontal" title="Horizontal Split">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <rect x="3" y="3" width="8" height="18" rx="2" stroke-width="2"/>
+                            <rect x="13" y="3" width="8" height="18" rx="2" stroke-width="2"/>
                         </svg>
-                    </div>
-                    <div class="relative">
-                        <input 
-                            type="text" 
-                            id="searchInput" 
-                            placeholder="搜索会话..." 
-                            class="bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 pl-10 w-64 focus:outline-none focus:border-blue-500 text-sm"
-                        >
-                        <svg class="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                    </button>
+                    <button class="layout-btn" data-mode="vertical" title="Vertical Split">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <rect x="3" y="3" width="18" height="8" rx="2" stroke-width="2"/>
+                            <rect x="3" y="13" width="18" height="8" rx="2" stroke-width="2"/>
                         </svg>
-                    </div>
-                    <button 
-                        id="refreshBtn"
-                        class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                    >
-                        刷新
+                    </button>
+                    <button class="layout-btn" data-mode="quad" title="Quad View">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <rect x="3" y="3" width="8" height="8" rx="1" stroke-width="2"/>
+                            <rect x="13" y="3" width="8" height="8" rx="1" stroke-width="2"/>
+                            <rect x="3" y="13" width="8" height="8" rx="1" stroke-width="2"/>
+                            <rect x="13" y="13" width="8" height="8" rx="1" stroke-width="2"/>
+                        </svg>
                     </button>
                 </div>
+            </div>
+
+            <div class="header-right">
+                <!-- User Filter -->
+                <select id="globalUserFilter" class="form-input form-select">
+                    <option value="">All Users</option>
+                </select>
+
+                <!-- Theme Toggle -->
+                <button id="themeToggle" class="theme-toggle" title="Toggle theme">
+                    <svg class="icon-sun" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>
+                    </svg>
+                    <svg class="icon-moon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/>
+                    </svg>
+                </button>
+
+                <!-- Refresh -->
+                <button id="refreshBtn" class="action-btn" title="Refresh">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                </button>
             </div>
         </header>
 
         <!-- Main Content -->
-        <main class="flex-1 overflow-hidden">
-            <!-- Chat View -->
-            <div id="chatView" class="h-full flex">
-                <!-- Session List -->
-                <div class="w-80 border-r border-gray-700 overflow-y-auto">
-                    <div id="sessionList" class="p-4 space-y-2">
-                        <!-- Sessions will be rendered here -->
-                        <div class="text-center text-gray-500 py-8">
-                            <p>加载中...</p>
+        <main class="main-content">
+            <div id="layoutWrapper" class="layout-wrapper" data-mode="single">
+                <!-- Pane 0 (always visible) -->
+                <div class="pane" id="pane-0" data-pane-id="0">
+                    <div class="pane-header">
+                        <div class="pane-tabs" id="pane-0-tabs">
+                            <!-- Tabs will be rendered here -->
                         </div>
-                    </div>
-                </div>
-
-                <!-- Session Detail -->
-                <div class="flex-1 overflow-hidden flex flex-col">
-                    <div id="sessionDetail" class="flex-1 overflow-y-auto p-6">
-                        <div class="flex items-center justify-center h-full text-gray-500">
-                            <div class="text-center">
-                                <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
-                                </svg>
-                                <p>选择一个会话查看详情</p>
+                        <div class="pane-actions">
+                            <div class="view-switcher" data-pane="0">
+                                <button class="view-btn active" data-view="chat" title="Chat View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                    </svg>
+                                </button>
+                                <button class="view-btn" data-view="task" title="Tasks View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                    </svg>
+                                </button>
                             </div>
+                            <button class="tab-add" data-pane="0" title="Add tab">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                            </button>
                         </div>
+                    </div>
+                    <div class="pane-content" id="pane-0-content">
+                        <!-- Content will be rendered here -->
                     </div>
                 </div>
-            </div>
 
-            <!-- Task View -->
-            <div id="taskView" class="h-full hidden">
-                <div class="h-full flex overflow-hidden">
-                    <div class="flex-1 flex flex-col overflow-hidden">
-                        <div id="taskToolbar" class="border-b border-gray-800 bg-gradient-to-r from-gray-900/60 to-gray-900/20 backdrop-blur"></div>
-                        <div class="flex-1 overflow-x-auto overflow-y-hidden">
-                            <div id="taskBoard" class="h-full p-4 flex space-x-4 min-w-[1100px]"></div>
+                <!-- Pane 1 (for horizontal/vertical/quad) -->
+                <div class="pane" id="pane-1" data-pane-id="1" style="display:none;">
+                    <div class="pane-header">
+                        <div class="pane-tabs" id="pane-1-tabs"></div>
+                        <div class="pane-actions">
+                            <div class="view-switcher" data-pane="1">
+                                <button class="view-btn active" data-view="chat" title="Chat View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                    </svg>
+                                </button>
+                                <button class="view-btn" data-view="task" title="Tasks View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <button class="tab-add" data-pane="1" title="Add tab">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                            </button>
                         </div>
                     </div>
+                    <div class="pane-content" id="pane-1-content"></div>
+                </div>
 
-                    <div id="taskDetail" class="w-[32rem] border-l border-gray-700 overflow-y-auto p-4 hidden"></div>
+                <!-- Pane 2 (for quad) -->
+                <div class="pane" id="pane-2" data-pane-id="2" style="display:none;">
+                    <div class="pane-header">
+                        <div class="pane-tabs" id="pane-2-tabs"></div>
+                        <div class="pane-actions">
+                            <div class="view-switcher" data-pane="2">
+                                <button class="view-btn active" data-view="chat" title="Chat View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                    </svg>
+                                </button>
+                                <button class="view-btn" data-view="task" title="Tasks View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <button class="tab-add" data-pane="2" title="Add tab">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="pane-content" id="pane-2-content"></div>
+                </div>
+
+                <!-- Pane 3 (for quad) -->
+                <div class="pane" id="pane-3" data-pane-id="3" style="display:none;">
+                    <div class="pane-header">
+                        <div class="pane-tabs" id="pane-3-tabs"></div>
+                        <div class="pane-actions">
+                            <div class="view-switcher" data-pane="3">
+                                <button class="view-btn active" data-view="chat" title="Chat View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                    </svg>
+                                </button>
+                                <button class="view-btn" data-view="task" title="Tasks View">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <button class="tab-add" data-pane="3" title="Add tab">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="pane-content" id="pane-3-content"></div>
                 </div>
             </div>
         </main>
     </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div id="deleteModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 class="text-lg font-semibold mb-4">确认删除</h3>
-            <p id="deleteModalMessage" class="text-gray-400 mb-6">确定要删除这个会话吗？此操作不可撤销。</p>
-            <div class="flex justify-end space-x-3">
-                <button id="cancelDeleteBtn" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">
-                    取消
-                </button>
-                <button id="confirmDeleteBtn" class="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors">
-                    删除
-                </button>
-            </div>
-        </div>
-    </div>
-
     <!-- Create Task Modal -->
-    <div id="createTaskModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
-        <div class="bg-gray-800 rounded-lg p-6 max-w-lg w-full mx-4">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-lg font-semibold">新建任务</h3>
-                <button onclick="app.hideCreateTaskModal()" class="text-gray-400 hover:text-gray-200">✕</button>
+    <div id="createTaskModal" class="modal-backdrop">
+        <div class="modal">
+            <div class="modal-header">
+                <h3 class="modal-title">Create Task</h3>
+                <button class="modal-close" data-close-modal>
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
             </div>
-
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-sm text-gray-300 mb-1">Provider</label>
-                    <select id="createTaskProvider" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                        <option value="claude">claude</option>
-                        <option value="gemini">gemini</option>
-                    </select>
+            <div class="modal-body">
+                <!-- Modal Tabs -->
+                <div class="modal-tabs">
+                    <button class="modal-tab active" data-tab="single">Single Task</button>
+                    <button class="modal-tab" data-tab="bulk">Bulk Create</button>
+                    <button class="modal-tab" data-tab="chain">Task Chain</button>
                 </div>
 
-                <div>
-                    <label class="block text-sm text-gray-300 mb-1">描述</label>
-                    <textarea id="createTaskDescription" rows="4" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" placeholder="任务要做什么？"></textarea>
+                <!-- Single Task Form -->
+                <div id="singleTaskForm" class="modal-tab-content active" data-tab-content="single">
+                    <div class="form-group">
+                        <label class="form-label">Provider</label>
+                        <select id="taskProvider" class="form-input form-select">
+                            <option value="claude">Claude</option>
+                            <option value="gemini">Gemini</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Description <span class="required">*</span></label>
+                        <textarea id="taskDescription" class="form-input form-textarea" placeholder="What should this task do?" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workspace</label>
+                        <input id="taskWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                        <p class="form-hint">Optional: Specify a working directory for the task</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Agent</label>
+                        <input id="taskAgent" type="text" class="form-input" placeholder="ubuntu" value="ubuntu">
+                        <p class="form-hint">System user to execute the task</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Depends On</label>
+                        <input id="taskDependsOn" type="text" class="form-input" placeholder="task-id-1, task-id-2">
+                        <p class="form-hint">Optional: Comma-separated task IDs this task depends on</p>
+                    </div>
                 </div>
 
-                <div>
-                    <label class="block text-sm text-gray-300 mb-1">Workspace（可选）</label>
-                    <input id="createTaskWorkspace" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" placeholder="例如 /path/to/repo" />
+                <!-- Bulk Create Form -->
+                <div id="bulkTaskForm" class="modal-tab-content" data-tab-content="bulk">
+                    <div class="form-group">
+                        <label class="form-label">Provider</label>
+                        <select id="bulkProvider" class="form-input form-select">
+                            <option value="claude">Claude</option>
+                            <option value="gemini">Gemini</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workspace (shared)</label>
+                        <input id="bulkWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Tasks <span class="required">*</span></label>
+                        <textarea id="bulkTasks" class="form-input form-textarea" placeholder="Enter one task description per line:&#10;&#10;Implement user login&#10;Add password reset feature&#10;Create user profile page" rows="8"></textarea>
+                        <p class="form-hint">Each line will create a separate task</p>
+                    </div>
                 </div>
 
-                <div>
-                    <label class="block text-sm text-gray-300 mb-1">Agent（可选）</label>
-                    <input id="createTaskAgent" type="text" class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500" placeholder="例如 ubuntu" />
-                    <div class="text-xs text-gray-500 mt-1">用于任务执行的系统用户（留空则使用默认）。</div>
+                <!-- Task Chain Form -->
+                <div id="chainTaskForm" class="modal-tab-content" data-tab-content="chain">
+                    <div class="form-group">
+                        <label class="form-label">Provider</label>
+                        <select id="chainProvider" class="form-input form-select">
+                            <option value="claude">Claude</option>
+                            <option value="gemini">Gemini</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workspace (shared)</label>
+                        <input id="chainWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Task Chain <span class="required">*</span></label>
+                        <textarea id="chainTasks" class="form-input form-textarea" placeholder="Enter tasks in order (each depends on the previous):&#10;&#10;1. Set up project structure&#10;2. Implement database models&#10;3. Create API endpoints&#10;4. Add frontend components" rows="8"></textarea>
+                        <p class="form-hint">Tasks will be created as a chain - each task depends on the previous one</p>
+                    </div>
                 </div>
             </div>
-
-            <div class="flex justify-end space-x-3 mt-6">
-                <button onclick="app.hideCreateTaskModal()" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">取消</button>
-                <button id="confirmCreateTaskBtn" onclick="app.submitCreateTask()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">创建</button>
+            <div class="modal-footer">
+                <button class="action-btn" data-close-modal>Cancel</button>
+                <button id="submitTaskBtn" class="action-btn primary">Create Task</button>
             </div>
         </div>
     </div>
 
-    <!-- Error Toast -->
-    <div id="errorToast" class="fixed bottom-4 right-4 bg-red-600 text-white px-6 py-3 rounded-lg shadow-lg hidden">
-        <p id="errorMessage"></p>
+    <!-- Delete Confirmation Modal -->
+    <div id="deleteModal" class="modal-backdrop">
+        <div class="modal" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Confirm Delete</h3>
+                <button class="modal-close" data-close-modal>
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="deleteModalMessage" style="color: var(--text-secondary);">Are you sure you want to delete this item? This action cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="action-btn" data-close-modal>Cancel</button>
+                <button id="confirmDeleteBtn" class="action-btn" style="background: var(--error); border-color: var(--error); color: white;">Delete</button>
+            </div>
+        </div>
     </div>
 
-    <script src="js/api.js?v=8"></script>
-    <script src="js/app.js?v=8"></script>
+    <!-- Tab Rename Modal -->
+    <div id="renameTabModal" class="modal-backdrop">
+        <div class="modal" style="max-width: 360px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Rename Tab</h3>
+                <button class="modal-close" data-close-modal>
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">Tab Name</label>
+                    <input id="renameTabInput" type="text" class="form-input" placeholder="Enter tab name">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="action-btn" data-close-modal>Cancel</button>
+                <button id="confirmRenameBtn" class="action-btn primary">Rename</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="js/api.js?v=20"></script>
+    <script src="js/app.js?v=20"></script>
 </body>
 </html>

@@ -264,6 +264,7 @@ class TaskItem(BaseModel):
     error_message: Optional[str] = None
     agent_name: Optional[str] = None
     session_id: Optional[str] = None  # Session ID for conversation storage
+    depends_on: List[str] = Field(default_factory=list)  # Task dependencies
 
 
 class TaskListResponse(BaseModel):
@@ -329,6 +330,7 @@ def _task_to_item(task) -> TaskItem:
     status_val = task.status if isinstance(task.status, str) else task.status.value
     priority_val = task.priority if isinstance(task.priority, str) else task.priority.value
     session_id = getattr(task, "session_id", None) or f"task_{task.id}"
+    depends_on = getattr(task, "depends_on", None) or []
     return TaskItem(
         id=str(task.id),
         description=task.description,
@@ -346,6 +348,7 @@ def _task_to_item(task) -> TaskItem:
         error_message=task.error_message,
         agent_name=task.agent_name,
         session_id=session_id,
+        depends_on=depends_on,
     )
 
 
@@ -406,6 +409,7 @@ class CreateTaskRequest(BaseModel):
     project_id: Optional[str] = Field(None, description="Optional project id (slug)")
     agent: Optional[str] = Field(None, description="Execution agent user (optional)")
     source_session_id: Optional[str] = Field(None, description="Optional source session id")
+    depends_on: Optional[List[str]] = Field(None, description="List of task IDs this task depends on")
 
 
 @router.post("/tasks", response_model=TaskItem)
@@ -443,9 +447,106 @@ async def create_task(
         provider=provider,
         source_session_id=(request.source_session_id or "").strip() or None,
         agent_name=(request.agent or "").strip() or None,
+        depends_on=request.depends_on or [],
     )
 
     return _task_to_item(task)
+
+
+class BulkCreateTaskRequest(BaseModel):
+    """Batch create multiple tasks at once."""
+    tasks: List[CreateTaskRequest] = Field(..., description="List of tasks to create (max 50)")
+
+
+class BulkCreateTaskResponse(BaseModel):
+    """Response for batch task creation."""
+    success: bool = True
+    created: List[TaskItem] = Field(default_factory=list)
+    errors: List[Dict[str, str]] = Field(default_factory=list)
+
+
+@router.post("/tasks/bulk", response_model=BulkCreateTaskResponse)
+async def bulk_create_tasks(
+    request: BulkCreateTaskRequest,
+    agent_name: str = Query("ubuntu", description="Agent name for task isolation"),
+):
+    """Batch create multiple tasks at once.
+    
+    Supports creating independent tasks or task chains with dependencies.
+    Maximum 50 tasks per request.
+    """
+    tasks_data = request.tasks or []
+    if not tasks_data:
+        raise HTTPException(status_code=400, detail="tasks list is required")
+    if len(tasks_data) > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 tasks per request")
+    
+    queue = _get_task_queue(agent_name)
+    allowed_providers = set(get_provider_registry().list_providers())
+    
+    created: List[TaskItem] = []
+    errors: List[Dict[str, str]] = []
+    
+    # Map temp_id -> real_id for dependency resolution
+    temp_id_map: Dict[str, str] = {}
+    
+    for idx, task_req in enumerate(tasks_data):
+        try:
+            desc = (task_req.description or "").strip()
+            if not desc:
+                errors.append({"index": str(idx), "error": "description is required"})
+                continue
+            
+            provider = (task_req.provider or "").strip().lower() or "claude"
+            if provider not in allowed_providers:
+                errors.append({"index": str(idx), "error": f"Invalid provider: {provider}"})
+                continue
+            
+            project_name = (task_req.project_name or "").strip() or None
+            project_id = (task_req.project_id or "").strip() or None
+            if project_name and not project_id:
+                project_id = slugify_project(project_name)
+            
+            priority = TaskPriority.SERIOUS if project_name else TaskPriority.THOUGHT
+            
+            # Resolve dependencies - convert temp IDs to real IDs
+            depends_on = []
+            for dep_id in (task_req.depends_on or []):
+                if dep_id.startswith("temp_"):
+                    # Map temp_id to real task id
+                    real_id = temp_id_map.get(dep_id)
+                    if real_id:
+                        depends_on.append(real_id)
+                else:
+                    depends_on.append(dep_id)
+            
+            task = queue.add_task(
+                description=desc,
+                priority=priority,
+                project_id=project_id,
+                project_name=project_name,
+                workspace=(task_req.workspace or "").strip() or None,
+                provider=provider,
+                source_session_id=(task_req.source_session_id or "").strip() or None,
+                agent_name=(task_req.agent or "").strip() or None,
+                depends_on=depends_on,
+            )
+            
+            task_item = _task_to_item(task)
+            created.append(task_item)
+            
+            # Store mapping for dependency resolution
+            temp_id_map[f"temp_{idx}"] = task_item.id
+            
+        except Exception as e:
+            logger.error(f"Failed to create task at index {idx}: {e}", exc_info=True)
+            errors.append({"index": str(idx), "error": str(e)})
+    
+    return BulkCreateTaskResponse(
+        success=len(errors) == 0,
+        created=created,
+        errors=errors,
+    )
 
 
 @router.delete("/tasks/{task_id}", response_model=SuccessResponse)
@@ -471,6 +572,40 @@ async def delete_task(task_id: str, agent_name: str = Query("ubuntu", descriptio
         pass
 
     return SuccessResponse(success=True, message=f"Task {task_id} deleted")
+
+
+class UpdateTaskStatusRequest(BaseModel):
+    status: str = Field(..., description="New task status (todo/doing/done/failed/cancelled/archived)")
+
+
+@router.patch("/tasks/{task_id}/status", response_model=TaskItem)
+async def update_task_status(
+    task_id: str,
+    request: UpdateTaskStatusRequest,
+    agent_name: str = Query("ubuntu", description="Agent name for task isolation"),
+):
+    """Manually update task status.
+    
+    Used to unblock dependent tasks or cancel blocked tasks.
+    """
+    queue = _get_task_queue(agent_name)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+    
+    new_status = request.status.strip().lower()
+    try:
+        new_status_enum = TaskStatus(new_status)
+    except ValueError:
+        valid_statuses = [s.value for s in TaskStatus]
+        raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}. Must be one of: {valid_statuses}")
+    
+    # Update task status in storage
+    updated_task = queue.update_task_status(task_id, new_status_enum)
+    if not updated_task:
+        raise HTTPException(status_code=500, detail="Failed to update task status")
+    
+    return _task_to_item(updated_task)
 
 
 @router.post("/tasks/bulk_archive", response_model=TaskBulkResponse)

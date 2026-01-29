@@ -81,6 +81,24 @@ class NexusAPI {
     }
 
     /**
+     * Create new session
+     * @param {Object} payload - Session data
+     * @returns {Promise<Object>} Created session
+     */
+    static async createSession(payload = {}) {
+        const response = await fetch(`${API_BASE}/sessions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to create session: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    /**
      * Cancel running session
      * @param {string} sessionId - Session ID
      * @returns {Promise<Object>} Cancel response
@@ -227,6 +245,55 @@ class NexusAPI {
         return response.json();
     }
 
+    /**
+     * Batch create multiple tasks at once
+     * @param {Array} tasks - Array of task objects to create
+     * @param {Object} options - Query options
+     * @returns {Promise<Object>} Bulk create response with created tasks and errors
+     */
+    static async bulkCreateTasks(tasks = [], options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        const response = await fetch(`${API_BASE}/tasks/bulk?${params}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tasks }),
+        });
+
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to bulk create tasks: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Update task status
+     * @param {string} taskId - Task ID
+     * @param {string} status - New status (todo/doing/done/failed/cancelled/archived)
+     * @param {Object} options - Query options
+     * @returns {Promise<Object>} Updated task
+     */
+    static async updateTaskStatus(taskId, status, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/status?${params}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status }),
+        });
+
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to update task status: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     static async getTaskMessages(taskId, options = {}) {
         const params = new URLSearchParams({
             agent_name: options.agentName || 'ubuntu',
@@ -255,6 +322,32 @@ class NexusAPI {
 
         const url = `${API_BASE}/tasks/${encodeURIComponent(taskId)}/agui/stream?${params}`;
         return new EventSource(url);
+    }
+
+    // ============ AGUI Chat Streaming API ============
+
+    /**
+     * Send a message via AGUI protocol and get streaming response
+     * @param {string} agentName - Agent/username for the session
+     * @param {Object} payload - AGUI request payload
+     * @returns {Promise<Response>} Fetch response for streaming
+     */
+    static async chatStream(agentName, payload) {
+        const response = await fetch(`/chat/stream/${agentName}`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            },
+            body: JSON.stringify(payload),
+        });
+        
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Chat stream failed: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        
+        return response;
     }
 }
 
