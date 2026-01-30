@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 
 from ..config import settings
@@ -217,6 +217,63 @@ async def delete_session(
     )
 
 
+# ============ Bulk Delete Sessions API ============
+
+class SessionBulkRequest(BaseModel):
+    session_ids: List[str] = Field(default_factory=list)
+
+
+class SessionBulkResponse(SuccessResponse):
+    result: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/sessions/bulk_delete", response_model=SessionBulkResponse)
+async def bulk_delete_sessions(
+    request: SessionBulkRequest,
+):
+    """Batch delete sessions and their associated data.
+
+    This endpoint deletes multiple sessions at once, including any
+    associated task data for task sessions (session_id starting with 'task_').
+    """
+    session_ids = [str(sid) for sid in (request.session_ids or [])]
+    if not session_ids:
+        raise HTTPException(status_code=400, detail="session_ids is required")
+    if len(session_ids) > 500:
+        raise HTTPException(status_code=400, detail="session_ids too large (max 500)")
+
+    storage = get_session_storage()
+
+    deleted: List[str] = []
+    skipped: Dict[str, str] = {}
+
+    for session_id in session_ids:
+        try:
+            # Get session meta for cleanup
+            meta = storage.get_session_meta(session_id)
+
+            # Cascade hard-delete task when deleting a task session
+            if session_id.startswith("task_"):
+                task_id = session_id[len("task_"):]
+                task_agent = (meta.agent_name if meta and meta.agent_name else "ubuntu")
+                try:
+                    queue = _get_task_queue(task_agent)
+                    queue.delete_task_hard(task_id)
+                except Exception:
+                    pass
+
+            # Delete session
+            resolved_username = meta.username if meta else None
+            storage.delete_session(session_id, resolved_username)
+            deleted.append(session_id)
+
+        except Exception as e:
+            skipped[session_id] = f"error:{e}"
+
+    result = {"count": len(deleted), "deleted": deleted, "skipped": skipped}
+    return SessionBulkResponse(success=True, message=f"Deleted {len(deleted)} sessions", result=result)
+
+
 # ============ Cancel Session API ============
 
 @router.post("/sessions/{session_id}/cancel", response_model=CancelResponse)
@@ -242,6 +299,163 @@ async def cancel_session(session_id: str):
         return CancelResponse(success=True, cancelled=True)
     
     return CancelResponse(success=True, cancelled=False)
+
+
+# ============ Session Files API ============
+
+class FileItem(BaseModel):
+    name: str
+    path: str
+    is_dir: bool
+    size: Optional[int] = None
+    modified: Optional[str] = None
+
+
+class SessionFilesResponse(BaseModel):
+    session_id: str
+    folder_path: str
+    files: List[FileItem] = []
+
+
+def _resolve_session_folder(session_id: str, agent_name: str) -> Optional[Path]:
+    """Resolve the folder path for a session.
+
+    - Regular session: /home/{agent_name}/sessions/{session_id}/
+    - Task session: /home/{agent_name}/sessions/task_{task_id}/
+    - Inplace task: workspace directory from task
+    """
+    current_user = pwd.getpwuid(os.getuid()).pw_name
+
+    # Check if it's a task session and get task info
+    if session_id.startswith("task_"):
+        task_id = session_id[len("task_"):]
+        queue = _get_task_queue(agent_name)
+        task = queue.get_task(task_id)
+
+        # If task has workspace and it's not the default sessions folder, it's inplace
+        if task and task.workspace:
+            workspace_path = Path(task.workspace)
+            if workspace_path.exists():
+                return workspace_path
+
+    # Default session folder path
+    if current_user != agent_name and os.geteuid() != 0:
+        base_dir = Path.home() / agent_name / "sessions" / session_id
+    else:
+        base_dir = Path(settings.user_home_base) / agent_name / "sessions" / session_id
+
+    return base_dir if base_dir.exists() else None
+
+
+@router.get("/sessions/{session_id}/files", response_model=SessionFilesResponse)
+async def list_session_files(
+    session_id: str,
+    agent_name: str = Query("ubuntu", description="Agent name"),
+    subpath: str = Query("", description="Subdirectory path within session folder"),
+):
+    """List files in a session's folder.
+
+    - **session_id**: The session ID
+    - **agent_name**: Agent name for folder resolution
+    - **subpath**: Optional subdirectory path
+    """
+    folder = _resolve_session_folder(session_id, agent_name)
+
+    if not folder:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session folder not found for: {session_id}"
+        )
+
+    # Handle subpath
+    target_path = folder
+    if subpath:
+        # Prevent directory traversal attacks
+        safe_subpath = Path(subpath).as_posix()
+        if ".." in safe_subpath:
+            raise HTTPException(status_code=400, detail="Invalid path")
+        target_path = folder / safe_subpath
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail=f"Path not found: {subpath}")
+        if not str(target_path.resolve()).startswith(str(folder.resolve())):
+            raise HTTPException(status_code=400, detail="Invalid path")
+
+    files: List[FileItem] = []
+
+    try:
+        for entry in sorted(target_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())):
+            # Skip hidden files starting with .
+            if entry.name.startswith("."):
+                continue
+
+            stat = entry.stat()
+            modified_time = datetime.fromtimestamp(stat.st_mtime).isoformat()
+
+            # Calculate relative path from session folder
+            rel_path = str(entry.relative_to(folder))
+
+            files.append(FileItem(
+                name=entry.name,
+                path=rel_path,
+                is_dir=entry.is_dir(),
+                size=stat.st_size if entry.is_file() else None,
+                modified=modified_time,
+            ))
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    except Exception as e:
+        logger.error(f"Failed to list session files: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list files")
+
+    return SessionFilesResponse(
+        session_id=session_id,
+        folder_path=str(folder),
+        files=files,
+    )
+
+
+@router.get("/sessions/{session_id}/files/download")
+async def download_session_file(
+    session_id: str,
+    file_path: str = Query(..., description="File path relative to session folder"),
+    agent_name: str = Query("ubuntu", description="Agent name"),
+):
+    """Download a file from session folder.
+
+    - **session_id**: The session ID
+    - **file_path**: File path relative to session folder
+    - **agent_name**: Agent name for folder resolution
+    """
+    folder = _resolve_session_folder(session_id, agent_name)
+
+    if not folder:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session folder not found for: {session_id}"
+        )
+
+    # Prevent directory traversal attacks
+    safe_path = Path(file_path).as_posix()
+    if ".." in safe_path:
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    target_file = folder / safe_path
+
+    # Verify the file is within the session folder
+    if not str(target_file.resolve()).startswith(str(folder.resolve())):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+    if not target_file.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+
+    if not target_file.is_file():
+        raise HTTPException(status_code=400, detail="Cannot download directory")
+
+    return FileResponse(
+        path=str(target_file),
+        filename=target_file.name,
+        media_type="application/octet-stream",
+    )
 
 
 # ============ Task API ==========
@@ -675,6 +889,55 @@ async def bulk_clear_tasks(
             pass
 
     return TaskBulkResponse(success=True, message=f"Cleared {result.get('count', 0)} tasks", result=result)
+
+
+@router.post("/tasks/bulk_delete", response_model=TaskBulkResponse)
+async def bulk_delete_tasks(
+    request: TaskBulkRequest,
+    agent_name: str = Query("ubuntu", description="Agent name for task isolation"),
+):
+    """Batch hard-delete tasks of ANY status and their associated sessions.
+
+    Unlike bulk_clear which only deletes ARCHIVED tasks, this endpoint
+    deletes tasks regardless of their current status.
+    """
+    task_ids = [str(tid) for tid in (request.task_ids or [])]
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="task_ids is required")
+    if len(task_ids) > 500:
+        raise HTTPException(status_code=400, detail="task_ids too large (max 500)")
+
+    queue = _get_task_queue(agent_name)
+    storage = get_session_storage()
+
+    deleted: List[str] = []
+    skipped: Dict[str, str] = {}
+
+    for task_id in task_ids:
+        try:
+            task = queue.get_task(task_id)
+            if not task:
+                skipped[task_id] = "not_found"
+                continue
+
+            # Get session_id before deleting
+            session_id = getattr(task, "session_id", None) or f"task_{task_id}"
+
+            # Hard delete the task (no status restriction)
+            queue.delete_task_hard(task_id)
+            deleted.append(task_id)
+
+            # Also delete associated session
+            try:
+                storage.delete_session(session_id)
+            except Exception:
+                pass
+
+        except Exception as e:
+            skipped[task_id] = f"error:{e}"
+
+    result = {"count": len(deleted), "deleted": deleted, "skipped": skipped}
+    return TaskBulkResponse(success=True, message=f"Deleted {len(deleted)} tasks", result=result)
 
 
 def _resolve_task_conversation_log_path(agent_name: str, task_id: str) -> Path:

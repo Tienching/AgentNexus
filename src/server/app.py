@@ -23,6 +23,7 @@ from .services import (
     create_and_start_executor,
     get_executor,
 )
+from src.runtime.models.task_models import ExecutorConfig
 from src.providers.claude_code_api.models import Task
 
 # 全局变量用于存储指标
@@ -266,10 +267,20 @@ async def lifespan(app: FastAPI):
             # 初始化任务队列
             _task_queue = TaskQueue(agent_name=agent_name)
             
+            # 创建执行器配置
+            executor_config = ExecutorConfig(
+                default_max_concurrency=settings.executor_default_max_concurrency,
+                poll_interval=settings.executor_poll_interval,
+                max_retries=settings.executor_max_retries,
+                retry_delay=settings.executor_retry_delay,
+                task_timeout=settings.executor_task_timeout,
+            )
+
             # 创建并启动执行器
             executor = await create_and_start_executor(
                 task_queue=_task_queue,
                 task_handler=task_handler,
+                config=executor_config,
             )
             logger.info(f"Task executor started for agent: {agent_name}")
         except Exception as e:

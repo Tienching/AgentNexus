@@ -128,7 +128,7 @@ class TabManager {
         const tab = pane.tabs.find(t => t.id === pane.activeTabId);
         if (tab && tab.type !== viewType) {
             tab.type = viewType;
-            tab.title = viewType === 'chat' ? 'Chat' : 'Tasks';
+            tab.title = viewType === 'chat' ? 'Chat' : 'Task';
             tab.data = {}; // Reset data when switching type
             this.renderTabs(paneId);
             this.renderContent(paneId);
@@ -170,7 +170,7 @@ class TabManager {
         const tab = {
             id: tabId,
             type: type,
-            title: title || (type === 'chat' ? 'Chat' : 'Tasks'),
+            title: title || (type === 'chat' ? 'Chat' : 'Task'),
             data: {}
         };
 
@@ -241,7 +241,7 @@ class TabManager {
         const tab = pane.tabs.find(t => t.id === tabId);
         if (tab && tab.type !== newType) {
             tab.type = newType;
-            tab.title = newType === 'chat' ? 'Chat' : 'Tasks';
+            tab.title = newType === 'chat' ? 'Chat' : 'Task';
             tab.data = {};
             this.renderTabs(paneId);
             this.renderContent(paneId);
@@ -321,34 +321,66 @@ class ChatView {
         this.app = app;
         this.sessions = {};
         this.currentSession = {};
+        this.selectionMode = {};  // paneId -> boolean
+        this.selectedSessionIds = {}; // paneId -> Set<sessionId>
     }
 
     async render(paneId, tab, container) {
+        // Initialize selection state for this pane
+        if (!this.selectionMode[paneId]) {
+            this.selectionMode[paneId] = false;
+        }
+        if (!this.selectedSessionIds[paneId]) {
+            this.selectedSessionIds[paneId] = new Set();
+        }
+
         container.innerHTML = `
             <div class="chat-container">
                 <div class="session-list" id="sessionList-${paneId}">
                     <div class="session-list-header">
                         <div class="session-header-row">
-                            <span class="session-header-title">会话列表</span>
-                            <button class="action-btn compact" data-action="new-session" data-pane="${paneId}">
+                            <span class="session-header-title">Sessions</span>
+                            <div class="session-header-actions">
+                                <button class="action-btn primary" data-action="new-session" data-pane="${paneId}">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    <span>New Chat</span>
+                                </button>
+                                <button class="action-btn" data-action="toggle-session-selection" data-pane="${paneId}" title="Batch select">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                    </svg>
+                                    <span>Select</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="session-selection-actions" id="sessionSelectionActions-${paneId}" style="display: none;">
+                            <button class="action-btn" data-action="select-all-sessions" data-pane="${paneId}">
+                                <span>Select All</span>
+                            </button>
+                            <button class="action-btn" data-action="deselect-all-sessions" data-pane="${paneId}">
+                                <span>Clear</span>
+                            </button>
+                            <button class="action-btn danger" data-action="delete-selected-sessions" data-pane="${paneId}" id="deleteSelectedSessionsBtn-${paneId}">
                                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                                 </svg>
-                                新建会话
+                                <span>Delete (0)</span>
                             </button>
                         </div>
                         <div class="session-search">
                             <svg class="session-search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                             </svg>
-                            <input type="text" class="session-search-input" placeholder="搜索会话..." data-pane="${paneId}">
+                            <input type="text" class="session-search-input" placeholder="Search sessions..." data-pane="${paneId}">
                         </div>
                         <div class="session-filter">
                             <select class="session-filter-select" data-pane="${paneId}" data-filter="status">
-                                <option value="">所有状态</option>
-                                <option value="running">运行中</option>
-                                <option value="completed">已完成</option>
-                                <option value="error">错误</option>
+                                <option value="">All Status</option>
+                                <option value="running">Running</option>
+                                <option value="completed">Completed</option>
+                                <option value="error">Error</option>
                             </select>
                         </div>
                     </div>
@@ -363,8 +395,8 @@ class ChatView {
                         <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                         </svg>
-                        <p class="empty-state-title">选择一个会话</p>
-                        <p class="empty-state-text">从左侧列表选择会话查看消息</p>
+                        <p class="empty-state-title">Select a session</p>
+                        <p class="empty-state-text">Choose a session from the list to view messages</p>
                     </div>
                 </div>
             </div>
@@ -394,6 +426,30 @@ class ChatView {
         if (newSessionBtn) {
             newSessionBtn.addEventListener('click', () => this.showNewSessionView(paneId));
         }
+
+        // Toggle selection mode button
+        const toggleSelectionBtn = document.querySelector(`[data-action="toggle-session-selection"][data-pane="${paneId}"]`);
+        if (toggleSelectionBtn) {
+            toggleSelectionBtn.addEventListener('click', () => this.toggleSessionSelectionMode(paneId));
+        }
+
+        // Select all button
+        const selectAllBtn = document.querySelector(`[data-action="select-all-sessions"][data-pane="${paneId}"]`);
+        if (selectAllBtn) {
+            selectAllBtn.addEventListener('click', () => this.selectAllSessions(paneId));
+        }
+
+        // Deselect all button
+        const deselectAllBtn = document.querySelector(`[data-action="deselect-all-sessions"][data-pane="${paneId}"]`);
+        if (deselectAllBtn) {
+            deselectAllBtn.addEventListener('click', () => this.deselectAllSessions(paneId));
+        }
+
+        // Delete selected button
+        const deleteSelectedBtn = document.querySelector(`[data-action="delete-selected-sessions"][data-pane="${paneId}"]`);
+        if (deleteSelectedBtn) {
+            deleteSelectedBtn.addEventListener('click', () => this.deleteSelectedSessions(paneId));
+        }
     }
 
     showNewSessionView(paneId) {
@@ -420,27 +476,27 @@ class ChatView {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                         </svg>
                     </div>
-                    <h2 class="new-session-title">开始新对话</h2>
-                    <p class="new-session-hint">选择 Agent 并输入您的问题或需求</p>
+                    <h2 class="new-session-title">Start New Chat</h2>
+                    <p class="new-session-hint">Select an Agent and enter your message</p>
                 </div>
                 <div class="new-session-agent-selector">
-                    <label for="newSessionAgent-${paneId}">选择 Agent:</label>
+                    <label for="newSessionAgent-${paneId}">Select Agent:</label>
                     <select id="newSessionAgent-${paneId}" class="new-session-agent-select">
                         ${options.replace('<option value="">All Users</option>', '')}
                     </select>
                 </div>
                 <div class="new-session-input-container">
-                    <textarea 
-                        id="newSessionInput-${paneId}" 
-                        class="new-session-input" 
-                        placeholder="输入您的消息..."
+                    <textarea
+                        id="newSessionInput-${paneId}"
+                        class="new-session-input"
+                        placeholder="Enter your message..."
                         rows="3"
                     ></textarea>
                     <button class="new-session-send-btn" data-pane="${paneId}">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
                         </svg>
-                        发送
+                        Send
                     </button>
                 </div>
             </div>
@@ -477,7 +533,7 @@ class ChatView {
 
     async createNewSession(paneId, message, agentName = 'ubuntu') {
         if (!message.trim()) {
-            this.app.showToast('请输入消息内容', 'warning');
+            this.app.showToast('Please enter a message', 'warning');
             return;
         }
 
@@ -493,7 +549,7 @@ class ChatView {
             <div class="chat-header">
                 <div class="chat-header-info">
                     <h2 class="chat-header-title">${this.escapeHtml(sessionTitle)}</h2>
-                    <span class="chat-header-meta">新会话 - ${agentName}</span>
+                    <span class="chat-header-meta">New Session - ${agentName}</span>
                 </div>
             </div>
             <div class="chat-messages" id="chatMessages-${paneId}">
@@ -518,7 +574,7 @@ class ChatView {
                             <span class="thinking-dot"></span>
                             <span class="thinking-dot"></span>
                             <span class="thinking-dot"></span>
-                            <span class="thinking-text">思考中...</span>
+                            <span class="thinking-text">Thinking...</span>
                         </div>
                     </div>
                 </div>
@@ -527,7 +583,7 @@ class ChatView {
                 <textarea 
                     id="chatInput-${paneId}" 
                     class="chat-input" 
-                    placeholder="输入消息继续对话..."
+                    placeholder="Enter message to continue..."
                     rows="1"
                     disabled
                 ></textarea>
@@ -569,7 +625,7 @@ class ChatView {
             
         } catch (error) {
             console.error('Failed to create session:', error);
-            this.app.showToast(error.message || '创建会话失败', 'error');
+            this.app.showToast(error.message || 'Failed to create session', 'error');
             
             // Show error in thinking area
             const thinkingEl = document.getElementById(`thinking-${paneId}`);
@@ -585,8 +641,8 @@ class ChatView {
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
-                            <span>${this.escapeHtml(error.message || '请求失败')}</span>
-                            <button class="retry-btn" onclick="nexusApp.chatView.showNewSessionView('${paneId}')">重试</button>
+                            <span>${this.escapeHtml(error.message || 'Request failed')}</span>
+                            <button class="retry-btn" onclick="nexusApp.chatView.showNewSessionView('${paneId}')">Retry</button>
                         </div>
                     </div>
                 `;
@@ -791,31 +847,53 @@ class ChatView {
 
         // Bind click events
         container.querySelectorAll('.session-item').forEach(item => {
-            item.addEventListener('click', () => {
+            item.addEventListener('click', (e) => {
+                // Don't select session if clicking on checkbox area
+                if (e.target.closest('.session-item-checkbox')) {
+                    return;
+                }
                 this.selectSession(paneId, item.dataset.sessionId);
+            });
+        });
+
+        // Bind checkbox events (for selection mode)
+        container.querySelectorAll('.session-item-checkbox input[type="checkbox"]').forEach(checkbox => {
+            checkbox.addEventListener('change', (e) => {
+                e.stopPropagation();
+                const sessionId = checkbox.closest('.session-item-checkbox').dataset.sessionId;
+                this.toggleSessionSelection(paneId, sessionId);
             });
         });
     }
 
     renderSessionItem(session, paneId) {
-        const statusClass = session.status === 'running' ? 'running' : 
+        const statusClass = session.status === 'running' ? 'running' :
                            session.status === 'error' ? 'error' : 'completed';
         const timeStr = this.formatTime(session.updated_at || session.created_at);
         const isActive = this.currentSession[paneId] === session.id;
+        const isInSelectionMode = this.selectionMode[paneId];
+        const isChecked = this.selectedSessionIds[paneId]?.has(session.id);
 
         return `
-            <div class="session-item ${isActive ? 'active' : ''}" data-session-id="${session.id}">
-                <div class="session-item-header">
-                    <span class="session-item-title">${this.escapeHtml(session.title || session.id)}</span>
-                    <span class="session-item-time">${timeStr}</span>
-                </div>
-                ${session.last_message ? `<p class="session-item-preview">${this.escapeHtml(session.last_message)}</p>` : ''}
-                <div class="session-item-meta">
-                    <span class="session-item-status ${statusClass}">
-                        <span class="status-dot"></span>
-                        ${session.status || 'idle'}
-                    </span>
-                    ${session.username ? `<span>@${session.username}</span>` : ''}
+            <div class="session-item ${isActive ? 'active' : ''} ${isChecked ? 'checked' : ''}" data-session-id="${session.id}">
+                ${isInSelectionMode ? `
+                    <div class="session-item-checkbox" data-session-id="${session.id}">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''}>
+                    </div>
+                ` : ''}
+                <div class="session-item-content">
+                    <div class="session-item-header">
+                        <span class="session-item-title">${this.escapeHtml(session.title || session.id)}</span>
+                        <span class="session-item-time">${timeStr}</span>
+                    </div>
+                    ${session.last_message ? `<p class="session-item-preview">${this.escapeHtml(session.last_message)}</p>` : ''}
+                    <div class="session-item-meta">
+                        <span class="session-item-status ${statusClass}">
+                            <span class="status-dot"></span>
+                            ${session.status || 'idle'}
+                        </span>
+                        ${session.username ? `<span>@${session.username}</span>` : ''}
+                    </div>
                 </div>
             </div>
         `;
@@ -871,7 +949,12 @@ class ChatView {
                     <span class="chat-header-meta">${messages.length} messages</span>
                 </div>
                 <div class="chat-header-actions">
-                    <button class="action-btn" data-action="delete-session" data-session-id="${sessionId}">
+                    <button class="action-btn" data-action="show-files" data-session-id="${sessionId}" title="Files">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                        </svg>
+                    </button>
+                    <button class="action-btn" data-action="delete-session" data-session-id="${sessionId}" title="Delete">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                         </svg>
@@ -887,7 +970,7 @@ class ChatView {
                 <textarea 
                     id="chatInput-${paneId}" 
                     class="chat-input" 
-                    placeholder="输入消息继续对话..."
+                    placeholder="Enter message to continue..."
                     rows="1"
                     data-session-id="${sessionId}"
                 ></textarea>
@@ -906,6 +989,14 @@ class ChatView {
                 this.app.showDeleteModal('session', sessionId, () => {
                     this.deleteSession(paneId, sessionId);
                 });
+            });
+        }
+
+        // Bind files action
+        const filesBtn = detail.querySelector('[data-action="show-files"]');
+        if (filesBtn) {
+            filesBtn.addEventListener('click', () => {
+                this.showFilesModal(sessionId);
             });
         }
 
@@ -993,7 +1084,7 @@ class ChatView {
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
-                        <span class="thinking-text">思考中...</span>
+                        <span class="thinking-text">Thinking...</span>
                     </div>
                 </div>
             </div>
@@ -1010,7 +1101,7 @@ class ChatView {
             // The streaming content is already displayed in the UI.
         } catch (error) {
             console.error('Failed to send message:', error);
-            this.app.showToast(error.message || '发送消息失败', 'error');
+            this.app.showToast(error.message || 'Failed to send message', 'error');
             
             // Replace thinking with error
             const thinkingEl = document.getElementById(thinkingId);
@@ -1026,7 +1117,7 @@ class ChatView {
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                             </svg>
-                            <span>${this.escapeHtml(error.message || '发送失败')}</span>
+                            <span>${this.escapeHtml(error.message || 'Send failed')}</span>
                         </div>
                     </div>
                 `;
@@ -1100,7 +1191,7 @@ class ChatView {
         
         // If no content and no tool calls, show empty placeholder
         if (!bubbleContent) {
-            bubbleContent = '<span class="message-empty">(空消息)</span>';
+            bubbleContent = '<span class="message-empty">(Empty message)</span>';
         }
 
         return `
@@ -1117,10 +1208,10 @@ class ChatView {
     renderToolCallStandalone(tc, isFromUser = false) {
         const status = tc.status || 'pending';
         const statusConfig = {
-            pending: { icon: '⏳', color: 'var(--text-muted)', bgColor: 'rgba(148, 163, 184, 0.1)', label: '等待中' },
-            executing: { icon: '▶️', color: 'var(--primary-500)', bgColor: 'rgba(59, 130, 246, 0.1)', label: '执行中' },
-            completed: { icon: '✓', color: 'var(--success)', bgColor: 'rgba(16, 185, 129, 0.1)', label: '已完成' },
-            failed: { icon: '✗', color: 'var(--error)', bgColor: 'rgba(239, 68, 68, 0.1)', label: '失败' }
+            pending: { icon: '⏳', color: 'var(--text-muted)', bgColor: 'rgba(148, 163, 184, 0.1)', label: 'Pending' },
+            executing: { icon: '▶️', color: 'var(--primary-500)', bgColor: 'rgba(59, 130, 246, 0.1)', label: 'Executing' },
+            completed: { icon: '✓', color: 'var(--success)', bgColor: 'rgba(16, 185, 129, 0.1)', label: 'Completed' },
+            failed: { icon: '✗', color: 'var(--error)', bgColor: 'rgba(239, 68, 68, 0.1)', label: 'Failed' }
         };
         const cfg = statusConfig[status] || statusConfig.pending;
         
@@ -1153,7 +1244,7 @@ class ChatView {
                         </svg>
                         <span class="tool-call-standalone-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
                         ${execTime ? `<span class="tool-call-standalone-time">⏱ ${execTime}</span>` : ''}
-                        ${tc.error ? `<span class="tool-call-standalone-error-badge">⚠ 错误</span>` : ''}
+                        ${tc.error ? `<span class="tool-call-standalone-error-badge">⚠ Error</span>` : ''}
                         <svg class="tool-call-standalone-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                         </svg>
@@ -1166,13 +1257,13 @@ class ChatView {
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                                         </svg>
-                                        输入参数
+                                        Input
                                     </span>
                                     <button class="tool-call-standalone-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-args')">
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                                         </svg>
-                                        复制
+                                        Copy
                                     </button>
                                 </div>
                                 <div class="tool-call-standalone-content" id="${toolId}-args">${this.escapeHtml(argsContent)}</div>
@@ -1185,13 +1276,13 @@ class ChatView {
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                         </svg>
-                                        执行结果
+                                        Output
                                     </span>
                                     <button class="tool-call-standalone-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-result')">
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                                         </svg>
-                                        复制
+                                        Copy
                                     </button>
                                 </div>
                                 <div class="tool-call-standalone-content tool-call-standalone-result" id="${toolId}-result">${this.escapeHtml(resultContent)}</div>
@@ -1204,13 +1295,13 @@ class ChatView {
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                         </svg>
-                                        错误信息
+                                        Error
                                     </span>
                                     <button class="tool-call-standalone-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-error')">
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                                         </svg>
-                                        复制
+                                        Copy
                                     </button>
                                 </div>
                                 <div class="tool-call-standalone-content tool-call-standalone-error" id="${toolId}-error">${this.escapeHtml(tc.error)}</div>
@@ -1225,10 +1316,10 @@ class ChatView {
     renderToolCall(tc) {
         const status = tc.status || 'pending';
         const statusConfig = {
-            pending: { icon: '⏳', color: 'var(--text-muted)', label: '等待中' },
-            executing: { icon: '▶️', color: 'var(--primary-500)', label: '执行中' },
-            completed: { icon: '✓', color: 'var(--success)', label: '已完成' },
-            failed: { icon: '✗', color: 'var(--error)', label: '失败' }
+            pending: { icon: '⏳', color: 'var(--text-muted)', label: 'Pending' },
+            executing: { icon: '▶️', color: 'var(--primary-500)', label: 'Executing' },
+            completed: { icon: '✓', color: 'var(--success)', label: 'Completed' },
+            failed: { icon: '✗', color: 'var(--error)', label: 'Failed' }
         };
         const cfg = statusConfig[status] || statusConfig.pending;
         
@@ -1259,7 +1350,7 @@ class ChatView {
                     </svg>
                     <span class="tool-call-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
                     ${execTime ? `<span class="tool-call-time">${execTime}</span>` : ''}
-                    ${tc.error ? `<span class="tool-call-error-badge">错误</span>` : ''}
+                    ${tc.error ? `<span class="tool-call-error-badge">Error</span>` : ''}
                     <svg class="tool-call-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                     </svg>
@@ -1268,12 +1359,12 @@ class ChatView {
                     ${argsContent ? `
                         <div class="tool-call-section">
                             <div class="tool-call-section-header">
-                                <span class="tool-call-section-title">输入参数</span>
+                                <span class="tool-call-section-title">Input</span>
                                 <button class="tool-call-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-args')">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                                     </svg>
-                                    复制
+                                    Copy
                                 </button>
                             </div>
                             <div class="tool-call-content" id="${toolId}-args">${this.escapeHtml(argsContent)}</div>
@@ -1282,12 +1373,12 @@ class ChatView {
                     ${resultContent ? `
                         <div class="tool-call-section">
                             <div class="tool-call-section-header">
-                                <span class="tool-call-section-title">执行结果</span>
+                                <span class="tool-call-section-title">Output</span>
                                 <button class="tool-call-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-result')">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                                     </svg>
-                                    复制
+                                    Copy
                                 </button>
                             </div>
                             <div class="tool-call-content tool-call-result" id="${toolId}-result">${this.escapeHtml(resultContent)}</div>
@@ -1296,12 +1387,12 @@ class ChatView {
                     ${tc.error ? `
                         <div class="tool-call-section">
                             <div class="tool-call-section-header">
-                                <span class="tool-call-section-title" style="color: var(--error);">错误信息</span>
+                                <span class="tool-call-section-title" style="color: var(--error);">Error</span>
                                 <button class="tool-call-copy-btn" onclick="event.stopPropagation(); nexusApp.chatView.copyToClipboard('${toolId}-error')">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
                                     </svg>
-                                    复制
+                                    Copy
                                 </button>
                             </div>
                             <div class="tool-call-content tool-call-error" id="${toolId}-error">${this.escapeHtml(tc.error)}</div>
@@ -1315,13 +1406,13 @@ class ChatView {
     copyToClipboard(elementId) {
         const element = document.getElementById(elementId);
         if (!element) return;
-        
+
         const text = element.textContent || '';
         navigator.clipboard.writeText(text).then(() => {
-            this.app.showToast('已复制到剪贴板', 'success');
+            this.app.showToast('Copied to clipboard', 'success');
         }).catch(err => {
-            console.error('复制失败:', err);
-            this.app.showToast('复制失败', 'error');
+            console.error('Copy failed:', err);
+            this.app.showToast('Copy failed', 'error');
         });
     }
 
@@ -1405,6 +1496,254 @@ class ChatView {
         div.textContent = str;
         return div.innerHTML;
     }
+
+    // ========== Batch Selection Methods ==========
+
+    toggleSessionSelectionMode(paneId) {
+        this.selectionMode[paneId] = !this.selectionMode[paneId];
+
+        // Clear selections when exiting selection mode
+        if (!this.selectionMode[paneId]) {
+            this.selectedSessionIds[paneId] = new Set();
+        }
+
+        // Update UI
+        const selectionActions = document.getElementById(`sessionSelectionActions-${paneId}`);
+        const toggleBtn = document.querySelector(`[data-action="toggle-session-selection"][data-pane="${paneId}"]`);
+
+        if (selectionActions) {
+            selectionActions.style.display = this.selectionMode[paneId] ? 'flex' : 'none';
+        }
+
+        if (toggleBtn) {
+            toggleBtn.classList.toggle('active', this.selectionMode[paneId]);
+        }
+
+        // Re-render sessions to show/hide checkboxes
+        this.renderSessionList(paneId);
+        this.updateDeleteSessionsButtonCount(paneId);
+    }
+
+    toggleSessionSelection(paneId, sessionId) {
+        if (!this.selectedSessionIds[paneId]) {
+            this.selectedSessionIds[paneId] = new Set();
+        }
+
+        if (this.selectedSessionIds[paneId].has(sessionId)) {
+            this.selectedSessionIds[paneId].delete(sessionId);
+        } else {
+            this.selectedSessionIds[paneId].add(sessionId);
+        }
+
+        // Update item visual state
+        const item = document.querySelector(`#sessionItems-${paneId} .session-item[data-session-id="${sessionId}"]`);
+        if (item) {
+            item.classList.toggle('checked', this.selectedSessionIds[paneId].has(sessionId));
+            const checkbox = item.querySelector('.session-item-checkbox input');
+            if (checkbox) {
+                checkbox.checked = this.selectedSessionIds[paneId].has(sessionId);
+            }
+        }
+
+        this.updateDeleteSessionsButtonCount(paneId);
+    }
+
+    selectAllSessions(paneId) {
+        const sessions = this.sessions[paneId] || [];
+        this.selectedSessionIds[paneId] = new Set(sessions.map(s => s.id));
+
+        // Update all items
+        document.querySelectorAll(`#sessionItems-${paneId} .session-item`).forEach(item => {
+            item.classList.add('checked');
+            const checkbox = item.querySelector('.session-item-checkbox input');
+            if (checkbox) checkbox.checked = true;
+        });
+
+        this.updateDeleteSessionsButtonCount(paneId);
+    }
+
+    deselectAllSessions(paneId) {
+        this.selectedSessionIds[paneId] = new Set();
+
+        // Update all items
+        document.querySelectorAll(`#sessionItems-${paneId} .session-item`).forEach(item => {
+            item.classList.remove('checked');
+            const checkbox = item.querySelector('.session-item-checkbox input');
+            if (checkbox) checkbox.checked = false;
+        });
+
+        this.updateDeleteSessionsButtonCount(paneId);
+    }
+
+    updateDeleteSessionsButtonCount(paneId) {
+        const count = this.selectedSessionIds[paneId]?.size || 0;
+        const btn = document.getElementById(`deleteSelectedSessionsBtn-${paneId}`);
+        if (btn) {
+            btn.innerHTML = `
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+                <span>Delete (${count})</span>
+            `;
+            btn.disabled = count === 0;
+        }
+    }
+
+    async deleteSelectedSessions(paneId) {
+        const sessionIds = Array.from(this.selectedSessionIds[paneId] || []);
+        if (sessionIds.length === 0) {
+            this.app.showToast('No sessions selected', 'warning');
+            return;
+        }
+
+        // Show confirmation modal
+        this.app.showDeleteModal('sessions', `${sessionIds.length} session(s)`, async () => {
+            try {
+                const result = await NexusAPI.bulkDeleteSessions(sessionIds);
+
+                const deletedCount = result.result?.count || sessionIds.length;
+                this.app.showToast(`Deleted ${deletedCount} session(s)`, 'success');
+
+                // Clear selections and reload
+                this.selectedSessionIds[paneId] = new Set();
+                this.updateDeleteSessionsButtonCount(paneId);
+                await this.loadSessions(paneId);
+
+            } catch (error) {
+                console.error('Failed to delete sessions:', error);
+                this.app.showToast('Failed to delete sessions', 'error');
+            }
+        });
+    }
+
+    async showFilesModal(sessionId, subpath = '') {
+        // Get agent name
+        const agentName = document.getElementById('globalUserFilter')?.value || 'ubuntu';
+
+        try {
+            const data = await NexusAPI.getSessionFiles(sessionId, { agentName, subpath });
+
+            // Create modal
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.id = 'filesModal';
+            modal.innerHTML = `
+                <div class="modal files-modal">
+                    <div class="modal-header">
+                        <h3>Session Files</h3>
+                        <button class="modal-close" data-action="close-modal">&times;</button>
+                    </div>
+                    <div class="files-modal-path">
+                        <span class="files-path-label">Path:</span>
+                        <span class="files-path-value">${this.escapeHtml(data.folder_path)}</span>
+                    </div>
+                    <div class="files-breadcrumb">
+                        ${this.renderBreadcrumb(sessionId, subpath)}
+                    </div>
+                    <div class="files-list">
+                        ${data.files.length === 0
+                            ? '<div class="files-empty">No files found</div>'
+                            : data.files.map(file => this.renderFileItem(sessionId, file, agentName)).join('')}
+                    </div>
+                    <div class="modal-footer">
+                        <button class="btn btn-secondary" data-action="close-modal">Close</button>
+                    </div>
+                </div>
+            `;
+
+            // Remove existing modal if any
+            document.getElementById('filesModal')?.remove();
+            document.body.appendChild(modal);
+
+            // Bind events
+            modal.querySelectorAll('[data-action="close-modal"]').forEach(btn => {
+                btn.addEventListener('click', () => modal.remove());
+            });
+
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.remove();
+            });
+
+            // Bind folder navigation
+            modal.querySelectorAll('[data-action="navigate-folder"]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const path = link.dataset.path;
+                    modal.remove();
+                    this.showFilesModal(sessionId, path);
+                });
+            });
+
+            // Bind breadcrumb navigation
+            modal.querySelectorAll('[data-action="navigate-breadcrumb"]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const path = link.dataset.path;
+                    modal.remove();
+                    this.showFilesModal(sessionId, path);
+                });
+            });
+
+        } catch (error) {
+            console.error('Failed to load session files:', error);
+            this.app.showToast(error.message || 'Failed to load files', 'error');
+        }
+    }
+
+    renderBreadcrumb(sessionId, subpath) {
+        const parts = subpath ? subpath.split('/').filter(p => p) : [];
+        let html = `<a href="#" data-action="navigate-breadcrumb" data-path="" class="breadcrumb-item">Root</a>`;
+
+        let currentPath = '';
+        for (const part of parts) {
+            currentPath = currentPath ? `${currentPath}/${part}` : part;
+            html += ` / <a href="#" data-action="navigate-breadcrumb" data-path="${this.escapeHtml(currentPath)}" class="breadcrumb-item">${this.escapeHtml(part)}</a>`;
+        }
+
+        return html;
+    }
+
+    renderFileItem(sessionId, file, agentName) {
+        const sizeStr = file.size != null ? this.formatFileSize(file.size) : '';
+        const modifiedStr = file.modified ? new Date(file.modified).toLocaleString() : '';
+
+        if (file.is_dir) {
+            return `
+                <div class="file-item file-item-dir">
+                    <div class="file-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                        </svg>
+                    </div>
+                    <a href="#" class="file-name" data-action="navigate-folder" data-path="${this.escapeHtml(file.path)}">${this.escapeHtml(file.name)}</a>
+                    <div class="file-size"></div>
+                    <div class="file-modified">${modifiedStr}</div>
+                </div>
+            `;
+        } else {
+            const downloadUrl = NexusAPI.getFileDownloadUrl(sessionId, file.path, { agentName });
+            return `
+                <div class="file-item">
+                    <div class="file-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <a href="${downloadUrl}" class="file-name" target="_blank" download>${this.escapeHtml(file.name)}</a>
+                    <div class="file-size">${sizeStr}</div>
+                    <div class="file-modified">${modifiedStr}</div>
+                </div>
+            `;
+        }
+    }
+
+    formatFileSize(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
 }
 
 // ============================================================
@@ -1415,6 +1754,8 @@ class TaskView {
         this.app = app;
         this.tasks = {};
         this.selectedTask = {};
+        this.selectionMode = {};  // paneId -> boolean
+        this.selectedTaskIds = {}; // paneId -> Set<taskId>
         this.statusColumns = [
             { key: 'todo', title: 'To Do', color: 'var(--status-todo)' },
             { key: 'doing', title: 'Doing', color: 'var(--status-doing)' },
@@ -1426,6 +1767,14 @@ class TaskView {
     }
 
     async render(paneId, tab, container) {
+        // Initialize selection state for this pane
+        if (!this.selectionMode[paneId]) {
+            this.selectionMode[paneId] = false;
+        }
+        if (!this.selectedTaskIds[paneId]) {
+            this.selectedTaskIds[paneId] = new Set();
+        }
+
         container.innerHTML = `
             <div class="task-container">
                 <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
@@ -1437,6 +1786,26 @@ class TaskView {
                                 </svg>
                                 <span>New Task</span>
                             </button>
+                            <button class="action-btn" data-action="toggle-selection" title="Toggle selection mode">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                </svg>
+                                <span>Select</span>
+                            </button>
+                            <div class="selection-actions" id="selectionActions-${paneId}" style="display: none;">
+                                <button class="action-btn" data-action="select-all">
+                                    <span>Select All</span>
+                                </button>
+                                <button class="action-btn" data-action="deselect-all">
+                                    <span>Clear</span>
+                                </button>
+                                <button class="action-btn danger" data-action="delete-selected" id="deleteSelectedBtn-${paneId}">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                    </svg>
+                                    <span>Delete (0)</span>
+                                </button>
+                            </div>
                         </div>
                         <div class="task-toolbar-right">
                             <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" data-pane="${paneId}" id="taskSearch-${paneId}">
@@ -1477,6 +1846,38 @@ class TaskView {
         if (createBtn) {
             createBtn.addEventListener('click', () => {
                 this.app.showCreateTaskModal('single');
+            });
+        }
+
+        // Toggle selection mode button
+        const toggleSelectionBtn = document.querySelector(`#pane-${paneId}-content [data-action="toggle-selection"]`);
+        if (toggleSelectionBtn) {
+            toggleSelectionBtn.addEventListener('click', () => {
+                this.toggleSelectionMode(paneId);
+            });
+        }
+
+        // Select all button
+        const selectAllBtn = document.querySelector(`#pane-${paneId}-content [data-action="select-all"]`);
+        if (selectAllBtn) {
+            selectAllBtn.addEventListener('click', () => {
+                this.selectAllTasks(paneId);
+            });
+        }
+
+        // Deselect all button
+        const deselectAllBtn = document.querySelector(`#pane-${paneId}-content [data-action="deselect-all"]`);
+        if (deselectAllBtn) {
+            deselectAllBtn.addEventListener('click', () => {
+                this.deselectAllTasks(paneId);
+            });
+        }
+
+        // Delete selected button
+        const deleteSelectedBtn = document.querySelector(`#pane-${paneId}-content [data-action="delete-selected"]`);
+        if (deleteSelectedBtn) {
+            deleteSelectedBtn.addEventListener('click', () => {
+                this.deleteSelectedTasks(paneId);
             });
         }
 
@@ -1555,11 +1956,24 @@ class TaskView {
                     `;
                 } else {
                     container.innerHTML = items.map(task => this.renderTaskCard(task, paneId)).join('');
-                    
+
                     // Bind click events
                     container.querySelectorAll('.task-card').forEach(card => {
-                        card.addEventListener('click', () => {
+                        card.addEventListener('click', (e) => {
+                            // Don't select task if clicking on checkbox area
+                            if (e.target.closest('.task-card-checkbox')) {
+                                return;
+                            }
                             this.selectTask(paneId, card.dataset.taskId);
+                        });
+                    });
+
+                    // Bind checkbox events (for selection mode)
+                    container.querySelectorAll('.task-card-checkbox').forEach(checkboxDiv => {
+                        checkboxDiv.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            const taskId = checkboxDiv.dataset.taskId;
+                            this.toggleTaskSelection(paneId, taskId);
                         });
                     });
                 }
@@ -1568,42 +1982,51 @@ class TaskView {
     }
 
     renderTaskCard(task, paneId) {
-        const priorityClass = task.priority === 'critical' ? 'critical' : 
+        const priorityClass = task.priority === 'critical' ? 'critical' :
                              task.priority === 'serious' ? 'serious' : 'normal';
         const timeStr = this.formatTime(task.updated_at || task.created_at);
         const isSelected = this.selectedTask[paneId] === task.id;
+        const isInSelectionMode = this.selectionMode[paneId];
+        const isChecked = this.selectedTaskIds[paneId]?.has(task.id);
 
         return `
-            <div class="task-card ${isSelected ? 'selected' : ''}" data-task-id="${task.id}">
-                <div class="task-card-header">
-                    <span class="task-card-id">#${task.id.slice(0, 8)}</span>
-                    ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
-                </div>
-                <p class="task-card-title">${this.escapeHtml(task.description || 'No description')}</p>
-                <div class="task-card-meta">
-                    <span class="task-card-meta-item">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                        </svg>
-                        ${timeStr}
-                    </span>
-                    ${task.provider ? `
-                        <span class="task-card-meta-item">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                            </svg>
-                            ${task.provider}
-                        </span>
-                    ` : ''}
-                </div>
-                ${task.depends_on && task.depends_on.length > 0 ? `
-                    <div class="task-card-deps">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 12px; height: 12px; color: var(--text-muted);">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
-                        </svg>
-                        ${task.depends_on.map(dep => `<span class="task-card-dep">${dep.slice(0, 8)}</span>`).join('')}
+            <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-task-id="${task.id}">
+                ${isInSelectionMode ? `
+                    <div class="task-card-checkbox" data-task-id="${task.id}">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation()">
                     </div>
                 ` : ''}
+                <div class="task-card-content">
+                    <div class="task-card-header">
+                        <span class="task-card-id">#${task.id.slice(0, 8)}</span>
+                        ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
+                    </div>
+                    <p class="task-card-title">${this.escapeHtml(task.description || 'No description')}</p>
+                    <div class="task-card-meta">
+                        <span class="task-card-meta-item">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            ${timeStr}
+                        </span>
+                        ${task.provider ? `
+                            <span class="task-card-meta-item">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                                </svg>
+                                ${task.provider}
+                            </span>
+                        ` : ''}
+                    </div>
+                    ${task.depends_on && task.depends_on.length > 0 ? `
+                        <div class="task-card-deps">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 12px; height: 12px; color: var(--text-muted);">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+                            </svg>
+                            ${task.depends_on.map(dep => `<span class="task-card-dep">${dep.slice(0, 8)}</span>`).join('')}
+                        </div>
+                    ` : ''}
+                </div>
             </div>
         `;
     }
@@ -1784,6 +2207,126 @@ class TaskView {
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    // ========== Batch Selection Methods ==========
+
+    toggleSelectionMode(paneId) {
+        this.selectionMode[paneId] = !this.selectionMode[paneId];
+
+        // Clear selections when exiting selection mode
+        if (!this.selectionMode[paneId]) {
+            this.selectedTaskIds[paneId] = new Set();
+        }
+
+        // Update UI
+        const selectionActions = document.getElementById(`selectionActions-${paneId}`);
+        const toggleBtn = document.querySelector(`#pane-${paneId}-content [data-action="toggle-selection"]`);
+
+        if (selectionActions) {
+            selectionActions.style.display = this.selectionMode[paneId] ? 'flex' : 'none';
+        }
+
+        if (toggleBtn) {
+            toggleBtn.classList.toggle('active', this.selectionMode[paneId]);
+        }
+
+        // Re-render kanban to show/hide checkboxes
+        this.renderKanban(paneId);
+        this.updateDeleteButtonCount(paneId);
+    }
+
+    toggleTaskSelection(paneId, taskId) {
+        if (!this.selectedTaskIds[paneId]) {
+            this.selectedTaskIds[paneId] = new Set();
+        }
+
+        if (this.selectedTaskIds[paneId].has(taskId)) {
+            this.selectedTaskIds[paneId].delete(taskId);
+        } else {
+            this.selectedTaskIds[paneId].add(taskId);
+        }
+
+        // Update card visual state
+        const card = document.querySelector(`#kanbanBoard-${paneId} .task-card[data-task-id="${taskId}"]`);
+        if (card) {
+            card.classList.toggle('checked', this.selectedTaskIds[paneId].has(taskId));
+            const checkbox = card.querySelector('.task-card-checkbox input');
+            if (checkbox) {
+                checkbox.checked = this.selectedTaskIds[paneId].has(taskId);
+            }
+        }
+
+        this.updateDeleteButtonCount(paneId);
+    }
+
+    selectAllTasks(paneId) {
+        const tasks = this.tasks[paneId] || [];
+        this.selectedTaskIds[paneId] = new Set(tasks.map(t => t.id));
+
+        // Update all cards
+        document.querySelectorAll(`#kanbanBoard-${paneId} .task-card`).forEach(card => {
+            card.classList.add('checked');
+            const checkbox = card.querySelector('.task-card-checkbox input');
+            if (checkbox) checkbox.checked = true;
+        });
+
+        this.updateDeleteButtonCount(paneId);
+    }
+
+    deselectAllTasks(paneId) {
+        this.selectedTaskIds[paneId] = new Set();
+
+        // Update all cards
+        document.querySelectorAll(`#kanbanBoard-${paneId} .task-card`).forEach(card => {
+            card.classList.remove('checked');
+            const checkbox = card.querySelector('.task-card-checkbox input');
+            if (checkbox) checkbox.checked = false;
+        });
+
+        this.updateDeleteButtonCount(paneId);
+    }
+
+    updateDeleteButtonCount(paneId) {
+        const count = this.selectedTaskIds[paneId]?.size || 0;
+        const btn = document.getElementById(`deleteSelectedBtn-${paneId}`);
+        if (btn) {
+            const span = btn.querySelector('span');
+            if (span) {
+                span.textContent = `Delete (${count})`;
+            }
+            btn.disabled = count === 0;
+        }
+    }
+
+    async deleteSelectedTasks(paneId) {
+        const taskIds = Array.from(this.selectedTaskIds[paneId] || []);
+        if (taskIds.length === 0) {
+            this.app.showToast('No tasks selected', 'warning');
+            return;
+        }
+
+        // Show confirmation modal
+        this.app.showDeleteModal('tasks', `${taskIds.length} tasks`, async () => {
+            try {
+                const globalUserFilter = document.getElementById('globalUserFilter');
+                const result = await NexusAPI.bulkDeleteTasks(taskIds, {
+                    agentName: globalUserFilter?.value || 'ubuntu'
+                });
+
+                const deletedCount = result.result?.count || taskIds.length;
+                this.app.showToast(`Deleted ${deletedCount} tasks`, 'success');
+
+                // Clear selections and reload
+                this.selectedTaskIds[paneId] = new Set();
+                this.updateDeleteButtonCount(paneId);
+                await this.loadTasks(paneId);
+
+            } catch (error) {
+                console.error('Failed to delete tasks:', error);
+                this.app.showToast('Failed to delete tasks', 'error');
+            }
+        });
     }
 }
 
@@ -2134,7 +2677,7 @@ class NexusApp {
         modal.innerHTML = `
             <div class="modal" style="max-width: 400px;">
                 <div class="modal-header">
-                    <h3 class="modal-title">新建会话</h3>
+                    <h3 class="modal-title">New Session</h3>
                     <button class="modal-close" data-close-modal>
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -2143,16 +2686,16 @@ class NexusApp {
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
-                        <label class="form-label">会话标题</label>
-                        <input id="newSessionTitle" type="text" class="form-input" placeholder="输入会话标题（可选）">
+                        <label class="form-label">Session Title</label>
+                        <input id="newSessionTitle" type="text" class="form-input" placeholder="Enter session title (optional)">
                     </div>
                     <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">
-                        注意：新建会话将通过 API 创建。如果您的系统不支持创建会话，此功能可能不可用。
+                        Note: New session will be created via API. This feature may not be available if your system doesn't support session creation.
                     </p>
                 </div>
                 <div class="modal-footer">
-                    <button class="action-btn" data-close-modal>取消</button>
-                    <button id="confirmNewSessionBtn" class="action-btn primary">创建</button>
+                    <button class="action-btn" data-close-modal>Cancel</button>
+                    <button id="confirmNewSessionBtn" class="action-btn primary">Create</button>
                 </div>
             </div>
         `;
@@ -2187,13 +2730,13 @@ class NexusApp {
                 username: globalUserFilter?.value || 'ubuntu'
             });
             
-            this.showToast('会话创建成功', 'success');
+            this.showToast('Session created successfully', 'success');
             
             // Reload sessions
             this.chatView.loadSessions(paneId);
         } catch (error) {
             console.error('Failed to create session:', error);
-            this.showToast('创建会话失败：' + (error.message || '未知错误'), 'error');
+            this.showToast('Failed to create session: ' + (error.message || 'Unknown error'), 'error');
         }
     }
 
@@ -2240,20 +2783,20 @@ class NexusApp {
         const dropdown = document.createElement('div');
         dropdown.className = 'tab-add-dropdown';
         dropdown.innerHTML = `
-            <div class="tab-add-dropdown-header">新建标签页</div>
+            <div class="tab-add-dropdown-header">New Tab</div>
             <button class="tab-add-option" data-type="chat">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                 </svg>
-                <span>新建 Chat</span>
-                <span class="tab-add-option-desc">对话会话视图</span>
+                <span>New Chat</span>
+                <span class="tab-add-option-desc">Chat session view</span>
             </button>
             <button class="tab-add-option" data-type="task">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
                 </svg>
-                <span>新建 Task</span>
-                <span class="tab-add-option-desc">任务看板视图</span>
+                <span>New Task</span>
+                <span class="tab-add-option-desc">Task kanban view</span>
             </button>
         `;
 

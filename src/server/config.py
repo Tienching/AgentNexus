@@ -44,7 +44,7 @@ class ServerSettings(BaseSettings):
     
     # 任务执行器配置
     executor_enabled: bool = True
-    executor_default_max_concurrency: int = 1
+    executor_default_max_concurrency: int = 3
     executor_poll_interval: float = 1.0
     executor_max_retries: int = 3
     executor_retry_delay: float = 5.0
