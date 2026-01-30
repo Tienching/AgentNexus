@@ -80,6 +80,19 @@ class NexusAPI {
         return response.json();
     }
 
+    static async bulkDeleteSessions(sessionIds = []) {
+        const response = await fetch(`${API_BASE}/sessions/bulk_delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_ids: sessionIds }),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to bulk delete sessions: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     /**
      * Create new session
      * @param {Object} payload - Session data
@@ -245,6 +258,23 @@ class NexusAPI {
         return response.json();
     }
 
+    static async bulkDeleteTasks(taskIds = [], options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        const response = await fetch(`${API_BASE}/tasks/bulk_delete?${params}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_ids: taskIds }),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to bulk delete tasks: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     /**
      * Batch create multiple tasks at once
      * @param {Array} tasks - Array of task objects to create
@@ -335,19 +365,61 @@ class NexusAPI {
     static async chatStream(agentName, payload) {
         const response = await fetch(`/chat/stream/${agentName}`, {
             method: 'POST',
-            headers: { 
+            headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream'
             },
             body: JSON.stringify(payload),
         });
-        
+
         if (!response.ok) {
             const text = await response.text().catch(() => '');
             throw new Error(`Chat stream failed: ${response.statusText}${text ? ` - ${text}` : ''}`);
         }
-        
+
         return response;
+    }
+
+    // ============ Session Files API ============
+
+    /**
+     * List files in a session's folder
+     * @param {string} sessionId - Session ID
+     * @param {Object} options - Query options
+     * @returns {Promise<Object>} Session files response
+     */
+    static async getSessionFiles(sessionId, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+
+        if (options.subpath) {
+            params.append('subpath', options.subpath);
+        }
+
+        const response = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/files?${params}`);
+        if (!response.ok) {
+            if (response.status === 404) {
+                throw new Error('Session folder not found');
+            }
+            throw new Error(`Failed to fetch session files: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Get download URL for a file in session folder
+     * @param {string} sessionId - Session ID
+     * @param {string} filePath - File path relative to session folder
+     * @param {Object} options - Query options
+     * @returns {string} Download URL
+     */
+    static getFileDownloadUrl(sessionId, filePath, options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+            file_path: filePath,
+        });
+        return `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/files/download?${params}`;
     }
 }
 
