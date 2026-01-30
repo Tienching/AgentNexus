@@ -27,7 +27,7 @@ def _generate_task_id() -> str:
 class TaskPriority(str, Enum):
     """Task priority levels"""
     THOUGHT = "thought"      # Low priority, experimental
-    SERIOUS = "serious"      # High priority, needs completion
+    PROJECT = "project"      # High priority, project-related
     GENERATED = "generated"  # Auto-generated backlog filler
 
 

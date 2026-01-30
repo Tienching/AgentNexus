@@ -67,18 +67,24 @@ class TaskQueue:
     
     def _workspace_key(self, workspace: str) -> str:
         """Get Redis key for tasks by workspace"""
-        # Use hash of workspace path for shorter keys
-        workspace_hash = str(hash(workspace or "default") % 10**8)
+        # Use stable hash for shorter keys
+        import hashlib
+        ws_str = (workspace or "default").encode("utf-8")
+        workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
         return f"tasks:{self.agent_name}:by_workspace:{workspace_hash}"
-    
+
     def _queue_key(self, workspace: str) -> str:
         """Get Redis key for workspace TODO queue"""
-        workspace_hash = str(hash(workspace or "default") % 10**8)
+        import hashlib
+        ws_str = (workspace or "default").encode("utf-8")
+        workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
         return f"queue:{self.agent_name}:{workspace_hash}:todo"
-    
+
     def _executing_key(self, workspace: str) -> str:
         """Get Redis key for executing tasks set"""
-        workspace_hash = str(hash(workspace or "default") % 10**8)
+        import hashlib
+        ws_str = (workspace or "default").encode("utf-8")
+        workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
         return f"executing:{self.agent_name}:{workspace_hash}"
 
     def add_task(
@@ -152,8 +158,8 @@ class TaskQueue:
         self._redis.sadd(self._workspace_key(workspace), task.id)
         
         # Add to TODO queue for execution
-        # Priority: SERIOUS tasks go to front, others to back
-        if priority == TaskPriority.SERIOUS:
+        # Priority: PROJECT tasks go to front, others to back
+        if priority == TaskPriority.PROJECT:
             self._redis.lpush(self._queue_key(workspace), task.id)
         else:
             self._redis.rpush(self._queue_key(workspace), task.id)

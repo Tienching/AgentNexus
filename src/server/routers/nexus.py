@@ -566,6 +566,25 @@ def _task_to_item(task) -> TaskItem:
     )
 
 
+class ProjectItem(BaseModel):
+    project_id: str
+    project_name: str
+    total_tasks: int
+    pending: int = 0
+    todo: int = 0
+    in_progress: int = 0
+    doing: int = 0
+    completed: int = 0
+    done: int = 0
+
+
+@router.get("/projects", response_model=List[ProjectItem])
+async def list_projects(agent_name: str = Query("ubuntu", description="Agent name for task isolation")):
+    """Get all unique projects from existing tasks."""
+    queue = _get_task_queue(agent_name)
+    return queue.get_projects()
+
+
 @router.get("/tasks", response_model=TaskListResponse)
 async def list_tasks(
     agent_name: str = Query("ubuntu", description="Agent name for task isolation"),
@@ -649,7 +668,7 @@ async def create_task(
     if project_name and not project_id:
         project_id = slugify_project(project_name)
 
-    priority = TaskPriority.SERIOUS if project_name else TaskPriority.THOUGHT
+    priority = TaskPriority.PROJECT if (project_name or project_id) else TaskPriority.THOUGHT
 
     queue = _get_task_queue(agent_name)
     task = queue.add_task(
@@ -720,9 +739,9 @@ async def bulk_create_tasks(
             project_id = (task_req.project_id or "").strip() or None
             if project_name and not project_id:
                 project_id = slugify_project(project_name)
-            
-            priority = TaskPriority.SERIOUS if project_name else TaskPriority.THOUGHT
-            
+
+            priority = TaskPriority.PROJECT if (project_name or project_id) else TaskPriority.THOUGHT
+
             # Resolve dependencies - convert temp IDs to real IDs
             depends_on = []
             for dep_id in (task_req.depends_on or []):
