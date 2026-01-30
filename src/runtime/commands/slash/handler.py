@@ -219,7 +219,7 @@ class SlashCommandHandler:
             )
 
         # Determine priority
-        priority = TaskPriority.SERIOUS if project_name else TaskPriority.THOUGHT
+        priority = TaskPriority.PROJECT if project_name else TaskPriority.THOUGHT
         project_id = slugify_project(project_name) if project_name else None
 
         requested_workspace = (workspace or "").strip() or None
@@ -230,7 +230,7 @@ class SlashCommandHandler:
 
         context = {}
         exec_workspace: Optional[str] = None
-        
+
         # 为初始用户消息生成唯一 ID
         context["next_user_message_id"] = f"task-init-{task_id}"
 
@@ -287,8 +287,8 @@ class SlashCommandHandler:
             agent_name=agent_name,
         )
 
-        priority_emoji = "🔴" if priority == TaskPriority.SERIOUS else "💭"
-        priority_label = "Serious" if priority == TaskPriority.SERIOUS else "Thought"
+        priority_emoji = "🔴" if priority == TaskPriority.PROJECT else "💭"
+        priority_label = "Project" if priority == TaskPriority.PROJECT else "Thought"
 
         response = f"## {priority_emoji} {priority_label} Task Created\n\n"
         response += "| Field | Value |\n"

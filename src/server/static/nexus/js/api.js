@@ -138,6 +138,22 @@ class NexusAPI {
         return response.json();
     }
 
+    /**
+     * Get unique projects
+     * @param {Object} options - Query options
+     * @returns {Promise<Array>} List of project items
+     */
+    static async getProjects(options = {}) {
+        const params = new URLSearchParams({
+            agent_name: options.agentName || 'ubuntu',
+        });
+        const response = await fetch(`${API_BASE}/projects?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch projects: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
     // ============ Tasks API ============
 
     static async getTasks(options = {}) {

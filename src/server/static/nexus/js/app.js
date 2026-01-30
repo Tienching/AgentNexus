@@ -1808,6 +1808,9 @@ class TaskView {
                             </div>
                         </div>
                         <div class="task-toolbar-right">
+                            <select class="form-input form-select" style="width: 150px; margin-right: 8px;" data-pane="${paneId}" id="taskProjectFilter-${paneId}">
+                                <option value="">All Projects</option>
+                            </select>
                             <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" data-pane="${paneId}" id="taskSearch-${paneId}">
                         </div>
                     </div>
@@ -1890,17 +1893,63 @@ class TaskView {
                 timeout = setTimeout(() => this.loadTasks(paneId), 300);
             });
         }
+
+        // Project filter
+        const projectFilter = document.getElementById(`taskProjectFilter-${paneId}`);
+        if (projectFilter) {
+            projectFilter.addEventListener('change', () => {
+                this.loadTasks(paneId);
+            });
+        }
+    }
+
+    async loadProjects(paneId) {
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const filterEl = document.getElementById(`taskProjectFilter-${paneId}`);
+        if (!filterEl) return;
+
+        try {
+            const projects = await NexusAPI.getProjects({
+                agentName: globalUserFilter?.value || 'ubuntu'
+            });
+
+            // Keep current selection
+            const current = filterEl.value;
+
+            filterEl.innerHTML = '<option value="">All Projects</option>' +
+                projects.map(p => {
+                    // Show pending/active count in dropdown
+                    const count = (p.todo || 0) + (p.doing || 0);
+                    const label = p.project_name || p.project_id;
+                    const countBadge = count > 0 ? ` (${count})` : '';
+                    return `<option value="${p.project_id}">${label}${countBadge}</option>`;
+                }).join('');
+
+            // Restore selection if it still exists
+            if (current && Array.from(filterEl.options).some(o => o.value === current)) {
+                filterEl.value = current;
+            }
+        } catch (error) {
+            console.error('Failed to load projects:', error);
+        }
     }
 
     async loadTasks(paneId) {
         const searchInput = document.getElementById(`taskSearch-${paneId}`);
+        const projectFilter = document.getElementById(`taskProjectFilter-${paneId}`);
         const globalUserFilter = document.getElementById('globalUserFilter');
 
         try {
+            // Load projects first to populate filter if empty
+            if (projectFilter && projectFilter.options.length <= 1) {
+                await this.loadProjects(paneId);
+            }
+
             const options = {
                 agentName: globalUserFilter?.value || 'ubuntu',
                 pageSize: 100,
-                search: searchInput?.value || ''
+                search: searchInput?.value || '',
+                projectId: projectFilter?.value || ''
             };
 
             const data = await NexusAPI.getTasks(options);
@@ -1993,7 +2042,7 @@ class TaskView {
             <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-task-id="${task.id}">
                 ${isInSelectionMode ? `
                     <div class="task-card-checkbox" data-task-id="${task.id}">
-                        <input type="checkbox" ${isChecked ? 'checked' : ''} onclick="event.stopPropagation()">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''}>
                     </div>
                 ` : ''}
                 <div class="task-card-content">
