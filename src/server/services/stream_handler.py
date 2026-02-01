@@ -129,7 +129,7 @@ class StreamHandler:
         # 如果有 response_url，启用超时回调模式
         if response_url:
             return await self._stream_agui_with_callback(
-                request, request_model, agui_request, adapter, agent_name, executor
+                request, request_model, agui_request, adapter, agent_name, executor, provider
             )
         
         # 标准 AG-UI 流式处理
@@ -180,6 +180,7 @@ class StreamHandler:
         adapter,
         agent_name: str,
         executor,
+        provider: str = "claude",
     ) -> StreamingResponse:
         """支持超时回调的 AG-UI 流式处理
         

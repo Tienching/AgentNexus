@@ -87,6 +87,225 @@ class SessionStorage:
             logger.error(f"Failed to get session meta: {e}")
             return None
 
+    def set_inherited_session(self, session_id: str, inherited_from: str) -> bool:
+        """Mark session as inheriting context from another session.
+
+        Args:
+            session_id: Current session ID
+            inherited_from: Session ID to inherit context from
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"inherited_from": inherited_from})
+            logger.info(f"Set inherited session: {session_id} <- {inherited_from}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set inherited session: {e}")
+            return False
+
+    def get_inherited_session(self, session_id: str) -> Optional[str]:
+        """Get the session ID this session inherited context from.
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Inherited session ID if set, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "inherited_from")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get inherited session: {e}")
+            return None
+
+    def clear_inherited_session(self, session_id: str) -> bool:
+        """Clear the inherited session flag.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "inherited_from")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear inherited session: {e}")
+            return False
+
+    def set_exec_dir_override(self, session_id: str, exec_dir: str) -> bool:
+        """Set execution directory override for a session.
+
+        When set, CCRExecutor will use this directory instead of auto-determining one.
+
+        Args:
+            session_id: Session ID
+            exec_dir: Directory path to use for execution
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"exec_dir_override": exec_dir})
+            logger.info(f"Set exec_dir override: {session_id} -> {exec_dir}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set exec_dir override: {e}")
+            return False
+
+    def get_exec_dir_override(self, session_id: str) -> Optional[str]:
+        """Get execution directory override if set.
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Override directory path if set, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "exec_dir_override")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get exec_dir override: {e}")
+            return None
+
+    def clear_exec_dir_override(self, session_id: str) -> bool:
+        """Clear the execution directory override.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "exec_dir_override")
+            logger.info(f"Cleared exec_dir override: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear exec_dir override: {e}")
+            return False
+
+    def set_target_session_id(self, session_id: str, target_session_id: str) -> bool:
+        """Set target session ID for message archiving when in /workspace -t mode.
+
+        When set, messages from this session should be archived to the target session.
+
+        Args:
+            session_id: Current user's session ID
+            target_session_id: Task's session ID to archive messages to
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"target_session_id": target_session_id})
+            logger.info(f"Set target session ID: {session_id} -> {target_session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set target session ID: {e}")
+            return False
+
+    def get_target_session_id(self, session_id: str) -> Optional[str]:
+        """Get target session ID if set (for /workspace -t mode).
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Target session ID if set, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "target_session_id")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get target session ID: {e}")
+            return None
+
+    def clear_target_session_id(self, session_id: str) -> bool:
+        """Clear the target session ID.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "target_session_id")
+            logger.info(f"Cleared target session ID: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear target session ID: {e}")
+            return False
+
+    def set_claude_session_id(self, session_id: str, claude_session_id: str) -> bool:
+        """Store Claude CLI session UUID for resumption.
+
+        Args:
+            session_id: Our session ID
+            claude_session_id: Claude CLI internal session UUID
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"claude_session_id": claude_session_id})
+            logger.info(f"Set Claude session ID: {session_id} -> {claude_session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set Claude session ID: {e}")
+            return False
+
+    def get_claude_session_id(self, session_id: str) -> Optional[str]:
+        """Get stored Claude CLI session UUID.
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Claude CLI session UUID if set, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "claude_session_id")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get Claude session ID: {e}")
+            return None
+
+    def clear_claude_session_id(self, session_id: str) -> bool:
+        """Clear the Claude session ID.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "claude_session_id")
+            logger.info(f"Cleared Claude session ID: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear Claude session ID: {e}")
+            return False
+
     def get_user_sessions(
         self,
         username: str,

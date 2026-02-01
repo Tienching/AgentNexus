@@ -260,7 +260,7 @@ class TestSlashCommandHandler:
         response = handler.handle_command("/task -p my-app -- Build feature")
 
         assert "Task Created" in response
-        assert "Serious" in response
+        assert "Project" in response
         assert "my-app" in response
         assert "Build feature" in response
 
@@ -439,8 +439,98 @@ class TestSlashCommandHandler:
     def test_unknown_command(self, handler):
         """Test unknown command"""
         response = handler.handle_command("/unknown")
-        
-        assert "未知命令" in response or "命令解析失败" in response
+
+        assert "Unknown Command" in response or "命令解析失败" in response
+
+    def test_workspace_command_change_success_flag(self, handler, temp_dir):
+        """Test /workspace -w <path> command changes directory"""
+        target = Path(temp_dir) / "subdir"
+        target.mkdir()
+
+        # Mock os.chdir since we don't want to actually change test runner cwd
+        with patch('os.chdir') as mock_chdir, patch('os.getcwd', return_value=str(target)):
+            response = handler.handle_command(f"/workspace -w {target}")
+
+            mock_chdir.assert_called_with(target.resolve())
+            assert "Workspace Changed" in response
+            assert str(target) in response
+
+    def test_workspace_command_task_success(self, handler, temp_dir):
+        """Test /workspace -t <id> command changes directory"""
+        target = Path(temp_dir) / "task_ws"
+        target.mkdir()
+
+        # Mock task queue response
+        task_mock = Mock()
+        task_mock.id = "123"
+        task_mock.workspace = str(target)
+
+        handler.task_queue.get_task = Mock(return_value=task_mock)
+
+        with patch('os.chdir') as mock_chdir, patch('os.getcwd', return_value=str(target)):
+            response = handler.handle_command(f"/workspace -t 123")
+
+            mock_chdir.assert_called_with(target.resolve())
+            assert "Workspace Changed" in response
+            assert "task #123" in response
+
+    def test_workspace_command_positional_fails(self, handler):
+        """Test /workspace <path> fails (not supported)"""
+        response = handler.handle_command("/workspace /tmp")
+        assert "Invalid Usage" in response
+        assert "Positional arguments are not supported" in response
+
+    def test_workspace_command_no_args(self, handler):
+        """Test /workspace without args shows current dir"""
+        cwd = "/current/path"
+        with patch('os.getcwd', return_value=cwd):
+            response = handler.handle_command("/workspace")
+
+            assert "Current Workspace" in response
+            assert cwd in response
+
+    def test_workspace_command_not_found(self, handler):
+        """Test /workspace command with non-existent directory"""
+        response = handler.handle_command("/workspace -w /non/existent/path")
+
+        assert "Not Found" in response
+        assert "Directory not found" in response
+
+    def test_workspace_command_not_dir(self, handler, temp_dir):
+        """Test /workspace command with file path"""
+        f = Path(temp_dir) / "file.txt"
+        f.touch()
+
+        response = handler.handle_command(f"/workspace -w {f}")
+
+        assert "Invalid Path" in response
+        assert "Not a directory" in response
+
+    def test_exit_command_success(self, handler):
+        """Test /exit command returns to startup directory"""
+        # Set current working directory to something else
+        handler.startup_cwd = Path("/startup/path")
+
+        with patch('pathlib.Path.cwd', return_value=Path("/other/path")), \
+             patch('os.chdir') as mock_chdir:
+
+            response = handler.handle_command("/exit")
+
+            mock_chdir.assert_called_with(handler.startup_cwd)
+            assert "Returned Home" in response
+            assert str(handler.startup_cwd) in response
+
+    def test_exit_command_already_home(self, handler):
+        """Test /exit command when already at startup directory"""
+        handler.startup_cwd = Path("/startup/path")
+
+        with patch('pathlib.Path.cwd', return_value=Path("/startup/path")), \
+             patch('os.chdir') as mock_chdir:
+
+            response = handler.handle_command("/exit")
+
+            mock_chdir.assert_not_called()
+            assert "Already at Home" in response
 
 
 class TestSlashCommandsConstant:
@@ -448,7 +538,7 @@ class TestSlashCommandsConstant:
 
     def test_all_commands_present(self):
         """Verify all expected commands are in SLASH_COMMANDS"""
-        expected = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat"]
+        expected = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/exit"]
         for cmd in expected:
             assert cmd in SLASH_COMMANDS
 

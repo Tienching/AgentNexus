@@ -145,8 +145,18 @@ class CCRExecutor:
             else:
                 source_session_id = request.session_id if request.session_id else None
                 logger.info(f"Slash command: request.session_id={request.session_id!r}, source_session_id={source_session_id!r}")
+                # Extract callback parameters from request
+                response_url = getattr(request, "response_url", None)
+                callback_msg_id = getattr(request, "msg_id", None)
+                callback_user = getattr(request, "user", None)
                 async for output in self._handle_slash_command(
-                    cleaned_content, agent_name, output_format, source_session_id
+                    cleaned_content,
+                    agent_name,
+                    output_format,
+                    source_session_id,
+                    response_url=response_url,
+                    callback_msg_id=callback_msg_id,
+                    callback_user=callback_user,
                 ):
                     yield output
                 return
@@ -165,8 +175,27 @@ class CCRExecutor:
         except Exception:
             run_cwd = None
 
+        # Check for exec_dir override (set by /workspace -t)
+        exec_dir_override = None
+        try:
+            from ...runtime.stores.session_storage import get_session_storage
+            storage = get_session_storage()
+            exec_dir_override = storage.get_exec_dir_override(request.session_id)
+            if exec_dir_override:
+                logger.info(f"Using exec_dir override: {exec_dir_override}", extra={
+                    "session_id": request.session_id,
+                    "exec_dir_override": exec_dir_override,
+                })
+        except Exception as e:
+            logger.warning(f"Failed to check exec_dir override: {e}")
+
         # 对于 inplace 模式，不创建 session 目录，直接使用指定的 cwd
-        if is_inplace and run_cwd:
+        if exec_dir_override:
+            # Use the override directory (from /workspace -t)
+            exec_dir = Path(exec_dir_override)
+            user_dir = str(exec_dir)
+            cwd_mode = "override"
+        elif is_inplace and run_cwd:
             exec_dir = Path(str(run_cwd))
             user_dir = str(exec_dir)  # 用于日志记录
         else:
@@ -196,12 +225,19 @@ class CCRExecutor:
         )
 
         # 构建命令 - 决定是否使用 -c (continue) 选项
+        # - exec_dir_override 模式（/workspace -t）：总是使用 -c，恢复该目录的上下文
         # - inplace 模式的首次执行：不使用 -c，避免恢复到其他目录的会话
         # - inplace 模式的续聊（chat_continue）：使用 -c，继续当前目录的会话
         # - 非 inplace 模式：总是使用 -c
         run_kind = getattr(request, "run_kind", "") or ""
         is_chat_continue = run_kind == "chat_continue"
-        use_continue = (not is_inplace) or is_chat_continue
+
+        # 简化逻辑：exec_dir_override 模式下总是使用 -c 来恢复上下文
+        if exec_dir_override:
+            use_continue = True  # 切换到任务目录后，使用 -c 恢复该目录的上下文
+        else:
+            use_continue = (not is_inplace) or is_chat_continue
+
         cmd = self._build_command(agent_name, cleaned_content, use_continue=use_continue)
 
         # 检查当前用户
@@ -284,23 +320,35 @@ class CCRExecutor:
         agent_name: str,
         output_format: str = "raw",
         source_session_id: Optional[str] = None,
+        response_url: Optional[str] = None,
+        callback_msg_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Handle slash commands and yield formatted response
-        
+
         Args:
             content: The slash command content
             agent_name: Linux agent user name
             output_format: Output format - "raw" or "legacy"
             source_session_id: Session ID from the source context (for task creation)
-            
+            response_url: Callback URL for async task completion notification
+            callback_msg_id: Message ID to pass back in callback
+            callback_user: User identifier for callback
+
         Yields:
             Formatted response strings
         """
         handler = self._get_slash_handler(agent_name)
-        
+
         try:
             # Get markdown response from handler
-            response = handler.handle_command(content, source_session_id=source_session_id)
+            response = handler.handle_command(
+                content,
+                source_session_id=source_session_id,
+                response_url=response_url,
+                callback_msg_id=callback_msg_id,
+                callback_user=callback_user,
+            )
             
             logger.info(f"Slash command handled", extra={
                 "command": content.split()[0] if content else "",
@@ -550,7 +598,7 @@ class CCRExecutor:
 
     def _build_command(self, agent_name: str, content: str, use_continue: bool = True) -> List[str]:
         """构建CCR命令
-        
+
         Args:
             agent_name: Agent用户名
             content: 用户消息内容
@@ -558,33 +606,35 @@ class CCRExecutor:
         """
         cleaned_content, model_param = self._parse_model_param(content)
         ccr_command = self.config.agent_ccr_command_map.get(agent_name, self.config.ccr_command)
-        
+
         cmd = [ccr_command]
-        
+
         if ccr_command == "ccr":
             cmd.append("code")
-        
+
         if cleaned_content.lower() == "/clear":
             cmd.extend(["-p"])
             message = "你好"
         else:
+            # 使用 -c 来恢复当前目录的上下文
             if use_continue:
                 cmd.extend(["-c", "-p"])
             else:
                 cmd.extend(["-p"])
+
             message = cleaned_content
-        
+
         cmd.extend([
             "--output-format", "stream-json",
             "--include-partial-messages",
             "--verbose",
         ])
-        
+
         if model_param:
             cmd.extend(["--model", model_param])
-        
+
         cmd.extend([message, "--dangerously-skip-permissions"])
-        
+
         return cmd
 
     def _sanitize_text(self, text: str) -> str:

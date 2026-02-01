@@ -100,15 +100,21 @@ class TaskQueue:
         source_session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         depends_on: Optional[list] = None,
+        response_url: Optional[str] = None,
+        callback_msg_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
     ) -> Task:
         """Add new task to queue
-        
+
         Args:
             source_session_id: Optional session ID from the source context (e.g., chat session).
                               If provided, task session_id will be {source_session_id}_{task_id}.
                               Otherwise, defaults to task_{task_id}.
             agent_name: Optional agent name (CCR user) for task execution.
                        If not provided, uses self.agent_name (the queue's default agent).
+            response_url: Optional callback URL for task completion notification.
+            callback_msg_id: Optional message ID to pass back in callback.
+            callback_user: Optional user identifier for callback.
         """
         # Generate task_id first if not provided
         actual_task_id = str(task_id) if task_id else str(uuid.uuid4())[:8]
@@ -137,7 +143,11 @@ class TaskQueue:
             agent_name=effective_agent,
             provider=normalized_provider,
             session_id=session_id,
+            source_session_id=source_session_id,
             depends_on=depends_on or [],
+            response_url=response_url,
+            callback_msg_id=callback_msg_id,
+            callback_user=callback_user,
         )
         
         # Store task data
@@ -170,7 +180,14 @@ class TaskQueue:
         
         return task
 
-    def enqueue_chat_continue(self, task_id: str, message: str) -> Optional[Task]:
+    def enqueue_chat_continue(
+        self,
+        task_id: str,
+        message: str,
+        response_url: Optional[str] = None,
+        callback_msg_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
+    ) -> Optional[Task]:
         """Re-enqueue an existing task as a background chat-continue run.
 
         This keeps the same task id and session id (`task_<id>`), but updates task.context
@@ -180,6 +197,11 @@ class TaskQueue:
         - If task is DOING, do not enqueue.
         - If task is CANCELLED, do not enqueue.
         - Avoid duplicating task id in the TODO queue.
+
+        Args:
+            response_url: Optional callback URL for completion notification.
+            callback_msg_id: Optional message ID to pass back in callback.
+            callback_user: Optional user identifier for callback.
         """
         task_id = str(task_id)
         task = self.get_task(task_id)
@@ -202,7 +224,20 @@ class TaskQueue:
         ctx["next_user_message_id"] = f"continue-{uuid.uuid4().hex[:8]}"
         ctx["next_run_kind"] = "chat_continue"
         task.context = ctx
-        self._redis.hset(self._task_key(task.id), {"context": json.dumps(ctx, ensure_ascii=False)})
+
+        # Update callback info for this run (may differ from original task creation)
+        updates: Dict[str, str] = {"context": json.dumps(ctx, ensure_ascii=False)}
+        if response_url:
+            task.response_url = response_url
+            updates["response_url"] = response_url
+        if callback_msg_id:
+            task.callback_msg_id = callback_msg_id
+            updates["callback_msg_id"] = callback_msg_id
+        if callback_user:
+            task.callback_user = callback_user
+            updates["callback_user"] = callback_user
+
+        self._redis.hset(self._task_key(task.id), updates)
 
         # Move status to TODO (from DONE/FAILED/etc.)
         try:
@@ -362,7 +397,7 @@ class TaskQueue:
         failed = self._redis.scard(self._status_key(TaskStatus.FAILED))
         cancelled = self._redis.scard(self._status_key(TaskStatus.CANCELLED))
         archived = self._redis.scard(self._status_key(TaskStatus.ARCHIVED))
-        
+
         return {
             "total": todo + doing + done + failed + cancelled + archived,
             "todo": todo,
@@ -376,6 +411,26 @@ class TaskQueue:
             "in_progress": doing,
             "completed": done,
         }
+
+    def update_task(self, task: Task) -> bool:
+        """Update task data in Redis.
+
+        This saves all task fields including claude_session_id.
+        Does not change queue membership or status indices.
+
+        Args:
+            task: Task object with updated fields
+
+        Returns:
+            True if successful, False if task doesn't exist
+        """
+        if not self._redis.exists(self._task_key(task.id)):
+            logger.warning(f"Task {task.id} not found for update")
+            return False
+
+        self._redis.hset(self._task_key(task.id), task.to_redis_hash())
+        logger.debug(f"Updated task {task.id}")
+        return True
 
     def get_projects(self) -> List[dict]:
         """Get all projects with task counts and status"""

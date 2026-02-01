@@ -28,6 +28,7 @@ class TaskPriority(str, Enum):
     """Task priority levels"""
     THOUGHT = "thought"      # Low priority, experimental
     SERIOUS = "serious"      # High priority, needs completion
+    PROJECT = "project"      # Top priority, maps to Project
     GENERATED = "generated"  # Auto-generated backlog filler
 
 
@@ -108,10 +109,21 @@ class Task(BaseModel):
     
     # Session ID for conversation storage (format: {session_id}_{task_id})
     session_id: Optional[str] = None
-    
+
+    # Source session ID (where the task was created from)
+    source_session_id: Optional[str] = None
+
     # Task dependencies - list of task IDs that must complete before this task runs
     depends_on: List[str] = Field(default_factory=list)
-    
+
+    # Claude CLI session UUID for context resumption
+    claude_session_id: Optional[str] = None
+
+    # Callback notification configuration for async task completion
+    response_url: Optional[str] = None          # Callback URL for task completion notification
+    callback_msg_id: Optional[str] = None       # Message ID to pass back in callback
+    callback_user: Optional[str] = None         # User identifier for callback
+
     model_config = ConfigDict(use_enum_values=True)
     
     def to_redis_hash(self) -> Dict[str, str]:

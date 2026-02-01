@@ -208,6 +208,7 @@ async def task_handler(task: Task) -> Optional[str]:
             await _archive_converted_sse(end_event)
 
         logger.info(f"Task {task.id} completed successfully")
+        _task_error = None  # Track error for notification
         return None  # 成功
 
     except asyncio.CancelledError:
@@ -215,6 +216,7 @@ async def task_handler(task: Task) -> Optional[str]:
         raise
     except Exception as e:
         logger.error(f"Task {task.id} failed: {e}", exc_info=True)
+        _task_error = str(e)  # Track error for notification
         try:
             await archiver.on_run_error(str(e))
         except Exception:
@@ -233,6 +235,26 @@ async def task_handler(task: Task) -> Optional[str]:
             await archiver.on_run_finished()
         except Exception:
             pass
+
+        # Send task completion notification if response_url is set
+        if getattr(task, "response_url", None):
+            try:
+                from .services.task_notifier import TaskNotifier
+                notifier = TaskNotifier()
+                # Check if _task_error was set in except block
+                task_succeeded = "_task_error" not in dir() or _task_error is None
+                await notifier.notify_task_completion(
+                    task_id=task.id,
+                    session_id=session_id,
+                    response_url=task.response_url,
+                    callback_msg_id=getattr(task, "callback_msg_id", None),
+                    callback_user=getattr(task, "callback_user", None),
+                    success=task_succeeded,
+                    error_message=_task_error if not task_succeeded else None,
+                    source_session_id=getattr(task, "source_session_id", None),
+                )
+            except Exception as notify_err:
+                logger.warning(f"Failed to send task completion notification: {notify_err}")
 
 
 @asynccontextmanager

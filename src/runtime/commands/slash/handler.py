@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ import logging
 
 from ...models.task_models import TaskPriority, TaskStatus
 from ...stores.session_storage import get_session_storage
+from ...models.session import StoredMessage
 from ...stores.task_storage import TaskQueue
 from .worktree import (
     NotGitRepoError,
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/exit"]
 
 
 def slugify_project(name: str) -> str:
@@ -72,6 +74,14 @@ class SlashCommandHandler:
         # Trash directory
         self._trash_dir = Path(self.config.user_home_base) / agent_name / "trash"
 
+        # Store startup CWD for /exit command
+        # Use config.user_home_base or Path.home() to ensure stability
+        # avoiding issues where process CWD has already changed
+        base = Path(self.config.user_home_base)
+        if str(base).strip() == "/home":
+            base = Path.home()
+        self.startup_cwd = base
+
     @property
     def task_queue(self) -> TaskQueue:
         """Lazy initialization of task queue"""
@@ -95,7 +105,14 @@ class SlashCommandHandler:
         args = parts[1] if len(parts) > 1 else ""
         return command, args
 
-    def handle_command(self, content: str, source_session_id: Optional[str] = None) -> str:
+    def handle_command(
+        self,
+        content: str,
+        source_session_id: Optional[str] = None,
+        response_url: Optional[str] = None,
+        callback_msg_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
+    ) -> str:
         """Handle a slash command and return markdown response.
 
         Grammar (strict):
@@ -104,6 +121,9 @@ class SlashCommandHandler:
         Args:
             content: The slash command content
             source_session_id: Session ID from the source context (for task creation)
+            response_url: Optional callback URL for async task completion notification
+            callback_msg_id: Optional message ID to pass back in callback
+            callback_user: Optional user identifier for callback
 
         Notes:
             - Free text MUST appear after `--`.
@@ -142,6 +162,9 @@ class SlashCommandHandler:
                     provider=parsed.options.get("provider"),
                     source_session_id=source_session_id,
                     agent_name=parsed.options.get("agent"),
+                    response_url=response_url,
+                    callback_msg_id=callback_msg_id,
+                    callback_user=callback_user,
                 )
 
             if parsed.cmd == "chat" and parsed.subcmd == "history":
@@ -153,6 +176,9 @@ class SlashCommandHandler:
                 return self._handle_chat_continue(
                     task_id=parsed.options["task"],
                     message=parsed.free_text,
+                    response_url=response_url,
+                    callback_msg_id=callback_msg_id,
+                    callback_user=callback_user,
                 )
 
             if parsed.cmd == "check" and parsed.subcmd == "status":
@@ -185,6 +211,17 @@ class SlashCommandHandler:
             if parsed.cmd == "clear" and parsed.subcmd == "now":
                 return self._handle_clear()
 
+            if parsed.cmd == "workspace":
+                return self._handle_workspace(
+                    path_arg=parsed.options.get("workspace"),
+                    task_id=parsed.options.get("task"),
+                    args=parsed.args,
+                    current_session_id=source_session_id
+                )
+
+            if parsed.cmd == "exit":
+                return self._handle_exit_impl(current_session_id=source_session_id)
+
             if parsed.cmd == "help" and parsed.subcmd == "show":
                 return self._handle_help()
 
@@ -193,6 +230,40 @@ class SlashCommandHandler:
         except Exception as e:
             logger.error(f"Error handling parsed command /{parsed.cmd} {parsed.subcmd}: {e}", exc_info=True)
             return f"## ❌ Error\n\nFailed to execute command: {str(e)}"
+
+    def _import_history(self, source_session_id: str, target_session_id: str) -> None:
+        """Import history from source session to target session.
+
+        This effectively allows a new session to "inherit" the context of an old task.
+        It appends messages, so it works as a merge.
+        """
+        try:
+            if not source_session_id or not target_session_id:
+                return
+
+            storage = get_session_storage()
+            source_msgs = storage.get_session_messages(source_session_id)
+
+            if not source_msgs:
+                return
+
+            # Add a system delimiter to indicate context switch
+            delimiter = StoredMessage(
+                role="system",
+                content=f"Context switched to session: {source_session_id}. Previous history imported below.",
+                created_at=int(datetime.now(timezone.utc).timestamp() * 1000)
+            )
+            storage.add_session_message(target_session_id, delimiter)
+
+            # Copy messages
+            # Note: We keep original timestamps to preserve history timeline
+            for msg in source_msgs:
+                storage.add_session_message(target_session_id, msg)
+
+            logger.info(f"Imported {len(source_msgs)} messages from {source_session_id} to {target_session_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to import history from {source_session_id}: {e}")
 
     def _handle_task_create(
         self,
@@ -203,14 +274,20 @@ class SlashCommandHandler:
         provider: Optional[str] = None,
         source_session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
+        response_url: Optional[str] = None,
+        callback_msg_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
     ) -> str:
         """Handle `/task create` (strict syntax; free text must be after `--`).
-        
+
         Args:
             source_session_id: Session ID from the source context.
                               Task session_id will be {source_session_id}_{task_id}.
             agent_name: Optional agent name (CCR user) for task execution.
                        If not provided, uses the default agent from task queue.
+            response_url: Optional callback URL for task completion notification.
+            callback_msg_id: Optional message ID to pass back in callback.
+            callback_user: Optional user identifier for callback.
         """
         if not (description or "").strip():
             return (
@@ -285,6 +362,9 @@ class SlashCommandHandler:
             task_id=task_id,
             source_session_id=source_session_id,
             agent_name=agent_name,
+            response_url=response_url,
+            callback_msg_id=callback_msg_id,
+            callback_user=callback_user,
         )
 
         priority_emoji = "🔴" if priority == TaskPriority.PROJECT else "💭"
@@ -307,8 +387,21 @@ class SlashCommandHandler:
 
         return response
 
-    def _handle_chat_continue(self, task_id: str, message: str) -> str:
-        """Handle `/chat continue` - enqueue a background run for an existing task."""
+    def _handle_chat_continue(
+        self,
+        task_id: str,
+        message: str,
+        response_url: Optional[str] = None,
+        callback_msg_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
+    ) -> str:
+        """Handle `/chat continue` - enqueue a background run for an existing task.
+
+        Args:
+            response_url: Optional callback URL for completion notification.
+            callback_msg_id: Optional message ID to pass back in callback.
+            callback_user: Optional user identifier for callback.
+        """
         task_id = (task_id or "").strip()
         msg = (message or "").strip()
         if not task_id:
@@ -335,7 +428,13 @@ class SlashCommandHandler:
             )
 
         try:
-            self.task_queue.enqueue_chat_continue(task_id, msg)
+            self.task_queue.enqueue_chat_continue(
+                task_id,
+                msg,
+                response_url=response_url,
+                callback_msg_id=callback_msg_id,
+                callback_user=callback_user,
+            )
         except Exception as e:
             return f"## ❌ 入队失败\n\n{str(e)}"
 
@@ -990,6 +1089,245 @@ class SlashCommandHandler:
             "Your session has been cleared. A fresh workspace has been created."
         )
 
+    def _find_claude_session_id(self, task_dir: Path) -> Optional[str]:
+        """Find Claude CLI session UUID from task directory.
+
+        Claude stores sessions in ~/.claude/projects/{path-with-dashes}/
+        The main session file is {uuid}.jsonl (not agent-*.jsonl)
+
+        Args:
+            task_dir: The task's execution directory
+
+        Returns:
+            Claude CLI session UUID if found, None otherwise
+        """
+        try:
+            # Transform path: /home/ubuntu/sessions/xxx_taskid → -home-ubuntu-sessions-xxx-taskid
+            path_str = str(task_dir.resolve())
+            projects_dir_name = path_str.replace("/", "-").replace("_", "-")
+
+            claude_projects_dir = Path.home() / ".claude" / "projects" / projects_dir_name
+
+            if not claude_projects_dir.exists():
+                logger.debug(f"Claude projects dir not found: {claude_projects_dir}")
+                return None
+
+            # Find session UUID file (*.jsonl but not agent-*.jsonl)
+            for f in claude_projects_dir.iterdir():
+                if f.suffix == ".jsonl" and not f.name.startswith("agent-"):
+                    logger.info(f"Found Claude session UUID: {f.stem}")
+                    return f.stem  # Return UUID without extension
+
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to find Claude session ID: {e}")
+            return None
+
+    def _handle_workspace(self, path_arg: Optional[str] = None, task_id: Optional[str] = None, args: Optional[list] = None, current_session_id: Optional[str] = None) -> str:
+        """Handle /workspace command - change process working directory
+
+        Usage:
+            /workspace              - Show current directory
+            /workspace -w <path>    - Switch to path
+            /workspace -t <taskid>  - Switch to task workspace
+        """
+        # Reject positional args if present
+        if args or (path_arg is None and task_id is None and args):
+            # Special case: if strictly no args/options, it means "Show current" (args is empty list)
+            # But if args has content, it's invalid usage.
+            if args:
+                return (
+                    "## ❌ Invalid Usage\n\n"
+                    "Positional arguments are not supported.\n"
+                    "**Usage:**\n"
+                    "- `/workspace` (Show current)\n"
+                    "- `/workspace -w <path>`\n"
+                    "- `/workspace -t <task_id>`"
+                )
+
+        # No options -> Show current execution directory
+        if not path_arg and not task_id:
+            # Check if there's an exec_dir override for this session
+            actual_exec_dir = None
+            if current_session_id:
+                try:
+                    storage = get_session_storage()
+                    actual_exec_dir = storage.get_exec_dir_override(current_session_id)
+                except Exception:
+                    pass
+
+            if actual_exec_dir:
+                return f"## 📂 Current Workspace\n\n`{actual_exec_dir}`\n(Overridden by /workspace -t)"
+            else:
+                # Default: show the session directory (even if not yet created)
+                base = Path(self.config.user_home_base)
+                if str(base).strip() == "/home":
+                    base = Path.home()
+                if current_session_id:
+                    session_dir = base / "sessions" / current_session_id
+                    # Always show the session directory path, regardless of existence
+                    # The directory will be created when Claude CLI executes
+                    return f"## 📂 Current Workspace\n\n`{session_dir}`"
+                # Fallback: no session_id available (should be rare)
+                return f"## 📂 Current Workspace\n\n`{os.getcwd()}`"
+
+        target_path = None
+        found_session_id = None  # Track the actual session ID from directory name
+
+        # Resolve path from task_id
+        if task_id:
+            task = self.task_queue.get_task(task_id)
+            if not task:
+                return f"## ❌ Not Found\n\nTask `{task_id}` not found."
+
+            if task.workspace:
+                target_path = task.workspace
+                found_session_id = task.session_id  # Use task's session_id if workspace is set
+            else:
+                # Fallback logic to find session directory
+                # 1. Determine correct base (handle misconfigured user_home_base)
+                base = Path(self.config.user_home_base)
+                if str(base).strip() == "/home":
+                    base = Path.home()  # e.g. /home/ubuntu
+
+                sessions_dir = base / "sessions"
+                found = None
+
+                # 2. Try task.session_id (best match)
+                if task.session_id:
+                    p = sessions_dir / task.session_id
+                    if p.exists():
+                        found = p
+                        found_session_id = task.session_id
+
+                # 3. Search for directory ending in _{task_id} (e.g. uuid_taskid)
+                if not found and sessions_dir.exists():
+                    suffix = f"_{task.id}"
+                    for child in sessions_dir.iterdir():
+                        if child.is_dir() and child.name.endswith(suffix):
+                            found = child
+                            found_session_id = child.name  # Use actual directory name as session_id
+                            break
+
+                # 4. Fallback to standard naming
+                if not found:
+                    found = sessions_dir / f"task_{task.id}"
+                    found_session_id = f"task_{task.id}"
+
+                target_path = str(found)
+
+        # Resolve explicit path (overrides task if both provided? or error? prioritizing path)
+        if path_arg:
+            target_path = path_arg
+
+        if not target_path:
+            return "## ❌ Error\n\nCould not determine target path."
+
+        try:
+            p = Path(target_path).resolve()
+
+            if not p.exists():
+                 return f"## ❌ Not Found\n\nDirectory not found: `{p}`"
+
+            if not p.is_dir():
+                 return f"## ❌ Invalid Path\n\nNot a directory: `{p}`"
+
+            os.chdir(p)
+            response = f"## 📂 Workspace Changed\n\n**New CWD:** `{os.getcwd()}`"
+
+            if task_id and not path_arg:
+                response += f"\n(Switched to task #{task_id} workspace)"
+
+                # Set exec_dir override for subsequent commands to use -c in this directory
+                if current_session_id:
+                    storage = get_session_storage()
+                    storage.set_exec_dir_override(current_session_id, str(p))
+                    # Also set target_session_id so messages get archived to task's session
+                    if found_session_id:
+                        storage.set_target_session_id(current_session_id, found_session_id)
+                    response += f"\n(Context will be restored via -c flag)"
+
+            return response
+
+        except Exception as e:
+            return f"## ❌ Error\n\nFailed to change directory: {e}"
+
+    def _handle_exit(self) -> str:
+        """Handle /exit command - return to current session's directory.
+
+        Instead of returning to global home (/home/ubuntu), this should return to
+        the session-specific directory if it exists, or home if not.
+        """
+        current = Path.cwd()
+
+        # Determine the "Home" for this session
+        # Logic: {home_base}/sessions/{current_session_id}
+        # But wait, we don't have current_session_id stored in self.
+        # We need to capture it or infer it.
+        # Since _handle_exit doesn't take session_id, we might need to rely on self.startup_cwd
+        # BUT self.startup_cwd was set to user_home_base.
+
+        # Let's try to restore to the directory where the process started,
+        # which ideally should be the session root if the agent was launched correctly.
+        # IF self.startup_cwd is set to /home/ubuntu, that's "too far back".
+
+        # Refined Logic:
+        # If we are inside a task directory (sessions/UUID_taskID), we want to go up to sessions/UUID?
+        # No, "session directory" usually IS the task directory in this flat structure.
+        # The user wants to go back to "this session's default address".
+        # If the session started in /home/ubuntu/sessions/main_session, we should go there.
+
+        # Since we can't easily know the "original session ID" without passing it,
+        # let's assume the user wants to go to self.startup_cwd (which we previously forced to /home/ubuntu).
+        # User says: "exit should enter this session's session_id directory".
+
+        # We will need to pass current_session_id to _handle_exit.
+        return self._handle_exit_impl()
+
+    def _handle_exit_impl(self, current_session_id: Optional[str] = None) -> str:
+        # Default target is the session directory (not startup_cwd which is /home/ubuntu)
+        target = self.startup_cwd
+
+        # Clear target_session_id when exiting (messages should go back to original session)
+        # But keep/set exec_dir_override to session directory so -c flag is used
+        if current_session_id:
+            try:
+                storage = get_session_storage()
+                # Clear target_session_id - messages should go back to original session
+                storage.clear_target_session_id(current_session_id)
+            except Exception as e:
+                logger.warning(f"Failed to clear target_session_id: {e}")
+
+            # Return to session directory (the correct "home" for this session)
+            base = self.startup_cwd
+            session_dir = base / "sessions" / current_session_id
+            # Always use session directory - create it if it doesn't exist
+            if not session_dir.exists():
+                try:
+                    session_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"Created session directory: {session_dir}")
+                except Exception as e:
+                    logger.warning(f"Failed to create session directory: {e}")
+            target = session_dir
+
+            # Set exec_dir_override to session directory so -c flag is used
+            # This ensures context inheritance continues in the original session
+            try:
+                storage = get_session_storage()
+                storage.set_exec_dir_override(current_session_id, str(target))
+            except Exception as e:
+                logger.warning(f"Failed to set exec_dir_override for session: {e}")
+
+        current = Path.cwd()
+        if current == target:
+            return "## ℹ️ Already at Home\n\nYou are already at the default directory."
+
+        try:
+            os.chdir(target)
+            return f"## 🏠 Returned Home\n\nRestored working directory: `{target}`"
+        except Exception as e:
+            return f"## ❌ Error\n\nFailed to restore directory: {e}"
+
     def _handle_help(self) -> str:
         """Handle /help command - show all available commands"""
         return """## 📚 帮助 - 可用命令
@@ -1029,6 +1367,22 @@ class SlashCommandHandler:
 ```
 /cancel -t <任务ID>  # 取消任务
 /cancel -p <项目>    # 取消项目
+```
+
+---
+
+### 工作区管理
+
+**`/workspace`** - 切换目录
+```
+/workspace              # 显示当前目录
+/workspace -w <path>    # 切换到指定路径
+/workspace -t <task_id> # 切换到任务目录
+```
+
+**`/exit`** - 退出
+```
+/exit                   # 回退到初始目录
 ```
 
 ---
