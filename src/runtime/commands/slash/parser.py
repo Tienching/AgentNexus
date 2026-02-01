@@ -16,7 +16,7 @@ Business execution is handled elsewhere.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import shlex
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,6 +57,7 @@ class ParsedSlashCommand:
     subcmd: str
     options: Dict[str, Any]
     free_text: str
+    args: List[str] = field(default_factory=list)
 
 
 class SlashCommandParseError(ValueError):
@@ -81,6 +82,8 @@ KNOWN_SLASH_COMMANDS = [
     "/clear",
     "/help",
     "/chat",
+    "/workspace",
+    "/exit",
 ]
 
 # Default subcommand when omitted (None means subcommand is required)
@@ -94,6 +97,8 @@ DEFAULT_SUBCMD: Dict[str, Optional[str]] = {
     "trash": "list",
     "cancel": "task",  # will be inferred from -t/-p
     "chat": "history",
+    "workspace": "switch",
+    "exit": "now",
 }
 
 # Commands where subcmd can be inferred from options (-t -> task, -p -> project, etc.)
@@ -209,6 +214,17 @@ SPECS: List[CommandSpec] = [
     ),
     # clear
     CommandSpec(cmd="clear", subcmd="now"),
+    # workspace
+    CommandSpec(
+        cmd="workspace",
+        subcmd="switch",
+        options=(
+            OptionDef(short="w", long="workspace", type="string", required=False),
+            OptionDef(short="t", long="task", type="string", required=False),
+        ),
+    ),
+    # exit
+    CommandSpec(cmd="exit", subcmd="now"),
 ]
 
 SPEC_BY_CMD_SUBCMD = _spec_index(SPECS)
@@ -343,6 +359,7 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
 
     by_short, by_long = _options_index(spec)
     options: Dict[str, Any] = {}
+    args: List[str] = []
 
     i = 0
     while i < len(before_dd):
@@ -389,15 +406,23 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
                     val = True
                     i += 1
 
+            if opt.long in options:
+                raise SlashCommandParseError(
+                    f"参数重复: {opt.long_flag}",
+                    usage=usage_for(cmd, subcmd),
+                )
+            options[opt.long] = val
+
         elif tok.startswith("-") and len(tok) == 2:
             # short option
             short = tok[1:]
             opt = by_short.get(short)
             if not opt:
-                raise SlashCommandParseError(
-                    f"未知参数: -{short}",
-                    usage=usage_for(cmd, subcmd),
-                )
+                # Treat as positional arg if not a known flag
+                args.append(tok)
+                i += 1
+                continue
+
             if opt.takes_value:
                 if i + 1 >= len(before_dd):
                     raise SlashCommandParseError(
@@ -411,19 +436,18 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
                 val = True
                 i += 1
 
-        else:
-            # e.g. -abc is not supported
-            raise SlashCommandParseError(
-                f"不支持的参数写法: {tok}",
-                usage=usage_for(cmd, subcmd),
-            )
+            if opt.long in options:
+                raise SlashCommandParseError(
+                    f"参数重复: {opt.long_flag}",
+                    usage=usage_for(cmd, subcmd),
+                )
+            options[opt.long] = val
 
-        if opt.long in options:
-            raise SlashCommandParseError(
-                f"参数重复: {opt.long_flag}",
-                usage=usage_for(cmd, subcmd),
-            )
-        options[opt.long] = val
+        else:
+            # Positional argument
+            args.append(tok)
+            i += 1
+
 
     # defaults & required
     for opt in spec.options:
@@ -448,4 +472,4 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
             usage=usage_for(cmd, subcmd),
         )
 
-    return ParsedSlashCommand(cmd=cmd, subcmd=subcmd, options=options, free_text=free_text)
+    return ParsedSlashCommand(cmd=cmd, subcmd=subcmd, options=options, free_text=free_text, args=args)

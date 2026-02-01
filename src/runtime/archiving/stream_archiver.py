@@ -516,18 +516,31 @@ def create_archiver(
     provider: Optional[str] = None,
 ) -> StreamArchiver:
     """Factory function to create a StreamArchiver
-    
+
     Args:
         thread_id: AG-UI thread ID (used as session ID)
         run_id: AG-UI run ID
         username: Username
         agent_name: Optional agent name
-        
+
     Returns:
         StreamArchiver instance
     """
+    # Check if there's a target_session_id override (for /workspace -t mode)
+    # If set, archive messages to the target session instead of the current session
+    archive_session_id = thread_id
+    try:
+        from ..stores.session_storage import get_session_storage
+        storage = get_session_storage()
+        target_session_id = storage.get_target_session_id(thread_id)
+        if target_session_id:
+            archive_session_id = target_session_id
+            logger.info(f"Using target_session_id for archiving: {thread_id} -> {target_session_id}")
+    except Exception as e:
+        logger.warning(f"Failed to check target_session_id: {e}")
+
     return StreamArchiver(
-        session_id=thread_id,  # Use thread_id as session_id
+        session_id=archive_session_id,  # Use target_session_id if set, otherwise thread_id
         thread_id=thread_id,
         run_id=run_id,
         username=username,
