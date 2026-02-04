@@ -602,13 +602,21 @@ class ChatView {
         }
 
         try {
-            // Build legacy (易事厅) request payload 
-            // The backend auto-detects protocol, default is legacy format
+            // Build AG-UI request payload
+            const runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
             const payload = {
-                content: message,
-                user: agentName,
-                session_id: sessionId,
-                msg_type: 'text'
+                threadId: sessionId,
+                runId: runId,
+                messages: [
+                    {
+                        role: "user",
+                        content: message
+                    }
+                ],
+                forwardedProps: {
+                    username: agentName
+                }
             };
 
             // Call streaming API
@@ -668,40 +676,43 @@ class ChatView {
             `;
         }
         
-        const contentEl = document.getElementById(`streaming-content-${thinkingId}`);
-        let fullContent = '';
-        
+        let currentContentEl = document.getElementById(`streaming-content-${thinkingId}`);
+        let currentSegmentText = '';
+
+        // Track active tools for real-time rendering
+        const activeTools = {};
+
         // Call streaming API
         const response = await NexusAPI.chatStream(agentName, payload);
-        
+
         const reader = response.body?.getReader();
         const decoder = new TextDecoder();
-        
+
         if (!reader) {
             throw new Error('No response body');
         }
-        
+
         let buffer = '';
-        
+
         try {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                
+
                 buffer += decoder.decode(value, { stream: true });
-                
+
                 // Process complete SSE events
                 const events = buffer.split('\n\n');
                 buffer = events.pop() || ''; // Keep incomplete event in buffer
-                
+
                 for (const event of events) {
                     if (!event.trim()) continue;
-                    
+
                     // Parse legacy SSE format: event:delta\ndata:{"delta":"...","finished":false}
                     const lines = event.split('\n');
                     let eventType = '';
                     let eventData = '';
-                    
+
                     for (const line of lines) {
                         if (line.startsWith('event:')) {
                             eventType = line.slice(6).trim();
@@ -711,51 +722,135 @@ class ChatView {
                             eventData = line.slice(6).trim();
                         }
                     }
-                    
+
                     if (!eventData) continue;
                     if (eventData === '[DONE]') continue;
-                    
+
                     try {
                         const data = JSON.parse(eventData);
-                        
+
                         // Handle legacy format with response field (event:delta, data.response)
                         if (eventType === 'delta' && data.response !== undefined) {
                             if (data.response) {
-                                fullContent += data.response;
-                                if (contentEl) {
-                                    contentEl.innerHTML = this.formatMessageContent(fullContent);
+                                currentSegmentText += data.response;
+                                if (currentContentEl) {
+                                    currentContentEl.innerHTML = this.formatMessageContent(currentSegmentText);
                                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                                 }
                             }
                             // Check if stream is finished
                             if (data.finished === true) {
                                 // Stream completed, remove streaming indicator
-                                if (contentEl) {
-                                    contentEl.classList.remove('streaming');
+                                if (currentContentEl) {
+                                    currentContentEl.classList.remove('streaming');
                                 }
                             }
                         }
                         // Handle legacy format (event:delta, data.delta)
                         else if (eventType === 'delta' && data.delta) {
-                            fullContent += data.delta;
-                            if (contentEl) {
-                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                            currentSegmentText += data.delta;
+                            if (currentContentEl) {
+                                currentContentEl.innerHTML = this.formatMessageContent(currentSegmentText);
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                             }
                         }
-                        // Handle AGUI format
+                        // Handle AGUI format - Text
                         else if (data.type === 'TEXT_MESSAGE_CONTENT' && data.delta) {
-                            fullContent += data.delta;
-                            if (contentEl) {
-                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                            currentSegmentText += data.delta;
+                            if (currentContentEl) {
+                                currentContentEl.innerHTML = this.formatMessageContent(currentSegmentText);
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle AGUI format - Tool Start
+                        else if (data.type === 'TOOL_CALL_START') {
+                            const toolId = data.toolCallId;
+                            activeTools[toolId] = {
+                                id: toolId,
+                                tool_name: data.toolCallName,
+                                status: 'executing', // Start in executing state
+                                args_string: '',
+                                start_time: Date.now()
+                            };
+
+                            // Render tool card
+                            const html = this.renderToolCall(activeTools[toolId]);
+
+                            // Append to parent container (sibling to text content)
+                            if (currentContentEl && currentContentEl.parentElement) {
+                                // 1. Create tool wrapper and append
+                                const wrapper = document.createElement('div');
+                                wrapper.innerHTML = html;
+                                const toolEl = wrapper.firstElementChild;
+                                toolEl.id = `streaming-tool-${toolId}`;
+                                currentContentEl.parentElement.appendChild(toolEl);
+
+                                activeTools[toolId].element = toolEl;
+
+                                // 2. Create NEW text container for subsequent text
+                                // This ensures text -> tool -> text order is preserved visually
+                                const newContentEl = document.createElement('div');
+                                newContentEl.className = 'message-text streaming';
+                                currentContentEl.parentElement.appendChild(newContentEl);
+
+                                // 3. Update content element reference to point to new container
+                                currentContentEl.classList.remove('streaming');
+                                currentContentEl = newContentEl;
+                                currentSegmentText = '';
+                            }
+                        }
+                        // Handle AGUI format - Tool Args
+                        else if (data.type === 'TOOL_CALL_ARGS') {
+                            const toolId = data.toolCallId;
+                            if (activeTools[toolId]) {
+                                activeTools[toolId].args_string += data.delta;
+
+                                // Update UI
+                                const toolEl = document.getElementById(`streaming-tool-${toolId}`);
+                                if (toolEl) {
+                                    // Re-render to ensure args are displayed correctly (header summary + body)
+                                    // Optimization: could just update text node, but re-render is safer for layout
+                                    const newHtml = this.renderToolCall(activeTools[toolId]);
+                                    const newWrapper = document.createElement('div');
+                                    newWrapper.innerHTML = newHtml;
+                                    const newToolEl = newWrapper.firstElementChild;
+                                    newToolEl.id = toolEl.id;
+                                    toolEl.replaceWith(newToolEl);
+                                    activeTools[toolId].element = newToolEl;
+                                }
+                            }
+                        }
+                        // Handle AGUI format - Tool Result/End
+                        else if (data.type === 'TOOL_CALL_RESULT' || data.type === 'TOOL_CALL_END') {
+                            const toolId = data.toolCallId;
+                            if (activeTools[toolId]) {
+                                if (data.type === 'TOOL_CALL_RESULT') {
+                                    activeTools[toolId].result = data.content;
+                                } else if (data.type === 'TOOL_CALL_END') {
+                                    if (data.result !== undefined) {
+                                        activeTools[toolId].result = data.result;
+                                    }
+                                    activeTools[toolId].status = 'completed';
+                                    activeTools[toolId].end_time = Date.now();
+                                }
+
+                                // Final re-render
+                                const toolEl = document.getElementById(`streaming-tool-${toolId}`);
+                                if (toolEl) {
+                                    const newHtml = this.renderToolCall(activeTools[toolId]);
+                                    const newWrapper = document.createElement('div');
+                                    newWrapper.innerHTML = newHtml;
+                                    const newToolEl = newWrapper.firstElementChild;
+                                    newToolEl.id = toolEl.id;
+                                    toolEl.replaceWith(newToolEl);
+                                }
                             }
                         }
                         // Handle generic delta
                         else if (data.delta && !data.type) {
-                            fullContent += data.delta;
-                            if (contentEl) {
-                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                            currentSegmentText += data.delta;
+                            if (currentContentEl) {
+                                currentContentEl.innerHTML = this.formatMessageContent(currentSegmentText);
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                             }
                         }
@@ -776,8 +871,8 @@ class ChatView {
         }
         
         // Remove streaming class when done
-        if (contentEl) {
-            contentEl.classList.remove('streaming');
+        if (currentContentEl) {
+            currentContentEl.classList.remove('streaming');
         }
         
         // Re-enable input
@@ -1134,18 +1229,27 @@ class ChatView {
         // Get agent name from global filter
         const globalUserFilter = document.getElementById('globalUserFilter');
         const agentName = globalUserFilter?.value || 'ubuntu';
-        
-        // Build legacy (易事厅) request payload with session_id to continue conversation
+
+        // Build AG-UI request payload
+        const runId = `run_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
         const payload = {
-            content: message,
-            user: agentName,
-            session_id: sessionId,
-            msg_type: 'text'
+            threadId: sessionId,
+            runId: runId,
+            messages: [
+                {
+                    role: "user",
+                    content: message
+                }
+            ],
+            forwardedProps: {
+                username: agentName
+            }
         };
-        
+
         // Use the shared streaming method
         await this.streamChatResponse(paneId, agentName, payload, thinkingId);
-        
+
         // Refresh session list to update last_message
         this.loadSessions(paneId);
     }
@@ -1171,8 +1275,9 @@ class ChatView {
                 if (segment.type === 'text' && segment.content) {
                     bubbleContent += this.formatMessageContent(segment.content);
                 } else if (segment.type === 'tool_call' && segment.tool_call_id) {
-                    // Find the tool call by ID
-                    const tc = messageToolCalls.find(t => t.id === segment.tool_call_id);
+                    // Find the tool call by ID (search in ALL session tool calls, not just filtered ones)
+                    // The segment itself serves as the linkage
+                    const tc = toolCalls.find(t => t.id === segment.tool_call_id);
                     if (tc) {
                         bubbleContent += this.renderToolCall(tc);
                     }
@@ -1214,24 +1319,39 @@ class ChatView {
             failed: { icon: '✗', color: 'var(--error)', bgColor: 'rgba(239, 68, 68, 0.1)', label: 'Failed' }
         };
         const cfg = statusConfig[status] || statusConfig.pending;
-        
+
         // Calculate execution time
         let execTime = '';
         if (tc.start_time && tc.end_time) {
             const ms = tc.end_time - tc.start_time;
             execTime = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
         }
-        
+
         // Format args and result
         const argsContent = tc.args ? JSON.stringify(tc.args, null, 2) : tc.args_string || '';
-        const resultContent = tc.result !== undefined ? 
+        const resultContent = tc.result !== undefined ?
             (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
-        
+
         // Generate unique IDs for copy buttons
         const toolId = `tool-${tc.id || Math.random().toString(36).substr(2, 9)}`;
-        
+
+        // Extract summary info
+        let summary = '';
+        let summaryLabel = '';
+        if (tc.args) {
+            if (tc.args.file_path) { summary = tc.args.file_path; summaryLabel = 'File'; }
+            else if (tc.args.path) { summary = tc.args.path; summaryLabel = 'Path'; }
+            else if (tc.args.command) { summary = tc.args.command; summaryLabel = 'Cmd'; }
+            else if (tc.args.query) { summary = tc.args.query; summaryLabel = 'Query'; }
+            else if (tc.args.url) { summary = tc.args.url; summaryLabel = 'URL'; }
+            else if (tc.args.description) { summary = tc.args.description; summaryLabel = 'Desc'; }
+        }
+
+        // Expand by default if running or if it has interesting content
+        const isExpanded = status === 'executing' || status === 'pending';
+
         return `
-            <div class="tool-call-standalone" data-tool-id="${toolId}">
+            <div class="tool-call-standalone ${isExpanded ? 'expanded' : ''}" data-tool-id="${toolId}">
                 <div class="tool-call-standalone-inner">
                     <div class="tool-call-standalone-header" onclick="this.closest('.tool-call-standalone').classList.toggle('expanded')">
                         <div class="tool-call-standalone-status" style="background: ${cfg.bgColor}; color: ${cfg.color}">
@@ -1242,7 +1362,10 @@ class ChatView {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                         </svg>
-                        <span class="tool-call-standalone-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                        <div class="tool-call-info" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+                            <span class="tool-call-standalone-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                            ${summary ? `<span class="tool-call-summary" style="font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono);"><strong style="color: var(--text-secondary);">${summaryLabel}:</strong> ${this.escapeHtml(summary)}</span>` : ''}
+                        </div>
                         ${execTime ? `<span class="tool-call-standalone-time">⏱ ${execTime}</span>` : ''}
                         ${tc.error ? `<span class="tool-call-standalone-error-badge">⚠ Error</span>` : ''}
                         <svg class="tool-call-standalone-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1322,24 +1445,39 @@ class ChatView {
             failed: { icon: '✗', color: 'var(--error)', label: 'Failed' }
         };
         const cfg = statusConfig[status] || statusConfig.pending;
-        
+
         // Calculate execution time
         let execTime = '';
         if (tc.start_time && tc.end_time) {
             const ms = tc.end_time - tc.start_time;
             execTime = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s`;
         }
-        
+
         // Format args and result
         const argsContent = tc.args ? JSON.stringify(tc.args, null, 2) : tc.args_string || '';
-        const resultContent = tc.result !== undefined ? 
+        const resultContent = tc.result !== undefined ?
             (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
-        
+
         // Generate unique IDs for copy buttons
         const toolId = `tool-${tc.id || Math.random().toString(36).substr(2, 9)}`;
-        
+
+        // Extract summary info
+        let summary = '';
+        let summaryLabel = '';
+        if (tc.args) {
+            if (tc.args.file_path) { summary = tc.args.file_path; summaryLabel = 'File'; }
+            else if (tc.args.path) { summary = tc.args.path; summaryLabel = 'Path'; }
+            else if (tc.args.command) { summary = tc.args.command; summaryLabel = 'Cmd'; }
+            else if (tc.args.query) { summary = tc.args.query; summaryLabel = 'Query'; }
+            else if (tc.args.url) { summary = tc.args.url; summaryLabel = 'URL'; }
+            else if (tc.args.description) { summary = tc.args.description; summaryLabel = 'Desc'; }
+        }
+
+        // Expand by default if running
+        const isExpanded = status === 'executing' || status === 'pending';
+
         return `
-            <div class="tool-call" data-tool-id="${toolId}">
+            <div class="tool-call ${isExpanded ? 'expanded' : ''}" data-tool-id="${toolId}">
                 <div class="tool-call-header" onclick="this.closest('.tool-call').classList.toggle('expanded')">
                     <div class="tool-call-status" style="color: ${cfg.color}">
                         <span class="tool-call-status-icon">${cfg.icon}</span>
@@ -1348,7 +1486,10 @@ class ChatView {
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                     </svg>
-                    <span class="tool-call-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                    <div class="tool-call-info" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+                        <span class="tool-call-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                        ${summary ? `<span class="tool-call-summary" style="font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono);"><strong style="color: var(--text-secondary);">${summaryLabel}:</strong> ${this.escapeHtml(summary)}</span>` : ''}
+                    </div>
                     ${execTime ? `<span class="tool-call-time">${execTime}</span>` : ''}
                     ${tc.error ? `<span class="tool-call-error-badge">Error</span>` : ''}
                     <svg class="tool-call-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
