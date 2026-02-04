@@ -31,14 +31,14 @@ uv sync
 # 启动应用
 if [ "$RELOAD" = "true" ]; then
     echo "Starting in development mode (with auto-reload)..."
-    uv run uvicorn src.claude_code_api.app:app \
+    uv run uvicorn src.server.app:app \
         --host $HOST \
         --port $PORT \
         --reload \
         --log-level info
 else
     echo "Starting in production mode..."
-    uv run uvicorn src.claude_code_api.app:app \
+    uv run uvicorn src.server.app:app \
         --host $HOST \
         --port $PORT \
         --workers ${API_WORKERS:-4} \

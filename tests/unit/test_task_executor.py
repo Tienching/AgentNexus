@@ -5,13 +5,13 @@ import pytest
 import asyncio
 from datetime import datetime, timezone
 
-from src.providers.claude_code_api.services import (
+from src.server.services import (
     TaskExecutor,
     ExecutorState,
     create_and_start_executor,
     WorkspaceQueueManager,
 )
-from src.providers.claude_code_api.models import Task, TaskPriority, TaskStatus, ExecutorConfig
+from src.server.models import Task, TaskPriority, TaskStatus, ExecutorConfig
 
 
 class MockTaskQueue:

@@ -229,11 +229,12 @@
                 <!-- Single Task Form -->
                 <div id="singleTaskForm" class="modal-tab-content active" data-tab-content="single">
                     <div class="form-group">
-                        <label class="form-label">Provider</label>
-                        <select id="taskProvider" class="form-input form-select">
-                            <option value="claude">Claude</option>
-                            <option value="gemini">Gemini</option>
-                        </select>
+                        <label class="form-label">Agent</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <select id="taskUser" class="form-input form-select" style="min-width:160px;"></select>
+                            <select id="taskModel" class="form-input form-select" style="min-width:180px;"></select>
+                        </div>
+                        <p class="form-hint">Select a user and model for this task</p>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Description <span class="required">*</span></label>
@@ -245,11 +246,6 @@
                         <p class="form-hint">Optional: Specify a working directory for the task</p>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">Agent</label>
-                        <input id="taskAgent" type="text" class="form-input" placeholder="ubuntu" value="ubuntu">
-                        <p class="form-hint">System user to execute the task</p>
-                    </div>
-                    <div class="form-group">
                         <label class="form-label">Depends On</label>
                         <input id="taskDependsOn" type="text" class="form-input" placeholder="task-id-1, task-id-2">
                         <p class="form-hint">Optional: Comma-separated task IDs this task depends on</p>
@@ -259,11 +255,12 @@
                 <!-- Bulk Create Form -->
                 <div id="bulkTaskForm" class="modal-tab-content" data-tab-content="bulk">
                     <div class="form-group">
-                        <label class="form-label">Provider</label>
-                        <select id="bulkProvider" class="form-input form-select">
-                            <option value="claude">Claude</option>
-                            <option value="gemini">Gemini</option>
-                        </select>
+                        <label class="form-label">Agent</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <select id="bulkUser" class="form-input form-select" style="min-width:160px;"></select>
+                            <select id="bulkModel" class="form-input form-select" style="min-width:180px;"></select>
+                        </div>
+                        <p class="form-hint">Select a user and model for these tasks</p>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Workspace (shared)</label>
@@ -279,11 +276,12 @@
                 <!-- Task Chain Form -->
                 <div id="chainTaskForm" class="modal-tab-content" data-tab-content="chain">
                     <div class="form-group">
-                        <label class="form-label">Provider</label>
-                        <select id="chainProvider" class="form-input form-select">
-                            <option value="claude">Claude</option>
-                            <option value="gemini">Gemini</option>
-                        </select>
+                        <label class="form-label">Agent</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <select id="chainUser" class="form-input form-select" style="min-width:160px;"></select>
+                            <select id="chainModel" class="form-input form-select" style="min-width:180px;"></select>
+                        </div>
+                        <p class="form-hint">Select a user and model for this task chain</p>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Workspace (shared)</label>

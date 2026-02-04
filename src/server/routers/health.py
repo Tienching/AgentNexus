@@ -3,7 +3,7 @@
 
 from fastapi import APIRouter
 
-from src.providers.claude_code_api.models import HealthResponse, MetricsResponse
+from ..models import HealthResponse, MetricsResponse
 from ..config import settings
 
 router = APIRouter(tags=["health"])

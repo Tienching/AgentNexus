@@ -24,7 +24,7 @@ from .services import (
     get_executor,
 )
 from src.runtime.models.task_models import ExecutorConfig
-from src.providers.claude_code_api.models import Task
+from .models import Task
 
 # 全局变量用于存储指标
 metrics = {
@@ -49,12 +49,14 @@ async def task_handler(task: Task) -> Optional[str]:
     import asyncio
     import uuid
 
-    from src.providers.claude_code_api.adapters import ProtocolType, get_router
-    from src.providers.claude_code_api.models import RequestModel
+    from .adapters import ProtocolType, get_router
+    from .models import RequestModel
     from .services import CCRExecutor, get_session_storage
     from .services.stream_archiver import create_archiver
-    from src.providers.gemini_cli_api.services.gemini_executor import GeminiExecutor
+    from src.providers.gemini import GeminiExecutor
+    from src.providers.codex import CodexCLIExecutor
     from src.runtime.adapters.gemini import GeminiAGUIAdapter
+    from src.runtime.adapters.codex import CodexCLIAGUIAdapter
 
     logger = get_logger(__name__)
 
@@ -71,8 +73,10 @@ async def task_handler(task: Task) -> Optional[str]:
     provider = (getattr(task, "provider", None) or "claude").strip().lower() or "claude"
 
     # Create provider-specific executor
-    if provider == "gemini":
+    if provider in ("gemini", "gemini-internal"):
         executor = GeminiExecutor(config=settings)
+    elif provider in ("codex", "codex-internal"):
+        executor = CodexCLIExecutor()
     else:
         executor = CCRExecutor(config=settings)
 
@@ -119,6 +123,8 @@ async def task_handler(task: Task) -> Optional[str]:
     # Adapter: provider-specific stream-json -> AG-UI SSE
     if provider == "gemini":
         adapter = GeminiAGUIAdapter()
+    elif provider in ("codex", "codex-internal"):
+        adapter = CodexCLIAGUIAdapter()
     else:
         adapter = get_router().get_adapter(ProtocolType.AGUI)
 
