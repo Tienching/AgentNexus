@@ -52,10 +52,10 @@ class TestProviderRouting:
             raise AssertionError("CCRExecutor.execute should not be used when provider=gemini")
 
         with patch(
-            "src.providers.claude_code_api.services.stream_handler.GeminiExecutor.execute",
+            "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.providers.claude_code_api.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CCRExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-gem", "r-gem", provider="gemini")
@@ -87,10 +87,10 @@ class TestProviderRouting:
             yield json.dumps({"type": "stream_event", "event": {"type": "message_stop"}})
 
         with patch(
-            "src.providers.claude_code_api.services.stream_handler.GeminiExecutor.execute",
+            "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.providers.claude_code_api.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CCRExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cla", "r-cla", provider=None)
@@ -121,13 +121,13 @@ class TestProviderRouting:
             raise AssertionError("CCRExecutor.execute should not be used when session meta provider=gemini")
 
         with patch(
-            "src.providers.claude_code_api.services.stream_handler.get_session_storage",
+            "src.server.providers.registry.get_session_storage",
             return_value=_Storage(),
         ), patch(
-            "src.providers.claude_code_api.services.stream_handler.GeminiExecutor.execute",
+            "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.providers.claude_code_api.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CCRExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-meta", "r-meta", provider=None)

@@ -2,7 +2,7 @@
 
 import json
 
-from src.runtime.adapters.gemini import GeminiAGUIAdapter, GeminiLegacyAdapter
+from src.runtime.adapters.gemini import GeminiAGUIAdapter
 
 
 class TestGeminiAGUIAdapter:
@@ -53,22 +53,4 @@ class TestGeminiAGUIAdapter:
         assert result is not None
         assert "TEXT_MESSAGE_CONTENT" in result
         assert "TEXT_MESSAGE_END" in result
-        assert "ok" in result
-
-
-class TestGeminiLegacyAdapter:
-    def test_convert_message(self):
-        adapter = GeminiLegacyAdapter()
-        event = {"type": "message", "role": "assistant", "content": "Hello"}
-        result = adapter.convert(event)
-        assert result is not None
-        assert result.startswith("event:delta")
-        assert "Hello" in result
-
-    def test_convert_tool_result(self):
-        adapter = GeminiLegacyAdapter()
-        event = {"type": "tool_result", "tool_id": "tool-1", "status": "success", "output": "ok"}
-        result = adapter.convert(event)
-        assert result is not None
-        assert "结果" in result
         assert "ok" in result

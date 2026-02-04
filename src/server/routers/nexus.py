@@ -21,8 +21,8 @@ from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 
 from ..config import settings
-from src.providers.claude_code_api.models.agui_events import AGUIMessage, MessageRole, MessagesSnapshotEvent
-from src.providers.claude_code_api.models import (
+from src.runtime.events.agui import AGUIMessage, MessageRole, MessagesSnapshotEvent
+from ..models import (
     TaskStatus,
     TaskPriority,
     SessionMeta,
@@ -32,7 +32,7 @@ from src.providers.claude_code_api.models import (
 )
 from ..services.task_storage import TaskQueue
 from src.runtime.commands.slash.handler import slugify_project
-from src.providers.claude_code_api.providers import get_provider_registry
+from ..providers import get_provider_registry
 from ..services.session_storage import get_session_storage
 from ..logger import get_logger
 
@@ -61,6 +61,18 @@ class UsernamesResponse(BaseModel):
     usernames: list[str] = []
 
 
+class AgentInfo(BaseModel):
+    id: str
+    username: str
+    agent_type: str
+    display_name: str
+    available: bool = True
+
+
+class AgentsResponse(BaseModel):
+    agents: list[AgentInfo] = []
+
+
 # ============ Usernames API ============
 
 @router.get("/usernames", response_model=UsernamesResponse)
@@ -72,6 +84,60 @@ async def get_usernames():
     storage = get_session_storage()
     usernames = storage.get_all_usernames()
     return UsernamesResponse(usernames=usernames)
+
+
+# ============ Agents API ============
+
+@router.get("/agents", response_model=AgentsResponse)
+async def get_agents():
+    """Get available agents by user and tool type.
+
+    Returns a list of available agent configurations for the UI selector.
+    """
+    home_base = Path(settings.user_home_base)
+    usernames: list[str] = []
+    try:
+        if home_base.exists():
+            for entry in home_base.iterdir():
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                try:
+                    pw = pwd.getpwnam(name)
+                except KeyError:
+                    continue
+                if pw.pw_shell in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/nologin"):
+                    continue
+                usernames.append(name)
+        usernames = sorted(set(usernames))
+    except Exception:
+        usernames = []
+    if not usernames:
+        usernames = ["ubuntu"]
+
+    agent_types = [
+        {"type": "claude", "label": "claude"},
+        {"type": "claude-internal", "label": "claude-internal"},
+        {"type": "gemini", "label": "gemini"},
+        {"type": "gemini-internal", "label": "gemini-internal"},
+        {"type": "codex", "label": "codex"},
+        {"type": "codex-internal", "label": "codex-internal"},
+    ]
+
+    agents: list[AgentInfo] = []
+    for username in usernames:
+        for entry in agent_types:
+            agent_type = entry["type"]
+            label = entry["label"]
+            agents.append(AgentInfo(
+                id=f"{username}::{agent_type}",
+                username=username,
+                agent_type=agent_type,
+                display_name=f"{username} / {label}",
+                available=True,
+            ))
+
+    return AgentsResponse(agents=agents)
 
 
 # ============ Session List API ============

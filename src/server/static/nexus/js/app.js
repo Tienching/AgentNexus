@@ -452,6 +452,67 @@ class ChatView {
         }
     }
 
+    getSessionMeta(paneId, sessionId) {
+        const sessions = this.sessions[paneId] || [];
+        return sessions.find(session => session.id === sessionId) || null;
+    }
+
+    getAvailableAgents(selectedUser = '') {
+        const agents = this.app.availableAgents || [];
+        if (!agents.length) return [];
+        return agents.filter(agent => {
+            if (agent.available === false) return false;
+            if (selectedUser && agent.username !== selectedUser) return false;
+            return true;
+        });
+    }
+
+    buildAgentOptions(agents = []) {
+        if (!agents.length) {
+            return '<option value="ubuntu::claude-internal">ubuntu / claude-internal</option>';
+        }
+
+        const groups = {};
+        agents.forEach(agent => {
+            if (!groups[agent.username]) {
+                groups[agent.username] = [];
+            }
+            groups[agent.username].push(agent);
+        });
+
+        return Object.entries(groups).map(([username, items]) => {
+            const options = items.map(agent => {
+                const label = agent.display_name || `${agent.username} / ${agent.agent_type}`;
+                return `<option value="${this.escapeHtml(agent.id)}">${this.escapeHtml(label)}</option>`;
+            }).join('');
+            return `<optgroup label="${this.escapeHtml(username)}">${options}</optgroup>`;
+        }).join('');
+    }
+
+    parseAgentSelection(value) {
+        const fallback = { username: 'ubuntu', agentType: 'claude-internal', label: 'ubuntu / claude-internal' };
+        if (!value) return fallback;
+
+        const agents = this.app.availableAgents || [];
+        const matched = agents.find(agent => agent.id === value);
+        if (matched) {
+            return {
+                username: matched.username,
+                agentType: matched.agent_type || 'claude',
+                label: matched.display_name || `${matched.username} / ${matched.agent_type || 'claude'}`
+            };
+        }
+
+        const parts = value.split('::');
+        const username = parts[0] || 'ubuntu';
+        const agentType = parts[1] || 'claude';
+        return {
+            username,
+            agentType,
+            label: `${username} / ${agentType}`
+        };
+    }
+
     showNewSessionView(paneId) {
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
@@ -463,11 +524,26 @@ class ChatView {
             item.classList.remove('active');
         });
 
-        // Get agent options from global user filter
+        // Get available agents
         const globalUserFilter = document.getElementById('globalUserFilter');
-        const options = globalUserFilter ? globalUserFilter.innerHTML : '<option value="ubuntu">ubuntu</option>';
+        const selectedUser = globalUserFilter?.value || '';
+        const allAgents = this.getAvailableAgents('');
+        const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
+        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const initialUser = (selectedUser && usernames.includes(selectedUser))
+            ? selectedUser
+            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
 
-        // Render new session view with input and agent selector
+        const buildModelOptions = (user) => {
+            const agents = this.getAvailableAgents(user);
+            const models = [...new Set(agents.map(agent => agent.agent_type))];
+            if (!models.length) {
+                return '<option value="claude-internal">claude-internal</option>';
+            }
+            return models.map(model => `<option value="${this.escapeHtml(model)}">${this.escapeHtml(model)}</option>`).join('');
+        };
+
+        // Render new session view with input and selectors
         detail.innerHTML = `
             <div class="new-session-view">
                 <div class="new-session-content">
@@ -477,13 +553,12 @@ class ChatView {
                         </svg>
                     </div>
                     <h2 class="new-session-title">Start New Chat</h2>
-                    <p class="new-session-hint">Select an Agent and enter your message</p>
+                    <p class="new-session-hint">Select a User and Model, then enter your message</p>
                 </div>
-                <div class="new-session-agent-selector">
-                    <label for="newSessionAgent-${paneId}">Select Agent:</label>
-                    <select id="newSessionAgent-${paneId}" class="new-session-agent-select">
-                        ${options.replace('<option value="">All Users</option>', '')}
-                    </select>
+                <div class="new-session-agent-selector" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <label>Select Agent</label>
+                    <select id="newSessionUser-${paneId}" class="new-session-agent-select"></select>
+                    <select id="newSessionModel-${paneId}" class="new-session-agent-select"></select>
                 </div>
                 <div class="new-session-input-container">
                     <textarea
@@ -502,10 +577,28 @@ class ChatView {
             </div>
         `;
 
-        // Set default agent to ubuntu
-        const agentSelect = document.getElementById(`newSessionAgent-${paneId}`);
-        if (agentSelect) {
-            agentSelect.value = 'ubuntu';
+        // Set default user/model
+        const userSelect = document.getElementById(`newSessionUser-${paneId}`);
+        const modelSelect = document.getElementById(`newSessionModel-${paneId}`);
+
+        const applyModelOptions = (user, preferred = 'claude-internal') => {
+            if (!modelSelect) return;
+            modelSelect.innerHTML = buildModelOptions(user);
+            const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
+            const selected = optionValues.includes(preferred) ? preferred : (optionValues[0] || 'claude-internal');
+            modelSelect.value = selected;
+        };
+
+        if (userSelect) {
+            userSelect.innerHTML = usernames.map(u => `<option value="${this.escapeHtml(u)}">${this.escapeHtml(u)}</option>`).join('');
+            userSelect.value = initialUser;
+            applyModelOptions(initialUser);
+            userSelect.addEventListener('change', () => {
+                const user = userSelect.value || initialUser;
+                applyModelOptions(user);
+            });
+        } else {
+            applyModelOptions(initialUser);
         }
 
         // Bind events
@@ -517,25 +610,29 @@ class ChatView {
             textarea.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    const selectedAgent = agentSelect?.value || 'ubuntu';
-                    this.createNewSession(paneId, textarea.value, selectedAgent);
+                    const selectedUser = userSelect?.value || initialUser || 'ubuntu';
+                    const selectedModel = modelSelect?.value || 'claude-internal';
+                    this.createNewSession(paneId, textarea.value, selectedUser, selectedModel);
                 }
             });
         }
 
         if (sendBtn) {
             sendBtn.addEventListener('click', () => {
-                const selectedAgent = agentSelect?.value || 'ubuntu';
-                this.createNewSession(paneId, textarea?.value || '', selectedAgent);
+                const selectedUser = userSelect?.value || initialUser || 'ubuntu';
+                const selectedModel = modelSelect?.value || 'claude-internal';
+                this.createNewSession(paneId, textarea?.value || '', selectedUser, selectedModel);
             });
         }
     }
 
-    async createNewSession(paneId, message, agentName = 'ubuntu') {
+    async createNewSession(paneId, message, agentName = 'ubuntu', agentType = 'claude-internal') {
         if (!message.trim()) {
             this.app.showToast('Please enter a message', 'warning');
             return;
         }
+
+        const agentLabel = `${agentName} / ${agentType}`;
 
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
@@ -549,7 +646,7 @@ class ChatView {
             <div class="chat-header">
                 <div class="chat-header-info">
                     <h2 class="chat-header-title">${this.escapeHtml(sessionTitle)}</h2>
-                    <span class="chat-header-meta">New Session - ${agentName}</span>
+                    <span class="chat-header-meta">New Session - ${this.escapeHtml(agentLabel)}</span>
                 </div>
             </div>
             <div class="chat-messages" id="chatMessages-${paneId}">
@@ -608,7 +705,8 @@ class ChatView {
                 content: message,
                 user: agentName,
                 session_id: sessionId,
-                msg_type: 'text'
+                msg_type: 'text',
+                provider: agentType
             };
 
             // Call streaming API
@@ -1131,16 +1229,18 @@ class ChatView {
     }
 
     async streamMessage(paneId, sessionId, message, thinkingId) {
-        // Get agent name from global filter
+        const sessionMeta = this.getSessionMeta(paneId, sessionId);
         const globalUserFilter = document.getElementById('globalUserFilter');
-        const agentName = globalUserFilter?.value || 'ubuntu';
+        const agentName = sessionMeta?.username || globalUserFilter?.value || 'ubuntu';
+        const provider = sessionMeta?.provider || '';
         
         // Build legacy (易事厅) request payload with session_id to continue conversation
         const payload = {
             content: message,
             user: agentName,
             session_id: sessionId,
-            msg_type: 'text'
+            msg_type: 'text',
+            provider: provider || undefined
         };
         
         // Use the shared streaming method
@@ -2389,6 +2489,7 @@ class NexusApp {
         this.taskView = new TaskView(this);
         this.tabManager = new TabManager(this);
         this.layoutManager = new LayoutManager(this);
+        this.availableAgents = [];
 
         this.deleteCallback = null;
         this.renameTabCallback = null;
@@ -2401,23 +2502,39 @@ class NexusApp {
         // Initialize layout
         this.layoutManager.setMode(this.layoutManager.mode);
 
-        // Load usernames for filter
-        this.loadUsernames();
+        // Load agents for filter
+        this.loadAgents();
 
         // Bind global events
         this.bindEvents();
     }
 
-    async loadUsernames() {
+    async loadAgents() {
         try {
-            const data = await NexusAPI.getUsernames();
+            const data = await NexusAPI.getAgents();
+            this.availableAgents = data.agents || [];
+
             const select = document.getElementById('globalUserFilter');
-            if (select && data.usernames) {
+            if (select) {
+                const usernames = [...new Set(this.availableAgents.map(agent => agent.username))];
                 select.innerHTML = '<option value="">All Users</option>' +
-                    data.usernames.map(u => `<option value="${u}">${u}</option>`).join('');
+                    usernames.map(u => `<option value="${u}">${u}</option>`).join('');
             }
         } catch (error) {
-            console.error('Failed to load usernames:', error);
+            console.error('Failed to load agents:', error);
+            this.availableAgents = [
+                {
+                    id: 'ubuntu::claude-internal',
+                    username: 'ubuntu',
+                    agent_type: 'claude-internal',
+                    display_name: 'ubuntu / claude-internal',
+                    available: true
+                }
+            ];
+            const select = document.getElementById('globalUserFilter');
+            if (select) {
+                select.innerHTML = '<option value="">All Users</option><option value="ubuntu">ubuntu</option>';
+            }
         }
     }
 
@@ -2553,21 +2670,80 @@ class NexusApp {
             content.classList.toggle('active', content.dataset.tabContent === mode);
         });
 
+        // Initialize agent/model selectors (same as New Chat)
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const selectedUser = globalUserFilter?.value || '';
+        const allAgents = this.chatView.getAvailableAgents('');
+        const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
+        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const initialUser = (selectedUser && usernames.includes(selectedUser))
+            ? selectedUser
+            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+
+        const buildModelOptions = (user) => {
+            const agents = this.chatView.getAvailableAgents(user);
+            const models = [...new Set(agents.map(agent => agent.agent_type))];
+            if (!models.length) {
+                return '<option value="claude-internal">claude-internal</option>';
+            }
+            return models.map(model => `<option value="${this.chatView.escapeHtml(model)}">${this.chatView.escapeHtml(model)}</option>`).join('');
+        };
+
+        const setupAgentSelectors = (userSelectId, modelSelectId, preferredUser = initialUser, preferredModel = 'claude-internal') => {
+            const userSelect = document.getElementById(userSelectId);
+            const modelSelect = document.getElementById(modelSelectId);
+            if (!modelSelect) return;
+
+            const applyModelOptions = (user) => {
+                modelSelect.innerHTML = buildModelOptions(user);
+                const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
+                const selected = optionValues.includes(preferredModel) ? preferredModel : (optionValues[0] || 'claude-internal');
+                modelSelect.value = selected;
+            };
+
+            if (userSelect) {
+                userSelect.innerHTML = usernames.map(u => `<option value="${this.chatView.escapeHtml(u)}">${this.chatView.escapeHtml(u)}</option>`).join('');
+                userSelect.value = preferredUser;
+                applyModelOptions(preferredUser);
+                userSelect.onchange = () => {
+                    const user = userSelect.value || preferredUser;
+                    applyModelOptions(user);
+                };
+            } else {
+                applyModelOptions(preferredUser);
+            }
+        };
+
+        setupAgentSelectors('taskUser', 'taskModel');
+        setupAgentSelectors('bulkUser', 'bulkModel');
+        setupAgentSelectors('chainUser', 'chainModel');
+
         modal.classList.add('open');
     }
 
-    async submitTask() {
+    getTaskAgentSelection(mode) {
         const globalUserFilter = document.getElementById('globalUserFilter');
-        const agentName = document.getElementById('taskAgent')?.value || 
-                         globalUserFilter?.value || 'ubuntu';
+        const mapping = {
+            single: { userId: 'taskUser', modelId: 'taskModel' },
+            bulk: { userId: 'bulkUser', modelId: 'bulkModel' },
+            chain: { userId: 'chainUser', modelId: 'chainModel' },
+        };
+        const ids = mapping[mode] || mapping.single;
+        const agentName = document.getElementById(ids.userId)?.value || globalUserFilter?.value || 'ubuntu';
+        const provider = document.getElementById(ids.modelId)?.value || 'claude-internal';
+        return { agentName, provider };
+    }
+
+    async submitTask() {
+        const { agentName, provider } = this.getTaskAgentSelection(this.activeModalTab);
 
         try {
             if (this.activeModalTab === 'single') {
-                await this.submitSingleTask(agentName);
+                await this.submitSingleTask(agentName, provider);
             } else if (this.activeModalTab === 'bulk') {
-                await this.submitBulkTasks(agentName);
+                await this.submitBulkTasks(agentName, provider);
             } else if (this.activeModalTab === 'chain') {
-                await this.submitTaskChain(agentName);
+                await this.submitTaskChain(agentName, provider);
             }
 
             document.getElementById('createTaskModal')?.classList.remove('open');
@@ -2578,11 +2754,11 @@ class NexusApp {
         }
     }
 
-    async submitSingleTask(agentName) {
+    async submitSingleTask(agentName, provider) {
         const description = document.getElementById('taskDescription')?.value.trim();
         const workspace = document.getElementById('taskWorkspace')?.value.trim();
-        const provider = document.getElementById('taskProvider')?.value || 'claude';
         const dependsOnStr = document.getElementById('taskDependsOn')?.value.trim();
+        const selectedProvider = provider || 'claude-internal';
 
         if (!description) {
             throw new Error('Description is required');
@@ -2590,7 +2766,7 @@ class NexusApp {
 
         const payload = {
             description,
-            provider,
+            provider: selectedProvider,
             workspace: workspace || undefined,
             depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
         };
@@ -2599,10 +2775,10 @@ class NexusApp {
         this.showToast('Task created successfully', 'success');
     }
 
-    async submitBulkTasks(agentName) {
+    async submitBulkTasks(agentName, provider) {
         const tasksText = document.getElementById('bulkTasks')?.value.trim();
         const workspace = document.getElementById('bulkWorkspace')?.value.trim();
-        const provider = document.getElementById('bulkProvider')?.value || 'claude';
+        const selectedProvider = provider || 'claude-internal';
 
         if (!tasksText) {
             throw new Error('Please enter at least one task');
@@ -2619,7 +2795,7 @@ class NexusApp {
         // Use bulk create API
         const tasks = taskDescriptions.map(description => ({
             description,
-            provider,
+            provider: selectedProvider,
             workspace: workspace || undefined
         }));
 
@@ -2632,10 +2808,10 @@ class NexusApp {
         }
     }
 
-    async submitTaskChain(agentName) {
+    async submitTaskChain(agentName, provider) {
         const tasksText = document.getElementById('chainTasks')?.value.trim();
         const workspace = document.getElementById('chainWorkspace')?.value.trim();
-        const provider = document.getElementById('chainProvider')?.value || 'claude';
+        const selectedProvider = provider || 'claude-internal';
 
         if (!tasksText) {
             throw new Error('Please enter at least one task');
@@ -2652,7 +2828,7 @@ class NexusApp {
         // Use bulk create API with temp_id dependencies for chain
         const tasks = taskDescriptions.map((description, index) => ({
             description,
-            provider,
+            provider: selectedProvider,
             workspace: workspace || undefined,
             depends_on: index > 0 ? [`temp_${index - 1}`] : undefined
         }));

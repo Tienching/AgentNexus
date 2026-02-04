@@ -27,7 +27,7 @@ echo "   Port: $PORT"
 echo "   日志: $LOG_DIR/api.log"
 
 # 在后台启动
-nohup uv run uvicorn src.claude_code_api.app:app \
+nohup uv run uvicorn src.server.app:app \
     --host "$HOST" \
     --port "$PORT" \
     --log-level info \

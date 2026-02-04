@@ -5,7 +5,7 @@ import pytest
 import json
 import time
 
-from src.providers.claude_code_api.models import (
+from src.server.models import (
     SessionStatus,
     SessionMeta,
     MessageStatus,

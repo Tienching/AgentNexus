@@ -14,12 +14,9 @@ __all__ = [
     "BaseExecutor",
     "ExecutorConfig",
     "RequestContext",
-    # Submodules
+    # Submodules (actual implementations)
     "claude",
     "gemini",
-    "channels",
-    # Legacy (for backward compatibility)
+    # Provider registry
     "runtime",
-    "claude_code_api",
-    "gemini_cli_api",
 ]

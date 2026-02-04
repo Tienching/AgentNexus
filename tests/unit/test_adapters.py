@@ -2,13 +2,12 @@
 
 import pytest
 import json
-from src.providers.claude_code_api.adapters import (
+from src.server.adapters import (
     ProtocolType,
     AGUIAdapter,
-    LegacyAdapter,
     detect_protocol_from_body,
 )
-from src.providers.claude_code_api.models.agui_events import AGUIEventType
+from src.runtime.events.agui import AGUIEventType
 
 
 class TestProtocolDetection:
@@ -27,15 +26,16 @@ class TestProtocolDetection:
         }
         assert detect_protocol_from_body(agui_body) == ProtocolType.AGUI
     
-    def test_detect_legacy_from_body(self):
-        """测试从请求体检测Legacy协议"""
-        legacy_body = {
+    def test_detect_agui_from_non_agui_body(self):
+        """测试从非AG-UI请求体仍返回AG-UI（统一协议）"""
+        non_agui_body = {
             "user": "testuser",
             "content": "hello",
             "session_id": "test-session",
             "msg_id": "test-msg"
         }
-        assert detect_protocol_from_body(legacy_body) == ProtocolType.LEGACY
+        # 现在统一返回 AGUI
+        assert detect_protocol_from_body(non_agui_body) == ProtocolType.AGUI
     
     def test_detect_partial_agui(self):
         """测试部分AG-UI字段"""
@@ -325,117 +325,12 @@ Final result: success""",
         assert "<tool_call>" not in result
 
 
-class TestLegacyAdapter:
-    """Legacy适配器测试"""
-    
-    @pytest.fixture
-    def adapter(self):
-        """创建适配器实例"""
-        return LegacyAdapter()
-    
-    def test_format_sse(self, adapter):
-        """测试SSE格式化"""
-        data = {"response": "test", "finished": False}
-        result = adapter.format_sse(data)
-        
-        assert result.startswith("event:delta\n")
-        assert "data:" in result
-        assert "test" in result
-    
-    def test_convert_text_delta(self, adapter):
-        """测试转换文本增量"""
-        claude_event = {
-            "type": "stream_event",
-            "event": {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {
-                    "type": "text_delta",
-                    "text": "Hello!"
-                }
-            }
-        }
-        
-        result = adapter.convert(claude_event)
-        assert result is not None
-        assert "Hello!" in result
-        assert "event:delta" in result
-    
-    def test_convert_tool_result(self, adapter):
-        """测试转换工具结果"""
-        claude_event = {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tool_123",
-                        "content": "command output",
-                        "is_error": False
-                    }
-                ]
-            }
-        }
-        
-        result = adapter.convert(claude_event)
-        assert result is not None
-        assert "工具结果" in result
-        assert "command output" in result
-    
-    def test_convert_tool_error(self, adapter):
-        """测试转换工具错误"""
-        claude_event = {
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "tool_123",
-                        "content": "error message",
-                        "is_error": True
-                    }
-                ]
-            }
-        }
-        
-        result = adapter.convert(claude_event)
-        assert result is not None
-        assert "工具错误" in result
-    
-    def test_skip_result_event(self, adapter):
-        """测试跳过result事件"""
-        claude_event = {
-            "type": "result",
-            "result": "final result"
-        }
-        
-        result = adapter.convert(claude_event)
-        assert result is None
-    
-    def test_format_todos(self, adapter):
-        """测试格式化todos"""
-        todos = [
-            {"id": "1", "content": "Task 1", "status": "completed"},
-            {"id": "2", "content": "Task 2", "status": "in_progress"},
-            {"id": "3", "content": "Task 3", "status": "pending"}
-        ]
-        
-        result = adapter._format_todos_markdown(todos)
-        assert "任务列表" in result
-        assert "Task 1" in result
-        assert "✅" in result
-        assert "🔄" in result
-        assert "⏳" in result
-
-
 class TestAGUIRequest:
     """AG-UI请求模型测试"""
     
     def test_parse_agui_request(self):
         """测试解析AG-UI请求"""
-        from src.providers.claude_code_api.models.agui_events import AGUIRequest
+        from src.runtime.events.agui import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -455,9 +350,9 @@ class TestAGUIRequest:
         assert request.get_user_content() == "Hello"
         assert request.get_username() == "testuser"
     
-    def test_convert_to_legacy(self):
-        """测试转换为Legacy格式"""
-        from src.providers.claude_code_api.models.agui_events import AGUIRequest
+    def test_convert_to_request_model(self):
+        """测试转换为RequestModel格式"""
+        from src.runtime.events.agui import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -472,16 +367,16 @@ class TestAGUIRequest:
         }
         
         request = AGUIRequest.model_validate(data)
-        legacy = request.to_legacy_request()
+        request_dict = request.to_legacy_request()
         
-        assert legacy["user"] == "testuser"
-        assert legacy["content"] == "Hello"
-        assert legacy["session_id"] == "test-thread"
-        assert legacy["msg_id"] == "test-run"
+        assert request_dict["user"] == "testuser"
+        assert request_dict["content"] == "Hello"
+        assert request_dict["session_id"] == "test-thread"
+        assert request_dict["msg_id"] == "test-run"
     
     def test_get_response_url(self):
         """测试从rawCallback提取response_url"""
-        from src.providers.claude_code_api.models.agui_events import AGUIRequest
+        from src.runtime.events.agui import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -502,7 +397,7 @@ class TestAGUIRequest:
     
     def test_get_response_url_missing(self):
         """测试无rawCallback时返回None"""
-        from src.providers.claude_code_api.models.agui_events import AGUIRequest
+        from src.runtime.events.agui import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -515,9 +410,9 @@ class TestAGUIRequest:
         assert request.get_response_url() is None
         assert request.get_msg_id() is None
     
-    def test_to_legacy_with_response_url(self):
-        """测试转换Legacy格式时包含response_url"""
-        from src.providers.claude_code_api.models.agui_events import AGUIRequest
+    def test_to_request_model_with_response_url(self):
+        """测试转换RequestModel格式时包含response_url"""
+        from src.runtime.events.agui import AGUIRequest
         
         data = {
             "threadId": "test-thread",
@@ -533,10 +428,10 @@ class TestAGUIRequest:
         }
         
         request = AGUIRequest.model_validate(data)
-        legacy = request.to_legacy_request()
+        request_dict = request.to_legacy_request()
         
-        assert legacy["response_url"] == "https://example.com/callback"
-        assert legacy["msg_id"] == "msg-123"
+        assert request_dict["response_url"] == "https://example.com/callback"
+        assert request_dict["msg_id"] == "msg-123"
 
 
 class TestCallbackHandler:
@@ -544,7 +439,7 @@ class TestCallbackHandler:
     
     def test_agui_events_to_markdown(self):
         """测试AG-UI事件转markdown"""
-        from src.providers.claude_code_api.services.callback_handler import CallbackHandler
+        from src.server.services.callback_handler import CallbackHandler
         
         handler = CallbackHandler()
         
@@ -565,7 +460,7 @@ class TestCallbackHandler:
     
     def test_agui_events_to_markdown_empty(self):
         """测试空事件列表"""
-        from src.providers.claude_code_api.services.callback_handler import CallbackHandler
+        from src.server.services.callback_handler import CallbackHandler
         
         handler = CallbackHandler()
         markdown_parts = handler.agui_events_to_markdown([])

@@ -139,6 +139,18 @@ class NexusAPI {
     }
 
     /**
+     * Get available agents
+     * @returns {Promise<Object>} Agents response
+     */
+    static async getAgents() {
+        const response = await fetch(`${API_BASE}/agents`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch agents: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
      * Get unique projects
      * @param {Object} options - Query options
      * @returns {Promise<Array>} List of project items

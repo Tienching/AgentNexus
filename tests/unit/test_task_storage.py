@@ -5,8 +5,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
-from src.providers.claude_code_api.services.task_storage import TaskQueue
-from src.providers.claude_code_api.models import Task, TaskPriority, TaskStatus
+from src.runtime.stores.task_storage import TaskQueue
+from src.server.models import Task, TaskPriority, TaskStatus
 
 
 class MockRedisClient:
@@ -222,7 +222,7 @@ def mock_redis():
 @pytest.fixture
 def task_queue(mock_redis):
     """Create TaskQueue instance with mock Redis"""
-    with patch('src.providers.claude_code_api.services.task_storage.get_redis_client', return_value=mock_redis):
+    with patch('src.runtime.stores.task_storage.get_redis_client', return_value=mock_redis):
         queue = TaskQueue(db_path=None, agent_name="test_agent")
         queue._redis = mock_redis
         return queue
