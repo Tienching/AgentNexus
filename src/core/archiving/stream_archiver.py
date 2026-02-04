@@ -238,6 +238,8 @@ class StreamArchiver:
                 delta = event_data.get("delta", "")
                 if delta:
                     await self._handle_text_event({"content": delta})
+                    self._append_text_segment(delta)
+                    self._update_current_message()
                 return
 
             if event_type == "TEXT_MESSAGE_END":
@@ -248,19 +250,6 @@ class StreamArchiver:
                 tool_id = event_data.get("toolCallId") or f"tool-{int(time.time() * 1000)}"
                 tool_name = event_data.get("toolCallName", "unknown")
                 parent_id = event_data.get("parentMessageId") or self._current_message_id
-
-                # Save current text content as a segment before tool call
-                if self._current_message_content and self._current_message_content != self._last_text_content:
-                    # Only add text that hasn't been saved yet
-                    new_text = self._current_message_content[len(self._last_text_content):]
-                    if new_text.strip():
-                        self._content_segments.append(ContentSegment(
-                            type="text",
-                            content=new_text,
-                            sequence=self._segment_sequence
-                        ))
-                        self._segment_sequence += 1
-                    self._last_text_content = self._current_message_content
 
                 # Add tool call segment
                 self._content_segments.append(ContentSegment(
@@ -281,6 +270,7 @@ class StreamArchiver:
                 self._storage.save_tool_call(self.session_id, tool_call)
                 self._pending_tool_calls.append(tool_id)
                 self._current_tool_call_id = tool_id
+                self._update_current_message()
                 return
 
             if event_type == "TOOL_CALL_ARGS":
@@ -366,6 +356,32 @@ class StreamArchiver:
             self._current_message_id,
             self._current_message_content
         )
+
+    def _append_text_segment(self, content: str) -> None:
+        if not content:
+            return
+        self._content_segments.append(ContentSegment(
+            type="text",
+            content=content,
+            sequence=self._segment_sequence,
+        ))
+        self._segment_sequence += 1
+        self._last_text_content = self._current_message_content
+
+    def _update_current_message(self) -> None:
+        if not self._current_message_id:
+            return
+        msg = StoredMessage(
+            id=self._current_message_id,
+            role="assistant",
+            content=self._current_message_content,
+            status=MessageStatus.STREAMING,
+            tool_call_ids=self._pending_tool_calls if self._pending_tool_calls else None,
+            content_segments=self._content_segments if self._content_segments else None,
+        )
+        updated = self._storage.update_message(self.session_id, msg)
+        if not updated:
+            self._storage.add_session_message(self.session_id, msg)
 
     async def _handle_tool_use_event(self, event_data: Dict[str, Any]):
         """Handle tool use start event"""
