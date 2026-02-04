@@ -319,6 +319,10 @@ class AGUIAdapter(BaseAdapter):
         elif event_type in ("user", "assistant", "result"):
             logger.info(f"[AGUI] Convert event: type={event_type}")
         
+        # 处理 error 事件
+        if event_type == "error":
+            return self.create_error_event(str(claude_event.get("message", "Unknown error")))
+
         # 处理 system 事件
         if event_type == "system":
             return self._handle_system_event(claude_event)

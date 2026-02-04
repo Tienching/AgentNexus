@@ -2,8 +2,9 @@
 """Adapters layer - convert provider events to protocol formats"""
 
 from .base import BaseAdapter, AdapterState, ProtocolType
-from .claude import AGUIAdapter, LegacyAdapter, ParsedToolCall
-from .gemini import GeminiAGUIAdapter, GeminiLegacyAdapter
+from .claude import AGUIAdapter, ParsedToolCall
+from .gemini import GeminiAGUIAdapter
+from .codex import CodexAGUIAdapter
 
 __all__ = [
     # Base
@@ -12,9 +13,9 @@ __all__ = [
     "ProtocolType",
     # Claude adapters
     "AGUIAdapter",
-    "LegacyAdapter",
     "ParsedToolCall",
     # Gemini adapters
     "GeminiAGUIAdapter",
-    "GeminiLegacyAdapter",
+    # Codex adapters
+    "CodexAGUIAdapter",
 ]

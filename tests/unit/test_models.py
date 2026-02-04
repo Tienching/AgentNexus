@@ -2,7 +2,7 @@
 
 import pytest
 from pydantic import ValidationError
-from src.providers.claude_code_api.models import (
+from src.server.models import (
     RequestModel,
     Document,
     GlobalOutput,

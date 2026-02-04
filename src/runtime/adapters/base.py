@@ -9,7 +9,6 @@ import json
 class ProtocolType(str, Enum):
     """协议类型"""
     AGUI = "agui"
-    LEGACY = "legacy"
 
 
 class AdapterState:

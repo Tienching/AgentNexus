@@ -6,8 +6,8 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-from src.providers.claude_code_api.services.session_storage import SessionStorage, SESSION_TTL
-from src.providers.claude_code_api.models import (
+from src.server.services.session_storage import SessionStorage, SESSION_TTL
+from src.server.models import (
     SessionMeta,
     SessionStatus,
     StoredMessage,

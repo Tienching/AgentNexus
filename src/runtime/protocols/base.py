@@ -13,7 +13,6 @@ from ..events import Event
 class ProtocolType(Enum):
     """协议类型"""
     AGUI = "agui"
-    WECOM = "wecom"  # 企微协议（原 legacy）
     RAW = "raw"
 
 

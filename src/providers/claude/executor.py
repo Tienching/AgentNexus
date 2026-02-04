@@ -88,10 +88,10 @@ class CCRExecutor(BaseExecutor):
         
         Args:
             context: Request context
-            output_format: "raw" (JSON lines) or "legacy" (event:delta SSE)
+            output_format: Output format (only "raw" JSON lines supported)
             
         Yields:
-            Output lines
+            Output lines (JSON format)
         """
         start_time = time.time()
         
@@ -105,8 +105,6 @@ class CCRExecutor(BaseExecutor):
         
         # Helper for slash command results
         def _format_slash_result(text: str, is_error: bool = False) -> str:
-            if output_format == "legacy":
-                return self.format_legacy_sse(text, finished=True, answer_success=0 if is_error else 1)
             return json.dumps({
                 "type": "result",
                 "subtype": "slash_command",
@@ -131,9 +129,7 @@ class CCRExecutor(BaseExecutor):
         # Check slash commands
         if self._is_slash_command(cleaned_content):
             if self._slash_command_handler:
-                async for output in self._handle_slash_command(
-                    cleaned_content, context, output_format
-                ):
+                async for output in self._handle_slash_command(cleaned_content, context):
                     yield output
                 return
             else:
@@ -169,7 +165,7 @@ class CCRExecutor(BaseExecutor):
         try:
             process = await self.run_subprocess(final_cmd)
             
-            async for output in self._process_stream(process, output_format):
+            async for output in self._process_stream(process):
                 yield output
             
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
@@ -186,18 +182,12 @@ class CCRExecutor(BaseExecutor):
                 process.kill()
             except Exception:
                 pass
-            if output_format == "legacy":
-                yield self.format_legacy_error("处理超时，请重试")
-            else:
-                yield json.dumps({"type": "error", "message": "处理超时，请重试"})
+            yield json.dumps({"type": "error", "message": "处理超时，请重试"})
                 
         except Exception as e:
             logger.error(f"Process error: {e}", exc_info=True)
             error_msg = self._format_error_message(str(e), context.agent_name)
-            if output_format == "legacy":
-                yield self.format_legacy_error(error_msg)
-            else:
-                yield json.dumps({"type": "error", "message": error_msg})
+            yield json.dumps({"type": "error", "message": error_msg})
     
     def _build_command(self, context: RequestContext, use_continue: bool = True) -> List[str]:
         """Build CCR command."""
@@ -265,7 +255,6 @@ class CCRExecutor(BaseExecutor):
         self,
         content: str,
         context: RequestContext,
-        output_format: str,
     ) -> AsyncGenerator[str, None]:
         """Handle slash commands via callback."""
         try:
@@ -277,31 +266,22 @@ class CCRExecutor(BaseExecutor):
                 "response_length": len(response),
             })
             
-            if output_format == "legacy":
-                yield self.format_legacy_sse(response, finished=True)
-            else:
-                yield json.dumps({
-                    "type": "result",
-                    "subtype": "slash_command",
-                    "content": response,
-                })
+            yield json.dumps({
+                "type": "result",
+                "subtype": "slash_command",
+                "content": response,
+            })
                 
         except Exception as e:
             logger.error(f"Slash command error: {e}", exc_info=True)
-            error_msg = f"命令执行错误: {str(e)}"
-            if output_format == "legacy":
-                yield self.format_legacy_error(error_msg)
-            else:
-                yield json.dumps({"type": "error", "message": error_msg})
+            yield json.dumps({"type": "error", "message": f"命令执行错误: {str(e)}"})
     
     async def _process_stream(
         self,
         process: asyncio.subprocess.Process,
-        output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
-        """Process subprocess stream output."""
+        """Process subprocess stream output (raw JSON lines only)."""
         line_count = 0
-        tool_input_buffer: Dict[int, str] = {}
         
         debug_file = None
         if DEBUG_STREAM:
@@ -323,23 +303,10 @@ class CCRExecutor(BaseExecutor):
                         debug_file.write(f"[{line_count}] {line_str}\n")
                         debug_file.flush()
                     
-                    if output_format == "raw":
-                        yield line_str
-                        continue
-                    
-                    # Legacy format processing
-                    data = json.loads(line_str)
-                    event_type = data.get("type")
-                    
-                    for sse in self._process_legacy_event(data, event_type, tool_input_buffer):
-                        yield sse
+                    yield line_str
                         
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON line #{line_count}")
                 except Exception as e:
                     logger.error(f"Error processing stream line #{line_count}: {e}")
-                    if output_format == "legacy":
-                        yield self.format_legacy_sse(f"处理流事件时出错: {str(e)}", finished=False)
             
             logger.info(f"Stream processing completed, total lines: {line_count}")
             
@@ -350,114 +317,6 @@ class CCRExecutor(BaseExecutor):
             if debug_file:
                 debug_file.write(f"\n=== Stream End: {line_count} lines ===\n")
                 debug_file.close()
-    
-    def _process_legacy_event(
-        self, 
-        data: Dict[str, Any], 
-        event_type: str, 
-        tool_input_buffer: Dict[int, str]
-    ) -> List[str]:
-        """Process legacy format events."""
-        results = []
-        
-        if event_type == "result":
-            pass
-        
-        elif event_type == "stream_event":
-            formatted_text = self._format_stream_event_legacy(data, tool_input_buffer)
-            if formatted_text:
-                results.append(self.format_legacy_sse(formatted_text, finished=False))
-        
-        elif event_type == "user":
-            formatted_text = self._format_user_message_legacy(data)
-            if formatted_text:
-                results.append(self.format_legacy_sse(formatted_text, finished=False))
-        
-        return results
-    
-    def _format_stream_event_legacy(
-        self, 
-        data: Dict[str, Any], 
-        tool_input_buffer: Dict[int, str]
-    ) -> str:
-        """Format stream_event for legacy protocol."""
-        event = data.get("event", {})
-        event_type = event.get("type")
-        
-        if event_type == "content_block_delta":
-            delta = event.get("delta", {})
-            delta_type = delta.get("type")
-            
-            if delta_type == "text_delta":
-                return delta.get("text", "")
-            
-            elif delta_type == "input_json_delta":
-                index = event.get("index", 0)
-                partial_json = delta.get("partial_json", "")
-                if index not in tool_input_buffer:
-                    tool_input_buffer[index] = ""
-                tool_input_buffer[index] += partial_json
-        
-        elif event_type == "content_block_start":
-            content_block = event.get("content_block", {})
-            block_type = content_block.get("type")
-            
-            if block_type == "tool_use":
-                tool_name = content_block.get("name", "unknown")
-                return f"\n🔧 **调用工具: {tool_name}**\n"
-        
-        elif event_type == "content_block_stop":
-            index = event.get("index", 0)
-            if index in tool_input_buffer:
-                params = tool_input_buffer.pop(index)
-                if params:
-                    try:
-                        params_obj = json.loads(params)
-                        if isinstance(params_obj, dict):
-                            key_params = []
-                            for key in ["command", "pattern", "path", "filePath", "content", "description"]:
-                                if key in params_obj:
-                                    val = params_obj[key]
-                                    if isinstance(val, str) and len(val) > 100:
-                                        val = val[:100] + "..."
-                                    key_params.append(f"{key}: {val}")
-                            if key_params:
-                                return f"参数: {', '.join(key_params[:3])}\n"
-                    except json.JSONDecodeError:
-                        pass
-        
-        return ""
-    
-    def _format_user_message_legacy(self, data: Dict[str, Any]) -> str:
-        """Format user message (tool result) for legacy protocol."""
-        message = data.get("message", {})
-        content = message.get("content", [])
-        
-        results = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "tool_result":
-                result_content = item.get("content", "")
-                is_error = item.get("is_error", False)
-                
-                if isinstance(result_content, list):
-                    text_parts = []
-                    for rc in result_content:
-                        if isinstance(rc, dict) and rc.get("type") == "text":
-                            text_parts.append(rc.get("text", "")[:500])
-                        elif isinstance(rc, str):
-                            text_parts.append(rc[:500])
-                    result_content = "\n".join(text_parts)
-                elif isinstance(result_content, str):
-                    result_content = result_content[:500]
-                else:
-                    result_content = str(result_content)[:500]
-                
-                if is_error:
-                    results.append(f"❌ **错误**: {result_content}\n")
-                else:
-                    results.append(f"✅ **结果**: {result_content}\n")
-        
-        return "".join(results)
     
     # Helper methods
     
@@ -497,21 +356,3 @@ class CCRExecutor(BaseExecutor):
         elif "cannot create child process" in error.lower():
             return f"无法创建子进程。可能是权限不足或资源限制。"
         return f"处理错误: {error}"
-    
-    def format_legacy_sse(self, response: str, finished: bool = False, answer_success: int = 1) -> str:
-        """Format as legacy SSE."""
-        data = {
-            "response": response,
-            "finished": finished,
-            "global_output": {
-                "context": "",
-                "answer_success": answer_success,
-                "docs": [],
-            },
-        }
-        json_data = json.dumps(data, ensure_ascii=False)
-        return f"event:delta\ndata:{json_data}\n\n"
-    
-    def format_legacy_error(self, error_msg: str) -> str:
-        """Format legacy error message."""
-        return self.format_legacy_sse(error_msg, finished=True, answer_success=0)

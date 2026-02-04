@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.providers.claude_code_api.models import Task, TaskPriority, TaskStatus
+from src.server.models import Task, TaskPriority, TaskStatus
 
 
 class MockTaskQueue:
@@ -23,6 +23,7 @@ class MockTaskQueue:
         task_id=None,
         source_session_id=None,
         agent_name=None,
+        depends_on=None,
     ) -> Task:
         t = Task(
             description=description,

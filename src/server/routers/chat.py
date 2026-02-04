@@ -5,16 +5,7 @@ import json
 import uuid
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import StreamingResponse
-from pydantic import ValidationError
 
-from src.providers.claude_code_api.models import RequestModel
-from src.providers.claude_code_api.models.agui_events import AGUIRequest
-from src.providers.claude_code_api.adapters import (
-    ProtocolType,
-    get_router,
-    detect_protocol,
-    detect_protocol_from_body,
-)
 from ..services.stream_handler import StreamHandler
 from ..logger import get_logger
 
@@ -34,11 +25,7 @@ async def chat_stream_default(request: Request):
 @router.post("/chat/stream/{agent_name}", response_class=StreamingResponse)
 async def chat_stream(request: Request, agent_name: str):
     """
-    统一流式聊天接口（自动识别协议类型）
-
-    支持两种协议格式：
-    - 易事厅协议：传统格式，返回 event:delta 格式的 SSE
-    - AG-UI 协议：标准 AG-UI 格式，返回 data: JSON 格式的 SSE
+    统一流式聊天接口（AG-UI 协议）
 
     Args:
         request: FastAPI请求对象
@@ -61,7 +48,7 @@ async def chat_stream(request: Request, agent_name: str):
     # 检查是否是测试连接请求（空body或仅包含{}）
     if not body_str or body_str.strip() in ['', '{}']:
         logger.info(f"Received test connectivity request for agent {agent_name} (empty body)")
-        return await _handle_test_request(agent_name)
+        return await _handle_test_request()
 
     # 解析请求体为 dict
     try:
@@ -71,41 +58,63 @@ async def chat_stream(request: Request, agent_name: str):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid JSON in request body"
         )
-    
-    # 检测协议类型
-    protocol = detect_protocol(request)
-    if protocol == ProtocolType.LEGACY:
-        # 从请求体再次检测
-        protocol = detect_protocol_from_body(body_dict)
-    
+
+    # 兼容 legacy/minimal 请求：仅包含 user/content
+    if "threadId" not in body_dict and "runId" not in body_dict:
+        content = (body_dict.get("content") or "").strip()
+        if not content:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Missing required field: content"
+            )
+        thread_id = body_dict.get("session_id") or f"thread-{uuid.uuid4()}"
+        run_id = body_dict.get("msg_id") or f"run-{uuid.uuid4()}"
+        user = body_dict.get("user")
+        provider = (body_dict.get("provider") or "").strip()
+        forwarded_props = {}
+        original_forwarded = body_dict.get("forwardedProps")
+        if isinstance(original_forwarded, dict):
+            forwarded_props.update(original_forwarded)
+        if user:
+            forwarded_props.setdefault("username", user)
+        if provider:
+            forwarded_props.setdefault("provider", provider)
+        body_dict = {
+            "threadId": thread_id,
+            "runId": run_id,
+            "messages": [
+                {"id": run_id, "role": "user", "content": content}
+            ],
+            "forwardedProps": forwarded_props,
+        }
+        if provider:
+            body_dict["provider"] = provider
+
     logger.info(
-        f"Processing request with protocol {protocol.value}",
+        f"Processing request with AG-UI protocol",
         extra={
             "agent_name": agent_name,
-            "protocol": protocol.value,
+            "protocol": "agui",
         }
     )
     
-    # 创建流处理器
+    # 创建流处理器并处理 AG-UI 请求
     stream_handler = StreamHandler()
+    return await stream_handler.handle_agui_request(request, body_dict, agent_name)
+
+
+async def _handle_test_request() -> StreamingResponse:
+    """处理测试连接请求 - 返回 AG-UI 格式响应"""
+    test_run_id = f"test-{uuid.uuid4()}"
+    test_msg_id = f"test-msg-{uuid.uuid4()}"
     
-    # 根据协议类型处理请求
-    if protocol == ProtocolType.AGUI:
-        return await stream_handler.handle_agui_request(request, body_dict, agent_name)
-    else:
-        return await stream_handler.handle_legacy_request(request, body_str, body_dict, agent_name)
-
-
-async def _handle_test_request(agent_name: str) -> StreamingResponse:
-    """处理测试连接请求"""
-    from ..services.ccr_executor import CCRExecutor
-    
-    executor = CCRExecutor()
-    test_msg = f"Service is running with agent '{agent_name}'. This is a test response for connectivity check."
-
     async def test_response():
-        """返回测试响应（易事厅格式）"""
-        yield executor.format_legacy_sse(test_msg, finished=True, answer_success=1)
+        """返回 AG-UI 格式测试响应"""
+        yield f'data: {{"type":"RUN_STARTED","runId":"{test_run_id}"}}\n\n'
+        yield f'data: {{"type":"TEXT_MESSAGE_START","messageId":"{test_msg_id}","role":"assistant"}}\n\n'
+        yield f'data: {{"type":"TEXT_MESSAGE_CONTENT","messageId":"{test_msg_id}","delta":"Service is running. This is a test response for connectivity check."}}\n\n'
+        yield f'data: {{"type":"TEXT_MESSAGE_END","messageId":"{test_msg_id}"}}\n\n'
+        yield f'data: {{"type":"RUN_FINISHED","runId":"{test_run_id}"}}\n\n'
 
     return StreamingResponse(
         test_response(),

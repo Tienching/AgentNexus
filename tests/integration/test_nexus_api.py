@@ -7,7 +7,7 @@ from unittest.mock import patch
 from httpx import ASGITransport, AsyncClient
 
 from src.server.app import app
-from src.providers.claude_code_api.models import (
+from src.server.models import (
     SessionMeta,
     SessionStatus,
     StoredMessage,
