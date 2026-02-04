@@ -8,12 +8,12 @@ import re
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from src.providers.claude_code_api.services import (
+from src.server.services import (
     SlashCommandHandler,
     SLASH_COMMANDS,
 )
 from src.runtime.commands.slash.handler import slugify_project
-from src.providers.claude_code_api.models import TaskPriority, TaskStatus
+from src.server.models import TaskPriority, TaskStatus
 from src.runtime.commands.slash.worktree import (
     NotGitRepoError,
     WorktreeDirConflictError,

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.providers.claude_code_api.services import (
+from src.server.services import (
     WorktreeError,
     ensure_task_worktree,
 )

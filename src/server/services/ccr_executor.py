@@ -18,8 +18,8 @@ import pwd
 from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 
-from src.providers.claude_code_api.models import RequestModel
-from src.providers.claude_code_api.models.agui_events import (
+from ..models import RequestModel
+from src.runtime.events.agui import (
     TextMessageStartEvent,
     TextMessageContentEvent,
     TextMessageEndEvent,
@@ -238,7 +238,8 @@ class CCRExecutor:
         else:
             use_continue = (not is_inplace) or is_chat_continue
 
-        cmd = self._build_command(agent_name, cleaned_content, use_continue=use_continue)
+        agent_type = getattr(request, "agent_type", None) or getattr(request, "provider", None)
+        cmd = self._build_command(agent_name, cleaned_content, use_continue=use_continue, agent_type=agent_type)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
@@ -596,16 +597,34 @@ class CCRExecutor:
         
         return content, None
 
-    def _build_command(self, agent_name: str, content: str, use_continue: bool = True) -> List[str]:
+    def _build_command(
+        self,
+        agent_name: str,
+        content: str,
+        use_continue: bool = True,
+        agent_type: Optional[str] = None,
+    ) -> List[str]:
         """构建CCR命令
 
         Args:
             agent_name: Agent用户名
             content: 用户消息内容
             use_continue: 是否使用 -c (continue) 选项，默认为 True
+            agent_type: Agent类型（如 claude / claude-internal / codex-internal）
         """
         cleaned_content, model_param = self._parse_model_param(content)
-        ccr_command = self.config.agent_ccr_command_map.get(agent_name, self.config.ccr_command)
+        provider = (agent_type or "").strip().lower()
+        provider_command_map = {
+            "claude": "claude",
+            "claude-internal": "claude-internal",
+            "codex": "codex",
+            "codex-internal": "codex-internal",
+        }
+
+        if provider in provider_command_map:
+            ccr_command = provider_command_map[provider]
+        else:
+            ccr_command = self.config.agent_ccr_command_map.get(agent_name, self.config.ccr_command)
 
         cmd = [ccr_command]
 

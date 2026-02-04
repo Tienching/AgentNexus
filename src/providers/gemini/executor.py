@@ -43,7 +43,20 @@ class GeminiExecutor(BaseExecutor):
     """
     
     def __init__(self, config: Optional[GeminiExecutorConfig] = None):
-        super().__init__(config or GeminiExecutorConfig())
+        if config is None:
+            super().__init__(GeminiExecutorConfig())
+            return
+        if isinstance(config, GeminiExecutorConfig):
+            super().__init__(config)
+            return
+        # Backward-compat: accept server settings-like objects.
+        super().__init__(
+            GeminiExecutorConfig(
+                timeout=getattr(config, "ccr_timeout", 120.0),
+                user_home_base=getattr(config, "user_home_base", "/home"),
+                gemini_command=getattr(config, "gemini_command", "gemini"),
+            )
+        )
     
     @property
     def gemini_config(self) -> GeminiExecutorConfig:
@@ -52,18 +65,35 @@ class GeminiExecutor(BaseExecutor):
     
     async def execute(
         self,
-        context: RequestContext,
+        request: Any,
+        agent_name: str = "default",
         output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
         """Execute Gemini CLI and yield stream output.
         
+        This signature matches CCR/Codex executors for StreamHandler compatibility.
+        
         Args:
-            context: Request context
-            output_format: "raw" (JSON lines) or "legacy" (event:delta SSE)
+            request: RequestModel or RequestContext
+            agent_name: Linux system user name
+            output_format: Output format (only "raw" JSON lines supported)
             
         Yields:
-            Output lines
+            Output lines (JSON format)
         """
+        if isinstance(request, RequestContext):
+            context = request
+        else:
+            context = RequestContext.from_request_model(request, agent_name)
+        async for line in self._execute_internal(context, output_format=output_format):
+            yield line
+
+    async def _execute_internal(
+        self,
+        context: RequestContext,
+        output_format: str = "raw",
+    ) -> AsyncGenerator[str, None]:
+        """Internal execution implementation using RequestContext."""
         start_time = time.time()
         
         if not context.content:
@@ -84,7 +114,7 @@ class GeminiExecutor(BaseExecutor):
         try:
             process = await self.run_subprocess(final_cmd)
             
-            async for output in self._process_stream(process, output_format):
+            async for output in self._process_stream(process):
                 yield output
             
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
@@ -94,18 +124,11 @@ class GeminiExecutor(BaseExecutor):
                 process.kill()
             except Exception:
                 pass
-            if output_format == "legacy":
-                yield self.format_legacy_error("处理超时，请重试")
-            else:
-                yield json.dumps({"type": "error", "message": "处理超时，请重试"})
+            yield json.dumps({"type": "error", "message": "处理超时，请重试"})
                 
         except Exception as e:
             logger.exception("Gemini process error")
-            msg = f"处理错误: {e}"
-            if output_format == "legacy":
-                yield self.format_legacy_error(msg)
-            else:
-                yield json.dumps({"type": "error", "message": msg})
+            yield json.dumps({"type": "error", "message": f"处理错误: {e}"})
         
         finally:
             _ = start_time  # keep parity hook for future metrics
@@ -122,11 +145,9 @@ class GeminiExecutor(BaseExecutor):
     async def _process_stream(
         self,
         process: asyncio.subprocess.Process,
-        output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
-        """Process subprocess stream output."""
+        """Process subprocess stream output (raw JSON lines only)."""
         line_count = 0
-        tool_input_buffer: Dict[int, str] = {}
         
         async for line in self.read_stream(process, self.config.timeout):
             line_count += 1
@@ -135,70 +156,13 @@ class GeminiExecutor(BaseExecutor):
                 if not line_str:
                     continue
                 
-                if output_format == "raw":
-                    yield line_str
-                    continue
-                
-                data = json.loads(line_str)
-                event_type = data.get("type")
-                for sse in self._process_legacy_event(data, event_type, tool_input_buffer):
-                    yield sse
+                yield line_str
                     
-            except json.JSONDecodeError:
-                continue
             except Exception:
-                if output_format == "legacy":
-                    yield self.format_legacy_sse("处理流事件时出错", finished=False, answer_success=0)
+                continue
         
         # Drain stderr
         await self.drain_stderr(process)
-    
-    def _process_legacy_event(
-        self, 
-        data: Dict[str, Any], 
-        event_type: str, 
-        tool_input_buffer: Dict[int, str]
-    ) -> List[str]:
-        """Process legacy format events for Gemini."""
-        results = []
-        
-        if event_type == "message":
-            if data.get("role") == "assistant":
-                content = data.get("content", "")
-                if content:
-                    results.append(self.format_legacy_sse(content, finished=False, answer_success=1))
-        
-        elif event_type == "tool_use":
-            tool_name = data.get("tool_name") or "unknown"
-            params = data.get("parameters")
-            text = f"\n🔧 **调用工具: {tool_name}**\n"
-            if params:
-                try:
-                    params_str = json.dumps(params, ensure_ascii=False)
-                except Exception:
-                    params_str = str(params)
-                text += f"参数: {params_str}\n"
-            results.append(self.format_legacy_sse(text, finished=False, answer_success=1))
-        
-        elif event_type == "tool_result":
-            status = (data.get("status") or "").lower()
-            output = data.get("output")
-            content = "" if output is None else str(output)
-            if status and status != "success":
-                results.append(self.format_legacy_sse(f"❌ **错误**: {content}\n", finished=False, answer_success=0))
-            else:
-                results.append(self.format_legacy_sse(f"✅ **结果**: {content}\n", finished=False, answer_success=1))
-        
-        elif event_type == "result" and data.get("subtype") == "slash_command":
-            content = data.get("content") or ""
-            if content:
-                results.append(self.format_legacy_sse(content, finished=True, answer_success=1))
-        
-        elif event_type == "error":
-            msg = data.get("message") or "Gemini CLI error"
-            results.append(self.format_legacy_sse(msg, finished=True, answer_success=0))
-        
-        return results
     
     # Helper methods
     
@@ -219,21 +183,3 @@ class GeminiExecutor(BaseExecutor):
             cleaned_content = re.sub(r'\s+', ' ', cleaned_content).strip()
             return cleaned_content, model_value
         return content, None
-    
-    def format_legacy_sse(self, response: str, finished: bool = False, answer_success: int = 1) -> str:
-        """Format as legacy SSE."""
-        data = {
-            "response": response,
-            "finished": finished,
-            "global_output": {
-                "context": "",
-                "answer_success": answer_success,
-                "docs": [],
-            },
-        }
-        json_data = json.dumps(data, ensure_ascii=False)
-        return f"event:delta\ndata:{json_data}\n\n"
-    
-    def format_legacy_error(self, error_msg: str) -> str:
-        """Format legacy error message."""
-        return self.format_legacy_sse(error_msg, finished=True, answer_success=0)
