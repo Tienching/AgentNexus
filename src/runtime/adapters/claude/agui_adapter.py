@@ -745,7 +745,7 @@ class AGUIAdapter(BaseAdapter):
                     logger.info(f"[AGUI] Sending ToolCallResult: tool_id={tool_use_id}, content_len={len(result_str)}, subagent_calls={len(subagent_calls)}")
 
                     # 紧接着发送 ToolCallEnd，确保正确的事件顺序
-                    tool_end = ToolCallEndEvent(toolCallId=tool_use_id)
+                    tool_end = ToolCallEndEvent(toolCallId=tool_use_id, result=result_str)
                     results.append(tool_end.to_sse())
                     logger.info(f"[AGUI] Sending ToolCallEnd: tool_id={tool_use_id}")
 
@@ -810,8 +810,9 @@ class AGUIAdapter(BaseAdapter):
                 )
                 events.append(args_event.to_sse())
         
-        # ToolCallEnd
-        tool_end = ToolCallEndEvent(toolCallId=call.tool_id)
+        # ToolCallEnd - include result from the call
+        call_result = json.dumps(call.arguments, ensure_ascii=False) if call.arguments else ""
+        tool_end = ToolCallEndEvent(toolCallId=call.tool_id, result=call_result)
         events.append(tool_end.to_sse())
         logger.info(f"[AGUI] Subagent ToolCallEnd: tool_id={call.tool_id}")
         

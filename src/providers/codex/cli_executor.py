@@ -29,7 +29,7 @@ class CodexCLIExecutorConfig(ExecutorConfig):
         self,
         timeout: float = 600.0,  # Codex tasks can be long-running
         user_home_base: str = "/home",
-        codex_command: str = "codex-internal",  # Use codex-internal as default
+        codex_command: str = "codex-internal",  # Use codex-internal as default (installed on system)
         sandbox_mode: str = "workspace-write",  # read-only, workspace-write, danger-full-access
         full_auto: bool = True,  # Allow file edits without confirmation
         skip_git_repo_check: bool = True,  # Skip git repo check for non-git directories

@@ -268,6 +268,10 @@ class AGUIRequest(BaseModel):
     def get_username(self) -> Optional[str]:
         """从 forwardedProps 获取用户名"""
         return self.forwardedProps.get("username")
+
+    def get_alias(self) -> Optional[str]:
+        """从 forwardedProps 获取别名"""
+        return self.forwardedProps.get("alias")
     
     def get_response_url(self) -> Optional[str]:
         """从 forwardedProps.rawCallback 获取 response_url"""

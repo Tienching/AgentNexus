@@ -23,6 +23,7 @@ def create_archiver(
     username: str,
     agent_name: Optional[str] = None,
     provider: Optional[str] = None,
+    alias: Optional[str] = None,
 ):
     """Factory compatible with historical API.
 
@@ -51,5 +52,6 @@ def create_archiver(
         username=username,
         agent_name=agent_name,
         provider=provider,
+        alias=alias,
         storage=storage,
     )

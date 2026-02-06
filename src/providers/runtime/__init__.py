@@ -10,6 +10,7 @@ from .registry import ProviderRegistry, get_provider_registry
 from .claude.provider import ClaudeProvider
 from .gemini.provider import GeminiProvider
 from .codex.provider import CodexProvider
+from .codebuddy.provider import CodebuddyProvider
 
 __all__ = [
     "Provider",
@@ -20,4 +21,5 @@ __all__ = [
     "ClaudeProvider",
     "GeminiProvider",
     "CodexProvider",
+    "CodebuddyProvider",
 ]

@@ -75,7 +75,15 @@ class ProviderRegistry:
         为了与现有系统兼容，即使尚未注册具体 Provider 实例，也会暴露内置名称。
         """
         names = set(self._providers.keys())
-        names.update({"claude", "gemini", "gemini-internal", "codex", "codex-internal"})
+        names.update({
+            "claude",
+            "claude-internal",
+            "gemini",
+            "gemini-internal",
+            "codex",
+            "codex-internal",
+            "codebuddy",
+        })
         return sorted(names)
     
     def set_default(self, name: str) -> None:

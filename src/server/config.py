@@ -61,7 +61,7 @@ class ProviderSettings(BaseSettings):
     """Provider 特定配置"""
 
     # CCR (Claude Code Runner) 配置
-    ccr_command: str = "claude-internal"
+    ccr_command: str = "claude"
     ccr_timeout: int = 120
     agent_ccr_command_map: dict = {}
 

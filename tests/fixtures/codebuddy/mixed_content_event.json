@@ -1,0 +1,27 @@
+{
+    "type": "assistant",
+    "uuid": "mixed-content-uuid",
+    "session_id": "mixed-session-id",
+    "message": {
+        "id": "mixed-content-uuid",
+        "content": [
+            {
+                "type": "text",
+                "text": "I'll read the file for you."
+            },
+            {
+                "type": "tool_use",
+                "id": "toolu_mixed_001",
+                "name": "Read",
+                "input": {
+                    "file_path": "/path/to/file.txt"
+                }
+            }
+        ],
+        "model": "claude-4.5",
+        "role": "assistant",
+        "stop_reason": "tool_use",
+        "type": "message"
+    },
+    "__timestamp": "2026-02-05T02:42:03.360Z"
+}
