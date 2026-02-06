@@ -96,6 +96,7 @@ class TaskQueue:
         project_name: Optional[str] = None,
         workspace: Optional[str] = None,
         provider: Optional[str] = None,
+        alias: Optional[str] = None,
         task_id: Optional[str] = None,
         source_session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
@@ -131,6 +132,7 @@ class TaskQueue:
         logger.info(f"Generated session_id={session_id}")
         
         normalized_provider = (provider or "").strip().lower() or "claude"
+        alias_value = (alias or "").strip() or normalized_provider
 
         task = Task(
             id=actual_task_id,
@@ -142,6 +144,7 @@ class TaskQueue:
             workspace=workspace,
             agent_name=effective_agent,
             provider=normalized_provider,
+            alias=alias_value,
             session_id=session_id,
             source_session_id=source_session_id,
             depends_on=depends_on or [],

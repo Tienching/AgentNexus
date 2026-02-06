@@ -29,6 +29,7 @@ class SessionMeta(BaseModel):
     username: str = Field(..., description="Username")
     agent_name: Optional[str] = Field(None, description="Agent name")
     provider: Optional[str] = Field(None, description="Provider (e.g., claude, gemini)")
+    alias: Optional[str] = Field(None, description="Alias (optional, defaults to provider)")
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000), description="Created timestamp (ms)")
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000), description="Updated timestamp (ms)")
     message_count: int = Field(0, description="Total message count")
@@ -44,6 +45,7 @@ class SessionMeta(BaseModel):
             "username": self.username,
             "agent_name": self.agent_name or "",
             "provider": self.provider or "",
+            "alias": self.alias or "",
             "created_at": str(self.created_at),
             "updated_at": str(self.updated_at),
             "message_count": str(self.message_count),
@@ -61,6 +63,7 @@ class SessionMeta(BaseModel):
             username=data.get("username", ""),
             agent_name=data.get("agent_name") or None,
             provider=data.get("provider") or None,
+            alias=data.get("alias") or None,
             created_at=int(data.get("created_at", 0)),
             updated_at=int(data.get("updated_at", 0)),
             message_count=int(data.get("message_count", 0)),
@@ -152,3 +155,4 @@ class SessionMessagesResponse(BaseModel):
     session_id: str = Field(..., description="Session ID")
     messages: List[StoredMessage] = Field(default_factory=list, description="Message list")
     tool_calls: List[StoredToolCall] = Field(default_factory=list, description="Tool call list")
+    session: Optional[SessionMeta] = Field(None, description="Session metadata")

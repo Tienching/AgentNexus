@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import Mock, AsyncMock, patch
 
 from src.providers.codex import CodexExecutor, CodexExecutorConfig, CodexConnection
-from src.runtime.adapters.codex import CodexAGUIAdapter
+from src.runtime.adapters.codex import CodexAGUIAdapter, CodexCLIAGUIAdapter
 
 
 class TestCodexExecutorConfig:
@@ -210,6 +210,53 @@ class TestCodexAGUIAdapter:
         # 未知事件应该被安全处理
         result = adapter.convert(codex_event)
         # 可能返回 None 或空字符串
+
+
+class TestCodexCLIAGUIAdapter:
+    """CodexCLIAGUIAdapter 事件转换测试"""
+
+    @pytest.fixture
+    def adapter(self):
+        adapter = CodexCLIAGUIAdapter()
+        adapter.init_state(thread_id="test-thread", run_id="test-run")
+        return adapter
+
+    def test_convert_thread_started(self, adapter):
+        result = adapter.convert({"type": "thread.started", "thread_id": "t-1"})
+        assert result is not None
+        assert "RUN_STARTED" in result
+
+    def test_convert_agent_message_item(self, adapter):
+        adapter.convert({"type": "thread.started", "thread_id": "t-1"})
+        result = adapter.convert({
+            "type": "item.completed",
+            "item": {"id": "item-1", "type": "agent_message", "text": "Hello"},
+        })
+        assert result is not None
+        assert "TEXT_MESSAGE_START" in result
+        assert "TEXT_MESSAGE_CONTENT" in result
+        assert "codex-msg-" in result
+
+    def test_convert_command_execution_item(self, adapter):
+        start = adapter.convert({
+            "type": "item.started",
+            "item": {"id": "cmd-1", "type": "command_execution", "command": "ls -la"},
+        })
+        assert start is not None
+        assert "TOOL_CALL_START" in start
+        assert "TOOL_CALL_ARGS" in start
+
+        end = adapter.convert({
+            "type": "item.completed",
+            "item": {
+                "id": "cmd-1",
+                "type": "command_execution",
+                "aggregated_output": "ok",
+                "exit_code": 0,
+            },
+        })
+        assert end is not None
+        assert "TOOL_CALL_END" in end
 
 
 class TestCodexExecutor:

@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="css/styles.css?v=20">
+    <link rel="stylesheet" href="css/styles.css?v=22">
 </head>
 <body>
     <div id="app" class="layout-container">
@@ -23,9 +23,25 @@
                     </div>
                     <span>Nexus</span>
                 </a>
+                <!-- Page Navigator -->
+                <div class="page-nav">
+                    <button class="page-nav-btn active" data-page="project" title="Project">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                        </svg>
+                        <span>Project</span>
+                    </button>
+                    <button class="page-nav-btn" data-page="config" title="Config">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        <span>Config</span>
+                    </button>
+                </div>
             </div>
 
-            <div class="header-center">
+            <div class="header-center" id="projectHeaderCenter">
                 <!-- Layout Switcher -->
                 <div class="layout-switcher">
                     <button class="layout-btn active" data-mode="single" title="Single View">
@@ -56,7 +72,7 @@
                 </div>
             </div>
 
-            <div class="header-right">
+            <div class="header-right" id="projectHeaderRight">
                 <!-- User Filter -->
                 <select id="globalUserFilter" class="form-input form-select">
                     <option value="">All Users</option>
@@ -83,7 +99,9 @@
 
         <!-- Main Content -->
         <main class="main-content">
-            <div id="layoutWrapper" class="layout-wrapper" data-mode="single">
+            <!-- Project View (original layout) -->
+            <div id="projectView" class="page-view active">
+                <div id="layoutWrapper" class="layout-wrapper" data-mode="single">
                 <!-- Pane 0 (always visible) -->
                 <div class="pane" id="pane-0" data-pane-id="0">
                     <div class="pane-header">
@@ -204,6 +222,148 @@
                     <div class="pane-content" id="pane-3-content"></div>
                 </div>
             </div>
+            </div><!-- End of projectView -->
+
+            <!-- Config View -->
+            <div id="configView" class="page-view">
+                <div class="config-container">
+                    <!-- Config Tabs -->
+                    <div class="config-tabs">
+                        <button class="config-tab active" data-config-tab="parameters">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+                            </svg>
+                            Parameters
+                        </button>
+                        <button class="config-tab" data-config-tab="mcp">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+                            </svg>
+                            MCP
+                        </button>
+                        <button class="config-tab" data-config-tab="skills">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                            </svg>
+                            Skills
+                        </button>
+                    </div>
+
+                    <!-- Config Content -->
+                    <div class="config-content">
+                        <!-- Parameters Tab -->
+                        <div class="config-tab-content active" data-config-content="parameters">
+                            <div class="config-section">
+                                <h3 class="config-section-title">Default Provider</h3>
+                                <p class="config-section-desc">Select the default agent provider for new chats and tasks</p>
+                                <div class="form-group">
+                                    <select id="configDefaultProvider" class="form-input form-select">
+                                        <option value="claude">claude</option>
+                                        <option value="gemini">gemini</option>
+                                        <option value="codex">codex</option>
+                                        <option value="codebuddy">codebuddy</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider Aliases</h3>
+                                <p class="config-section-desc">Create custom aliases for providers</p>
+                                
+                                <!-- Add Alias Form -->
+                                <div class="alias-form">
+                                    <input id="newAliasName" type="text" class="form-input" placeholder="Alias name">
+                                    <select id="newAliasBase" class="form-input form-select">
+                                        <option value="claude">claude</option>
+                                        <option value="gemini">gemini</option>
+                                        <option value="codex">codex</option>
+                                        <option value="codebuddy">codebuddy</option>
+                                    </select>
+                                    <button id="addAliasBtn" class="action-btn primary">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Add
+                                    </button>
+                                </div>
+
+                                <!-- Alias List -->
+                                <div id="aliasListContainer" class="alias-list">
+                                    <!-- Alias items will be rendered here -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- MCP Tab -->
+                        <div class="config-tab-content" data-config-content="mcp">
+                            <div class="config-section">
+                                <h3 class="config-section-title">Global MCP Servers</h3>
+                                <p class="config-section-desc">MCP servers available to all providers</p>
+                                
+                                <!-- Add MCP Form -->
+                                <div class="mcp-form">
+                                    <input id="globalMcpName" type="text" class="form-input" placeholder="Server name">
+                                    <input id="globalMcpCommand" type="text" class="form-input" placeholder="Command (e.g., npx)">
+                                    <input id="globalMcpArgs" type="text" class="form-input" placeholder="Args (comma-separated)">
+                                    <button id="addGlobalMcpBtn" class="action-btn primary">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Add
+                                    </button>
+                                </div>
+
+                                <!-- Global MCP List -->
+                                <div id="globalMcpList" class="mcp-list">
+                                    <!-- MCP items will be rendered here -->
+                                </div>
+                            </div>
+
+                            <!-- Provider-specific MCP -->
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider-specific MCP Servers</h3>
+                                <p class="config-section-desc">Configure MCP servers for individual providers</p>
+                                <div id="providerMcpPanels" class="provider-panels">
+                                    <!-- Provider panels will be rendered here -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Skills Tab -->
+                        <div class="config-tab-content" data-config-content="skills">
+                            <div class="config-section">
+                                <h3 class="config-section-title">Global Skills</h3>
+                                <p class="config-section-desc">Skills available to all providers</p>
+                                
+                                <!-- Add Skill Form -->
+                                <div class="skill-form">
+                                    <input id="globalSkillName" type="text" class="form-input" placeholder="Skill name">
+                                    <button id="addGlobalSkillBtn" class="action-btn primary">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Add
+                                    </button>
+                                </div>
+
+                                <!-- Global Skills List -->
+                                <div id="globalSkillsList" class="skills-list">
+                                    <!-- Skill items will be rendered here -->
+                                </div>
+                            </div>
+
+                            <!-- Provider-specific Skills -->
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider-specific Skills</h3>
+                                <p class="config-section-desc">Configure skills for individual providers</p>
+                                <div id="providerSkillsPanels" class="provider-panels">
+                                    <!-- Provider panels will be rendered here -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div><!-- End of configView -->
         </main>
     </div>
 
@@ -350,7 +510,7 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <!-- Scripts -->
-    <script src="js/api.js?v=20"></script>
-    <script src="js/app.js?v=20"></script>
+    <script src="js/api.js?v=22"></script>
+    <script src="js/app.js?v=22"></script>
 </body>
 </html>

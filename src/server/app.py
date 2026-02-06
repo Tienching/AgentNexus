@@ -109,12 +109,14 @@ async def task_handler(task: Task) -> Optional[str]:
     )
 
     # 归档器（落 Redis，供 Nexus UI 查询）
+    alias_value = (getattr(task, "alias", None) or provider)
     archiver = create_archiver(
         thread_id=session_id,
         run_id=run_id,
         username=request.user or "task_executor",
         agent_name=agent_name,
         provider=provider,
+        alias=alias_value,
     )
 
     # 同时写入“原始 AG-UI 事件序列”，供 Task 详情页像 Chat 一样实时播放

@@ -38,6 +38,15 @@ command: "codex"
 default_model: ""
 """,
     },
+    "codebuddy": {
+        "name": "Codebuddy",
+        "package": None,  # 未来
+        "config_template": """# Codebuddy Provider 配置
+enabled: false
+command: "codebuddy"
+default_model: ""
+""",
+    },
 }
 
 
