@@ -4,6 +4,7 @@ vhsdk CLI 入口
 
 用法:
     vhsdk install provider codex
+    vhsdk install provider codebuddy
     vhsdk list
     vhsdk config init
 """
@@ -30,7 +31,7 @@ def create_parser() -> argparse.ArgumentParser:
 
     # install provider
     provider_parser = install_subparsers.add_parser("provider", help="安装 Provider")
-    provider_parser.add_argument("name", help="Provider 名称 (claude/gemini/codex)")
+    provider_parser.add_argument("name", help="Provider 名称 (claude/gemini/codex/codebuddy)")
 
     # list 命令
     list_parser = subparsers.add_parser("list", help="列出已安装的插件")

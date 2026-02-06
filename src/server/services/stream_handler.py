@@ -26,8 +26,10 @@ from .stream_archiver import create_archiver
 from .session_storage import get_session_storage
 from src.providers.gemini import GeminiExecutor
 from src.providers.codex import CodexCLIExecutor
+from src.providers.codebuddy import CodebuddyCLIExecutor
 from src.runtime.adapters.gemini import GeminiAGUIAdapter
 from src.runtime.adapters.codex import CodexCLIAGUIAdapter
+from src.runtime.adapters.codebuddy import CodebuddyAGUIAdapter
 from src.runtime.streaming import StreamOrchestrator
 
 logger = get_logger(__name__)
@@ -40,6 +42,7 @@ class StreamHandler:
         self._ccr_executor = CCRExecutor(config=settings)
         self._gemini_executor = GeminiExecutor(config=settings)
         self._codex_executor = CodexCLIExecutor()
+        self._codebuddy_executor = CodebuddyCLIExecutor()
         self.callback_handler = CallbackHandler()
 
     def _get_provider(self, request: Request, body_dict: Dict[str, Any]) -> str:
@@ -68,6 +71,8 @@ class StreamHandler:
             return self._gemini_executor
         elif provider_lower in ("codex", "codex-internal"):
             return self._codex_executor
+        elif provider_lower == "codebuddy":
+            return self._codebuddy_executor
         return self._ccr_executor
 
     def _get_agui_adapter(self, provider: str):
@@ -76,6 +81,8 @@ class StreamHandler:
             return GeminiAGUIAdapter()
         elif provider_lower in ("codex", "codex-internal"):
             return CodexCLIAGUIAdapter()
+        elif provider_lower == "codebuddy":
+            return CodebuddyAGUIAdapter()
         return get_router().get_adapter(ProtocolType.AGUI)
 
     async def handle_agui_request(
@@ -101,6 +108,8 @@ class StreamHandler:
         if not legacy_data.get("user"):
             legacy_data["user"] = "anonymous"
         request_model = RequestModel.model_validate(legacy_data)
+        request_model.provider = provider
+        request_model.agent_type = provider
         
         executor = self._get_executor(provider, request_model=request_model)
 
@@ -139,6 +148,7 @@ class StreamHandler:
         # 标准 AG-UI 流式处理
         # Extract username for archiver
         username = request_model.user or "anonymous"
+        alias = agui_request.get_alias() or provider
         
         # Create archiver for session storage
         archiver = create_archiver(
@@ -147,6 +157,7 @@ class StreamHandler:
             username=username,
             agent_name=agent_name,
             provider=provider,
+            alias=alias,
         )
         
         # Extract initial messages for archiver
@@ -198,12 +209,14 @@ class StreamHandler:
         
         # Create archiver for session storage
         username = request_model.user or "anonymous"
+        alias = agui_request.get_alias() or provider
         archiver = create_archiver(
             thread_id=agui_request.threadId,
             run_id=agui_request.runId,
             username=username,
             agent_name=agent_name,
             provider=provider,
+            alias=alias,
         )
         
         # Extract initial messages for archiver

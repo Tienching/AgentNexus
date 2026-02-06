@@ -28,6 +28,69 @@ class ThemeManager {
 }
 
 // ============================================================
+// Page Manager - Handles Project/Config page switching
+// ============================================================
+class PageManager {
+    constructor(app) {
+        this.app = app;
+        this.currentPage = localStorage.getItem('nexus-page') || 'project';
+        this.projectView = document.getElementById('projectView');
+        this.configView = document.getElementById('configView');
+        this.projectHeaderCenter = document.getElementById('projectHeaderCenter');
+        this.projectHeaderRight = document.getElementById('projectHeaderRight');
+        this.bindEvents();
+        this.apply();
+    }
+
+    bindEvents() {
+        document.querySelectorAll('.page-nav-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.setPage(btn.dataset.page);
+            });
+        });
+    }
+
+    setPage(page) {
+        this.currentPage = page;
+        localStorage.setItem('nexus-page', page);
+        this.apply();
+        
+        // Refresh config view when switching to config page
+        if (page === 'config' && this.app.configView) {
+            this.app.configView.refresh();
+        }
+
+        // Refresh project selectors when switching back to project page
+        if (page === 'project' && this.app.refreshProjectProviders) {
+            this.app.refreshProjectProviders();
+        }
+    }
+
+    apply() {
+        // Update nav button states
+        document.querySelectorAll('.page-nav-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.page === this.currentPage);
+        });
+
+        // Show/hide page views
+        if (this.projectView) {
+            this.projectView.classList.toggle('active', this.currentPage === 'project');
+        }
+        if (this.configView) {
+            this.configView.classList.toggle('active', this.currentPage === 'config');
+        }
+
+        // Show/hide project-specific header elements
+        if (this.projectHeaderCenter) {
+            this.projectHeaderCenter.style.display = this.currentPage === 'project' ? '' : 'none';
+        }
+        if (this.projectHeaderRight) {
+            this.projectHeaderRight.style.display = this.currentPage === 'project' ? '' : 'none';
+        }
+    }
+}
+
+// ============================================================
 // Layout Manager
 // ============================================================
 class LayoutManager {
@@ -458,7 +521,10 @@ class ChatView {
     }
 
     getAvailableAgents(selectedUser = '') {
-        const agents = this.app.availableAgents || [];
+        const agents = (this.app.availableAgents || []).filter(agent => {
+            const agentType = (agent.agent_type || '').toLowerCase();
+            return !agentType.endsWith('-internal');
+        });
         if (!agents.length) return [];
         return agents.filter(agent => {
             if (agent.available === false) return false;
@@ -469,7 +535,7 @@ class ChatView {
 
     buildAgentOptions(agents = []) {
         if (!agents.length) {
-            return '<option value="ubuntu::claude-internal">ubuntu / claude-internal</option>';
+            return '<option value="ubuntu::claude">ubuntu / claude</option>';
         }
 
         const groups = {};
@@ -490,7 +556,7 @@ class ChatView {
     }
 
     parseAgentSelection(value) {
-        const fallback = { username: 'ubuntu', agentType: 'claude-internal', label: 'ubuntu / claude-internal' };
+        const fallback = { username: 'ubuntu', agentType: 'claude', label: 'ubuntu / claude' };
         if (!value) return fallback;
 
         const agents = this.app.availableAgents || [];
@@ -536,11 +602,27 @@ class ChatView {
 
         const buildModelOptions = (user) => {
             const agents = this.getAvailableAgents(user);
-            const models = [...new Set(agents.map(agent => agent.agent_type))];
-            if (!models.length) {
-                return '<option value="claude-internal">claude-internal</option>';
+            const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
+            // Merge with custom providers (use getCustomProviderNames for new format)
+            const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
+            if (!allModels.length) {
+                return '<option value="claude">claude</option>';
             }
-            return models.map(model => `<option value="${this.escapeHtml(model)}">${this.escapeHtml(model)}</option>`).join('');
+            const getModelLabel = (model) => {
+                if (this.app?.isCustomAlias && this.app.isCustomAlias(model)) {
+                    const baseProvider = this.app.getBaseProvider ? this.app.getBaseProvider(model) : null;
+                    if (baseProvider) {
+                        return `${model} (${baseProvider})`;
+                    }
+                }
+                return model;
+            };
+            return allModels.map(model => {
+                const label = getModelLabel(model);
+                return `<option value="${this.escapeHtml(model)}">${this.escapeHtml(label)}</option>`;
+            }).join('');
         };
 
         // Render new session view with input and selectors
@@ -581,11 +663,12 @@ class ChatView {
         const userSelect = document.getElementById(`newSessionUser-${paneId}`);
         const modelSelect = document.getElementById(`newSessionModel-${paneId}`);
 
-        const applyModelOptions = (user, preferred = 'claude-internal') => {
+        const applyModelOptions = (user, preferred = null) => {
             if (!modelSelect) return;
+            const defaultPref = preferred || this.app.getDefaultProvider();
             modelSelect.innerHTML = buildModelOptions(user);
             const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
-            const selected = optionValues.includes(preferred) ? preferred : (optionValues[0] || 'claude-internal');
+            const selected = optionValues.includes(defaultPref) ? defaultPref : (optionValues[0] || 'claude');
             modelSelect.value = selected;
         };
 
@@ -611,8 +694,8 @@ class ChatView {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     const selectedUser = userSelect?.value || initialUser || 'ubuntu';
-                    const selectedModel = modelSelect?.value || 'claude-internal';
-                    this.createNewSession(paneId, textarea.value, selectedUser, selectedModel);
+                    const selectedModel = modelSelect?.value || this.app.getDefaultProvider();
+                    this.createNewSession(paneId, textarea.value, selectedUser, selectedModel, selectedModel);
                 }
             });
         }
@@ -620,13 +703,69 @@ class ChatView {
         if (sendBtn) {
             sendBtn.addEventListener('click', () => {
                 const selectedUser = userSelect?.value || initialUser || 'ubuntu';
-                const selectedModel = modelSelect?.value || 'claude-internal';
-                this.createNewSession(paneId, textarea?.value || '', selectedUser, selectedModel);
+                const selectedModel = modelSelect?.value || this.app.getDefaultProvider();
+                this.createNewSession(paneId, textarea?.value || '', selectedUser, selectedModel, selectedModel);
             });
         }
     }
 
-    async createNewSession(paneId, message, agentName = 'ubuntu', agentType = 'claude-internal') {
+    refreshNewSessionSelectors(paneId) {
+        const userSelect = document.getElementById(`newSessionUser-${paneId}`);
+        const modelSelect = document.getElementById(`newSessionModel-${paneId}`);
+        if (!modelSelect) return;
+
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const selectedUser = globalUserFilter?.value || '';
+        const allAgents = this.getAvailableAgents('');
+        const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
+        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const fallbackUser = (selectedUser && usernames.includes(selectedUser))
+            ? selectedUser
+            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+
+        const buildModelOptions = (user) => {
+            const agents = this.getAvailableAgents(user);
+            const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
+            const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
+            if (!allModels.length) {
+                return '<option value="claude">claude</option>';
+            }
+            const getModelLabel = (model) => {
+                if (this.app?.isCustomAlias && this.app.isCustomAlias(model)) {
+                    const baseProvider = this.app.getBaseProvider ? this.app.getBaseProvider(model) : null;
+                    if (baseProvider) {
+                        return `${model} (${baseProvider})`;
+                    }
+                }
+                return model;
+            };
+            return allModels.map(model => {
+                const label = getModelLabel(model);
+                return `<option value="${this.escapeHtml(model)}">${this.escapeHtml(label)}</option>`;
+            }).join('');
+        };
+
+        const currentUser = userSelect?.value || fallbackUser;
+        const resolvedUser = usernames.includes(currentUser) ? currentUser : fallbackUser;
+
+        if (userSelect) {
+            userSelect.innerHTML = usernames.map(u => `<option value="${this.escapeHtml(u)}">${this.escapeHtml(u)}</option>`).join('');
+            userSelect.value = resolvedUser;
+        }
+
+        const currentModel = modelSelect.value;
+        modelSelect.innerHTML = buildModelOptions(resolvedUser);
+        const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
+        const defaultPref = this.app.getDefaultProvider();
+        const selected = optionValues.includes(currentModel)
+            ? currentModel
+            : (optionValues.includes(defaultPref) ? defaultPref : (optionValues[0] || 'claude'));
+        modelSelect.value = selected;
+    }
+
+    async createNewSession(paneId, message, agentName = 'ubuntu', agentType = 'claude', alias = null) {
         if (!message.trim()) {
             this.app.showToast('Please enter a message', 'warning');
             return;
@@ -699,6 +838,7 @@ class ChatView {
         }
 
         try {
+            const aliasValue = (alias || '').trim() || agentType;
             // Build legacy (易事厅) request payload 
             // The backend auto-detects protocol, default is legacy format
             const payload = {
@@ -706,7 +846,9 @@ class ChatView {
                 user: agentName,
                 session_id: sessionId,
                 msg_type: 'text',
-                provider: agentType
+                provider: agentType,
+                alias: aliasValue,
+                forwardedProps: { alias: aliasValue },
             };
 
             // Call streaming API
@@ -753,6 +895,7 @@ class ChatView {
         const thinkingEl = document.getElementById(thinkingId);
         
         // Replace thinking indicator with streaming response container
+        // Start with an empty bubble - content will be added dynamically
         if (thinkingEl) {
             thinkingEl.innerHTML = `
                 <div class="message-avatar assistant">
@@ -761,13 +904,29 @@ class ChatView {
                     </svg>
                 </div>
                 <div class="message-content">
-                    <div class="message-text streaming" id="streaming-content-${thinkingId}"></div>
+                    <div class="message-bubble streaming-bubble" id="streaming-bubble-${thinkingId}"></div>
                 </div>
             `;
         }
         
-        const contentEl = document.getElementById(`streaming-content-${thinkingId}`);
-        let fullContent = '';
+        const bubbleEl = document.getElementById(`streaming-bubble-${thinkingId}`);
+        let currentTextEl = null; // Will be created on demand when text arrives
+        let currentTextContent = ''; // Current text segment content
+        let textSegmentIndex = 0; // Track text segments for unique IDs
+        
+        // Helper function to ensure we have a text element to write to
+        const ensureTextElement = () => {
+            if (!currentTextEl && bubbleEl) {
+                const textId = `streaming-content-${thinkingId}-seg${textSegmentIndex}`;
+                bubbleEl.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
+                currentTextEl = document.getElementById(textId);
+                currentTextContent = '';
+            }
+            return currentTextEl;
+        };
+        
+        // Track streaming tool calls
+        const streamingToolCalls = new Map(); // toolCallId -> { name, args, status }
         
         // Call streaming API
         const response = await NexusAPI.chatStream(agentName, payload);
@@ -819,41 +978,146 @@ class ChatView {
                         // Handle legacy format with response field (event:delta, data.response)
                         if (eventType === 'delta' && data.response !== undefined) {
                             if (data.response) {
-                                fullContent += data.response;
-                                if (contentEl) {
-                                    contentEl.innerHTML = this.formatMessageContent(fullContent);
+                                currentTextContent += data.response;
+                                const textEl = ensureTextElement();
+                                if (textEl) {
+                                    textEl.innerHTML = this.formatMessageContent(currentTextContent);
                                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                                 }
                             }
                             // Check if stream is finished
                             if (data.finished === true) {
                                 // Stream completed, remove streaming indicator
-                                if (contentEl) {
-                                    contentEl.classList.remove('streaming');
+                                if (currentTextEl) {
+                                    currentTextEl.classList.remove('streaming');
                                 }
                             }
                         }
                         // Handle legacy format (event:delta, data.delta)
                         else if (eventType === 'delta' && data.delta) {
-                            fullContent += data.delta;
-                            if (contentEl) {
-                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                            currentTextContent += data.delta;
+                            const textEl = ensureTextElement();
+                            if (textEl) {
+                                textEl.innerHTML = this.formatMessageContent(currentTextContent);
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                             }
                         }
-                        // Handle AGUI format
+                        // Handle AGUI format - TEXT_MESSAGE_CONTENT
                         else if (data.type === 'TEXT_MESSAGE_CONTENT' && data.delta) {
-                            fullContent += data.delta;
-                            if (contentEl) {
-                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                            currentTextContent += data.delta;
+                            const textEl = ensureTextElement();
+                            if (textEl) {
+                                textEl.innerHTML = this.formatMessageContent(currentTextContent);
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle AGUI format - TOOL_CALL_START
+                        else if (data.type === 'TOOL_CALL_START') {
+                            const toolCallId = data.toolCallId || `tool-${Date.now()}`;
+                            const toolName = data.toolCallName || 'Tool';
+                            
+                            // Initialize tool call state
+                            streamingToolCalls.set(toolCallId, {
+                                name: toolName,
+                                args: '',
+                                status: 'executing',
+                                result: ''
+                            });
+                            
+                            // Close current text element (if any) and prepare for new one after tool call
+                            if (currentTextEl) {
+                                currentTextEl.classList.remove('streaming');
+                            }
+                            currentTextEl = null; // Reset so next text creates a new element after the tool call
+                            textSegmentIndex++;
+                            
+                            // Create tool call UI element in the bubble
+                            if (bubbleEl) {
+                                const toolCallHtml = this.renderStreamingToolCall(toolCallId, toolName, 'executing');
+                                bubbleEl.insertAdjacentHTML('beforeend', toolCallHtml);
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle AGUI format - TOOL_CALL_ARGS
+                        else if (data.type === 'TOOL_CALL_ARGS') {
+                            const toolCallId = data.toolCallId;
+                            const argsDelta = data.delta || '';
+                            
+                            if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                                const tc = streamingToolCalls.get(toolCallId);
+                                tc.args += argsDelta;
+                                
+                                // Update the args display
+                                const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
+                                if (argsEl) {
+                                    argsEl.textContent = tc.args;
+                                }
+                            }
+                        }
+                        // Handle AGUI format - TOOL_CALL_END
+                        else if (data.type === 'TOOL_CALL_END') {
+                            const toolCallId = data.toolCallId;
+                            const result = data.result || '';
+                            const error = data.error;
+                            
+                            if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                                const tc = streamingToolCalls.get(toolCallId);
+                                tc.status = error ? 'failed' : 'completed';
+                                tc.result = result;
+                                tc.error = error;
+                                
+                                // Update status icon
+                                const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-status-icon`);
+                                if (statusEl) {
+                                    statusEl.textContent = error ? '✗' : '✓';
+                                    statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
+                                }
+                                
+                                // Show result section
+                                const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                                const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                                if (resultSection && resultEl && result) {
+                                    resultSection.style.display = 'block';
+                                    resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                                }
+                                
+                                // Show error if any
+                                if (error) {
+                                    const errorSection = document.getElementById(`streaming-tool-error-section-${toolCallId}`);
+                                    const errorEl = document.getElementById(`streaming-tool-error-${toolCallId}`);
+                                    if (errorSection && errorEl) {
+                                        errorSection.style.display = 'block';
+                                        errorEl.textContent = error;
+                                    }
+                                }
+                                
+                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                            }
+                        }
+                        // Handle AGUI format - TOOL_CALL_RESULT (alternative format)
+                        else if (data.type === 'TOOL_CALL_RESULT') {
+                            const toolCallId = data.toolCallId;
+                            const result = data.result || '';
+                            
+                            if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                                const tc = streamingToolCalls.get(toolCallId);
+                                tc.result = result;
+                                
+                                // Show result section
+                                const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                                const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                                if (resultSection && resultEl && result) {
+                                    resultSection.style.display = 'block';
+                                    resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                                }
                             }
                         }
                         // Handle generic delta
                         else if (data.delta && !data.type) {
-                            fullContent += data.delta;
-                            if (contentEl) {
-                                contentEl.innerHTML = this.formatMessageContent(fullContent);
+                            currentTextContent += data.delta;
+                            const textEl = ensureTextElement();
+                            if (textEl) {
+                                textEl.innerHTML = this.formatMessageContent(currentTextContent);
                                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
                             }
                         }
@@ -874,8 +1138,13 @@ class ChatView {
         }
         
         // Remove streaming class when done
-        if (contentEl) {
-            contentEl.classList.remove('streaming');
+        if (currentTextEl) {
+            currentTextEl.classList.remove('streaming');
+        }
+        
+        // Remove empty text segments
+        if (bubbleEl) {
+            bubbleEl.querySelectorAll('.message-text:empty').forEach(el => el.remove());
         }
         
         // Re-enable input
@@ -883,6 +1152,57 @@ class ChatView {
         const sendBtn = document.querySelector(`.chat-send-btn[data-pane="${paneId}"]`);
         if (textarea) textarea.disabled = false;
         if (sendBtn) sendBtn.disabled = false;
+    }
+    
+    /**
+     * Render a streaming tool call UI element (simplified version for real-time display)
+     */
+    renderStreamingToolCall(toolCallId, toolName, status = 'executing') {
+        const statusConfig = {
+            pending: { icon: '⏳', color: 'var(--text-muted)' },
+            executing: { icon: '▶️', color: 'var(--primary-500)' },
+            completed: { icon: '✓', color: 'var(--success)' },
+            failed: { icon: '✗', color: 'var(--error)' }
+        };
+        const cfg = statusConfig[status] || statusConfig.executing;
+        
+        return `
+            <div class="tool-call" data-streaming-tool-id="${toolCallId}">
+                <div class="tool-call-header" onclick="this.closest('.tool-call').classList.toggle('expanded')">
+                    <div class="tool-call-status" style="color: ${cfg.color}">
+                        <span class="tool-call-status-icon">${cfg.icon}</span>
+                    </div>
+                    <svg class="tool-call-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                    </svg>
+                    <span class="tool-call-name">${this.escapeHtml(toolName)}</span>
+                    <svg class="tool-call-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                    </svg>
+                </div>
+                <div class="tool-call-body">
+                    <div class="tool-call-section">
+                        <div class="tool-call-section-header">
+                            <span class="tool-call-section-title">Input</span>
+                        </div>
+                        <div class="tool-call-content" id="streaming-tool-args-${toolCallId}"></div>
+                    </div>
+                    <div class="tool-call-section" id="streaming-tool-result-section-${toolCallId}" style="display: none;">
+                        <div class="tool-call-section-header">
+                            <span class="tool-call-section-title">Output</span>
+                        </div>
+                        <div class="tool-call-content tool-call-result" id="streaming-tool-result-${toolCallId}"></div>
+                    </div>
+                    <div class="tool-call-section" id="streaming-tool-error-section-${toolCallId}" style="display: none;">
+                        <div class="tool-call-section-header">
+                            <span class="tool-call-section-title" style="color: var(--error);">Error</span>
+                        </div>
+                        <div class="tool-call-content tool-call-error" id="streaming-tool-error-${toolCallId}"></div>
+                    </div>
+                </div>
+            </div>
+        `;
     }
 
     async loadSessions(paneId) {
@@ -990,7 +1310,7 @@ class ChatView {
                             <span class="status-dot"></span>
                             ${session.status || 'idle'}
                         </span>
-                        ${session.username ? `<span>@${session.username}</span>` : ''}
+                        ${session.username ? `<span>@${session.username}${session.provider ? ' / ' + session.provider : ''}</span>` : ''}
                     </div>
                 </div>
             </div>
@@ -1257,7 +1577,17 @@ class ChatView {
         const hasContent = msg.content && msg.content.trim();
 
         // Find tool calls for this message
-        const messageToolCalls = toolCalls.filter(tc => tc.parent_message_id === msg.id || tc.message_id === msg.id);
+        const messageToolCallIds = new Set([
+            ...(msg.tool_call_ids || []),
+            ...((msg.content_segments || [])
+                .filter(segment => segment.type === 'tool_call' && segment.tool_call_id)
+                .map(segment => segment.tool_call_id))
+        ]);
+        const messageToolCalls = toolCalls.filter(tc => (
+            tc.parent_message_id === msg.id ||
+            tc.message_id === msg.id ||
+            messageToolCallIds.has(tc.id)
+        ));
 
         // Build message bubble content
         let bubbleContent = '';
@@ -1323,7 +1653,9 @@ class ChatView {
         }
         
         // Format args and result
-        const argsContent = tc.args ? JSON.stringify(tc.args, null, 2) : tc.args_string || '';
+        // Prefer args_string if args is empty object
+        const hasArgs = tc.args && Object.keys(tc.args).length > 0;
+        const argsContent = hasArgs ? JSON.stringify(tc.args, null, 2) : (tc.args_string || '');
         const resultContent = tc.result !== undefined ? 
             (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
         
@@ -1431,7 +1763,9 @@ class ChatView {
         }
         
         // Format args and result
-        const argsContent = tc.args ? JSON.stringify(tc.args, null, 2) : tc.args_string || '';
+        // Prefer args_string if args is empty object
+        const hasArgs = tc.args && Object.keys(tc.args).length > 0;
+        const argsContent = hasArgs ? JSON.stringify(tc.args, null, 2) : (tc.args_string || '');
         const resultContent = tc.result !== undefined ? 
             (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
         
@@ -2480,6 +2814,634 @@ class TaskView {
 }
 
 // ============================================================
+// Config View - Handles Parameters, MCP, and Skills configuration
+// ============================================================
+class ConfigView {
+    constructor(app) {
+        this.app = app;
+        this.activeTab = 'parameters';
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        // Config tab switching
+        document.querySelectorAll('.config-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                this.switchTab(tab.dataset.configTab);
+            });
+        });
+
+        // Parameters tab events
+        this.bindParametersEvents();
+        
+        // MCP tab events
+        this.bindMcpEvents();
+        
+        // Skills tab events
+        this.bindSkillsEvents();
+    }
+
+    switchTab(tabName) {
+        this.activeTab = tabName;
+        
+        // Update tab button states
+        document.querySelectorAll('.config-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.configTab === tabName);
+        });
+
+        // Update tab content visibility
+        document.querySelectorAll('.config-tab-content').forEach(content => {
+            content.classList.toggle('active', content.dataset.configContent === tabName);
+        });
+    }
+
+    refresh() {
+        this.renderParameters();
+        this.renderMcp();
+        this.renderSkills();
+    }
+
+    // ============================================================
+    // Parameters Tab
+    // ============================================================
+    bindParametersEvents() {
+        // Default provider select
+        const defaultProviderSelect = document.getElementById('configDefaultProvider');
+        if (defaultProviderSelect) {
+            defaultProviderSelect.addEventListener('change', (e) => {
+                this.app.setDefaultProvider(e.target.value);
+                this.app.showToast('Default provider updated', 'success');
+                this.app.refreshProjectProviders?.();
+            });
+        }
+
+        // Add alias button
+        const addAliasBtn = document.getElementById('addAliasBtn');
+        if (addAliasBtn) {
+            addAliasBtn.addEventListener('click', () => this.addAlias());
+        }
+
+        // Add alias on Enter key
+        const newAliasName = document.getElementById('newAliasName');
+        if (newAliasName) {
+            newAliasName.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.addAlias();
+            });
+        }
+    }
+
+    renderParameters() {
+        // Update default provider select
+        const defaultProviderSelect = document.getElementById('configDefaultProvider');
+        if (defaultProviderSelect) {
+            const currentDefault = this.app.getDefaultProvider();
+            const allProviders = this.app.getAllProviders();
+            
+            defaultProviderSelect.innerHTML = allProviders.map(p => {
+                const label = this.app.isCustomAlias(p) 
+                    ? `${p} (${this.app.getBaseProvider(p)})` 
+                    : p;
+                return `<option value="${p}" ${p === currentDefault ? 'selected' : ''}>${label}</option>`;
+            }).join('');
+        }
+
+        // Update base provider select for new alias
+        const newAliasBase = document.getElementById('newAliasBase');
+        if (newAliasBase) {
+            newAliasBase.innerHTML = this.app.getDefaultProviders()
+                .map(p => `<option value="${p}">${p}</option>`)
+                .join('');
+        }
+
+        // Render alias list
+        this.renderAliasList();
+    }
+
+    renderAliasList() {
+        const container = document.getElementById('aliasListContainer');
+        if (!container) return;
+
+        const aliases = this.app.customProviders;
+        
+        if (aliases.length === 0) {
+            container.innerHTML = '<div class="alias-empty">No custom aliases configured</div>';
+            return;
+        }
+
+        container.innerHTML = aliases.map(alias => `
+            <div class="alias-item" data-alias="${alias.name}">
+                <div class="alias-item-info">
+                    <span class="alias-item-name">${alias.name}</span>
+                    <span class="alias-item-base">${alias.baseProvider}</span>
+                </div>
+                <button class="alias-item-delete" title="Delete alias">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+
+        // Bind delete buttons
+        container.querySelectorAll('.alias-item-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const item = e.target.closest('.alias-item');
+                const aliasName = item?.dataset.alias;
+                if (aliasName) {
+                    this.deleteAlias(aliasName);
+                }
+            });
+        });
+    }
+
+    addAlias() {
+        const nameInput = document.getElementById('newAliasName');
+        const baseSelect = document.getElementById('newAliasBase');
+        
+        if (!nameInput || !baseSelect) return;
+
+        const name = nameInput.value.trim();
+        const base = baseSelect.value;
+
+        if (!name) {
+            this.app.showToast('Please enter an alias name', 'error');
+            return;
+        }
+
+        if (this.app.addCustomProvider(name, base)) {
+            this.app.showToast(`Alias "${name}" added`, 'success');
+            nameInput.value = '';
+            this.renderParameters();
+            this.app.refreshProjectProviders?.();
+        } else {
+            this.app.showToast('Alias already exists or is invalid', 'error');
+        }
+    }
+
+    deleteAlias(name) {
+        if (this.app.removeCustomProvider(name)) {
+            this.app.showToast(`Alias "${name}" removed`, 'success');
+            this.renderParameters();
+            this.app.refreshProjectProviders?.();
+        } else {
+            this.app.showToast('Cannot remove this alias', 'error');
+        }
+    }
+
+    // ============================================================
+    // MCP Tab
+    // ============================================================
+    bindMcpEvents() {
+        // Add global MCP button
+        const addGlobalMcpBtn = document.getElementById('addGlobalMcpBtn');
+        if (addGlobalMcpBtn) {
+            addGlobalMcpBtn.addEventListener('click', () => this.addGlobalMcp());
+        }
+    }
+
+    renderMcp() {
+        const mcpConfig = this.app.loadMcpConfig();
+        
+        // Render global MCP list
+        this.renderMcpList('globalMcpList', mcpConfig.global, null);
+        
+        // Render provider panels
+        this.renderProviderMcpPanels(mcpConfig.providers);
+    }
+
+    renderMcpList(containerId, mcpServers, provider) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        if (!mcpServers || mcpServers.length === 0) {
+            container.innerHTML = '<div class="mcp-empty">No MCP servers configured</div>';
+            return;
+        }
+
+        container.innerHTML = mcpServers.map((mcp, index) => `
+            <div class="mcp-item" data-index="${index}" data-provider="${provider || 'global'}">
+                <div class="mcp-item-info">
+                    <div class="mcp-item-name">${mcp.name}</div>
+                    <div class="mcp-item-command">${mcp.command} ${(mcp.args || []).join(' ')}</div>
+                </div>
+                <button class="mcp-item-delete" title="Delete MCP server">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+
+        // Bind delete buttons
+        container.querySelectorAll('.mcp-item-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const item = e.target.closest('.mcp-item');
+                const index = parseInt(item?.dataset.index);
+                const prov = item?.dataset.provider;
+                if (!isNaN(index)) {
+                    this.deleteMcp(prov === 'global' ? null : prov, index);
+                }
+            });
+        });
+    }
+
+    renderProviderMcpPanels(providersMcp) {
+        const container = document.getElementById('providerMcpPanels');
+        if (!container) return;
+
+        const providers = this.app.getDefaultProviders();
+        
+        container.innerHTML = providers.map(provider => {
+            const mcpList = providersMcp[provider] || [];
+            return `
+                <div class="provider-panel" data-provider="${provider}">
+                    <div class="provider-panel-header">
+                        <div class="provider-panel-title">
+                            ${provider}
+                            <span class="provider-panel-count">${mcpList.length}</span>
+                        </div>
+                        <svg class="provider-panel-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                    <div class="provider-panel-body">
+                        <div class="mcp-form">
+                            <input type="text" class="form-input provider-mcp-name" placeholder="Server name">
+                            <input type="text" class="form-input provider-mcp-command" placeholder="Command">
+                            <input type="text" class="form-input provider-mcp-args" placeholder="Args (comma-separated)">
+                            <button class="action-btn primary provider-mcp-add">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                Add
+                            </button>
+                        </div>
+                        <div class="mcp-list" id="providerMcpList-${provider}">
+                            ${this.renderProviderMcpItems(mcpList, provider)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Bind panel toggle
+        container.querySelectorAll('.provider-panel-header').forEach(header => {
+            header.addEventListener('click', () => {
+                header.closest('.provider-panel').classList.toggle('expanded');
+            });
+        });
+
+        // Bind add buttons
+        container.querySelectorAll('.provider-mcp-add').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const panel = e.target.closest('.provider-panel');
+                const provider = panel?.dataset.provider;
+                if (provider) {
+                    this.addProviderMcp(provider, panel);
+                }
+            });
+        });
+
+        // Bind delete buttons
+        container.querySelectorAll('.mcp-item-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const item = e.target.closest('.mcp-item');
+                const index = parseInt(item?.dataset.index);
+                const prov = item?.dataset.provider;
+                if (!isNaN(index) && prov) {
+                    this.deleteMcp(prov, index);
+                }
+            });
+        });
+    }
+
+    renderProviderMcpItems(mcpList, provider) {
+        if (!mcpList || mcpList.length === 0) {
+            return '<div class="mcp-empty">No MCP servers for this provider</div>';
+        }
+
+        return mcpList.map((mcp, index) => `
+            <div class="mcp-item" data-index="${index}" data-provider="${provider}">
+                <div class="mcp-item-info">
+                    <div class="mcp-item-name">${mcp.name}</div>
+                    <div class="mcp-item-command">${mcp.command} ${(mcp.args || []).join(' ')}</div>
+                </div>
+                <button class="mcp-item-delete" title="Delete MCP server">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+    }
+
+    addGlobalMcp() {
+        const nameInput = document.getElementById('globalMcpName');
+        const commandInput = document.getElementById('globalMcpCommand');
+        const argsInput = document.getElementById('globalMcpArgs');
+
+        if (!nameInput || !commandInput) return;
+
+        const name = nameInput.value.trim();
+        const command = commandInput.value.trim();
+        const args = argsInput?.value.trim().split(',').map(s => s.trim()).filter(Boolean) || [];
+
+        if (!name || !command) {
+            this.app.showToast('Please enter server name and command', 'error');
+            return;
+        }
+
+        const config = this.app.loadMcpConfig();
+        config.global.push({ name, command, args });
+        this.app.saveMcpConfig(config);
+
+        nameInput.value = '';
+        commandInput.value = '';
+        if (argsInput) argsInput.value = '';
+
+        this.app.showToast(`MCP server "${name}" added`, 'success');
+        this.renderMcp();
+    }
+
+    addProviderMcp(provider, panel) {
+        const nameInput = panel.querySelector('.provider-mcp-name');
+        const commandInput = panel.querySelector('.provider-mcp-command');
+        const argsInput = panel.querySelector('.provider-mcp-args');
+
+        if (!nameInput || !commandInput) return;
+
+        const name = nameInput.value.trim();
+        const command = commandInput.value.trim();
+        const args = argsInput?.value.trim().split(',').map(s => s.trim()).filter(Boolean) || [];
+
+        if (!name || !command) {
+            this.app.showToast('Please enter server name and command', 'error');
+            return;
+        }
+
+        const config = this.app.loadMcpConfig();
+        if (!config.providers[provider]) {
+            config.providers[provider] = [];
+        }
+        config.providers[provider].push({ name, command, args });
+        this.app.saveMcpConfig(config);
+
+        nameInput.value = '';
+        commandInput.value = '';
+        if (argsInput) argsInput.value = '';
+
+        this.app.showToast(`MCP server "${name}" added to ${provider}`, 'success');
+        this.renderMcp();
+    }
+
+    deleteMcp(provider, index) {
+        const config = this.app.loadMcpConfig();
+        
+        if (provider === null) {
+            // Global
+            if (config.global[index]) {
+                const name = config.global[index].name;
+                config.global.splice(index, 1);
+                this.app.saveMcpConfig(config);
+                this.app.showToast(`MCP server "${name}" removed`, 'success');
+                this.renderMcp();
+            }
+        } else {
+            // Provider specific
+            if (config.providers[provider] && config.providers[provider][index]) {
+                const name = config.providers[provider][index].name;
+                config.providers[provider].splice(index, 1);
+                this.app.saveMcpConfig(config);
+                this.app.showToast(`MCP server "${name}" removed from ${provider}`, 'success');
+                this.renderMcp();
+            }
+        }
+    }
+
+    // ============================================================
+    // Skills Tab
+    // ============================================================
+    bindSkillsEvents() {
+        // Add global skill button
+        const addGlobalSkillBtn = document.getElementById('addGlobalSkillBtn');
+        if (addGlobalSkillBtn) {
+            addGlobalSkillBtn.addEventListener('click', () => this.addGlobalSkill());
+        }
+
+        // Add skill on Enter key
+        const globalSkillName = document.getElementById('globalSkillName');
+        if (globalSkillName) {
+            globalSkillName.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.addGlobalSkill();
+            });
+        }
+    }
+
+    renderSkills() {
+        const skillsConfig = this.app.loadSkillsConfig();
+        
+        // Render global skills list
+        this.renderSkillsList('globalSkillsList', skillsConfig.global, null);
+        
+        // Render provider panels
+        this.renderProviderSkillsPanels(skillsConfig.providers);
+    }
+
+    renderSkillsList(containerId, skills, provider) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+
+        if (!skills || skills.length === 0) {
+            container.innerHTML = '<div class="skills-empty">No skills configured</div>';
+            return;
+        }
+
+        container.innerHTML = skills.map((skill, index) => `
+            <div class="skill-item" data-index="${index}" data-provider="${provider || 'global'}">
+                <span>${skill}</span>
+                <button class="skill-item-delete" title="Remove skill">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+
+        // Bind delete buttons
+        container.querySelectorAll('.skill-item-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const item = e.target.closest('.skill-item');
+                const index = parseInt(item?.dataset.index);
+                const prov = item?.dataset.provider;
+                if (!isNaN(index)) {
+                    this.deleteSkill(prov === 'global' ? null : prov, index);
+                }
+            });
+        });
+    }
+
+    renderProviderSkillsPanels(providersSkills) {
+        const container = document.getElementById('providerSkillsPanels');
+        if (!container) return;
+
+        const providers = this.app.getDefaultProviders();
+        
+        container.innerHTML = providers.map(provider => {
+            const skillsList = providersSkills[provider] || [];
+            return `
+                <div class="provider-panel" data-provider="${provider}">
+                    <div class="provider-panel-header">
+                        <div class="provider-panel-title">
+                            ${provider}
+                            <span class="provider-panel-count">${skillsList.length}</span>
+                        </div>
+                        <svg class="provider-panel-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                    <div class="provider-panel-body">
+                        <div class="skill-form">
+                            <input type="text" class="form-input provider-skill-name" placeholder="Skill name">
+                            <button class="action-btn primary provider-skill-add">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                Add
+                            </button>
+                        </div>
+                        <div class="skills-list" id="providerSkillsList-${provider}">
+                            ${this.renderProviderSkillsItems(skillsList, provider)}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Bind panel toggle
+        container.querySelectorAll('.provider-panel-header').forEach(header => {
+            header.addEventListener('click', () => {
+                header.closest('.provider-panel').classList.toggle('expanded');
+            });
+        });
+
+        // Bind add buttons
+        container.querySelectorAll('.provider-skill-add').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const panel = e.target.closest('.provider-panel');
+                const provider = panel?.dataset.provider;
+                if (provider) {
+                    this.addProviderSkill(provider, panel);
+                }
+            });
+        });
+
+        // Bind delete buttons
+        container.querySelectorAll('.skill-item-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const item = e.target.closest('.skill-item');
+                const index = parseInt(item?.dataset.index);
+                const prov = item?.dataset.provider;
+                if (!isNaN(index) && prov) {
+                    this.deleteSkill(prov, index);
+                }
+            });
+        });
+    }
+
+    renderProviderSkillsItems(skillsList, provider) {
+        if (!skillsList || skillsList.length === 0) {
+            return '<div class="skills-empty">No skills for this provider</div>';
+        }
+
+        return skillsList.map((skill, index) => `
+            <div class="skill-item" data-index="${index}" data-provider="${provider}">
+                <span>${skill}</span>
+                <button class="skill-item-delete" title="Remove skill">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+    }
+
+    addGlobalSkill() {
+        const nameInput = document.getElementById('globalSkillName');
+        if (!nameInput) return;
+
+        const name = nameInput.value.trim();
+        if (!name) {
+            this.app.showToast('Please enter a skill name', 'error');
+            return;
+        }
+
+        const config = this.app.loadSkillsConfig();
+        if (config.global.includes(name)) {
+            this.app.showToast('Skill already exists', 'error');
+            return;
+        }
+
+        config.global.push(name);
+        this.app.saveSkillsConfig(config);
+
+        nameInput.value = '';
+        this.app.showToast(`Skill "${name}" added`, 'success');
+        this.renderSkills();
+    }
+
+    addProviderSkill(provider, panel) {
+        const nameInput = panel.querySelector('.provider-skill-name');
+        if (!nameInput) return;
+
+        const name = nameInput.value.trim();
+        if (!name) {
+            this.app.showToast('Please enter a skill name', 'error');
+            return;
+        }
+
+        const config = this.app.loadSkillsConfig();
+        if (!config.providers[provider]) {
+            config.providers[provider] = [];
+        }
+        if (config.providers[provider].includes(name)) {
+            this.app.showToast('Skill already exists for this provider', 'error');
+            return;
+        }
+
+        config.providers[provider].push(name);
+        this.app.saveSkillsConfig(config);
+
+        nameInput.value = '';
+        this.app.showToast(`Skill "${name}" added to ${provider}`, 'success');
+        this.renderSkills();
+    }
+
+    deleteSkill(provider, index) {
+        const config = this.app.loadSkillsConfig();
+        
+        if (provider === null) {
+            // Global
+            if (config.global[index]) {
+                const name = config.global[index];
+                config.global.splice(index, 1);
+                this.app.saveSkillsConfig(config);
+                this.app.showToast(`Skill "${name}" removed`, 'success');
+                this.renderSkills();
+            }
+        } else {
+            // Provider specific
+            if (config.providers[provider] && config.providers[provider][index]) {
+                const name = config.providers[provider][index];
+                config.providers[provider].splice(index, 1);
+                this.app.saveSkillsConfig(config);
+                this.app.showToast(`Skill "${name}" removed from ${provider}`, 'success');
+                this.renderSkills();
+            }
+        }
+    }
+}
+
+// ============================================================
 // Main Application
 // ============================================================
 class NexusApp {
@@ -2489,13 +3451,186 @@ class NexusApp {
         this.taskView = new TaskView(this);
         this.tabManager = new TabManager(this);
         this.layoutManager = new LayoutManager(this);
+        this.configView = new ConfigView(this);
+        this.pageManager = new PageManager(this);
         this.availableAgents = [];
+        this.customProviders = this.loadCustomProviders();
 
         this.deleteCallback = null;
         this.renameTabCallback = null;
         this.activeModalTab = 'single';
 
         this.init();
+    }
+
+    // ============================================================
+    // Custom Providers Management (localStorage persistence)
+    // Storage format: [{name: string, baseProvider: string}, ...]
+    // ============================================================
+    loadCustomProviders() {
+        try {
+            const stored = localStorage.getItem('nexus-custom-providers');
+            if (!stored) return [];
+            const parsed = JSON.parse(stored);
+            // Migrate old format (string array) to new format (object array)
+            if (Array.isArray(parsed)) {
+                return parsed.map(item => {
+                    if (typeof item === 'string') {
+                        // Old format: convert string to object with default baseProvider
+                        return { name: item, baseProvider: 'claude' };
+                    }
+                    // New format: already an object
+                    return item;
+                });
+            }
+            return [];
+        } catch (e) {
+            console.error('Failed to load custom providers:', e);
+            return [];
+        }
+    }
+
+    saveCustomProviders() {
+        try {
+            localStorage.setItem('nexus-custom-providers', JSON.stringify(this.customProviders));
+        } catch (e) {
+            console.error('Failed to save custom providers:', e);
+        }
+    }
+
+    addCustomProvider(name, baseProvider = 'claude') {
+        if (!name || typeof name !== 'string') return false;
+        const trimmed = name.trim();
+        if (!trimmed) return false;
+
+        // Default providers that shouldn't be duplicated
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        
+        // Check if already exists in defaults or custom list
+        if (defaultProviders.includes(trimmed.toLowerCase()) || 
+            this.customProviders.some(p => p.name.toLowerCase() === trimmed.toLowerCase())) {
+            return false;
+        }
+
+        this.customProviders.push({ name: trimmed, baseProvider: baseProvider });
+        this.saveCustomProviders();
+        return true;
+    }
+
+    // Check if a name is a custom alias (not a default provider)
+    isCustomAlias(name) {
+        if (!name) return false;
+        const trimmed = name.trim().toLowerCase();
+        return this.customProviders.some(p => p.name.toLowerCase() === trimmed);
+    }
+
+    // Get all custom provider names (for dropdown options)
+    getCustomProviderNames() {
+        return this.customProviders.map(p => p.name);
+    }
+
+    // Get base provider for an alias
+    getBaseProvider(aliasName) {
+        if (!aliasName) return null;
+        const trimmed = aliasName.trim().toLowerCase();
+        const found = this.customProviders.find(p => p.name.toLowerCase() === trimmed);
+        return found ? found.baseProvider : null;
+    }
+
+    // Remove a custom provider alias
+    removeCustomProvider(name) {
+        if (!name || typeof name !== 'string') return false;
+        const trimmed = name.trim().toLowerCase();
+        
+        // Can't remove default providers
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        if (defaultProviders.includes(trimmed)) {
+            return false;
+        }
+        
+        const index = this.customProviders.findIndex(p => p.name.toLowerCase() === trimmed);
+        if (index === -1) return false;
+        
+        this.customProviders.splice(index, 1);
+        this.saveCustomProviders();
+        return true;
+    }
+
+    getDefaultProviders() {
+        return ['claude', 'gemini', 'codex', 'codebuddy'];
+    }
+
+    getAllProviders() {
+        return [...this.getDefaultProviders(), ...this.getCustomProviderNames()];
+    }
+
+    // ============================================================
+    // Default Provider Management
+    // ============================================================
+    getDefaultProvider() {
+        return localStorage.getItem('nexus-default-provider') || 'claude';
+    }
+
+    setDefaultProvider(provider) {
+        localStorage.setItem('nexus-default-provider', provider);
+    }
+
+    // ============================================================
+    // MCP Configuration Management
+    // Storage format: { global: [...], providers: { claude: [...], ... } }
+    // ============================================================
+    loadMcpConfig() {
+        try {
+            const stored = localStorage.getItem('nexus-mcp-config');
+            if (!stored) {
+                return { global: [], providers: {} };
+            }
+            const parsed = JSON.parse(stored);
+            return {
+                global: Array.isArray(parsed.global) ? parsed.global : [],
+                providers: parsed.providers || {}
+            };
+        } catch (e) {
+            console.error('Failed to load MCP config:', e);
+            return { global: [], providers: {} };
+        }
+    }
+
+    saveMcpConfig(config) {
+        try {
+            localStorage.setItem('nexus-mcp-config', JSON.stringify(config));
+        } catch (e) {
+            console.error('Failed to save MCP config:', e);
+        }
+    }
+
+    // ============================================================
+    // Skills Configuration Management
+    // Storage format: { global: [...], providers: { claude: [...], ... } }
+    // ============================================================
+    loadSkillsConfig() {
+        try {
+            const stored = localStorage.getItem('nexus-skills-config');
+            if (!stored) {
+                return { global: [], providers: {} };
+            }
+            const parsed = JSON.parse(stored);
+            return {
+                global: Array.isArray(parsed.global) ? parsed.global : [],
+                providers: parsed.providers || {}
+            };
+        } catch (e) {
+            console.error('Failed to load skills config:', e);
+            return { global: [], providers: {} };
+        }
+    }
+
+    saveSkillsConfig(config) {
+        try {
+            localStorage.setItem('nexus-skills-config', JSON.stringify(config));
+        } catch (e) {
+            console.error('Failed to save skills config:', e);
+        }
     }
 
     init() {
@@ -2512,7 +3647,11 @@ class NexusApp {
     async loadAgents() {
         try {
             const data = await NexusAPI.getAgents();
-            this.availableAgents = data.agents || [];
+            const agents = data.agents || [];
+            this.availableAgents = agents.filter(agent => {
+                const agentType = (agent.agent_type || '').toLowerCase();
+                return !agentType.endsWith('-internal');
+            });
 
             const select = document.getElementById('globalUserFilter');
             if (select) {
@@ -2524,10 +3663,10 @@ class NexusApp {
             console.error('Failed to load agents:', error);
             this.availableAgents = [
                 {
-                    id: 'ubuntu::claude-internal',
+                    id: 'ubuntu::claude',
                     username: 'ubuntu',
-                    agent_type: 'claude-internal',
-                    display_name: 'ubuntu / claude-internal',
+                    agent_type: 'claude',
+                    display_name: 'ubuntu / claude',
                     available: true
                 }
             ];
@@ -2650,6 +3789,79 @@ class NexusApp {
         }
     }
 
+    refreshProjectProviders() {
+        const panesCount = this.layoutManager.getPanesCount();
+        for (let i = 0; i < panesCount; i++) {
+            this.chatView.refreshNewSessionSelectors(i);
+        }
+        this.refreshTaskModalSelectors();
+    }
+
+    refreshTaskModalSelectors() {
+        const modal = document.getElementById('createTaskModal');
+        if (!modal || !modal.classList.contains('open')) return;
+
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const selectedUser = globalUserFilter?.value || '';
+        const allAgents = this.chatView.getAvailableAgents('');
+        const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
+        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const fallbackUser = (selectedUser && usernames.includes(selectedUser))
+            ? selectedUser
+            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+
+        const buildModelOptions = (user) => {
+            const agents = this.chatView.getAvailableAgents(user);
+            const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
+            const customProviderNames = this.getCustomProviderNames ? this.getCustomProviderNames() : [];
+            const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
+            if (!allModels.length) {
+                return '<option value="claude">claude</option>';
+            }
+            const getModelLabel = (model) => {
+                if (this.isCustomAlias && this.isCustomAlias(model)) {
+                    const baseProvider = this.getBaseProvider ? this.getBaseProvider(model) : null;
+                    if (baseProvider) {
+                        return `${model} (${baseProvider})`;
+                    }
+                }
+                return model;
+            };
+            return allModels.map(model => {
+                const label = getModelLabel(model);
+                return `<option value="${this.chatView.escapeHtml(model)}">${this.chatView.escapeHtml(label)}</option>`;
+            }).join('');
+        };
+
+        const updateSelectors = (userSelectId, modelSelectId) => {
+            const userSelect = document.getElementById(userSelectId);
+            const modelSelect = document.getElementById(modelSelectId);
+            if (!modelSelect) return;
+
+            const currentUser = userSelect?.value || fallbackUser;
+            const resolvedUser = usernames.includes(currentUser) ? currentUser : fallbackUser;
+
+            if (userSelect) {
+                userSelect.innerHTML = usernames.map(u => `<option value="${this.chatView.escapeHtml(u)}">${this.chatView.escapeHtml(u)}</option>`).join('');
+                userSelect.value = resolvedUser;
+            }
+
+            const currentModel = modelSelect.value;
+            modelSelect.innerHTML = buildModelOptions(resolvedUser);
+            const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
+            const defaultPref = this.getDefaultProvider();
+            const selected = optionValues.includes(currentModel)
+                ? currentModel
+                : (optionValues.includes(defaultPref) ? defaultPref : (optionValues[0] || 'claude'));
+            modelSelect.value = selected;
+        };
+
+        updateSelectors('taskUser', 'taskModel');
+        updateSelectors('bulkUser', 'bulkModel');
+        updateSelectors('chainUser', 'chainModel');
+    }
+
     showCreateTaskModal(mode = 'single') {
         const modal = document.getElementById('createTaskModal');
         if (!modal) return;
@@ -2658,8 +3870,11 @@ class NexusApp {
         document.getElementById('taskDescription').value = '';
         document.getElementById('taskWorkspace').value = '';
         document.getElementById('taskDependsOn').value = '';
+        document.getElementById('taskAlias').value = '';
         document.getElementById('bulkTasks').value = '';
+        document.getElementById('bulkAlias').value = '';
         document.getElementById('chainTasks').value = '';
+        document.getElementById('chainAlias').value = '';
 
         // Set active tab
         this.activeModalTab = mode;
@@ -2682,22 +3897,40 @@ class NexusApp {
 
         const buildModelOptions = (user) => {
             const agents = this.chatView.getAvailableAgents(user);
-            const models = [...new Set(agents.map(agent => agent.agent_type))];
-            if (!models.length) {
-                return '<option value="claude-internal">claude-internal</option>';
+            const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
+            // Merge with custom providers (use getCustomProviderNames for new format)
+            const customProviderNames = this.getCustomProviderNames ? this.getCustomProviderNames() : [];
+            const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
+            if (!allModels.length) {
+                return '<option value="claude">claude</option>';
             }
-            return models.map(model => `<option value="${this.chatView.escapeHtml(model)}">${this.chatView.escapeHtml(model)}</option>`).join('');
+            const getModelLabel = (model) => {
+                if (this.isCustomAlias && this.isCustomAlias(model)) {
+                    const baseProvider = this.getBaseProvider ? this.getBaseProvider(model) : null;
+                    if (baseProvider) {
+                        return `${model} (${baseProvider})`;
+                    }
+                }
+                return model;
+            };
+            return allModels.map(model => {
+                const label = getModelLabel(model);
+                return `<option value="${this.chatView.escapeHtml(model)}">${this.chatView.escapeHtml(label)}</option>`;
+            }).join('');
         };
 
-        const setupAgentSelectors = (userSelectId, modelSelectId, preferredUser = initialUser, preferredModel = 'claude-internal') => {
+        const setupAgentSelectors = (userSelectId, modelSelectId, preferredUser = initialUser, preferredModel = null) => {
             const userSelect = document.getElementById(userSelectId);
             const modelSelect = document.getElementById(modelSelectId);
             if (!modelSelect) return;
 
+            const defaultModel = preferredModel || this.getDefaultProvider();
+
             const applyModelOptions = (user) => {
                 modelSelect.innerHTML = buildModelOptions(user);
                 const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
-                const selected = optionValues.includes(preferredModel) ? preferredModel : (optionValues[0] || 'claude-internal');
+                const selected = optionValues.includes(defaultModel) ? defaultModel : (optionValues[0] || 'claude');
                 modelSelect.value = selected;
             };
 
@@ -2730,7 +3963,7 @@ class NexusApp {
         };
         const ids = mapping[mode] || mapping.single;
         const agentName = document.getElementById(ids.userId)?.value || globalUserFilter?.value || 'ubuntu';
-        const provider = document.getElementById(ids.modelId)?.value || 'claude-internal';
+        const provider = document.getElementById(ids.modelId)?.value || 'claude';
         return { agentName, provider };
     }
 
@@ -2758,7 +3991,8 @@ class NexusApp {
         const description = document.getElementById('taskDescription')?.value.trim();
         const workspace = document.getElementById('taskWorkspace')?.value.trim();
         const dependsOnStr = document.getElementById('taskDependsOn')?.value.trim();
-        const selectedProvider = provider || 'claude-internal';
+        const selectedProvider = provider || this.getDefaultProvider();
+        const aliasValue = selectedProvider;
 
         if (!description) {
             throw new Error('Description is required');
@@ -2767,6 +4001,7 @@ class NexusApp {
         const payload = {
             description,
             provider: selectedProvider,
+            alias: aliasValue,
             workspace: workspace || undefined,
             depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
         };
@@ -2778,7 +4013,8 @@ class NexusApp {
     async submitBulkTasks(agentName, provider) {
         const tasksText = document.getElementById('bulkTasks')?.value.trim();
         const workspace = document.getElementById('bulkWorkspace')?.value.trim();
-        const selectedProvider = provider || 'claude-internal';
+        const selectedProvider = provider || this.getDefaultProvider();
+        const aliasValue = selectedProvider;
 
         if (!tasksText) {
             throw new Error('Please enter at least one task');
@@ -2796,6 +4032,7 @@ class NexusApp {
         const tasks = taskDescriptions.map(description => ({
             description,
             provider: selectedProvider,
+            alias: aliasValue,
             workspace: workspace || undefined
         }));
 
@@ -2811,7 +4048,8 @@ class NexusApp {
     async submitTaskChain(agentName, provider) {
         const tasksText = document.getElementById('chainTasks')?.value.trim();
         const workspace = document.getElementById('chainWorkspace')?.value.trim();
-        const selectedProvider = provider || 'claude-internal';
+        const selectedProvider = provider || this.getDefaultProvider();
+        const aliasValue = selectedProvider;
 
         if (!tasksText) {
             throw new Error('Please enter at least one task');
@@ -2829,6 +4067,7 @@ class NexusApp {
         const tasks = taskDescriptions.map((description, index) => ({
             description,
             provider: selectedProvider,
+            alias: aliasValue,
             workspace: workspace || undefined,
             depends_on: index > 0 ? [`temp_${index - 1}`] : undefined
         }));

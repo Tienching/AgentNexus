@@ -125,6 +125,8 @@ class ProviderRegistry:
             backend = "gemini"
         elif name in ("codex", "codex-internal"):
             backend = "codex"
+        elif name == "codebuddy":
+            backend = "codebuddy"
         else:
             backend = "claude"
         return ProviderResolution(name=name, backend=backend)

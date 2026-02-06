@@ -1,0 +1,16 @@
+{
+    "type": "system",
+    "subtype": "init",
+    "uuid": "f2381367-becb-4255-83e2-03ef32139f7e",
+    "session_id": "f2381367-becb-4255-83e2-03ef32139f7e",
+    "apiKeySource": "copilot.tencent.com",
+    "cwd": "/home/ubuntu/Projects/virtual-human-sdk-feature-aionui",
+    "tools": ["Task", "Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+    "mcp_servers": [],
+    "model": "claude-4.5",
+    "permissionMode": "default",
+    "slash_commands": ["help", "clear", "config"],
+    "output_style": "default",
+    "__timestamp": "2026-02-05T02:41:44.814Z",
+    "_requestId": "e9860c0a21784b4b8b56a8b20912d719"
+}

@@ -1,0 +1,8 @@
+{
+    "type": "error",
+    "message": "处理超时，请重试",
+    "code": "timeout",
+    "uuid": "error-uuid-123",
+    "session_id": "error-session-456",
+    "__timestamp": "2026-02-05T02:42:08.062Z"
+}
