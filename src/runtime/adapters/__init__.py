@@ -5,6 +5,7 @@ from .base import BaseAdapter, AdapterState, ProtocolType
 from .claude import AGUIAdapter, ParsedToolCall
 from .gemini import GeminiAGUIAdapter
 from .codex import CodexAGUIAdapter
+from .codebuddy import CodebuddyAGUIAdapter
 
 __all__ = [
     # Base
@@ -18,4 +19,6 @@ __all__ = [
     "GeminiAGUIAdapter",
     # Codex adapters
     "CodexAGUIAdapter",
+    # Codebuddy adapters
+    "CodebuddyAGUIAdapter",
 ]

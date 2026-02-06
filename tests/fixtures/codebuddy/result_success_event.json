@@ -1,0 +1,19 @@
+{
+    "type": "result",
+    "subtype": "success",
+    "is_error": false,
+    "result": "The first 5 lines of the pyproject.toml file are:\n\n```toml\n[project]\nname = \"claude-code-api\"\n```",
+    "uuid": "4f2682bb-5d3a-40c4-b8d3-a259bffe8194",
+    "session_id": "3ae9ea3c-ad37-45c5-b08e-dcf9494307d2",
+    "duration_ms": 11247,
+    "duration_api_ms": 11247,
+    "num_turns": 5,
+    "total_cost_usd": 0,
+    "usage": {
+        "input_tokens": 46998,
+        "output_tokens": 238
+    },
+    "permission_denials": [],
+    "__timestamp": "2026-02-05T02:42:08.062Z",
+    "_requestId": "3951f669e5004539a020fb132e5e2382"
+}

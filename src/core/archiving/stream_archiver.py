@@ -38,6 +38,7 @@ class StreamArchiver:
         username: str,
         agent_name: Optional[str] = None,
         provider: Optional[str] = None,
+        alias: Optional[str] = None,
         storage: Optional[SessionStorage] = None,
     ):
         """Initialize stream archiver
@@ -57,6 +58,7 @@ class StreamArchiver:
         self.username = username
         self.agent_name = agent_name
         self.provider = provider
+        self.alias = alias
         self._storage = storage or get_session_storage()
         
         # State tracking
@@ -92,6 +94,10 @@ class StreamArchiver:
                     existing.provider = self.provider
                     existing.updated_at = int(time.time() * 1000)
                     self._storage.save_session_meta(existing)
+                if self.alias and not getattr(existing, "alias", None):
+                    existing.alias = self.alias
+                    existing.updated_at = int(time.time() * 1000)
+                    self._storage.save_session_meta(existing)
                 self._initialized = True
             else:
                 # Create new session
@@ -116,6 +122,7 @@ class StreamArchiver:
                     username=self.username,
                     agent_name=self.agent_name,
                     provider=self.provider,
+                    alias=self.alias,
                     status=SessionStatus.RUNNING,
                 )
                 self._storage.save_session_meta(meta)
@@ -507,6 +514,7 @@ def create_archiver(
     username: str,
     agent_name: Optional[str] = None,
     provider: Optional[str] = None,
+    alias: Optional[str] = None,
 ) -> StreamArchiver:
     """Factory function to create a StreamArchiver
     
@@ -526,4 +534,5 @@ def create_archiver(
         username=username,
         agent_name=agent_name,
         provider=provider,
+        alias=alias,
     )

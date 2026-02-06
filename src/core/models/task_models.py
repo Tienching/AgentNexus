@@ -105,6 +105,8 @@ class Task(BaseModel):
 
     # Provider pinned at task creation time (e.g., claude, gemini)
     provider: str = "claude"
+    # Optional alias (defaults to provider)
+    alias: Optional[str] = None
     
     # Session ID for conversation storage (format: {session_id}_{task_id})
     session_id: Optional[str] = None

@@ -117,11 +117,9 @@ async def get_agents():
 
     agent_types = [
         {"type": "claude", "label": "claude"},
-        {"type": "claude-internal", "label": "claude-internal"},
         {"type": "gemini", "label": "gemini"},
-        {"type": "gemini-internal", "label": "gemini-internal"},
         {"type": "codex", "label": "codex"},
-        {"type": "codex-internal", "label": "codex-internal"},
+        {"type": "codebuddy", "label": "codebuddy"},
     ]
 
     agents: list[AgentInfo] = []
@@ -240,6 +238,7 @@ async def get_session_messages(session_id: str):
         session_id=session_id,
         messages=messages,
         tool_calls=tool_calls,
+        session=session,
     )
 
 
@@ -536,6 +535,7 @@ class TaskItem(BaseModel):
     project_name: Optional[str] = None
     workspace: Optional[str] = None
     provider: Optional[str] = None
+    alias: Optional[str] = None
     created_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
@@ -620,6 +620,7 @@ def _task_to_item(task) -> TaskItem:
         project_name=task.project_name,
         workspace=task.workspace,
         provider=getattr(task, "provider", None) or "claude",
+        alias=getattr(task, "alias", None) or getattr(task, "provider", None) or "claude",
         created_at=task.created_at,
         started_at=task.started_at,
         completed_at=task.completed_at,
@@ -703,6 +704,7 @@ async def get_task(task_id: str, agent_name: str = Query("ubuntu", description="
 class CreateTaskRequest(BaseModel):
     description: str = Field(..., description="Task description")
     provider: str = Field("claude", description="Provider name (claude/gemini)")
+    alias: Optional[str] = Field(None, description="Alias (defaults to provider)")
     workspace: Optional[str] = Field(None, description="Execution workspace")
     project_name: Optional[str] = Field(None, description="Optional project name")
     project_id: Optional[str] = Field(None, description="Optional project id (slug)")
@@ -728,6 +730,7 @@ async def create_task(
     allowed = set(get_provider_registry().list_providers())
     if provider not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
+    alias_value = (request.alias or "").strip() or provider
 
     project_name = (request.project_name or "").strip() or None
     project_id = (request.project_id or "").strip() or None
@@ -744,6 +747,7 @@ async def create_task(
         project_name=project_name,
         workspace=(request.workspace or "").strip() or None,
         provider=provider,
+        alias=alias_value,
         source_session_id=(request.source_session_id or "").strip() or None,
         agent_name=(request.agent or "").strip() or None,
         depends_on=request.depends_on or [],
@@ -800,6 +804,7 @@ async def bulk_create_tasks(
             if provider not in allowed_providers:
                 errors.append({"index": str(idx), "error": f"Invalid provider: {provider}"})
                 continue
+            alias_value = (getattr(task_req, "alias", None) or "").strip() or provider
             
             project_name = (task_req.project_name or "").strip() or None
             project_id = (task_req.project_id or "").strip() or None
@@ -826,6 +831,7 @@ async def bulk_create_tasks(
                 project_name=project_name,
                 workspace=(task_req.workspace or "").strip() or None,
                 provider=provider,
+                alias=alias_value,
                 source_session_id=(task_req.source_session_id or "").strip() or None,
                 agent_name=(task_req.agent or "").strip() or None,
                 depends_on=depends_on,

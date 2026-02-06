@@ -1,0 +1,24 @@
+{
+    "type": "user",
+    "uuid": "023c4157-a1ce-4b47-8627-9c6931371741",
+    "session_id": "3ae9ea3c-ad37-45c5-b08e-dcf9494307d2",
+    "message": {
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "   1→[project]\n   2→name = \"claude-code-api\"\n   3→version = \"0.1.0\"\n   4→description = \"Stream API wrapper for ccr code CLI\"\n   5→readme = \"README.md\"\n   6→"
+                    }
+                ],
+                "is_error": false
+            }
+        ],
+        "role": "user"
+    },
+    "parent_tool_use_id": "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg",
+    "__timestamp": "2026-02-05T02:42:03.403Z",
+    "_requestId": "2a61c32709b8424fb8129476e8bd3f71"
+}
