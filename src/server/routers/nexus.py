@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 
@@ -35,10 +35,11 @@ from src.runtime.commands.slash.handler import slugify_project
 from ..providers import get_provider_registry
 from ..services.session_storage import get_session_storage
 from ..logger import get_logger
+from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
 
-router = APIRouter(prefix="/api/nexus", tags=["nexus"])
+router = APIRouter(prefix="/api/nexus", tags=["nexus"], dependencies=[Depends(verify_nexus_auth)])
 
 
 # Response models
@@ -703,7 +704,7 @@ async def get_task(task_id: str, agent_name: str = Query("ubuntu", description="
 
 class CreateTaskRequest(BaseModel):
     description: str = Field(..., description="Task description")
-    provider: str = Field("claude", description="Provider name (claude/gemini)")
+    provider: Optional[str] = Field(None, description="Provider name (claude/gemini/codex/codebuddy)")
     alias: Optional[str] = Field(None, description="Alias (defaults to provider)")
     workspace: Optional[str] = Field(None, description="Execution workspace")
     project_name: Optional[str] = Field(None, description="Optional project name")
@@ -726,11 +727,15 @@ async def create_task(
     if not desc:
         raise HTTPException(status_code=400, detail="description is required")
 
-    provider = (request.provider or "").strip().lower() or "claude"
+    default_provider = (settings.default_provider or "").strip().lower() or "claude"
+    provider = (request.provider or "").strip().lower() or default_provider
     allowed = set(get_provider_registry().list_providers())
     if provider not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
     alias_value = (request.alias or "").strip() or provider
+
+    default_agent = (settings.default_agent or "").strip() or None
+    effective_agent = (request.agent or "").strip() or default_agent
 
     project_name = (request.project_name or "").strip() or None
     project_id = (request.project_id or "").strip() or None
@@ -749,7 +754,7 @@ async def create_task(
         provider=provider,
         alias=alias_value,
         source_session_id=(request.source_session_id or "").strip() or None,
-        agent_name=(request.agent or "").strip() or None,
+        agent_name=effective_agent,
         depends_on=request.depends_on or [],
     )
 
@@ -786,6 +791,8 @@ async def bulk_create_tasks(
     
     queue = _get_task_queue(agent_name)
     allowed_providers = set(get_provider_registry().list_providers())
+    default_provider = (settings.default_provider or "").strip().lower() or "claude"
+    default_agent = (settings.default_agent or "").strip() or None
     
     created: List[TaskItem] = []
     errors: List[Dict[str, str]] = []
@@ -800,11 +807,13 @@ async def bulk_create_tasks(
                 errors.append({"index": str(idx), "error": "description is required"})
                 continue
             
-            provider = (task_req.provider or "").strip().lower() or "claude"
+            provider = (task_req.provider or "").strip().lower() or default_provider
             if provider not in allowed_providers:
                 errors.append({"index": str(idx), "error": f"Invalid provider: {provider}"})
                 continue
             alias_value = (getattr(task_req, "alias", None) or "").strip() or provider
+
+            effective_agent = (task_req.agent or "").strip() or default_agent
             
             project_name = (task_req.project_name or "").strip() or None
             project_id = (task_req.project_id or "").strip() or None
@@ -833,7 +842,7 @@ async def bulk_create_tasks(
                 provider=provider,
                 alias=alias_value,
                 source_session_id=(task_req.source_session_id or "").strip() or None,
-                agent_name=(task_req.agent or "").strip() or None,
+                agent_name=effective_agent,
                 depends_on=depends_on,
             )
             

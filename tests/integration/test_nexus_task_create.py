@@ -20,6 +20,7 @@ class MockTaskQueue:
         project_name=None,
         workspace=None,
         provider=None,
+        alias=None,
         task_id=None,
         source_session_id=None,
         agent_name=None,
@@ -33,6 +34,7 @@ class MockTaskQueue:
             project_name=project_name,
             workspace=workspace,
             provider=provider or "claude",
+            alias=alias,
             agent_name=agent_name,
             session_id=(source_session_id + "_" if source_session_id else "task_") + (task_id or "new"),
         )

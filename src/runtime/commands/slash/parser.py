@@ -83,6 +83,7 @@ KNOWN_SLASH_COMMANDS = [
     "/help",
     "/chat",
     "/workspace",
+    "/config",
     "/exit",
 ]
 
@@ -98,6 +99,7 @@ DEFAULT_SUBCMD: Dict[str, Optional[str]] = {
     "cancel": "task",  # will be inferred from -t/-p
     "chat": "history",
     "workspace": "switch",
+    "config": "show",
     "exit": "now",
 }
 
@@ -107,6 +109,7 @@ INFER_SUBCMD_FROM_OPTIONS: Dict[str, Dict[str, str]] = {
     "report": {"t": "task", "p": "project", "l": "list"},
     "trash": {"p": "restore", "e": "empty"},
     "chat": {"c": "continue"},
+    "config": {"s": "set", "r": "reset"},
 }
 
 
@@ -140,6 +143,7 @@ SPECS: List[CommandSpec] = [
             OptionDef(short="i", long="inplace", type="boolean", required=False, default=False),
             OptionDef(short="a", long="agent", type="string", required=False, default=None),
             OptionDef(short="r", long="provider", type="string", required=False, default=None),
+            OptionDef(short="l", long="alias", type="string", required=False, default=None),
         ),
         allow_free_text=True,
         free_text_required=True,
@@ -223,6 +227,18 @@ SPECS: List[CommandSpec] = [
             OptionDef(short="t", long="task", type="string", required=False),
         ),
     ),
+    # config
+    CommandSpec(cmd="config", subcmd="show"),
+    CommandSpec(
+        cmd="config",
+        subcmd="set",
+        options=(OptionDef(short="s", long="set", type="boolean", required=False, default=True),),
+    ),
+    CommandSpec(
+        cmd="config",
+        subcmd="reset",
+        options=(OptionDef(short="r", long="reset", type="boolean", required=False, default=True),),
+    ),
     # exit
     CommandSpec(cmd="exit", subcmd="now"),
 ]
@@ -304,7 +320,8 @@ def _infer_subcmd_from_tokens(cmd: str, tokens: List[str]) -> Optional[str]:
             # Map long names to short for lookup
             long_to_short = {
                 "task": "t", "project": "p", "list": "l",
-                "continue": "c", "empty": "e"
+                "continue": "c", "empty": "e",
+                "set": "s", "reset": "r",
             }
             short = long_to_short.get(long_name)
             if short and short in infer_map:
