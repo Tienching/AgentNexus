@@ -5,6 +5,54 @@
 const API_BASE = '/api/nexus';
 
 class NexusAPI {
+    // ============ Auth API ============
+
+    /**
+     * Check authentication status
+     * @returns {Promise<Object>} Auth status response
+     */
+    static async getAuthStatus() {
+        const response = await fetch(`${API_BASE}/auth/status`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch auth status: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Login to Nexus
+     * @param {string} password - Login password
+     * @returns {Promise<Object>} Login response
+     */
+    static async login(password) {
+        const response = await fetch(`${API_BASE}/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password }),
+        });
+        if (!response.ok) {
+            if (response.status === 401) {
+                throw new Error('Invalid password');
+            }
+            throw new Error(`Login failed: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Logout from Nexus
+     * @returns {Promise<Object>} Logout response
+     */
+    static async logout() {
+        const response = await fetch(`${API_BASE}/auth/logout`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            throw new Error(`Logout failed: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
     /**
      * Get session list
      * @param {Object} options - Query options

@@ -14,8 +14,9 @@ from pydantic import ValidationError
 
 from .config import settings
 from .middleware import CorrelationMiddleware
-from .routers import chat_router, health_router
+from .routers import chat_router, health_router, channels_router
 from .routers.nexus import router as nexus_router
+from .routers.nexus_auth import router as nexus_auth_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -316,9 +317,30 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to start task executor: {e}", exc_info=True)
 
+    # 启动 Channel 服务（Telegram, Slack, Discord 等）
+    channel_service = None
+    try:
+        from .services.channel_service import create_channel_service
+        channel_service = await create_channel_service()
+        if channel_service:
+            await channel_service.start()
+            logger.info("Channel service started")
+    except ImportError as e:
+        logger.debug(f"Channel service not available: {e}")
+    except Exception as e:
+        logger.warning(f"Failed to start channel service: {e}")
+
     yield
 
     # 关闭时
+    # 停止 Channel 服务
+    if channel_service:
+        try:
+            await channel_service.stop()
+            logger.info("Channel service stopped")
+        except Exception as e:
+            logger.error(f"Error stopping channel service: {e}")
+
     if executor:
         try:
             await executor.stop()
@@ -352,6 +374,8 @@ app.add_middleware(CorrelationMiddleware, metrics=metrics)
 # 注册路由
 app.include_router(health_router)
 app.include_router(chat_router)
+app.include_router(channels_router)
+app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
 
 # Mount static files for NexusHub Web UI

@@ -11,7 +11,32 @@
     <link rel="stylesheet" href="css/styles.css?v=22">
 </head>
 <body>
-    <div id="app" class="layout-container">
+    <!-- Login Modal (shown when auth is required) -->
+    <div id="loginOverlay" class="login-overlay" style="display: none;">
+        <div class="login-container">
+            <div class="login-header">
+                <div class="login-logo">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                    </svg>
+                </div>
+                <h1 class="login-title">Nexus</h1>
+                <p class="login-subtitle">Session & Task Manager</p>
+            </div>
+            <form id="loginForm" class="login-form">
+                <div class="form-group">
+                    <label class="form-label">Password</label>
+                    <input type="password" id="loginPassword" class="form-input" placeholder="Enter password" autocomplete="current-password" required>
+                </div>
+                <div id="loginError" class="login-error" style="display: none;"></div>
+                <button type="submit" id="loginBtn" class="action-btn primary login-btn">
+                    <span>Login</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div id="app" class="layout-container" style="display: none;">
         <!-- Header -->
         <header class="header">
             <div class="header-left">
@@ -92,6 +117,13 @@
                 <button id="refreshBtn" class="action-btn" title="Refresh">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                </button>
+
+                <!-- Logout (shown when auth is enabled) -->
+                <button id="logoutBtn" class="action-btn" title="Logout" style="display: none;">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
                     </svg>
                 </button>
             </div>
