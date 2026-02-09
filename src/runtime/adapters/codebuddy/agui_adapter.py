@@ -98,13 +98,6 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                     # Ensure we have a message context for the tool call
                     if not self.state.current_message_id:
                         self.state.current_message_id = self._generate_message_id()
-                        self.state.message_started = True
-                        results.append(
-                            TextMessageStartEvent(
-                                messageId=self.state.current_message_id,
-                                role=MessageRole.ASSISTANT,
-                            ).to_sse()
-                        )
                     
                     if tool_id not in self.state.active_tool_calls:
                         self.state.active_tool_calls[tool_id] = tool_name
