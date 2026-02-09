@@ -2,6 +2,7 @@
 """服务器配置管理"""
 
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 
 class ServerSettings(BaseSettings):
@@ -32,6 +33,7 @@ class ServerSettings(BaseSettings):
     # 用户目录配置
     user_home_base: str = "/home"
     auto_create_user_dir: bool = True
+    agent_name: str = "ubuntu"
 
     # Redis 配置
     redis_host: str = "localhost"
@@ -49,6 +51,29 @@ class ServerSettings(BaseSettings):
     executor_max_retries: int = 3
     executor_retry_delay: float = 5.0
     executor_task_timeout: float = 3600.0
+    
+    # Channel 服务配置
+    channels_enabled: bool = True
+    
+    # Telegram 配置
+    telegram_bot_token: str | None = None
+    telegram_allowed_users: str = ""  # 逗号分隔的用户 ID
+    
+    # Slack 配置
+    slack_bot_token: str | None = None
+    slack_app_token: str | None = None
+    
+    # Discord 配置
+    discord_bot_token: str | None = None
+    
+    # WhatsApp 配置
+    whatsapp_bridge_url: str | None = None
+    whatsapp_bridge_auth_token: str | None = None
+    whatsapp_session_name: str = "default"
+    
+    # Signal 配置
+    signal_api_url: str = "http://localhost:8080"
+    signal_phone_number: str | None = None
 
     model_config = {
         "env_file": ".env",
@@ -63,10 +88,14 @@ class ProviderSettings(BaseSettings):
     # CCR (Claude Code Runner) 配置
     ccr_command: str = "claude"
     ccr_timeout: int = 120
-    agent_ccr_command_map: dict = {}
+    agent_ccr_command_map: dict = Field(default_factory=dict)
 
     # Gemini CLI 配置
     gemini_command: str = "gemini"
+    
+    # 默认 Provider 和 Agent
+    default_provider: str = "claude"
+    default_agent: str = ""
 
     model_config = {
         "env_file": ".env",
@@ -75,8 +104,24 @@ class ProviderSettings(BaseSettings):
     }
 
 
+class NexusSettings(BaseSettings):
+    """Nexus 控制台配置"""
+    
+    # Nexus 登录密码（为空则禁用认证）
+    nexus_password: str | None = None
+    
+    # Session 有效期（秒）
+    nexus_session_ttl: int = 86400  # 24 小时
+    
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False
+    }
+
+
 # 合并配置（向后兼容）
-class Settings(ServerSettings, ProviderSettings):
+class Settings(ServerSettings, ProviderSettings, NexusSettings):
     """完整配置（包含服务器和 Provider 配置）"""
     pass
 

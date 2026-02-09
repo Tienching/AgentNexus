@@ -383,7 +383,7 @@ class ChatView {
     constructor(app) {
         this.app = app;
         this.sessions = {};
-        this.currentSession = {};
+        this.currentSessionByTab = {}; // tabId -> sessionId
         this.selectionMode = {};  // paneId -> boolean
         this.selectedSessionIds = {}; // paneId -> Set<sessionId>
     }
@@ -395,6 +395,10 @@ class ChatView {
         }
         if (!this.selectedSessionIds[paneId]) {
             this.selectedSessionIds[paneId] = new Set();
+        }
+
+        if (tab?.id && this.currentSessionByTab[tab.id] === undefined) {
+            this.currentSessionByTab[tab.id] = tab.data?.sessionId || null;
         }
 
         container.innerHTML = `
@@ -467,6 +471,20 @@ class ChatView {
 
         this.bindEvents(paneId);
         await this.loadSessions(paneId);
+
+        const activeSessionId = tab?.data?.sessionId || (tab?.id ? this.currentSessionByTab[tab.id] : null);
+        if (activeSessionId) {
+            await this.selectSession(paneId, activeSessionId, { silent: true });
+        }
+    }
+
+    getActiveTabId(paneId) {
+        const tab = this.app.tabManager.getActiveTab(paneId);
+        return tab ? tab.id : null;
+    }
+
+    getActiveTab(paneId) {
+        return this.app.tabManager.getActiveTab(paneId);
     }
 
     bindEvents(paneId) {
@@ -583,8 +601,16 @@ class ChatView {
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
 
-        // Clear current session selection
-        this.currentSession[paneId] = null;
+        // Clear current session selection for active tab
+        const activeTabId = this.getActiveTabId(paneId);
+        if (activeTabId) {
+            this.currentSessionByTab[activeTabId] = null;
+            const tab = this.getActiveTab(paneId);
+            if (tab) {
+                tab.data = tab.data || {};
+                tab.data.sessionId = null;
+            }
+        }
         const container = document.getElementById(`sessionItems-${paneId}`);
         container?.querySelectorAll('.session-item').forEach(item => {
             item.classList.remove('active');
@@ -855,7 +881,15 @@ class ChatView {
             await this.streamChatResponse(paneId, agentName, payload, `thinking-${paneId}`);
             
             // After successful response, set current session and reload everything
-            this.currentSession[paneId] = sessionId;
+            const activeTabId = this.getActiveTabId(paneId);
+            if (activeTabId) {
+                this.currentSessionByTab[activeTabId] = sessionId;
+                const tab = this.getActiveTab(paneId);
+                if (tab) {
+                    tab.data = tab.data || {};
+                    tab.data.sessionId = sessionId;
+                }
+            }
             
             // Reload sessions list first, then load messages after a delay to ensure backend has saved them
             await this.loadSessions(paneId);
@@ -1288,7 +1322,8 @@ class ChatView {
         const statusClass = session.status === 'running' ? 'running' :
                            session.status === 'error' ? 'error' : 'completed';
         const timeStr = this.formatTime(session.updated_at || session.created_at);
-        const isActive = this.currentSession[paneId] === session.id;
+        const activeTabId = this.getActiveTabId(paneId);
+        const isActive = activeTabId ? this.currentSessionByTab[activeTabId] === session.id : false;
         const isInSelectionMode = this.selectionMode[paneId];
         const isChecked = this.selectedSessionIds[paneId]?.has(session.id);
 
@@ -1317,8 +1352,16 @@ class ChatView {
         `;
     }
 
-    async selectSession(paneId, sessionId) {
-        this.currentSession[paneId] = sessionId;
+    async selectSession(paneId, sessionId, options = {}) {
+        const activeTabId = this.getActiveTabId(paneId);
+        if (activeTabId) {
+            this.currentSessionByTab[activeTabId] = sessionId;
+            const tab = this.getActiveTab(paneId);
+            if (tab) {
+                tab.data = tab.data || {};
+                tab.data.sessionId = sessionId;
+            }
+        }
         
         // Update active state in list
         const container = document.getElementById(`sessionItems-${paneId}`);
@@ -1854,7 +1897,15 @@ class ChatView {
         try {
             await NexusAPI.deleteSession(sessionId);
             this.app.showToast('Session deleted', 'success');
-            this.currentSession[paneId] = null;
+            const activeTabId = this.getActiveTabId(paneId);
+            if (activeTabId) {
+                this.currentSessionByTab[activeTabId] = null;
+                const tab = this.getActiveTab(paneId);
+                if (tab) {
+                    tab.data = tab.data || {};
+                    tab.data.sessionId = null;
+                }
+            }
             await this.loadSessions(paneId);
             
             // Clear detail view
@@ -4334,6 +4385,102 @@ class NexusApp {
 }
 
 // Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    window.app = new NexusApp();
+document.addEventListener('DOMContentLoaded', async () => {
+    // Check authentication status first
+    try {
+        const authStatus = await NexusAPI.getAuthStatus();
+        
+        if (authStatus.auth_required && !authStatus.authenticated) {
+            // Show login overlay
+            showLoginOverlay();
+            setupLoginHandlers();
+        } else {
+            // Show main app
+            showMainApp(authStatus.auth_required);
+        }
+    } catch (error) {
+        console.error('Failed to check auth status:', error);
+        // On error, try to show main app anyway
+        showMainApp(false);
+    }
 });
+
+function showLoginOverlay() {
+    const loginOverlay = document.getElementById('loginOverlay');
+    const mainApp = document.getElementById('app');
+    if (loginOverlay) loginOverlay.style.display = 'flex';
+    if (mainApp) mainApp.style.display = 'none';
+}
+
+function showMainApp(authRequired) {
+    const loginOverlay = document.getElementById('loginOverlay');
+    const mainApp = document.getElementById('app');
+    const logoutBtn = document.getElementById('logoutBtn');
+    
+    if (loginOverlay) loginOverlay.style.display = 'none';
+    if (mainApp) mainApp.style.display = '';
+    if (logoutBtn) logoutBtn.style.display = authRequired ? '' : 'none';
+    
+    // Initialize main app
+    window.app = new NexusApp();
+    
+    // Setup logout handler
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            try {
+                await NexusAPI.logout();
+                window.location.reload();
+            } catch (error) {
+                console.error('Logout failed:', error);
+            }
+        });
+    }
+}
+
+function setupLoginHandlers() {
+    const loginForm = document.getElementById('loginForm');
+    const loginPassword = document.getElementById('loginPassword');
+    const loginError = document.getElementById('loginError');
+    const loginBtn = document.getElementById('loginBtn');
+    
+    if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const password = loginPassword?.value || '';
+            if (!password) {
+                if (loginError) {
+                    loginError.textContent = 'Please enter a password';
+                    loginError.style.display = 'block';
+                }
+                return;
+            }
+            
+            // Disable button during login
+            if (loginBtn) {
+                loginBtn.disabled = true;
+                loginBtn.innerHTML = '<span>Logging in...</span>';
+            }
+            
+            try {
+                await NexusAPI.login(password);
+                // Login successful, reload to show main app
+                window.location.reload();
+            } catch (error) {
+                if (loginError) {
+                    loginError.textContent = error.message || 'Login failed';
+                    loginError.style.display = 'block';
+                }
+                if (loginBtn) {
+                    loginBtn.disabled = false;
+                    loginBtn.innerHTML = '<span>Login</span>';
+                }
+            }
+        });
+    }
+    
+    // Focus password input
+    if (loginPassword) {
+        loginPassword.focus();
+    }
+}

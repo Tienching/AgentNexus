@@ -53,23 +53,88 @@ cp .env.example .env
 
 ## 配置
 
-通过 `.env` 配置：
+复制 `.env.example` 为 `.env` 并根据需要修改：
+
+```bash
+cp .env.example .env
+```
+
+### 服务器配置
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `API_HOST` | `0.0.0.0` | 监听地址 |
 | `API_PORT` | `8081` | 端口 |
 | `API_WORKERS` | `1` | 进程数 |
+| `ENVIRONMENT` | `development` | 运行环境 |
+| `DEBUG` | `false` | 调试模式 |
+
+### 日志配置
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
 | `LOG_LEVEL` | `INFO` | 日志级别 |
 | `LOG_DIR` | `./logs` | 日志目录 |
+| `LOG_MAX_BYTES` | `10485760` | 单日志文件大小 |
+| `LOG_BACKUP_COUNT` | `5` | 日志备份数 |
+
+### 用户目录配置
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
 | `USER_HOME_BASE` | `/home` | 用户目录根路径 |
+| `AUTO_CREATE_USER_DIR` | `true` | 自动创建用户目录 |
+| `AGENT_NAME` | `ubuntu` | 默认 Agent 名称 |
+
+### Redis 配置
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
 | `REDIS_HOST` | `localhost` | Redis 地址 |
 | `REDIS_PORT` | `6379` | Redis 端口 |
 | `REDIS_DB` | `0` | Redis DB |
+| `REDIS_PASSWORD` | | Redis 密码 |
 | `REDIS_KEY_PREFIX` | `aona:` | Redis Key 前缀 |
-| `CCR_COMMAND` | `claude-internal` | Claude CLI 命令 |
+
+### Provider 配置
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `CCR_COMMAND` | `claude` | Claude CLI 命令 |
 | `CCR_TIMEOUT` | `120` | Claude 超时(秒) |
 | `GEMINI_COMMAND` | `gemini` | Gemini CLI 命令 |
+
+### Channels 配置（消息渠道）
+
+通过配置以下环境变量启用不同的消息渠道：
+
+**Telegram:**
+| 参数 | 说明 |
+|------|------|
+| `TELEGRAM_BOT_TOKEN` | Bot Token（从 @BotFather 获取） |
+| `TELEGRAM_ALLOWED_USERS` | 允许的用户 ID（逗号分隔，留空允许所有） |
+
+**Slack:**
+| 参数 | 说明 |
+|------|------|
+| `SLACK_BOT_TOKEN` | Bot OAuth Token（xoxb-开头） |
+| `SLACK_APP_TOKEN` | App Token for Socket Mode（xapp-开头） |
+
+**Discord:**
+| 参数 | 说明 |
+|------|------|
+| `DISCORD_BOT_TOKEN` | Bot Token |
+
+安装 Channel 依赖：
+```bash
+# 单独安装
+pip install -e ".[telegram]"
+pip install -e ".[slack]"
+pip install -e ".[discord]"
+
+# 或安装全部
+pip install -e ".[all-channels]"
+```
 
 ## API
 
@@ -154,10 +219,12 @@ http://localhost:8081/nexus/
 
 ```
 virtual-human-sdk-feature-aionui/
+├── .env.example                # 配置模板
 ├── src/server/                 # FastAPI 服务（路由/服务/适配器/模型）
 ├── src/runtime/                # 运行时核心（事件/适配器/存储/执行流）
 ├── src/providers/              # Provider 实现（claude/gemini/codex）
 ├── src/providers/runtime/      # Provider 运行时抽象
+├── src/channels/               # 消息渠道（Telegram/Slack/Discord 等）
 ├── src/server/static/nexus/    # Nexus Web UI
 ├── scripts/                    # 启停脚本
 └── tests/                      # 测试

@@ -272,8 +272,13 @@ class SlashCommandHandler:
             if inplace:
                 context["inplace_ignored"] = True
 
+        default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+        effective_provider = (provider or "").strip().lower() or default_provider or "claude"
+        default_agent = (getattr(self.config, "default_agent", None) or "").strip()
+        effective_agent = (agent_name or "").strip() or default_agent or None
+
         # Create task (workspace for execution)
-        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, agent_name={agent_name!r}")
+        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, agent_name={effective_agent!r}")
         task = self.task_queue.add_task(
             description=description.strip(),
             priority=priority,
@@ -281,10 +286,10 @@ class SlashCommandHandler:
             project_id=project_id,
             project_name=project_name,
             workspace=exec_workspace,
-            provider=provider,
+            provider=effective_provider,
             task_id=task_id,
             source_session_id=source_session_id,
-            agent_name=agent_name,
+            agent_name=effective_agent,
         )
 
         priority_emoji = "🔴" if priority == TaskPriority.SERIOUS else "💭"
@@ -295,8 +300,10 @@ class SlashCommandHandler:
         response += "|-------|-------|\n"
         response += f"| Task ID | #{task.id} |\n"
         response += f"| Priority | {priority_label} |\n"
-        if agent_name:
-            response += f"| Agent | {agent_name} |\n"
+        if effective_provider:
+            response += f"| Provider | {effective_provider} |\n"
+        if effective_agent:
+            response += f"| Agent | {effective_agent} |\n"
         if project_name:
             response += f"| Project | {project_name} |\n"
         if requested_workspace:
@@ -1005,8 +1012,10 @@ class SlashCommandHandler:
 
 **`/task`** - 创建任务
 ```
-/task [-p <项目>] [-w <路径> [-i]] -- <描述>
+/task [-p <项目>] [-w <路径> [-i]] [-r <provider>] [-a <agent>] -- <描述>
 ```
+- 可选 `-r/--provider` 指定执行 Provider（未指定则使用默认配置）
+- 可选 `-a/--agent` 指定执行 Agent（未指定则使用默认配置）
 
 **`/chat`** - 对话管理
 ```

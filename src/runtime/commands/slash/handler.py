@@ -25,6 +25,7 @@ from ...models.task_models import TaskPriority, TaskStatus
 from ...stores.session_storage import get_session_storage
 from ...models.session import StoredMessage
 from ...stores.task_storage import TaskQueue
+from ...stores.user_config import UserConfigStore
 from .worktree import (
     NotGitRepoError,
     WorktreeDirConflictError,
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/exit"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/exit"]
 
 
 def slugify_project(name: str) -> str:
@@ -73,6 +74,9 @@ class SlashCommandHandler:
         
         # Trash directory
         self._trash_dir = Path(self.config.user_home_base) / agent_name / "trash"
+
+        # User config store (Redis)
+        self._user_config_store = UserConfigStore()
 
         # Store startup CWD for /exit command
         # Use config.user_home_base or Path.home() to ensure stability
@@ -160,6 +164,7 @@ class SlashCommandHandler:
                     workspace=parsed.options.get("workspace"),
                     inplace=bool(parsed.options.get("inplace", False)),
                     provider=parsed.options.get("provider"),
+                    alias=parsed.options.get("alias"),
                     source_session_id=source_session_id,
                     agent_name=parsed.options.get("agent"),
                     response_url=response_url,
@@ -219,6 +224,13 @@ class SlashCommandHandler:
                     current_session_id=source_session_id
                 )
 
+            if parsed.cmd == "config" and parsed.subcmd == "show":
+                return self._handle_config_show(callback_user=callback_user)
+            if parsed.cmd == "config" and parsed.subcmd == "set":
+                return self._handle_config_set(args=parsed.args, callback_user=callback_user)
+            if parsed.cmd == "config" and parsed.subcmd == "reset":
+                return self._handle_config_reset(callback_user=callback_user)
+
             if parsed.cmd == "exit":
                 return self._handle_exit_impl(current_session_id=source_session_id)
 
@@ -265,6 +277,61 @@ class SlashCommandHandler:
         except Exception as e:
             logger.error(f"Failed to import history from {source_session_id}: {e}")
 
+    def _handle_config_show(self, callback_user: Optional[str]) -> str:
+        if not callback_user:
+            return "## ❌ 无法识别用户\n\n无法获取用户标识，无法显示配置。"
+
+        user_cfg = self._user_config_store.get_all(callback_user)
+        default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+        default_agent = (getattr(self.config, "default_agent", None) or "").strip()
+
+        effective_provider = (user_cfg.get("provider") or "").strip() or default_provider or "claude"
+        effective_agent = (user_cfg.get("agent") or "").strip() or default_agent or ""
+        effective_alias = (user_cfg.get("alias") or "").strip() or (user_cfg.get("provider") or "").strip() or effective_provider
+
+        def _display(val: str) -> str:
+            return val if val else "未设置"
+
+        response = "## ⚙️ 当前配置\n\n"
+        response += "| 项 | 用户设置 | 生效值 |\n"
+        response += "|---|---|---|\n"
+        response += f"| Provider | {_display(user_cfg.get('provider') or '')} | {effective_provider} |\n"
+        response += f"| Agent | {_display(user_cfg.get('agent') or '')} | {_display(effective_agent)} |\n"
+        response += f"| Alias | {_display(user_cfg.get('alias') or '')} | {effective_alias} |\n"
+        response += "\n**设置示例：** `/config -s provider claude`"
+        return response
+
+    def _handle_config_set(self, args: list, callback_user: Optional[str]) -> str:
+        if not callback_user:
+            return "## ❌ 无法识别用户\n\n无法获取用户标识，无法设置配置。"
+
+        if not args or len(args) < 2:
+            return "## ❌ 缺少参数\n\n**Usage:** `/config -s <key> <value>`\n\n支持的 key: `provider`, `agent`/`model`, `alias`。"
+
+        key = (args[0] or "").strip()
+        value = " ".join(args[1:]).strip()
+        if not value:
+            return "## ❌ 缺少参数\n\n**Usage:** `/config -s <key> <value>`"
+
+        try:
+            ok = self._user_config_store.set(callback_user, key, value)
+        except ValueError as e:
+            return f"## ❌ 无效配置\n\n{str(e)}\n\n支持的 key: `provider`, `agent`/`model`, `alias`。"
+
+        if not ok:
+            return "## ❌ 设置失败\n\n请稍后重试。"
+
+        return f"## ✅ 已更新\n\n`{key}` 已设置为 `{value}`。"
+
+    def _handle_config_reset(self, callback_user: Optional[str]) -> str:
+        if not callback_user:
+            return "## ❌ 无法识别用户\n\n无法获取用户标识，无法重置配置。"
+
+        ok = self._user_config_store.reset(callback_user)
+        if not ok:
+            return "## ❌ 重置失败\n\n请稍后重试。"
+        return "## ✅ 已重置\n\n用户配置已清空。"
+
     def _handle_task_create(
         self,
         description: str,
@@ -272,6 +339,7 @@ class SlashCommandHandler:
         workspace: Optional[str] = None,
         inplace: bool = False,
         provider: Optional[str] = None,
+        alias: Optional[str] = None,
         source_session_id: Optional[str] = None,
         agent_name: Optional[str] = None,
         response_url: Optional[str] = None,
@@ -349,8 +417,22 @@ class SlashCommandHandler:
             if inplace:
                 context["inplace_ignored"] = True
 
+        def _safe_str(value: Optional[str]) -> str:
+            return value.strip() if isinstance(value, str) else ""
+
+        user_config = self._user_config_store.get_all(callback_user) if callback_user else {}
+        user_provider = _safe_str(user_config.get("provider"))
+        user_agent = _safe_str(user_config.get("agent"))
+        user_alias = _safe_str(user_config.get("alias"))
+
+        default_provider = _safe_str(getattr(self.config, "default_provider", None))
+        effective_provider = _safe_str(provider).lower() or user_provider or default_provider or "claude"
+        default_agent = _safe_str(getattr(self.config, "default_agent", None))
+        effective_agent = _safe_str(agent_name) or user_agent or default_agent or None
+        effective_alias = _safe_str(alias) or user_alias or None
+
         # Create task (workspace for execution)
-        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, agent_name={agent_name!r}")
+        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, agent_name={effective_agent!r}")
         task = self.task_queue.add_task(
             description=description.strip(),
             priority=priority,
@@ -358,10 +440,11 @@ class SlashCommandHandler:
             project_id=project_id,
             project_name=project_name,
             workspace=exec_workspace,
-            provider=provider,
+            provider=effective_provider,
+            alias=effective_alias,
             task_id=task_id,
             source_session_id=source_session_id,
-            agent_name=agent_name,
+            agent_name=effective_agent,
             response_url=response_url,
             callback_msg_id=callback_msg_id,
             callback_user=callback_user,
@@ -375,8 +458,12 @@ class SlashCommandHandler:
         response += "|-------|-------|\n"
         response += f"| Task ID | #{task.id} |\n"
         response += f"| Priority | {priority_label} |\n"
-        if agent_name:
-            response += f"| Agent | {agent_name} |\n"
+        if effective_provider:
+            response += f"| Provider | {effective_provider} |\n"
+        if effective_alias:
+            response += f"| Alias | {effective_alias} |\n"
+        if effective_agent:
+            response += f"| Agent | {effective_agent} |\n"
         if project_name:
             response += f"| Project | {project_name} |\n"
         if requested_workspace:
@@ -1343,8 +1430,11 @@ class SlashCommandHandler:
 
 **`/task`** - 创建任务
 ```
-/task [-p <项目>] [-w <路径> [-i]] -- <描述>
+/task [-p <项目>] [-w <路径> [-i]] [-r <provider>] [-a <agent>] [-l <alias>] -- <描述>
 ```
+- 可选 `-r/--provider` 指定执行 Provider（未指定则使用默认配置）
+- 可选 `-a/--agent` 指定执行 Agent（未指定则使用默认配置）
+- 可选 `-l/--alias` 指定别名（未指定则默认等于 Provider）
 
 **`/chat`** - 对话管理
 ```
@@ -1388,6 +1478,14 @@ class SlashCommandHandler:
 ---
 
 ### 系统管理
+
+**`/config`** - 用户配置
+```
+/config                 # 查看当前配置
+/config -s <key> <value> # 设置配置
+/config -r              # 重置配置
+```
+- 支持的 key: `provider`, `agent`/`model`, `alias`
 
 **`/usage`** - 查看使用量
 
