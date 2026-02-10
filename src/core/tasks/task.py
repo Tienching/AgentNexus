@@ -26,7 +26,7 @@ class Task:
     description: str
     provider: str = "claude"
     session_id: Optional[str] = None
-    agent: Optional[str] = None
+    exec_user: Optional[str] = None
     workspace: Optional[str] = None
     status: TaskStatus = TaskStatus.PENDING
     created_at: float = field(default_factory=time.time)
@@ -42,7 +42,7 @@ class Task:
             "description": self.description,
             "provider": self.provider,
             "session_id": self.session_id,
-            "agent": self.agent,
+            "exec_user": self.exec_user,
             "workspace": self.workspace,
             "status": self.status.value,
             "created_at": self.created_at,
@@ -65,7 +65,7 @@ class TaskManager:
         description: str,
         provider: str = "claude",
         session_id: Optional[str] = None,
-        agent: Optional[str] = None,
+        exec_user: Optional[str] = None,
         workspace: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Task:
@@ -76,7 +76,7 @@ class TaskManager:
             description=description,
             provider=provider,
             session_id=session_id,
-            agent=agent,
+            exec_user=exec_user,
             workspace=workspace,
             metadata=metadata or {},
         )

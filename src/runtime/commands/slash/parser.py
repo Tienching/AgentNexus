@@ -141,7 +141,7 @@ SPECS: List[CommandSpec] = [
             OptionDef(short="p", long="project", type="string", required=False, default=None),
             OptionDef(short="w", long="workspace", type="string", required=False, default=None),
             OptionDef(short="i", long="inplace", type="boolean", required=False, default=False),
-            OptionDef(short="a", long="agent", type="string", required=False, default=None),
+            OptionDef(short="u", long="exec-user", type="string", required=False, default=None),
             OptionDef(short="r", long="provider", type="string", required=False, default=None),
             OptionDef(short="l", long="alias", type="string", required=False, default=None),
         ),

@@ -150,14 +150,14 @@ class CCRExecutor(BaseExecutor):
         cmd = self._build_command(context, use_continue=use_continue)
         
         # Wrap with user switching if needed
-        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.agent_name)
+        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
         
         logger.info(
             f"Starting CCR processing",
             extra={
                 "process_type": "ccr_start",
                 "api_user": context.user,
-                "agent_name": context.agent_name,
+                "exec_user": context.exec_user,
                 "content_preview": cleaned_content[:100] if len(cleaned_content) > 100 else cleaned_content,
                 "exec_dir": str(exec_dir),
                 "cwd_mode": context.cwd_mode,
@@ -193,7 +193,7 @@ class CCRExecutor(BaseExecutor):
                 
         except Exception as e:
             logger.error(f"Process error: {e}", exc_info=True)
-            error_msg = self._format_error_message(str(e), context.agent_name)
+            error_msg = self._format_error_message(str(e), context.exec_user)
             if output_format == "legacy":
                 yield self.format_legacy_error(error_msg)
             else:
@@ -204,7 +204,7 @@ class CCRExecutor(BaseExecutor):
         cleaned_content, model_param = self._parse_model_param(context.content)
         
         ccr_command = self.ccr_config.agent_ccr_command_map.get(
-            context.agent_name, 
+            context.exec_user, 
             self.ccr_config.ccr_command
         )
         
@@ -249,7 +249,7 @@ class CCRExecutor(BaseExecutor):
         # Use user directory manager if available
         if self._user_dir_manager:
             user_dir = await self._user_dir_manager.ensure_directory(
-                context.agent_name, context.user, context.session_id
+                context.exec_user, context.user, context.session_id
             )
             if context.cwd:
                 exec_dir = Path(str(context.cwd))
@@ -273,7 +273,7 @@ class CCRExecutor(BaseExecutor):
             
             logger.info(f"Slash command handled", extra={
                 "command": content.split()[0] if content else "",
-                "agent_name": context.agent_name,
+                "exec_user": context.exec_user,
                 "response_length": len(response),
             })
             
@@ -490,10 +490,10 @@ class CCRExecutor(BaseExecutor):
         
         return content, None
     
-    def _format_error_message(self, error: str, agent_name: str) -> str:
+    def _format_error_message(self, error: str, exec_user: str) -> str:
         """Format error message."""
         if "su:" in error:
-            return f"无法切换到用户 '{agent_name}'。请确保用户存在且当前进程有切换权限。"
+            return f"无法切换到用户 '{exec_user}'。请确保用户存在且当前进程有切换权限。"
         elif "cannot create child process" in error.lower():
             return f"无法创建子进程。可能是权限不足或资源限制。"
         return f"处理错误: {error}"

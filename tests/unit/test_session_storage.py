@@ -216,7 +216,7 @@ class TestSessionMetadataOperations:
             run_id="run-456",
             title="Test Session",
             username="testuser",
-            agent_name="test-agent",
+            exec_user="test-agent",
             status=SessionStatus.RUNNING,
         )
         

@@ -47,16 +47,16 @@ async def root():
         "version": "0.1.0",
         "status": "running",
         "endpoints": {
-            "chat": "/chat/stream/{agent_name}",
+            "chat": "/chat/stream/{exec_user}",
             "health": "/health",
             "metrics": "/metrics",
             "docs": "/docs",
             "redoc": "/redoc",
         },
         "description": {
-            "/chat/stream/{agent_name}": "统一SSE接口（自动检测协议类型：易事厅/AG-UI）",
-            "agent_name": "URL路径参数，Linux系统用户名，用于执行命令",
-            "api_user": "请求体中的user字段，用于创建工作目录/home/{agent_name}/{api_user}"
+            "/chat/stream/{exec_user}": "统一SSE接口（自动检测协议类型：易事厅/AG-UI）",
+            "exec_user": "URL路径参数，Linux系统用户名，用于执行命令",
+            "api_user": "请求体中的user字段，用于创建工作目录/home/{exec_user}/{api_user}"
         },
         "protocols": {
             "legacy": "易事厅格式（默认）",

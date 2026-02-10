@@ -13,7 +13,7 @@ class Session:
     """会话"""
     session_id: str
     provider: str = "claude"
-    agent: Optional[str] = None
+    exec_user: Optional[str] = None
     workspace: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -23,7 +23,7 @@ class Session:
         return {
             "session_id": self.session_id,
             "provider": self.provider,
-            "agent": self.agent,
+            "exec_user": self.exec_user,
             "workspace": self.workspace,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -45,7 +45,7 @@ class SessionManager:
         self,
         session_id: str,
         provider: str = "claude",
-        agent: Optional[str] = None,
+        exec_user: Optional[str] = None,
         workspace: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Session:
@@ -53,7 +53,7 @@ class SessionManager:
         session = Session(
             session_id=session_id,
             provider=provider,
-            agent=agent,
+            exec_user=exec_user,
             workspace=workspace,
             metadata=metadata or {},
         )

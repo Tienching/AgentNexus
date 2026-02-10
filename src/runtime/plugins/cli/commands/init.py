@@ -44,8 +44,8 @@ class InitCommand(BaseCommand):
             "default": "0.0.0.0",
             "type": "str",
         },
-        "AGENT_NAME": {
-            "description": "默认 Agent 名称",
+        "EXEC_USER": {
+            "description": "默认执行用户",
             "default": "ubuntu",
             "type": "str",
         },

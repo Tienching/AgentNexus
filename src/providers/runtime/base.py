@@ -15,7 +15,7 @@ class RunContext:
     """执行上下文"""
     session_id: str
     workspace: Optional[Path] = None
-    agent: Optional[str] = None
+    exec_user: Optional[str] = None
     model: Optional[str] = None
     max_turns: int = 10
     permission_mode: str = "default"
@@ -25,7 +25,7 @@ class RunContext:
         return {
             "session_id": self.session_id,
             "workspace": str(self.workspace) if self.workspace else None,
-            "agent": self.agent,
+            "exec_user": self.exec_user,
             "model": self.model,
             "max_turns": self.max_turns,
             "permission_mode": self.permission_mode,

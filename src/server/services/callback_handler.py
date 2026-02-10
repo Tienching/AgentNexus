@@ -110,18 +110,18 @@ class CallbackHandler:
         msg_id: str,
         session_id: str,
         content: str,
-        agent_name: str,
+        exec_user: str,
     ) -> None:
         """在客户端断开后发送回调"""
         if not pending_messages:
-            logger.info("No pending messages to send in callback", extra={"agent_name": agent_name})
+            logger.info("No pending messages to send in callback", extra={"exec_user": exec_user})
             return
 
         logger.info(
             "Sending disconnect callback",
             extra={
                 "api_user": user,
-                "agent_name": agent_name,
+                "exec_user": exec_user,
                 "response_url": response_url[:100] if response_url else "",
                 "pending_messages_count": len(pending_messages),
             }
@@ -137,9 +137,9 @@ class CallbackHandler:
         success = await self.send_callback(response_url, pending_messages, request_data)
 
         if success:
-            logger.info("Disconnect callback sent successfully", extra={"agent_name": agent_name})
+            logger.info("Disconnect callback sent successfully", extra={"exec_user": exec_user})
         else:
-            logger.error("Failed to send disconnect callback", extra={"agent_name": agent_name})
+            logger.error("Failed to send disconnect callback", extra={"exec_user": exec_user})
 
     async def send_timeout_callback(
         self,
@@ -148,13 +148,13 @@ class CallbackHandler:
         msg_id: str,
         session_id: str,
         content: str,
-        agent_name: str,
+        exec_user: str,
     ) -> None:
         """在 response_url 即将超时时发送超时提示回调"""
         if not response_url:
             return
 
-        logger.info("Sending timeout callback", extra={"agent_name": agent_name})
+        logger.info("Sending timeout callback", extra={"exec_user": exec_user})
 
         timeout_message = "⏰ **处理超时**\n\n很抱歉，由于处理时间过长（超过1小时），无法返回完整结果。\n\n请尝试：\n1. 简化您的问题\n2. 分步骤提问\n3. 稍后重试"
 
@@ -170,9 +170,9 @@ class CallbackHandler:
         )
 
         if success:
-            logger.info("Timeout callback sent successfully", extra={"agent_name": agent_name})
+            logger.info("Timeout callback sent successfully", extra={"exec_user": exec_user})
         else:
-            logger.error("Failed to send timeout callback", extra={"agent_name": agent_name})
+            logger.error("Failed to send timeout callback", extra={"exec_user": exec_user})
 
     def _build_callback_payload(
         self,

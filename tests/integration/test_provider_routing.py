@@ -9,6 +9,25 @@ from unittest.mock import patch
 
 import pytest
 
+from src.runtime.stores.session_storage import get_session_storage
+
+# All test session IDs used in this module — cleaned up after each test.
+_TEST_SESSION_IDS = [
+    "t-gem", "t-gem-int", "t-codex-int", "t-cb", "t-cla", "t-cla-int",
+    "t-meta", "t-cb-init", "t-cb-tool", "t-cb-err", "t-cb-mix", "t-cb-slash",
+]
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_test_sessions():
+    """Clean up test session data from Redis before and after each test."""
+    storage = get_session_storage()
+    for sid in _TEST_SESSION_IDS:
+        storage.delete_session(sid)
+    yield
+    for sid in _TEST_SESSION_IDS:
+        storage.delete_session(sid)
+
 
 def _agui_body(thread_id: str, run_id: str, provider: str | None = None):
     body = {
@@ -44,11 +63,11 @@ async def _collect_agui_events(response):
 class TestProviderRouting:
     @pytest.mark.asyncio
     async def test_agui_provider_gemini_uses_gemini_adapter(self, client):
-        async def gemini_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             # GeminiAGUIAdapter expects event.type == "message"
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CCRExecutor.execute should not be used when provider=gemini")
 
         with patch(
@@ -69,13 +88,13 @@ class TestProviderRouting:
 
     @pytest.mark.asyncio
     async def test_agui_provider_gemini_internal_uses_gemini_adapter(self, client):
-        async def gemini_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CCRExecutor.execute should not be used when provider=gemini-internal")
 
-        async def codex_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CodexCLIExecutor.execute should not be used when provider=gemini-internal")
 
         with patch(
@@ -98,17 +117,17 @@ class TestProviderRouting:
 
     @pytest.mark.asyncio
     async def test_agui_provider_codex_internal_uses_codex_adapter(self, client):
-        async def codex_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({"type": "thread.started", "thread_id": "t-123"})
             yield json.dumps({
                 "type": "item.completed",
                 "item": {"id": "item-1", "type": "agent_message", "text": "Hello"},
             })
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CCRExecutor.execute should not be used when provider=codex-internal")
 
-        async def gemini_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("GeminiExecutor.execute should not be used when provider=codex-internal")
 
         with patch(
@@ -131,11 +150,11 @@ class TestProviderRouting:
 
     @pytest.mark.asyncio
     async def test_agui_provider_codebuddy_uses_codebuddy_adapter(self, client):
-        async def codebuddy_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codebuddy_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             # CodebuddyAGUIAdapter expects event.type == "message"
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CCRExecutor.execute should not be used when provider=codebuddy")
 
         with patch(
@@ -155,10 +174,10 @@ class TestProviderRouting:
 
     @pytest.mark.asyncio
     async def test_agui_default_provider_uses_claude_executor(self, client):
-        async def gemini_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("GeminiExecutor.execute should not be used by default")
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             # Claude adapter expects CCR stream_event shape
             yield json.dumps(
                 {
@@ -190,13 +209,13 @@ class TestProviderRouting:
 
     @pytest.mark.asyncio
     async def test_agui_provider_claude_internal_uses_claude_executor(self, client):
-        async def gemini_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("GeminiExecutor.execute should not be used when provider=claude-internal")
 
-        async def codex_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CodexCLIExecutor.execute should not be used when provider=claude-internal")
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps(
                 {
                     "type": "stream_event",
@@ -239,10 +258,10 @@ class TestProviderRouting:
                     return _Meta("gemini")
                 return None
 
-        async def gemini_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({"type": "message", "role": "assistant", "content": "FromMeta"})
 
-        async def claude_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CCRExecutor.execute should not be used when session meta provider=gemini")
 
         with patch(
@@ -270,7 +289,7 @@ class TestCodebuddyProvider:
     @pytest.mark.asyncio
     async def test_codebuddy_init_event(self, client):
         """测试 Codebuddy system/init 事件转换"""
-        async def codebuddy_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codebuddy_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({
                 "type": "system",
                 "subtype": "init",
@@ -301,7 +320,7 @@ class TestCodebuddyProvider:
     @pytest.mark.asyncio
     async def test_codebuddy_tool_use_flow(self, client):
         """测试 Codebuddy 工具调用流程"""
-        async def codebuddy_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codebuddy_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({
                 "type": "system",
                 "subtype": "init",
@@ -360,7 +379,7 @@ class TestCodebuddyProvider:
     @pytest.mark.asyncio
     async def test_codebuddy_error_handling(self, client):
         """测试 Codebuddy 错误事件处理"""
-        async def codebuddy_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codebuddy_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({
                 "type": "system",
                 "subtype": "init",
@@ -388,7 +407,7 @@ class TestCodebuddyProvider:
     @pytest.mark.asyncio
     async def test_codebuddy_mixed_content(self, client):
         """测试 Codebuddy 混合内容（text + tool_use）"""
-        async def codebuddy_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codebuddy_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({
                 "type": "system",
                 "subtype": "init",
@@ -427,7 +446,7 @@ class TestCodebuddyProvider:
     @pytest.mark.asyncio
     async def test_codebuddy_slash_command_result(self, client):
         """测试 Codebuddy slash command 结果"""
-        async def codebuddy_execute(self, request_model, agent_name: str, output_format: str = "raw"):
+        async def codebuddy_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({
                 "type": "system",
                 "subtype": "init",

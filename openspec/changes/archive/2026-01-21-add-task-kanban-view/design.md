@@ -28,7 +28,7 @@
 
 ### 2) Task API：在 `/api/nexus/` 下新增任务相关端点
 - 路由保持同一命名空间，降低前端集成成本。
-- 任务按 `agent_name` 隔离（与 `TaskQueue(agent_name=...)` 一致），API 默认使用配置/环境中的默认 agent（当前为 `ubuntu`）。
+- 任务按 `exec_user` 隔离（与 `TaskQueue(exec_user=...)` 一致），API 默认使用配置/环境中的默认 agent（当前为 `ubuntu`）。
 
 ### 3) Task 对话记录：从 `conversation.json` 生成 AGUI 事件
 - 由于任务执行不走 `StreamHandler`，其对话记录不一定被写入现有 `session-storage`。
@@ -47,7 +47,7 @@
 
 ## Risks / Trade-offs
 - **读取 `/home` 下日志的权限/路径差异**：不同部署下 `user_home_base` 可能变化。
-  - Mitigation：基于 `settings.user_home_base` + `agent_name` + `task_id` 拼路径；不存在则返回“暂无日志”。
+  - Mitigation：基于 `settings.user_home_base` + `exec_user` + `task_id` 拼路径；不存在则返回“暂无日志”。
 - **日志体积大**：conversation 可能很长。
   - Mitigation：API 支持 `limit`/`tail` 参数（例如仅返回最近 N 条消息）。
 - **AGUI 语义不完整**：conversation.json 不一定包含精确的 tool-call 时间线。

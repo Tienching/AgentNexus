@@ -49,11 +49,11 @@ class CCRExecutor:
         self.user_dir_manager = UserDirectoryManager(config)
         self._slash_handlers: Dict[str, SlashCommandHandler] = {}
 
-    def _get_slash_handler(self, agent_name: str) -> SlashCommandHandler:
-        """Get or create slash command handler for agent"""
-        if agent_name not in self._slash_handlers:
-            self._slash_handlers[agent_name] = SlashCommandHandler(agent_name, self.config)
-        return self._slash_handlers[agent_name]
+    def _get_slash_handler(self, exec_user: str) -> SlashCommandHandler:
+        """Get or create slash command handler for exec_user"""
+        if exec_user not in self._slash_handlers:
+            self._slash_handlers[exec_user] = SlashCommandHandler(exec_user, self.config)
+        return self._slash_handlers[exec_user]
 
     def _is_slash_command(self, content: str) -> bool:
         """Check if content is a slash command (excluding /clear which has special handling)"""
@@ -64,9 +64,9 @@ class CCRExecutor:
         return False
 
     async def execute(
-        self, 
-        request: RequestModel, 
-        agent_name: str,
+        self,
+        request: RequestModel,
+        exec_user: str,
         output_format: str = "raw"
     ) -> AsyncGenerator[str, None]:
         """
@@ -74,7 +74,7 @@ class CCRExecutor:
 
         Args:
             request: 请求模型
-            agent_name: Linux系统用户名
+            exec_user: Linux系统用户名
             output_format: 输出格式 - "raw"(原始JSON行), "legacy"(易事厅格式)
 
         Yields:
@@ -84,7 +84,7 @@ class CCRExecutor:
 
         # 验证用户参数
         if not request.user:
-            logger.error(f"Missing required user parameter", extra={"agent_name": agent_name})
+            logger.error(f"Missing required user parameter", extra={"exec_user": exec_user})
             raise ValueError("用户名参数是必需的，请在请求中提供 'user' 字段")
 
         # 清理输入内容
@@ -132,9 +132,9 @@ class CCRExecutor:
             if parsed.cmd == "clear" and parsed.subcmd == "now":
 
                 session_id = request.session_id if request.session_id else "default"
-                user_dir = await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
-                await self.user_dir_manager.clear_directory(agent_name, request.user, user_dir, session_id)
-                await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
+                user_dir = await self.user_dir_manager.ensure_directory(exec_user, request.user, session_id)
+                await self.user_dir_manager.clear_directory(exec_user, request.user, user_dir, session_id)
+                await self.user_dir_manager.ensure_directory(exec_user, request.user, session_id)
                 yield _format_slash_result(
                     "## 🔄 Session Cleared\n\nYour session has been cleared. A fresh workspace has been created.",
                     is_error=False,
@@ -151,7 +151,7 @@ class CCRExecutor:
                 callback_user = getattr(request, "user", None)
                 async for output in self._handle_slash_command(
                     cleaned_content,
-                    agent_name,
+                    exec_user,
                     output_format,
                     source_session_id,
                     response_url=response_url,
@@ -200,7 +200,7 @@ class CCRExecutor:
             user_dir = str(exec_dir)  # 用于日志记录
         else:
             # 确保用户目录存在
-            user_dir = await self.user_dir_manager.ensure_directory(agent_name, request.user, session_id)
+            user_dir = await self.user_dir_manager.ensure_directory(exec_user, request.user, session_id)
             exec_dir = Path(str(run_cwd)) if run_cwd else Path(user_dir)
 
         if run_cwd:
@@ -216,7 +216,7 @@ class CCRExecutor:
             f"Using user directory",
             extra={
                 "api_user": request.user,
-                "agent_name": agent_name,
+                "exec_user": exec_user,
                 "session_id": session_id,
                 "user_dir": str(user_dir),
                 "exec_dir": str(exec_dir),
@@ -239,24 +239,24 @@ class CCRExecutor:
             use_continue = (not is_inplace) or is_chat_continue
 
         agent_type = getattr(request, "agent_type", None) or getattr(request, "provider", None)
-        cmd = self._build_command(agent_name, cleaned_content, use_continue=use_continue, agent_type=agent_type)
+        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
         ccr_cmd_str = ' '.join(shlex.quote(arg) for arg in cmd)
         full_cmd = f"cd {shlex.quote(str(exec_dir))} && {ccr_cmd_str}"
         
-        if current_user == agent_name:
+        if current_user == exec_user:
             cmd = ["bash", "-c", full_cmd]
             logger.info(f"Running command directly as current user", extra={
-                "agent_name": agent_name,
+                "exec_user": exec_user,
                 "api_user": request.user,
                 "user_dir": str(user_dir),
             })
         else:
-            cmd = ["su", "-", agent_name, "-c", full_cmd]
-            logger.info(f"Wrapping command with su for agent {agent_name}", extra={
-                "agent_name": agent_name,
+            cmd = ["su", "-", exec_user, "-c", full_cmd]
+            logger.info(f"Wrapping command with su for exec_user {exec_user}", extra={
+                "exec_user": exec_user,
                 "api_user": request.user,
                 "user_dir": str(user_dir),
             })
@@ -264,7 +264,7 @@ class CCRExecutor:
         logger.info(f"Starting CCR processing", extra={
             "process_type": "ccr_start",
             "api_user": request.user,
-            "agent_name": agent_name,
+            "exec_user": exec_user,
             "content_preview": cleaned_content[:100] if len(cleaned_content) > 100 else cleaned_content,
             "full_cmd": full_cmd,
             "exec_dir": str(exec_dir),
@@ -309,7 +309,7 @@ class CCRExecutor:
 
         except Exception as e:
             logger.error(f"Process error: {e}", exc_info=True)
-            error_msg = self._format_error_message(str(e), agent_name)
+            error_msg = self._format_error_message(str(e), exec_user)
             if output_format == "legacy":
                 yield self.format_legacy_error(error_msg)
             else:
@@ -318,7 +318,7 @@ class CCRExecutor:
     async def _handle_slash_command(
         self,
         content: str,
-        agent_name: str,
+        exec_user: str,
         output_format: str = "raw",
         source_session_id: Optional[str] = None,
         response_url: Optional[str] = None,
@@ -329,7 +329,7 @@ class CCRExecutor:
 
         Args:
             content: The slash command content
-            agent_name: Linux agent user name
+            exec_user: Linux exec user name
             output_format: Output format - "raw" or "legacy"
             source_session_id: Session ID from the source context (for task creation)
             response_url: Callback URL for async task completion notification
@@ -339,7 +339,7 @@ class CCRExecutor:
         Yields:
             Formatted response strings
         """
-        handler = self._get_slash_handler(agent_name)
+        handler = self._get_slash_handler(exec_user)
 
         try:
             # Get markdown response from handler
@@ -353,7 +353,7 @@ class CCRExecutor:
             
             logger.info(f"Slash command handled", extra={
                 "command": content.split()[0] if content else "",
-                "agent_name": agent_name,
+                "exec_user": exec_user,
                 "response_length": len(response),
             })
             
@@ -599,7 +599,7 @@ class CCRExecutor:
 
     def _build_command(
         self,
-        agent_name: str,
+        exec_user: str,
         content: str,
         use_continue: bool = True,
         agent_type: Optional[str] = None,
@@ -607,7 +607,7 @@ class CCRExecutor:
         """构建CCR命令
 
         Args:
-            agent_name: Agent用户名
+            exec_user: Linux exec user
             content: 用户消息内容
             use_continue: 是否使用 -c (continue) 选项，默认为 True
             agent_type: Agent类型（如 claude / claude-internal / codex-internal）
@@ -624,7 +624,7 @@ class CCRExecutor:
         if provider in provider_command_map:
             ccr_command = provider_command_map[provider]
         else:
-            ccr_command = self.config.agent_ccr_command_map.get(agent_name, self.config.ccr_command)
+            ccr_command = self.config.agent_ccr_command_map.get(exec_user, self.config.ccr_command)
 
         cmd = [ccr_command]
 
@@ -660,10 +660,10 @@ class CCRExecutor:
         """Legacy SSE 下保留原始文本（包含 <think> 标签）。"""
         return text
 
-    def _format_error_message(self, error: str, agent_name: str) -> str:
+    def _format_error_message(self, error: str, exec_user: str) -> str:
         """格式化错误消息"""
         if "su:" in error:
-            return f"无法切换到用户 '{agent_name}'。请确保用户存在且当前进程有切换权限。"
+            return f"无法切换到用户 '{exec_user}'。请确保用户存在且当前进程有切换权限。"
         elif "cannot create child process" in error.lower():
             return f"无法创建子进程。可能是权限不足或资源限制。"
         return f"处理错误: {error}"
