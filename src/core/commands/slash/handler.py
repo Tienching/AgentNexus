@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Slash Command Handler for tswitch-rca-agent
+"""Slash Command Handler for agent-runtime
 
 Handles slash commands like /task, /check, /usage, /report, /cancel, /trash, /chat.
 
@@ -52,31 +52,31 @@ def slugify_project(name: str) -> str:
 class SlashCommandHandler:
     """Handles slash commands and returns markdown responses"""
 
-    def __init__(self, agent_name: str, config=None):
+    def __init__(self, exec_user: str, config=None):
         """Initialize handler
-        
+
         Args:
-            agent_name: Linux agent user name for task isolation
+            exec_user: Linux exec user name for task isolation
             config: Optional config override
         """
-        self.agent_name = agent_name
+        self.exec_user = exec_user
         if config is None:
             raise ValueError("SlashCommandHandler requires a config object")
         self.config = config
-        
-        # Initialize task queue with agent-specific database
-        db_path = Path(self.config.user_home_base) / agent_name / "data" / "tasks.db"
+
+        # Initialize task queue with exec_user-specific database
+        db_path = Path(self.config.user_home_base) / exec_user / "data" / "tasks.db"
         self._task_queue: Optional[TaskQueue] = None
         self._db_path = str(db_path)
-        
+
         # Trash directory
-        self._trash_dir = Path(self.config.user_home_base) / agent_name / "trash"
+        self._trash_dir = Path(self.config.user_home_base) / exec_user / "trash"
 
     @property
     def task_queue(self) -> TaskQueue:
         """Lazy initialization of task queue"""
         if self._task_queue is None:
-            self._task_queue = TaskQueue(self._db_path, self.agent_name)
+            self._task_queue = TaskQueue(self._db_path, self.exec_user)
         return self._task_queue
 
     def is_slash_command(self, content: str) -> bool:
@@ -141,7 +141,7 @@ class SlashCommandHandler:
                     inplace=bool(parsed.options.get("inplace", False)),
                     provider=parsed.options.get("provider"),
                     source_session_id=source_session_id,
-                    agent_name=parsed.options.get("agent"),
+                    exec_user=parsed.options.get("exec-user"),
                 )
 
             if parsed.cmd == "chat" and parsed.subcmd == "history":
@@ -202,15 +202,15 @@ class SlashCommandHandler:
         inplace: bool = False,
         provider: Optional[str] = None,
         source_session_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        exec_user: Optional[str] = None,
     ) -> str:
         """Handle `/task create` (strict syntax; free text must be after `--`).
-        
+
         Args:
             source_session_id: Session ID from the source context.
                               Task session_id will be {source_session_id}_{task_id}.
-            agent_name: Optional agent name (CCR user) for task execution.
-                       If not provided, uses the default agent from task queue.
+            exec_user: Optional Linux exec user for task execution.
+                       If not provided, uses the default exec_user from task queue.
         """
         if not (description or "").strip():
             return (
@@ -274,11 +274,11 @@ class SlashCommandHandler:
 
         default_provider = (getattr(self.config, "default_provider", None) or "").strip()
         effective_provider = (provider or "").strip().lower() or default_provider or "claude"
-        default_agent = (getattr(self.config, "default_agent", None) or "").strip()
-        effective_agent = (agent_name or "").strip() or default_agent or None
+        default_exec_user = (getattr(self.config, "default_exec_user", None) or "").strip()
+        effective_exec_user = (exec_user or "").strip() or default_exec_user or None
 
         # Create task (workspace for execution)
-        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, agent_name={effective_agent!r}")
+        logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, exec_user={effective_exec_user!r}")
         task = self.task_queue.add_task(
             description=description.strip(),
             priority=priority,
@@ -289,7 +289,7 @@ class SlashCommandHandler:
             provider=effective_provider,
             task_id=task_id,
             source_session_id=source_session_id,
-            agent_name=effective_agent,
+            exec_user=effective_exec_user,
         )
 
         priority_emoji = "🔴" if priority == TaskPriority.SERIOUS else "💭"
@@ -302,8 +302,8 @@ class SlashCommandHandler:
         response += f"| Priority | {priority_label} |\n"
         if effective_provider:
             response += f"| Provider | {effective_provider} |\n"
-        if effective_agent:
-            response += f"| Agent | {effective_agent} |\n"
+        if effective_exec_user:
+            response += f"| Exec User | {effective_exec_user} |\n"
         if project_name:
             response += f"| Project | {project_name} |\n"
         if requested_workspace:
@@ -478,7 +478,7 @@ class SlashCommandHandler:
             logger.debug(f"Could not read archived session messages: {e}")
 
         # Fallback to conversation.json (legacy path)
-        log_path = Path(self.config.user_home_base) / self.agent_name / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path = Path(self.config.user_home_base) / self.exec_user / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
 
         if log_path.exists():
             try:
@@ -868,7 +868,7 @@ class SlashCommandHandler:
         count = self.task_queue.delete_project(project_id)
         
         # Move workspace to trash
-        workspace_path = Path(self.config.user_home_base) / self.agent_name / "projects" / project_id
+        workspace_path = Path(self.config.user_home_base) / self.exec_user / "projects" / project_id
         workspace_status = ""
         
         if workspace_path.exists():
@@ -956,7 +956,7 @@ class SlashCommandHandler:
             project_id = "_".join(parts[1:-2])
             
             # Restore workspace
-            workspace_path = Path(self.config.user_home_base) / self.agent_name / "projects" / project_id
+            workspace_path = Path(self.config.user_home_base) / self.exec_user / "projects" / project_id
             if workspace_path.exists():
                 return f"## ⚠️ Workspace Exists\n\nWorkspace already exists at `{workspace_path}`"
             
@@ -1012,10 +1012,11 @@ class SlashCommandHandler:
 
 **`/task`** - 创建任务
 ```
-/task [-p <项目>] [-w <路径> [-i]] [-r <provider>] [-a <agent>] -- <描述>
+/task [-p <项目>] [-w <路径> [-i]] [-r <provider>] [-u <exec_user>] [-l <alias>] -- <描述>
 ```
 - 可选 `-r/--provider` 指定执行 Provider（未指定则使用默认配置）
-- 可选 `-a/--agent` 指定执行 Agent（未指定则使用默认配置）
+- 可选 `-u/--exec-user` 指定执行用户（未指定则使用默认配置）
+- 可选 `-l/--alias` 指定别名（未指定则默认等于 Provider）
 
 **`/chat`** - 对话管理
 ```
@@ -1183,7 +1184,7 @@ class SlashCommandHandler:
             logger.debug(f"Could not read archived session messages: {e}")
 
         # 回退：尝试读取任务执行日志（旧链路）
-        log_path = Path(self.config.user_home_base) / self.agent_name / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path = Path(self.config.user_home_base) / self.exec_user / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
         
         if log_path.exists():
             try:
@@ -1225,7 +1226,7 @@ class SlashCommandHandler:
                 response += "\n### 💬 对话记录\n\n暂无对话记录或无法读取。\n"
         else:
             # 尝试其他可能的日志路径
-            alt_log_path = Path(self.config.user_home_base) / self.agent_name / "data" / "task_logs" / f"{task.id}.json"
+            alt_log_path = Path(self.config.user_home_base) / self.exec_user / "data" / "task_logs" / f"{task.id}.json"
             
             if alt_log_path.exists():
                 try:

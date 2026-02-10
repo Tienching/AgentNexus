@@ -27,7 +27,7 @@ class SessionMeta(BaseModel):
     run_id: Optional[str] = Field(None, description="AG-UI run ID")
     title: str = Field("New Session", description="Session title (first user message)")
     username: str = Field(..., description="Username")
-    agent_name: Optional[str] = Field(None, description="Agent name")
+    exec_user: Optional[str] = Field(None, description="Linux exec user for command execution")
     provider: Optional[str] = Field(None, description="Provider (e.g., claude, gemini)")
     alias: Optional[str] = Field(None, description="Alias (optional, defaults to provider)")
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000), description="Created timestamp (ms)")
@@ -43,7 +43,7 @@ class SessionMeta(BaseModel):
             "run_id": self.run_id or "",
             "title": self.title,
             "username": self.username,
-            "agent_name": self.agent_name or "",
+            "exec_user": self.exec_user or "",
             "provider": self.provider or "",
             "alias": self.alias or "",
             "created_at": str(self.created_at),
@@ -55,13 +55,15 @@ class SessionMeta(BaseModel):
     @classmethod
     def from_redis_hash(cls, data: Dict[str, str]) -> "SessionMeta":
         """Create from Redis hash mapping"""
+        exec_user = data.get("exec_user") or None
+
         return cls(
             id=data.get("id", ""),
             thread_id=data.get("thread_id", ""),
             run_id=data.get("run_id") or None,
             title=data.get("title", "New Session"),
             username=data.get("username", ""),
-            agent_name=data.get("agent_name") or None,
+            exec_user=exec_user,
             provider=data.get("provider") or None,
             alias=data.get("alias") or None,
             created_at=int(data.get("created_at", 0)),

@@ -7,7 +7,7 @@
 - **AG-UI 协议优先**：统一以 AG-UI 事件流输出
 - **Legacy 兼容**：支持最简 `{user, content}` 请求，后端自动转为 AG-UI
 - **多 Provider**：`claude` / `gemini` / `codex` 及其 `-internal` 变体
-- **多用户隔离**：按 `agent_name + session_id` 进行目录隔离
+- **多用户隔离**：按 `exec_user + session_id` 进行目录隔离
 - **Nexus Web UI**：会话回放 + 任务看板 + 文件浏览
 - **任务系统**：支持单任务/批量/依赖链
 
@@ -84,7 +84,7 @@ cp .env.example .env
 |------|--------|------|
 | `USER_HOME_BASE` | `/home` | 用户目录根路径 |
 | `AUTO_CREATE_USER_DIR` | `true` | 自动创建用户目录 |
-| `AGENT_NAME` | `ubuntu` | 默认 Agent 名称 |
+| `EXEC_USER` | `ubuntu` | 默认执行用户（Linux 用户名） |
 
 ### Redis 配置
 
@@ -143,8 +143,8 @@ pip install -e ".[all-channels]"
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
-| `/chat/stream` | POST | 默认 agent (`ubuntu`) 流式聊天 |
-| `/chat/stream/{agent_name}` | POST | 指定 agent 流式聊天 |
+| `/chat/stream` | POST | 默认用户 (`ubuntu`) 流式聊天 |
+| `/chat/stream/{exec_user}` | POST | 指定执行用户流式聊天 |
 | `/agui/test` | GET | AG-UI SSE 测试 |
 | `/nexus/` | GET | Nexus Web UI |
 

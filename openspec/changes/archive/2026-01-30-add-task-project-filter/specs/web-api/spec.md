@@ -12,5 +12,5 @@ The system MUST provide an endpoint to retrieve a list of unique projects derive
 
 #### Scenario: Get projects for specific agent
 - **Given** Multiple agents exist
-- **When** Request `GET /api/nexus/projects?agent_name=ubuntu`
+- **When** Request `GET /api/nexus/projects?exec_user=ubuntu`
 - **Then** Only return projects associated with the specified agent's tasks

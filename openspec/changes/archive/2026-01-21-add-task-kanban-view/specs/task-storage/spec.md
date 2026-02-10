@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: REQ-TS-001 Task Storage Key Patterns
-系统 MUST 能够在 Redis 中存储任务数据，并按 `agent_name` 进行隔离。
+系统 MUST 能够在 Redis 中存储任务数据，并按 `exec_user` 进行隔离。
 
 #### Scenario: Store task in Redis
 - **Given** 用户通过 `/think` 或 `/task` 创建了一个任务

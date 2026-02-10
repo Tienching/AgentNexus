@@ -205,7 +205,7 @@ class NexusAPI {
      */
     static async getProjects(options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
         const response = await fetch(`${API_BASE}/projects?${params}`);
         if (!response.ok) {
@@ -218,7 +218,7 @@ class NexusAPI {
 
     static async getTasks(options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
             page: options.page || 1,
             page_size: options.pageSize || 50,
         });
@@ -237,7 +237,7 @@ class NexusAPI {
 
     static async getTask(taskId, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`);
@@ -252,7 +252,7 @@ class NexusAPI {
 
     static async createTask(payload, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks?${params}`, {
@@ -271,7 +271,7 @@ class NexusAPI {
 
     static async deleteTask(taskId, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`, {
@@ -285,7 +285,7 @@ class NexusAPI {
 
     static async bulkArchiveTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_archive?${params}`, {
@@ -302,7 +302,7 @@ class NexusAPI {
 
     static async bulkUnarchiveTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_unarchive?${params}`, {
@@ -319,7 +319,7 @@ class NexusAPI {
 
     static async bulkClearTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_clear?${params}`, {
@@ -336,7 +336,7 @@ class NexusAPI {
 
     static async bulkDeleteTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_delete?${params}`, {
@@ -359,7 +359,7 @@ class NexusAPI {
      */
     static async bulkCreateTasks(tasks = [], options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk?${params}`, {
@@ -384,7 +384,7 @@ class NexusAPI {
      */
     static async updateTaskStatus(taskId, status, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/status?${params}`, {
@@ -402,7 +402,7 @@ class NexusAPI {
 
     static async getTaskMessages(taskId, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         if (options.tail) params.append('tail', options.tail);
@@ -420,7 +420,7 @@ class NexusAPI {
 
     static streamTaskMessages(taskId, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
             tail: options.tail || 200,
         });
 
@@ -434,12 +434,12 @@ class NexusAPI {
 
     /**
      * Send a message via AGUI protocol and get streaming response
-     * @param {string} agentName - Agent/username for the session
+     * @param {string} execUser - Linux exec user for the session
      * @param {Object} payload - AGUI request payload
      * @returns {Promise<Response>} Fetch response for streaming
      */
-    static async chatStream(agentName, payload) {
-        const response = await fetch(`/chat/stream/${agentName}`, {
+    static async chatStream(execUser, payload) {
+        const response = await fetch(`/chat/stream/${execUser}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -466,7 +466,7 @@ class NexusAPI {
      */
     static async getSessionFiles(sessionId, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
         });
 
         if (options.subpath) {
@@ -492,7 +492,7 @@ class NexusAPI {
      */
     static getFileDownloadUrl(sessionId, filePath, options = {}) {
         const params = new URLSearchParams({
-            agent_name: options.agentName || 'ubuntu',
+            exec_user: options.execUser || 'ubuntu',
             file_path: filePath,
         });
         return `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/files/download?${params}`;

@@ -85,7 +85,7 @@ class ConfigCommand(BaseCommand):
             "title": "默认值配置",
             "keys": [
                 ("DEFAULT_PROVIDER", "默认 Provider (claude/gemini/codex/codebuddy)", "claude"),
-                ("DEFAULT_AGENT", "默认 Agent 名称", ""),
+                ("DEFAULT_EXEC_USER", "默认 Exec User 名称", ""),
             ],
         },
         "nexus": {

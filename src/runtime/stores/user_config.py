@@ -13,13 +13,13 @@ from .redis_client import get_redis_client, RedisClient
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_USER_CONFIG_KEYS = {"provider", "agent", "alias", "model"}
+ALLOWED_USER_CONFIG_KEYS = {"provider", "exec_user", "alias", "model"}
 
 
 def normalize_config_key(key: str) -> str:
     normalized = (key or "").strip().lower()
     if normalized == "model":
-        return "agent"
+        return "exec_user"
     return normalized
 
 
@@ -39,11 +39,11 @@ class UserConfigStore:
             data = self._redis.hgetall(self._key(user_id))
             if not data:
                 return {}
-            # Only return known keys (normalize model -> agent)
+            # Only return known keys (normalize model -> exec_user)
             out: Dict[str, str] = {}
             for k, v in data.items():
                 nk = normalize_config_key(k)
-                if nk in {"provider", "agent", "alias"}:
+                if nk in {"provider", "exec_user", "alias"}:
                     out[nk] = (v or "").strip()
             return out
         except Exception as e:
@@ -57,7 +57,7 @@ class UserConfigStore:
         if raw_key not in ALLOWED_USER_CONFIG_KEYS:
             raise ValueError(f"unsupported key: {key}")
         normalized = normalize_config_key(raw_key)
-        if normalized not in {"provider", "agent", "alias"}:
+        if normalized not in {"provider", "exec_user", "alias"}:
             raise ValueError(f"unsupported key: {key}")
         val = (value or "").strip()
         if not val:

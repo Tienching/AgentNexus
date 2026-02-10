@@ -64,7 +64,7 @@ class CodebuddyProvider:
                 content=prompt,
                 user=context.metadata.get("user", "default"),
                 session_id=context.session_id,
-                agent_name=context.agent or "default",
+                exec_user=context.exec_user or "default",
                 cwd=str(context.workspace) if context.workspace else None,
             )
             async for raw_line in executor._execute_internal(request_ctx):

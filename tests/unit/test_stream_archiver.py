@@ -108,7 +108,7 @@ def archiver(mock_storage):
         thread_id="thread-123",
         run_id="run-456",
         username="testuser",
-        agent_name="test-agent",
+        exec_user="test-agent",
         storage=mock_storage,
     )
 
@@ -122,14 +122,14 @@ class TestStreamArchiverInit:
             thread_id="thread-123",
             run_id="run-456",
             username="testuser",
-            agent_name="test-agent",
+            exec_user="test-agent",
         )
         
         assert archiver.session_id == "thread-123"  # Uses thread_id as session_id
         assert archiver.thread_id == "thread-123"
         assert archiver.run_id == "run-456"
         assert archiver.username == "testuser"
-        assert archiver.agent_name == "test-agent"
+        assert archiver.exec_user == "test-agent"
 
     def test_create_archiver_minimal(self):
         """Test creating archiver with minimal parameters"""
@@ -141,7 +141,7 @@ class TestStreamArchiverInit:
         
         assert archiver.session_id == "thread-123"
         assert archiver.run_id is None
-        assert archiver.agent_name is None
+        assert archiver.exec_user is None
 
     def test_archiver_initial_state(self, archiver):
         """Test archiver initial state"""
@@ -174,7 +174,7 @@ class TestOnRunStarted:
         assert session.status == SessionStatus.RUNNING
         assert session.title == "Hello, how are you?"
         assert session.username == "testuser"
-        assert session.agent_name == "test-agent"
+        assert session.exec_user == "test-agent"
         
         # Verify initial message was stored
         messages = mock_storage.get_session_messages("session-123")

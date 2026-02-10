@@ -24,7 +24,7 @@ def executor():
 
 class TestCCRExecutor:
     def test_build_command_default_continue(self, executor):
-        cmd = executor._build_command(agent_name="ubuntu", content="Test content", use_continue=True)
+        cmd = executor._build_command(exec_user="ubuntu", content="Test content", use_continue=True)
 
         assert isinstance(cmd, list)
         assert cmd[0] == "ccr"
@@ -39,13 +39,13 @@ class TestCCRExecutor:
         assert "Test content" in cmd
 
     def test_build_command_without_continue(self, executor):
-        cmd = executor._build_command(agent_name="ubuntu", content="Test content", use_continue=False)
+        cmd = executor._build_command(exec_user="ubuntu", content="Test content", use_continue=False)
 
         assert "-p" in cmd
         assert "-c" not in cmd
 
     def test_build_command_clear_uses_hello_message(self, executor):
-        cmd = executor._build_command(agent_name="ubuntu", content="/clear", use_continue=True)
+        cmd = executor._build_command(exec_user="ubuntu", content="/clear", use_continue=True)
 
         # /clear 特殊处理：message 固定为 "你好"，并且不带 -c
         assert "-p" in cmd

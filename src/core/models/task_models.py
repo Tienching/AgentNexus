@@ -100,8 +100,8 @@ class Task(BaseModel):
     # Working directory for task execution
     workspace: Optional[str] = None
     
-    # Agent isolation
-    agent_name: Optional[str] = None
+    # Exec user isolation (Linux user for su command)
+    exec_user: Optional[str] = None
 
     # Provider pinned at task creation time (e.g., claude, gemini)
     provider: str = "claude"

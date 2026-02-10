@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from ..services.stream_handler import StreamHandler
 from ..logger import get_logger
+from ..config import settings
 
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
@@ -19,17 +20,17 @@ async def chat_stream_default(request: Request):
 
     主要用于让 `/chat/stream` 这个路径存在，从而对 GET 返回 405（符合测试期望）。
     """
-    return await chat_stream(request, agent_name="ubuntu")
+    return await chat_stream(request, exec_user=settings.exec_user)
 
 
-@router.post("/chat/stream/{agent_name}", response_class=StreamingResponse)
-async def chat_stream(request: Request, agent_name: str):
+@router.post("/chat/stream/{exec_user}", response_class=StreamingResponse)
+async def chat_stream(request: Request, exec_user: str):
     """
     统一流式聊天接口（AG-UI 协议）
 
     Args:
         request: FastAPI请求对象
-        agent_name: Linux系统用户名，通过su切换到该用户运行CCR命令
+        exec_user: Linux系统用户名，通过su切换到该用户运行CCR命令
     """
     # 获取原始请求体
     try:
@@ -47,7 +48,7 @@ async def chat_stream(request: Request, agent_name: str):
 
     # 检查是否是测试连接请求（空body或仅包含{}）
     if not body_str or body_str.strip() in ['', '{}']:
-        logger.info(f"Received test connectivity request for agent {agent_name} (empty body)")
+        logger.info(f"Received test connectivity request for exec_user {exec_user} (empty body)")
         return await _handle_test_request()
 
     # 解析请求体为 dict
@@ -96,14 +97,14 @@ async def chat_stream(request: Request, agent_name: str):
     logger.info(
         f"Processing request with AG-UI protocol",
         extra={
-            "agent_name": agent_name,
+            "exec_user": exec_user,
             "protocol": "agui",
         }
     )
-    
+
     # 创建流处理器并处理 AG-UI 请求
     stream_handler = StreamHandler()
-    return await stream_handler.handle_agui_request(request, body_dict, agent_name)
+    return await stream_handler.handle_agui_request(request, body_dict, exec_user)
 
 
 async def _handle_test_request() -> StreamingResponse:

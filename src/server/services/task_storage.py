@@ -17,8 +17,8 @@ class TaskQueue(_RuntimeTaskQueue):
     Keeps `get_redis_client` patchable at `src.providers.claude_code_api.services.task_storage.get_redis_client`.
     """
 
-    def __init__(self, db_path: str = None, agent_name: str = "default"):
-        super().__init__(db_path=db_path, agent_name=agent_name, redis_client=get_redis_client())
+    def __init__(self, db_path: str = None, exec_user: str = "default"):
+        super().__init__(db_path=db_path, exec_user=exec_user, redis_client=get_redis_client())
 
 
 __all__ = ["TaskQueue", "get_redis_client", "RedisClient"]

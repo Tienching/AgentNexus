@@ -628,9 +628,9 @@ class MockTaskQueue:
 @pytest.fixture
 def mock_task_queue():
     tasks = [
-        Task(description="Fix login", priority=TaskPriority.SERIOUS, project_id="proj-a", project_name="Project A", workspace="/ws/a", status=TaskStatus.TODO, agent_name="ubuntu"),
-        Task(description="Refactor API", priority=TaskPriority.THOUGHT, project_id="proj-b", project_name="Project B", workspace="/ws/b", status=TaskStatus.DOING, agent_name="ubuntu"),
-        Task(description="Fix checkout", priority=TaskPriority.SERIOUS, project_id="proj-a", project_name="Project A", workspace="/ws/a", status=TaskStatus.DONE, agent_name="ubuntu"),
+        Task(description="Fix login", priority=TaskPriority.SERIOUS, project_id="proj-a", project_name="Project A", workspace="/ws/a", status=TaskStatus.TODO, exec_user="ubuntu"),
+        Task(description="Refactor API", priority=TaskPriority.THOUGHT, project_id="proj-b", project_name="Project B", workspace="/ws/b", status=TaskStatus.DOING, exec_user="ubuntu"),
+        Task(description="Fix checkout", priority=TaskPriority.SERIOUS, project_id="proj-a", project_name="Project A", workspace="/ws/a", status=TaskStatus.DONE, exec_user="ubuntu"),
     ]
     return MockTaskQueue(tasks)
 
@@ -642,7 +642,7 @@ class TestTaskAPI:
     async def test_list_tasks_success(self, client, mock_storage, mock_task_queue):
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
-            response = await client.get("/api/nexus/tasks", params={"agent_name": "ubuntu"})
+            response = await client.get("/api/nexus/tasks", params={"exec_user": "ubuntu"})
 
         assert response.status_code == 200
         data = response.json()
@@ -656,7 +656,7 @@ class TestTaskAPI:
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             response = await client.get(
                 "/api/nexus/tasks",
-                params={"agent_name": "ubuntu", "page": 1, "page_size": 200},
+                params={"exec_user": "ubuntu", "page": 1, "page_size": 200},
             )
 
         assert response.status_code == 200
@@ -669,7 +669,7 @@ class TestTaskAPI:
     async def test_list_tasks_filter_by_status(self, client, mock_storage, mock_task_queue):
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
-            response = await client.get("/api/nexus/tasks", params={"agent_name": "ubuntu", "status": "done"})
+            response = await client.get("/api/nexus/tasks", params={"exec_user": "ubuntu", "status": "done"})
 
         assert response.status_code == 200
         data = response.json()
@@ -680,7 +680,7 @@ class TestTaskAPI:
     async def test_get_task_not_found(self, client, mock_storage, mock_task_queue):
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
-            response = await client.get("/api/nexus/tasks/nonexistent", params={"agent_name": "ubuntu"})
+            response = await client.get("/api/nexus/tasks/nonexistent", params={"exec_user": "ubuntu"})
 
         assert response.status_code == 404
 
@@ -692,7 +692,7 @@ class TestTaskAPI:
              patch('src.server.routers.nexus.settings.user_home_base', str(tmp_path)):
             response = await client.get(
                 "/api/nexus/tasks/abc123/agui/messages",
-                params={"agent_name": "ubuntu"}
+                params={"exec_user": "ubuntu"}
             )
 
         assert response.status_code == 404
@@ -712,7 +712,7 @@ class TestTaskAPI:
              patch('src.server.routers.nexus.settings.user_home_base', str(tmp_path)):
             response = await client.get(
                 f"/api/nexus/tasks/{task_id}/agui/messages",
-                params={"agent_name": "ubuntu", "tail": 1}
+                params={"exec_user": "ubuntu", "tail": 1}
             )
 
         assert response.status_code == 200
@@ -733,7 +733,7 @@ class TestTaskBulkAPI:
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp = await client.post(
                 "/api/nexus/tasks/bulk_archive",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={"task_ids": [done_task.id]},
             )
 
@@ -747,7 +747,7 @@ class TestTaskBulkAPI:
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp2 = await client.post(
                 "/api/nexus/tasks/bulk_unarchive",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={"task_ids": [done_task.id]},
             )
 
@@ -770,14 +770,14 @@ class TestTaskBulkAPI:
             status=SessionStatus.COMPLETED,
             created_at=1704067200000,
             updated_at=1704067200000,
-            agent_name="ubuntu",
+            exec_user="ubuntu",
         ))
 
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp = await client.post(
                 "/api/nexus/tasks/bulk_clear",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={"task_ids": [done_task.id]},
             )
 
@@ -791,7 +791,7 @@ class TestTaskBulkAPI:
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
             resp = await client.post(
                 "/api/nexus/tasks/bulk_archive",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={"task_ids": []},
             )
 
@@ -816,12 +816,12 @@ class TestDeleteTaskAndCascade:
             status=SessionStatus.COMPLETED,
             created_at=1704067200000,
             updated_at=1704067200000,
-            agent_name="ubuntu",
+            exec_user="ubuntu",
         ))
 
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
-            resp = await client.delete(f"/api/nexus/tasks/{task_id}", params={"agent_name": "ubuntu"})
+            resp = await client.delete(f"/api/nexus/tasks/{task_id}", params={"exec_user": "ubuntu"})
 
         assert resp.status_code == 200
         assert mock_task_queue.get_task(task_id) is None
@@ -831,7 +831,7 @@ class TestDeleteTaskAndCascade:
     async def test_delete_task_idempotent(self, client, mock_storage, mock_task_queue):
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
-            resp = await client.delete("/api/nexus/tasks/nonexistent", params={"agent_name": "ubuntu"})
+            resp = await client.delete("/api/nexus/tasks/nonexistent", params={"exec_user": "ubuntu"})
 
         assert resp.status_code == 200
 
@@ -849,7 +849,7 @@ class TestDeleteTaskAndCascade:
             status=SessionStatus.COMPLETED,
             created_at=1704067200000,
             updated_at=1704067200000,
-            agent_name="ubuntu",
+            exec_user="ubuntu",
         ))
 
         with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \

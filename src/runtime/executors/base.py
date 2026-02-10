@@ -40,20 +40,20 @@ class RequestContext:
     content: str
     user: str = "anonymous"
     session_id: str = "default"
-    agent_name: str = "default"
+    exec_user: str = "default"
     cwd: Optional[str] = None
     cwd_mode: str = ""
     run_kind: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
-    def from_request_model(cls, model: Any, agent_name: str = "default") -> "RequestContext":
+    def from_request_model(cls, model: Any, exec_user: str = "default") -> "RequestContext":
         """Create from legacy RequestModel for backward compatibility."""
         return cls(
             content=getattr(model, "content", "") or "",
             user=getattr(model, "user", None) or "anonymous",
             session_id=getattr(model, "session_id", None) or "default",
-            agent_name=agent_name,
+            exec_user=exec_user,
             cwd=getattr(model, "cwd", None),
             cwd_mode=getattr(model, "cwd_mode", "") or "",
             run_kind=getattr(model, "run_kind", "") or "",
@@ -106,12 +106,12 @@ class BaseExecutor(ABC):
             return Path(str(context.cwd))
         
         base = self.config.user_home_base
-        preferred_dir = Path(base) / context.agent_name / "sessions" / context.session_id
+        preferred_dir = Path(base) / context.exec_user / "sessions" / context.session_id
         
         current_user = pwd.getpwuid(os.getuid()).pw_name
-        if current_user != context.agent_name and os.geteuid() != 0:
+        if current_user != context.exec_user and os.geteuid() != 0:
             # Non-root fallback
-            exec_dir = Path.home() / context.agent_name / "sessions" / context.session_id
+            exec_dir = Path.home() / context.exec_user / "sessions" / context.session_id
         else:
             exec_dir = preferred_dir
         

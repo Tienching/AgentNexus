@@ -61,14 +61,14 @@ async def task_handler(task: Task) -> Optional[str]:
 
     logger = get_logger(__name__)
 
-    # 使用任务中存储的 agent_name
-    agent_name = task.agent_name or "ubuntu"
+    # 使用任务中存储的 exec_user
+    exec_user = task.exec_user or "ubuntu"
     logger.info(f"task_handler: task.session_id={task.session_id!r}, task.id={task.id}")
     session_id = task.session_id or f"task_{task.id}"  # Use stored session_id, fallback for legacy tasks
     logger.info(f"task_handler: using session_id={session_id}")
     run_id = f"task-run-{uuid.uuid4().hex}"
 
-    logger.info(f"Executing task {task.id} for agent {agent_name}: {task.description[:50]}...")
+    logger.info(f"Executing task {task.id} for exec_user {exec_user}: {task.description[:50]}...")
 
     # Provider pinned at task creation time (default: claude)
     provider = (getattr(task, "provider", None) or "claude").strip().lower() or "claude"
@@ -115,7 +115,7 @@ async def task_handler(task: Task) -> Optional[str]:
         thread_id=session_id,
         run_id=run_id,
         username=request.user or "task_executor",
-        agent_name=agent_name,
+        exec_user=exec_user,
         provider=provider,
         alias=alias_value,
     )
@@ -183,7 +183,7 @@ async def task_handler(task: Task) -> Optional[str]:
         if start_event:
             await _archive_converted_sse(start_event)
 
-        async for output in executor.execute(request, agent_name, output_format="raw"):
+        async for output in executor.execute(request, exec_user, output_format="raw"):
             if not output:
                 continue
 
@@ -292,12 +292,12 @@ async def lifespan(app: FastAPI):
     if settings.executor_enabled:
         try:
             import os
-            # 默认使用 ubuntu agent（与路由 /chat/stream/ubuntu 对应）
-            agent_name = os.environ.get("AGENT_NAME", "ubuntu")
-            
+            # 默认使用 ubuntu exec_user（与路由 /chat/stream/ubuntu 对应）
+            exec_user = os.environ.get("EXEC_USER", "ubuntu")
+
             # 初始化任务队列
-            _task_queue = TaskQueue(agent_name=agent_name)
-            
+            _task_queue = TaskQueue(exec_user=exec_user)
+
             # 创建执行器配置
             executor_config = ExecutorConfig(
                 default_max_concurrency=settings.executor_default_max_concurrency,
@@ -313,7 +313,7 @@ async def lifespan(app: FastAPI):
                 task_handler=task_handler,
                 config=executor_config,
             )
-            logger.info(f"Task executor started for agent: {agent_name}")
+            logger.info(f"Task executor started for exec_user: {exec_user}")
         except Exception as e:
             logger.error(f"Failed to start task executor: {e}", exc_info=True)
 
