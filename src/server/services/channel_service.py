@@ -212,8 +212,8 @@ class ChannelService:
         # 创建执行器
         executor = CCRExecutor(config=settings)
         
-        # 使用配置的 agent 名称（默认是 "ubuntu"）
-        agent_name = settings.agent_name or "ubuntu"
+        # 使用配置的 exec_user 名称（默认是 "ubuntu"）
+        exec_user = settings.exec_user or "ubuntu"
         
         # 收集响应
         response_parts = []
@@ -222,7 +222,7 @@ class ChannelService:
 
         try:
             async with asyncio.timeout(timeout):
-                async for output in executor.execute(request, agent_name=agent_name, output_format="raw"):
+                async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
                     if not output:
                         continue
 

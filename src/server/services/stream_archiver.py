@@ -21,7 +21,7 @@ def create_archiver(
     thread_id: str,
     run_id: Optional[str],
     username: str,
-    agent_name: Optional[str] = None,
+    exec_user: Optional[str] = None,
     provider: Optional[str] = None,
     alias: Optional[str] = None,
 ):
@@ -50,7 +50,7 @@ def create_archiver(
         thread_id=thread_id,
         run_id=run_id,
         username=username,
-        agent_name=agent_name,
+        exec_user=exec_user,
         provider=provider,
         alias=alias,
         storage=storage,

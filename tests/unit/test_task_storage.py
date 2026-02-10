@@ -223,7 +223,7 @@ def mock_redis():
 def task_queue(mock_redis):
     """Create TaskQueue instance with mock Redis"""
     with patch('src.runtime.stores.task_storage.get_redis_client', return_value=mock_redis):
-        queue = TaskQueue(db_path=None, agent_name="test_agent")
+        queue = TaskQueue(db_path=None, exec_user="test_agent")
         queue._redis = mock_redis
         return queue
 
@@ -242,7 +242,7 @@ class TestTaskQueue:
         assert task.description == "Test task"
         assert task.priority == TaskPriority.THOUGHT
         assert task.status == TaskStatus.TODO
-        assert task.agent_name == "test_agent"
+        assert task.exec_user == "test_agent"
         assert task.provider == "claude"
 
     def test_add_task_with_provider(self, task_queue):

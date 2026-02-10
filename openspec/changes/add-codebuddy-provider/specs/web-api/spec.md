@@ -4,5 +4,5 @@
 
 #### Scenario: Resolve Codebuddy provider label
 - **Given** 请求体包含 `provider: "codebuddy"`
-- **When** 调用 `/chat/stream/{agent_name}`
+- **When** 调用 `/chat/stream/{exec_user}`
 - **Then** Provider Registry 解析为 `codebuddy` 并路由到对应执行链路

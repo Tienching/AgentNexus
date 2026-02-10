@@ -33,7 +33,7 @@ class ServerSettings(BaseSettings):
     # 用户目录配置
     user_home_base: str = "/home"
     auto_create_user_dir: bool = True
-    agent_name: str = "ubuntu"
+    exec_user: str = "ubuntu"
 
     # Redis 配置
     redis_host: str = "localhost"
@@ -93,9 +93,9 @@ class ProviderSettings(BaseSettings):
     # Gemini CLI 配置
     gemini_command: str = "gemini"
     
-    # 默认 Provider 和 Agent
+    # 默认 Provider 和 Exec User
     default_provider: str = "claude"
-    default_agent: str = ""
+    default_exec_user: str = ""
 
     model_config = {
         "env_file": ".env",

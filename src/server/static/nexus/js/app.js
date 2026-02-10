@@ -791,13 +791,13 @@ class ChatView {
         modelSelect.value = selected;
     }
 
-    async createNewSession(paneId, message, agentName = 'ubuntu', agentType = 'claude', alias = null) {
+    async createNewSession(paneId, message, execUser = 'ubuntu', agentType = 'claude', alias = null) {
         if (!message.trim()) {
             this.app.showToast('Please enter a message', 'warning');
             return;
         }
 
-        const agentLabel = `${agentName} / ${agentType}`;
+        const agentLabel = `${execUser} / ${agentType}`;
 
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
@@ -869,7 +869,7 @@ class ChatView {
             // The backend auto-detects protocol, default is legacy format
             const payload = {
                 content: message,
-                user: agentName,
+                user: execUser,
                 session_id: sessionId,
                 msg_type: 'text',
                 provider: agentType,
@@ -878,7 +878,7 @@ class ChatView {
             };
 
             // Call streaming API
-            await this.streamChatResponse(paneId, agentName, payload, `thinking-${paneId}`);
+            await this.streamChatResponse(paneId, execUser, payload, `thinking-${paneId}`);
             
             // After successful response, set current session and reload everything
             const activeTabId = this.getActiveTabId(paneId);
@@ -924,7 +924,7 @@ class ChatView {
         }
     }
 
-    async streamChatResponse(paneId, agentName, payload, thinkingId) {
+    async streamChatResponse(paneId, execUser, payload, thinkingId) {
         const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
         const thinkingEl = document.getElementById(thinkingId);
         
@@ -963,7 +963,7 @@ class ChatView {
         const streamingToolCalls = new Map(); // toolCallId -> { name, args, status }
         
         // Call streaming API
-        const response = await NexusAPI.chatStream(agentName, payload);
+        const response = await NexusAPI.chatStream(execUser, payload);
         
         const reader = response.body?.getReader();
         const decoder = new TextDecoder();
@@ -1594,20 +1594,20 @@ class ChatView {
     async streamMessage(paneId, sessionId, message, thinkingId) {
         const sessionMeta = this.getSessionMeta(paneId, sessionId);
         const globalUserFilter = document.getElementById('globalUserFilter');
-        const agentName = sessionMeta?.username || globalUserFilter?.value || 'ubuntu';
+        const execUser = sessionMeta?.username || globalUserFilter?.value || 'ubuntu';
         const provider = sessionMeta?.provider || '';
         
         // Build legacy (易事厅) request payload with session_id to continue conversation
         const payload = {
             content: message,
-            user: agentName,
+            user: execUser,
             session_id: sessionId,
             msg_type: 'text',
             provider: provider || undefined
         };
         
         // Use the shared streaming method
-        await this.streamChatResponse(paneId, agentName, payload, thinkingId);
+        await this.streamChatResponse(paneId, execUser, payload, thinkingId);
         
         // Refresh session list to update last_message
         this.loadSessions(paneId);
@@ -2103,10 +2103,10 @@ class ChatView {
 
     async showFilesModal(sessionId, subpath = '') {
         // Get agent name
-        const agentName = document.getElementById('globalUserFilter')?.value || 'ubuntu';
+        const execUser = document.getElementById('globalUserFilter')?.value || 'ubuntu';
 
         try {
-            const data = await NexusAPI.getSessionFiles(sessionId, { agentName, subpath });
+            const data = await NexusAPI.getSessionFiles(sessionId, { execUser, subpath });
 
             // Create modal
             const modal = document.createElement('div');
@@ -2128,7 +2128,7 @@ class ChatView {
                     <div class="files-list">
                         ${data.files.length === 0
                             ? '<div class="files-empty">No files found</div>'
-                            : data.files.map(file => this.renderFileItem(sessionId, file, agentName)).join('')}
+                            : data.files.map(file => this.renderFileItem(sessionId, file, execUser)).join('')}
                     </div>
                     <div class="modal-footer">
                         <button class="btn btn-secondary" data-action="close-modal">Close</button>
@@ -2188,7 +2188,7 @@ class ChatView {
         return html;
     }
 
-    renderFileItem(sessionId, file, agentName) {
+    renderFileItem(sessionId, file, execUser) {
         const sizeStr = file.size != null ? this.formatFileSize(file.size) : '';
         const modifiedStr = file.modified ? new Date(file.modified).toLocaleString() : '';
 
@@ -2206,7 +2206,7 @@ class ChatView {
                 </div>
             `;
         } else {
-            const downloadUrl = NexusAPI.getFileDownloadUrl(sessionId, file.path, { agentName });
+            const downloadUrl = NexusAPI.getFileDownloadUrl(sessionId, file.path, { execUser });
             return `
                 <div class="file-item">
                     <div class="file-icon">
@@ -2395,7 +2395,7 @@ class TaskView {
 
         try {
             const projects = await NexusAPI.getProjects({
-                agentName: globalUserFilter?.value || 'ubuntu'
+                execUser: globalUserFilter?.value || 'ubuntu'
             });
 
             // Keep current selection
@@ -2431,7 +2431,7 @@ class TaskView {
             }
 
             const options = {
-                agentName: globalUserFilter?.value || 'ubuntu',
+                execUser: globalUserFilter?.value || 'ubuntu',
                 pageSize: 100,
                 search: searchInput?.value || '',
                 projectId: projectFilter?.value || ''
@@ -2592,7 +2592,7 @@ class TaskView {
         try {
             const globalUserFilter = document.getElementById('globalUserFilter');
             const task = await NexusAPI.getTask(taskId, { 
-                agentName: globalUserFilter?.value || 'ubuntu' 
+                execUser: globalUserFilter?.value || 'ubuntu' 
             });
             this.renderTaskDetail(paneId, task);
         } catch (error) {
@@ -2709,7 +2709,7 @@ class TaskView {
         try {
             const globalUserFilter = document.getElementById('globalUserFilter');
             await NexusAPI.deleteTask(taskId, { 
-                agentName: globalUserFilter?.value || 'ubuntu' 
+                execUser: globalUserFilter?.value || 'ubuntu' 
             });
             this.app.showToast('Task deleted', 'success');
             this.selectedTask[paneId] = null;
@@ -2845,7 +2845,7 @@ class TaskView {
             try {
                 const globalUserFilter = document.getElementById('globalUserFilter');
                 const result = await NexusAPI.bulkDeleteTasks(taskIds, {
-                    agentName: globalUserFilter?.value || 'ubuntu'
+                    execUser: globalUserFilter?.value || 'ubuntu'
                 });
 
                 const deletedCount = result.result?.count || taskIds.length;
@@ -4025,21 +4025,21 @@ class NexusApp {
             chain: { userId: 'chainUser', modelId: 'chainModel' },
         };
         const ids = mapping[mode] || mapping.single;
-        const agentName = document.getElementById(ids.userId)?.value || globalUserFilter?.value || 'ubuntu';
+        const execUser = document.getElementById(ids.userId)?.value || globalUserFilter?.value || 'ubuntu';
         const provider = document.getElementById(ids.modelId)?.value || 'claude';
-        return { agentName, provider };
+        return { execUser, provider };
     }
 
     async submitTask() {
-        const { agentName, provider } = this.getTaskAgentSelection(this.activeModalTab);
+        const { execUser, provider } = this.getTaskAgentSelection(this.activeModalTab);
 
         try {
             if (this.activeModalTab === 'single') {
-                await this.submitSingleTask(agentName, provider);
+                await this.submitSingleTask(execUser, provider);
             } else if (this.activeModalTab === 'bulk') {
-                await this.submitBulkTasks(agentName, provider);
+                await this.submitBulkTasks(execUser, provider);
             } else if (this.activeModalTab === 'chain') {
-                await this.submitTaskChain(agentName, provider);
+                await this.submitTaskChain(execUser, provider);
             }
 
             document.getElementById('createTaskModal')?.classList.remove('open');
@@ -4050,7 +4050,7 @@ class NexusApp {
         }
     }
 
-    async submitSingleTask(agentName, provider) {
+    async submitSingleTask(execUser, provider) {
         const description = document.getElementById('taskDescription')?.value.trim();
         const workspace = document.getElementById('taskWorkspace')?.value.trim();
         const dependsOnStr = document.getElementById('taskDependsOn')?.value.trim();
@@ -4069,11 +4069,11 @@ class NexusApp {
             depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
         };
 
-        await NexusAPI.createTask(payload, { agentName });
+        await NexusAPI.createTask(payload, { execUser });
         this.showToast('Task created successfully', 'success');
     }
 
-    async submitBulkTasks(agentName, provider) {
+    async submitBulkTasks(execUser, provider) {
         const tasksText = document.getElementById('bulkTasks')?.value.trim();
         const workspace = document.getElementById('bulkWorkspace')?.value.trim();
         const selectedProvider = provider || this.getDefaultProvider();
@@ -4099,7 +4099,7 @@ class NexusApp {
             workspace: workspace || undefined
         }));
 
-        const result = await NexusAPI.bulkCreateTasks(tasks, { agentName });
+        const result = await NexusAPI.bulkCreateTasks(tasks, { execUser });
         
         if (result.errors && result.errors.length > 0) {
             this.showToast(`Created ${result.created.length} tasks, ${result.errors.length} failed`, 'warning');
@@ -4108,7 +4108,7 @@ class NexusApp {
         }
     }
 
-    async submitTaskChain(agentName, provider) {
+    async submitTaskChain(execUser, provider) {
         const tasksText = document.getElementById('chainTasks')?.value.trim();
         const workspace = document.getElementById('chainWorkspace')?.value.trim();
         const selectedProvider = provider || this.getDefaultProvider();
@@ -4135,7 +4135,7 @@ class NexusApp {
             depends_on: index > 0 ? [`temp_${index - 1}`] : undefined
         }));
 
-        const result = await NexusAPI.bulkCreateTasks(tasks, { agentName });
+        const result = await NexusAPI.bulkCreateTasks(tasks, { execUser });
         
         if (result.errors && result.errors.length > 0) {
             this.showToast(`Created ${result.created.length} tasks in chain, ${result.errors.length} failed`, 'warning');

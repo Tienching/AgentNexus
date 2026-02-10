@@ -27,7 +27,7 @@ description: 任务编排大师。将复杂的用户需求拆解为多个可执�
       "priority": "thought",
       "provider": "claude",
       "alias": "main-claude",
-      "agent": "ubuntu",
+      "exec_user": "ubuntu",
       "depends_on": []
     },
     {
@@ -58,7 +58,7 @@ description: 任务编排大师。将复杂的用户需求拆解为多个可执�
 | `priority` | 否 | "thought" (思考/规划, 默认) 或 "project" (高优先级项目) |
 | `provider` | 否 | 任务执行的 Provider: "claude", "gemini", "codex", "codebuddy" |
 | `alias` | 否 | 任务执行别名（可用于标记 provider/agent 组合） |
-| `agent` | 否 | 任务执行的 Agent 用户名，如 "ubuntu" |
+| `exec_user` | 否 | 任务执行的 Linux 用户名，如 "ubuntu" |
 | `workspace` | 否 | 任务的工作目录路径 |
 | `depends_on` | 否 | 依赖的任务 ID 列表 |
 
@@ -85,7 +85,7 @@ python3 prompts/skills/orchestrator/scripts/orchestrator.py \
 - `--plan`: 必填，JSON 格式的任务计划
 - `--project-id`: 可选但推荐，用于将任务关联到同一个项目/会话
 - `--api`: 可选，API 地址（默认 `http://localhost:8081/api/nexus/tasks`）
-- `--agent-name`: 可选，默认 Agent 名称（任务级别的 agent 字段会覆盖此值）
+- `--exec-user`: 可选，默认执行用户（任务级别的 exec_user 字段会覆盖此值）
 
 ## 示例场景
 

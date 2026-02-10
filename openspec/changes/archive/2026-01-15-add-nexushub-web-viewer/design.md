@@ -50,7 +50,7 @@ class SessionMeta(BaseModel):
     run_id: Optional[str] = None
     title: str
     username: str
-    agent_name: Optional[str] = None
+    exec_user: Optional[str] = None
     created_at: int  # Unix timestamp ms
     updated_at: int
     message_count: int = 0

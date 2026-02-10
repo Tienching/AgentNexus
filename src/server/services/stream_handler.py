@@ -86,10 +86,10 @@ class StreamHandler:
         return get_router().get_adapter(ProtocolType.AGUI)
 
     async def handle_agui_request(
-        self, 
-        request: Request, 
-        body_dict: Dict[str, Any], 
-        agent_name: str
+        self,
+        request: Request,
+        body_dict: Dict[str, Any],
+        exec_user: str
     ) -> StreamingResponse:
         """处理 AG-UI 协议请求"""
         provider = self._get_provider(request, body_dict)
@@ -142,7 +142,7 @@ class StreamHandler:
         # 如果有 response_url，启用超时回调模式
         if response_url:
             return await self._stream_agui_with_callback(
-                request, request_model, agui_request, adapter, agent_name, executor, provider
+                request, request_model, agui_request, adapter, exec_user, executor, provider
             )
         
         # 标准 AG-UI 流式处理
@@ -155,7 +155,7 @@ class StreamHandler:
             thread_id=agui_request.threadId,
             run_id=agui_request.runId,
             username=username,
-            agent_name=agent_name,
+            exec_user=exec_user,
             provider=provider,
             alias=alias,
         )
@@ -176,7 +176,7 @@ class StreamHandler:
                 adapter=adapter,
                 archiver=archiver,
                 initial_messages=initial_messages,
-                agent_name=agent_name,
+                exec_user=exec_user,
             ),
             media_type="text/event-stream",
             headers={
@@ -193,7 +193,7 @@ class StreamHandler:
         request_model: RequestModel,
         agui_request: AGUIRequest,
         adapter,
-        agent_name: str,
+        exec_user: str,
         executor,
         provider: str = "claude",
     ) -> StreamingResponse:
@@ -214,7 +214,7 @@ class StreamHandler:
             thread_id=agui_request.threadId,
             run_id=agui_request.runId,
             username=username,
-            agent_name=agent_name,
+            exec_user=exec_user,
             provider=provider,
             alias=alias,
         )
@@ -243,7 +243,7 @@ class StreamHandler:
                 # Initialize archiver
                 await archiver.on_run_started(initial_messages)
                 
-                async for line in executor.execute(request_model, agent_name=agent_name, output_format="raw"):
+                async for line in executor.execute(request_model, exec_user=exec_user, output_format="raw"):
                     if not line.strip():
                         continue
                     

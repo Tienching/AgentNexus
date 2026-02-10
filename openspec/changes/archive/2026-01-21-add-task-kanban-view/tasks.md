@@ -6,7 +6,7 @@
 
 ## 2. Task Web API
 - [x] **2.1** 在 `nexus` API 下新增任务列表端点
-  - `GET /api/nexus/tasks`：支持按 `agent_name`（默认值）、`status`、`project_id`、`workspace`、`search` 过滤
+  - `GET /api/nexus/tasks`：支持按 `exec_user`（默认值）、`status`、`project_id`、`workspace`、`search` 过滤
   - 验证：集成测试覆盖分页/过滤（或最小可用的列表返回）
 
 - [x] **2.2** 新增任务详情端点

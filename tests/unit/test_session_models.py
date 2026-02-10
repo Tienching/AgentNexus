@@ -46,7 +46,7 @@ class TestSessionMeta:
             run_id="run-456",
             title="Test Session",
             username="testuser",
-            agent_name="test-agent",
+            exec_user="test-agent",
         )
         
         assert meta.id == "session-123"
@@ -54,7 +54,7 @@ class TestSessionMeta:
         assert meta.run_id == "run-456"
         assert meta.title == "Test Session"
         assert meta.username == "testuser"
-        assert meta.agent_name == "test-agent"
+        assert meta.exec_user == "test-agent"
         assert meta.status == SessionStatus.IDLE
         assert meta.message_count == 0
         assert meta.created_at > 0
@@ -70,7 +70,7 @@ class TestSessionMeta:
         
         assert meta.run_id is None
         assert meta.title == "New Session"
-        assert meta.agent_name is None
+        assert meta.exec_user is None
         assert meta.status == SessionStatus.IDLE
         assert meta.message_count == 0
 
@@ -82,7 +82,7 @@ class TestSessionMeta:
             run_id="run-456",
             title="Test Session",
             username="testuser",
-            agent_name="test-agent",
+            exec_user="test-agent",
             created_at=1704067200000,
             updated_at=1704067200000,
             message_count=5,
@@ -96,7 +96,7 @@ class TestSessionMeta:
         assert hash_data["run_id"] == "run-456"
         assert hash_data["title"] == "Test Session"
         assert hash_data["username"] == "testuser"
-        assert hash_data["agent_name"] == "test-agent"
+        assert hash_data["exec_user"] == "test-agent"
         assert hash_data["created_at"] == "1704067200000"
         assert hash_data["updated_at"] == "1704067200000"
         assert hash_data["message_count"] == "5"
@@ -113,7 +113,7 @@ class TestSessionMeta:
         hash_data = meta.to_redis_hash()
         
         assert hash_data["run_id"] == ""
-        assert hash_data["agent_name"] == ""
+        assert hash_data["exec_user"] == ""
 
     def test_session_meta_from_redis_hash(self):
         """Test creating session metadata from Redis hash"""
@@ -123,7 +123,7 @@ class TestSessionMeta:
             "run_id": "run-456",
             "title": "Test Session",
             "username": "testuser",
-            "agent_name": "test-agent",
+            "exec_user": "test-agent",
             "created_at": "1704067200000",
             "updated_at": "1704067200000",
             "message_count": "5",
@@ -137,7 +137,7 @@ class TestSessionMeta:
         assert meta.run_id == "run-456"
         assert meta.title == "Test Session"
         assert meta.username == "testuser"
-        assert meta.agent_name == "test-agent"
+        assert meta.exec_user == "test-agent"
         assert meta.created_at == 1704067200000
         assert meta.updated_at == 1704067200000
         assert meta.message_count == 5
@@ -151,7 +151,7 @@ class TestSessionMeta:
             "run_id": "",
             "title": "Test Session",
             "username": "testuser",
-            "agent_name": "",
+            "exec_user": "",
             "created_at": "1704067200000",
             "updated_at": "1704067200000",
             "message_count": "0",
@@ -161,7 +161,7 @@ class TestSessionMeta:
         meta = SessionMeta.from_redis_hash(hash_data)
         
         assert meta.run_id is None
-        assert meta.agent_name is None
+        assert meta.exec_user is None
 
     def test_session_meta_roundtrip(self):
         """Test roundtrip conversion to/from Redis hash"""
@@ -171,7 +171,7 @@ class TestSessionMeta:
             run_id="run-456",
             title="Test Session",
             username="testuser",
-            agent_name="test-agent",
+            exec_user="test-agent",
             created_at=1704067200000,
             updated_at=1704067200000,
             message_count=5,
@@ -186,7 +186,7 @@ class TestSessionMeta:
         assert restored.run_id == original.run_id
         assert restored.title == original.title
         assert restored.username == original.username
-        assert restored.agent_name == original.agent_name
+        assert restored.exec_user == original.exec_user
         assert restored.created_at == original.created_at
         assert restored.updated_at == original.updated_at
         assert restored.message_count == original.message_count
