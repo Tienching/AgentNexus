@@ -3917,15 +3917,27 @@ class NexusApp {
         const modal = document.getElementById('createTaskModal');
         if (!modal) return;
 
-        // Reset form
-        document.getElementById('taskDescription').value = '';
-        document.getElementById('taskWorkspace').value = '';
-        document.getElementById('taskDependsOn').value = '';
-        document.getElementById('taskAlias').value = '';
-        document.getElementById('bulkTasks').value = '';
-        document.getElementById('bulkAlias').value = '';
-        document.getElementById('chainTasks').value = '';
-        document.getElementById('chainAlias').value = '';
+        // Reset form - safely check element exists before setting value
+        const taskDesc = document.getElementById('taskDescription');
+        if (taskDesc) taskDesc.value = '';
+        const taskWorkspace = document.getElementById('taskWorkspace');
+        if (taskWorkspace) taskWorkspace.value = '';
+        const taskDependsOn = document.getElementById('taskDependsOn');
+        if (taskDependsOn) taskDependsOn.value = '';
+        const taskAlias = document.getElementById('taskAlias');
+        if (taskAlias) taskAlias.value = '';
+        const bulkTasks = document.getElementById('bulkTasks');
+        if (bulkTasks) bulkTasks.value = '';
+        const bulkAlias = document.getElementById('bulkAlias');
+        if (bulkAlias) bulkAlias.value = '';
+        const chainTasks = document.getElementById('chainTasks');
+        if (chainTasks) chainTasks.value = '';
+        const chainAlias = document.getElementById('chainAlias');
+        if (chainAlias) chainAlias.value = '';
+        const bulkWorkspace = document.getElementById('bulkWorkspace');
+        if (bulkWorkspace) bulkWorkspace.value = '';
+        const chainWorkspace = document.getElementById('chainWorkspace');
+        if (chainWorkspace) chainWorkspace.value = '';
 
         // Set active tab
         this.activeModalTab = mode;
