@@ -79,7 +79,7 @@ class GeminiExecutor(BaseExecutor):
                 raise ValueError(f"cwd 不存在或不是目录: {exec_dir}")
         
         cmd = self._build_command(context)
-        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.agent_name)
+        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
         
         try:
             process = await self.run_subprocess(final_cmd)

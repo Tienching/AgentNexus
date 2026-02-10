@@ -4,8 +4,8 @@
 系统 MUST 提供获取任务列表的 API。
 
 #### Scenario: List tasks by agent
-- **Given** 某 `agent_name` 下存在多个任务
-- **When** 请求 `GET /api/nexus/tasks?agent_name=ubuntu`
+- **Given** 某 `exec_user` 下存在多个任务
+- **When** 请求 `GET /api/nexus/tasks?exec_user=ubuntu`
 - **Then** 返回该 agent 的任务列表
 
 #### Scenario: Filter tasks by status

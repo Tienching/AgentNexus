@@ -36,12 +36,12 @@ class StreamOrchestrator:
         adapter: Any,
         archiver: Any,
         initial_messages: list[dict[str, Any]],
-        agent_name: str,
+        exec_user: str,
     ) -> AsyncGenerator[str, None]:
         """Generate AG-UI SSE stream.
 
         Contracts expected:
-        - executor.execute(request_model, agent_name=..., output_format="raw") -> AsyncIterator[str]
+        - executor.execute(request_model, exec_user=..., output_format="raw") -> AsyncIterator[str]
         - adapter.convert(dict) -> Optional[str] (SSE chunks)
         - adapter.create_start_event()/create_end_event()/create_error_event(str) -> str
         - archiver.on_run_started(list)/on_run_finished()/on_run_error(str)
@@ -57,7 +57,7 @@ class StreamOrchestrator:
                 event_count += self._count_sse_events(start_event)
                 yield start_event
 
-            async for line in executor.execute(request_model, agent_name=agent_name, output_format="raw"):
+            async for line in executor.execute(request_model, exec_user=exec_user, output_format="raw"):
                 if not line or not str(line).strip():
                     continue
 

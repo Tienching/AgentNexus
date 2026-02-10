@@ -66,7 +66,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
     async def execute(
         self,
         request: Any,
-        agent_name: str = "default",
+        exec_user: str = "default",
         output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
         """Execute Codebuddy CLI and yield stream output.
@@ -75,7 +75,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
         Args:
             request: RequestModel or RequestContext
-            agent_name: Linux system user name
+            exec_user: Linux system user name
             output_format: Output format (only "raw" JSON lines supported)
 
         Yields:
@@ -84,7 +84,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
         if isinstance(request, RequestContext):
             context = request
         else:
-            context = RequestContext.from_request_model(request, agent_name)
+            context = RequestContext.from_request_model(request, exec_user)
         async for line in self._execute_internal(context, output_format=output_format):
             yield line
 
@@ -109,7 +109,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
                 raise ValueError(f"cwd 不存在或不是目录: {exec_dir}")
 
         cmd = self._build_command(context)
-        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.agent_name)
+        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
 
         try:
             process = await self.run_subprocess(final_cmd)

@@ -67,7 +67,7 @@ class CodexCLIExecutor(BaseExecutor):
     async def execute(
         self,
         request: Any,
-        agent_name: str = "default",
+        exec_user: str = "default",
         output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
         """Execute Codex CLI and yield stream output.
@@ -76,14 +76,14 @@ class CodexCLIExecutor(BaseExecutor):
         
         Args:
             request: RequestModel instance (from server layer)
-            agent_name: Linux system user name
+            exec_user: Linux system user name
             output_format: Output format (only "raw" JSON lines supported)
             
         Yields:
             Output lines (JSON format)
         """
         # Convert RequestModel to RequestContext
-        context = RequestContext.from_request_model(request, agent_name)
+        context = RequestContext.from_request_model(request, exec_user)
         
         async for line in self._execute_internal(context):
             yield line
@@ -111,17 +111,17 @@ class CodexCLIExecutor(BaseExecutor):
             f"Starting Codex CLI processing",
             extra={
                 "process_type": "codex_cli_start",
-                "agent_name": context.agent_name,
+                "exec_user": context.exec_user,
                 "content_preview": cleaned_content[:100] if len(cleaned_content) > 100 else cleaned_content,
                 "exec_dir": str(exec_dir),
             }
         )
         
         cmd = self._build_command(context)
-        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.agent_name)
+        final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
         
         logger.info(
-            f"Codex CLI command: raw={' '.join(cmd)}, final={' '.join(final_cmd)}, agent={context.agent_name}, dir={exec_dir}"
+            f"Codex CLI command: raw={' '.join(cmd)}, final={' '.join(final_cmd)}, agent={context.exec_user}, dir={exec_dir}"
         )
         
         try:

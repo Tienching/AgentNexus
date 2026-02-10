@@ -23,7 +23,7 @@ class MockTaskQueue:
         alias=None,
         task_id=None,
         source_session_id=None,
-        agent_name=None,
+        exec_user=None,
         depends_on=None,
     ) -> Task:
         t = Task(
@@ -35,7 +35,7 @@ class MockTaskQueue:
             workspace=workspace,
             provider=provider or "claude",
             alias=alias,
-            agent_name=agent_name,
+            exec_user=exec_user,
             session_id=(source_session_id + "_" if source_session_id else "task_") + (task_id or "new"),
         )
         self._tasks[t.id] = t
@@ -49,7 +49,7 @@ class TestNexusCreateTask:
         with patch("src.server.routers.nexus._get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={
                     "description": "Build feature",
                     "provider": "gemini",
@@ -72,7 +72,7 @@ class TestNexusCreateTask:
         with patch("src.server.routers.nexus._get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={
                     "description": "Build feature",
                     "provider": provider,
@@ -91,7 +91,7 @@ class TestNexusCreateTask:
         with patch("src.server.routers.nexus._get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={
                     "description": "Build feature",
                     "provider": "unknown",
@@ -106,7 +106,7 @@ class TestNexusCreateTask:
         with patch("src.server.routers.nexus._get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
-                params={"agent_name": "ubuntu"},
+                params={"exec_user": "ubuntu"},
                 json={
                     "description": " ",
                     "provider": "claude",

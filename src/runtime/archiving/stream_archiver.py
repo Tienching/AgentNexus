@@ -36,7 +36,7 @@ class StreamArchiver:
         thread_id: str,
         run_id: Optional[str],
         username: str,
-        agent_name: Optional[str] = None,
+        exec_user: Optional[str] = None,
         provider: Optional[str] = None,
         alias: Optional[str] = None,
         storage: Optional[SessionStorage] = None,
@@ -48,7 +48,7 @@ class StreamArchiver:
             thread_id: AG-UI thread ID
             run_id: AG-UI run ID
             username: Username
-            agent_name: Optional agent name
+            exec_user: Optional exec_user name
             provider: Optional provider (e.g., claude, gemini)
             storage: Optional SessionStorage instance
         """
@@ -56,7 +56,7 @@ class StreamArchiver:
         self.thread_id = thread_id
         self.run_id = run_id
         self.username = username
-        self.agent_name = agent_name
+        self.exec_user = exec_user
         self.provider = provider
         self.alias = alias
         self._storage = storage or get_session_storage()
@@ -120,7 +120,7 @@ class StreamArchiver:
                     run_id=self.run_id,
                     title=title,
                     username=self.username,
-                    agent_name=self.agent_name,
+                    exec_user=self.exec_user,
                     provider=self.provider,
                     alias=self.alias,
                     status=SessionStatus.RUNNING,
@@ -519,7 +519,7 @@ def create_archiver(
     thread_id: str,
     run_id: Optional[str],
     username: str,
-    agent_name: Optional[str] = None,
+    exec_user: Optional[str] = None,
     provider: Optional[str] = None,
     alias: Optional[str] = None,
 ) -> StreamArchiver:
@@ -529,7 +529,7 @@ def create_archiver(
         thread_id: AG-UI thread ID (used as session ID)
         run_id: AG-UI run ID
         username: Username
-        agent_name: Optional agent name
+        exec_user: Optional exec_user name
 
     Returns:
         StreamArchiver instance
@@ -552,7 +552,7 @@ def create_archiver(
         thread_id=thread_id,
         run_id=run_id,
         username=username,
-        agent_name=agent_name,
+        exec_user=exec_user,
         provider=provider,
         alias=alias,
     )

@@ -23,47 +23,47 @@ class TaskQueue:
     """Task queue manager with Redis backend
     
     Redis key structure:
-    - task:{agent}:{task_id} - Task hash data
-    - tasks:{agent}:all - Sorted set of all task IDs (score = created_at timestamp)
-    - tasks:{agent}:by_status:{status} - Set of task IDs by status
-    - tasks:{agent}:by_project:{project_id} - Set of task IDs by project
-    - tasks:{agent}:by_workspace:{workspace_hash} - Set of task IDs by workspace
-    - queue:{agent}:{workspace_hash}:todo - List of TODO task IDs (queue for execution)
-    - executing:{agent}:{workspace_hash} - Set of currently executing task IDs
+    - task:{exec_user}:{task_id} - Task hash data
+    - tasks:{exec_user}:all - Sorted set of all task IDs (score = created_at timestamp)
+    - tasks:{exec_user}:by_status:{status} - Set of task IDs by status
+    - tasks:{exec_user}:by_project:{project_id} - Set of task IDs by project
+    - tasks:{exec_user}:by_workspace:{workspace_hash} - Set of task IDs by workspace
+    - queue:{exec_user}:{workspace_hash}:todo - List of TODO task IDs (queue for execution)
+    - executing:{exec_user}:{workspace_hash} - Set of currently executing task IDs
     """
 
     def __init__(
         self,
         db_path: str = None,
-        agent_name: str = "default",
+        exec_user: str = "default",
         redis_client: Optional[RedisClient] = None,
     ):
         """Initialize task queue with Redis
 
         Args:
             db_path: Ignored, kept for backward compatibility
-            agent_name: Agent name for task isolation
+            exec_user: Exec user name for task isolation
             redis_client: Optional injected Redis client (for tests/hosts)
         """
-        self.agent_name = agent_name
+        self.exec_user = exec_user
         self._redis: RedisClient = redis_client or get_redis_client()
-        logger.info(f"TaskQueue initialized for agent: {agent_name}")
+        logger.info(f"TaskQueue initialized for exec_user: {exec_user}")
 
     def _task_key(self, task_id: str) -> str:
         """Get Redis key for task data"""
-        return f"task:{self.agent_name}:{task_id}"
+        return f"task:{self.exec_user}:{task_id}"
     
     def _all_tasks_key(self) -> str:
         """Get Redis key for all tasks sorted set"""
-        return f"tasks:{self.agent_name}:all"
+        return f"tasks:{self.exec_user}:all"
     
     def _status_key(self, status: TaskStatus) -> str:
         """Get Redis key for tasks by status"""
-        return f"tasks:{self.agent_name}:by_status:{status.value}"
+        return f"tasks:{self.exec_user}:by_status:{status.value}"
     
     def _project_key(self, project_id: str) -> str:
         """Get Redis key for tasks by project"""
-        return f"tasks:{self.agent_name}:by_project:{project_id}"
+        return f"tasks:{self.exec_user}:by_project:{project_id}"
     
     def _workspace_key(self, workspace: str) -> str:
         """Get Redis key for tasks by workspace"""
@@ -71,21 +71,21 @@ class TaskQueue:
         import hashlib
         ws_str = (workspace or "default").encode("utf-8")
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"tasks:{self.agent_name}:by_workspace:{workspace_hash}"
+        return f"tasks:{self.exec_user}:by_workspace:{workspace_hash}"
 
     def _queue_key(self, workspace: str) -> str:
         """Get Redis key for workspace TODO queue"""
         import hashlib
         ws_str = (workspace or "default").encode("utf-8")
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"queue:{self.agent_name}:{workspace_hash}:todo"
+        return f"queue:{self.exec_user}:{workspace_hash}:todo"
 
     def _executing_key(self, workspace: str) -> str:
         """Get Redis key for executing tasks set"""
         import hashlib
         ws_str = (workspace or "default").encode("utf-8")
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"executing:{self.agent_name}:{workspace_hash}"
+        return f"executing:{self.exec_user}:{workspace_hash}"
 
     def add_task(
         self,
@@ -99,7 +99,7 @@ class TaskQueue:
         alias: Optional[str] = None,
         task_id: Optional[str] = None,
         source_session_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        exec_user: Optional[str] = None,
         depends_on: Optional[list] = None,
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
@@ -111,8 +111,8 @@ class TaskQueue:
             source_session_id: Optional session ID from the source context (e.g., chat session).
                               If provided, task session_id will be {source_session_id}_{task_id}.
                               Otherwise, defaults to task_{task_id}.
-            agent_name: Optional agent name (CCR user) for task execution.
-                       If not provided, uses self.agent_name (the queue's default agent).
+            exec_user: Optional exec_user (CCR user) for task execution.
+                       If not provided, uses self.exec_user (the queue's default exec_user).
             response_url: Optional callback URL for task completion notification.
             callback_msg_id: Optional message ID to pass back in callback.
             callback_user: Optional user identifier for callback.
@@ -120,11 +120,11 @@ class TaskQueue:
         # Generate task_id first if not provided
         actual_task_id = str(task_id) if task_id else str(uuid.uuid4())[:8]
         
-        # Use provided agent_name or fallback to queue's default
-        effective_agent = agent_name or self.agent_name
+        # Use provided exec_user or fallback to queue's default
+        effective_exec_user = exec_user or self.exec_user
         
         # Generate session_id based on source_session_id
-        logger.info(f"add_task called with source_session_id={source_session_id!r}, task_id={actual_task_id}, agent_name={effective_agent}")
+        logger.info(f"add_task called with source_session_id={source_session_id!r}, task_id={actual_task_id}, exec_user={effective_exec_user}")
         if source_session_id:
             session_id = f"{source_session_id}_{actual_task_id}"
         else:
@@ -142,7 +142,7 @@ class TaskQueue:
             project_id=project_id,
             project_name=project_name,
             workspace=workspace,
-            agent_name=effective_agent,
+            exec_user=effective_exec_user,
             provider=normalized_provider,
             alias=alias_value,
             session_id=session_id,
@@ -438,7 +438,7 @@ class TaskQueue:
     def get_projects(self) -> List[dict]:
         """Get all projects with task counts and status"""
         # Find all project keys
-        project_keys = list(self._redis.scan_iter(f"tasks:{self.agent_name}:by_project:*"))
+        project_keys = list(self._redis.scan_iter(f"tasks:{self.exec_user}:by_project:*"))
         
         result = []
         for key in project_keys:
@@ -860,7 +860,7 @@ class TaskQueue:
             return None
         
         # Check all workspace queues
-        queue_keys = list(self._redis.scan_iter(f"queue:{self.agent_name}:*:todo"))
+        queue_keys = list(self._redis.scan_iter(f"queue:{self.exec_user}:*:todo"))
         for key in queue_keys:
             # Remove prefix to get actual key
             task_id = self._redis.lpop(key.replace(self._redis._prefix, ""))
@@ -916,7 +916,7 @@ class TaskQueue:
     
     def get_all_workspaces(self) -> List[str]:
         """Get all unique workspaces with tasks"""
-        workspace_keys = list(self._redis.scan_iter(f"tasks:{self.agent_name}:by_workspace:*"))
+        workspace_keys = list(self._redis.scan_iter(f"tasks:{self.exec_user}:by_workspace:*"))
         workspaces = []
         for key in workspace_keys:
             workspace_hash = key.split(":")[-1]

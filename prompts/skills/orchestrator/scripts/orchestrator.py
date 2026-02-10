@@ -17,14 +17,14 @@ import os
 
 # Default API URL, can be overridden by env var or arg
 API_URL = os.environ.get("NEXUS_API_URL", "http://localhost:8081/api/nexus/tasks")
-DEFAULT_AGENT = os.environ.get("DEFAULT_AGENT", "ubuntu")
+DEFAULT_EXEC_USER = os.environ.get("EXEC_USER", "ubuntu")
 
 def main():
     parser = argparse.ArgumentParser(description="Create tasks from a JSON plan via Nexus API")
     parser.add_argument("--plan", required=True, help="JSON string of the task plan")
     parser.add_argument("--api", default=API_URL, help="Task API URL")
     parser.add_argument("--project-id", default=None, help="Project ID to group tasks (e.g., session_id)")
-    parser.add_argument("--agent-name", default=DEFAULT_AGENT, help="Default agent name for tasks")
+    parser.add_argument("--exec-user", default=DEFAULT_EXEC_USER, help="Default exec user for tasks")
     args = parser.parse_args()
 
     try:
@@ -41,7 +41,7 @@ def main():
     id_map = {} # Maps plan_id -> real_task_id
 
     print(f"Orchestrating {len(tasks)} tasks via {args.api}...")
-    print(f"Default agent: {args.agent_name}")
+    print(f"Default exec_user: {args.exec_user}")
     if args.project_id:
         print(f"Project ID: {args.project_id}")
 
@@ -69,17 +69,17 @@ def main():
         # If not provided, use None to let executor use default workspace
         workspace = t.get("workspace")  # Can be None
         
-        # Get provider, alias, and agent from task, with defaults
+        # Get provider, alias, and exec_user from task, with defaults
         provider = t.get("provider")  # None means use system default
         alias = t.get("alias")
-        agent = t.get("agent") or args.agent_name  # Use task agent or default
+        exec_user = t.get("exec_user") or args.exec_user  # Use task exec_user or default
 
-        # Build API URL with agent_name query parameter
+        # Build API URL with exec_user query parameter
         api_url = args.api
         if "?" in api_url:
-            api_url = f"{api_url}&agent_name={agent}"
+            api_url = f"{api_url}&exec_user={exec_user}"
         else:
-            api_url = f"{api_url}?agent_name={agent}"
+            api_url = f"{api_url}?exec_user={exec_user}"
 
         payload = {
             "description": full_description,
@@ -98,8 +98,8 @@ def main():
         # Log task details
         provider_info = f" [provider={provider}]" if provider else ""
         alias_info = f" [alias={alias}]" if alias else ""
-        agent_info = f" [agent={agent}]"
-        print(f"\nCreating: {title}{provider_info}{alias_info}{agent_info}")
+        user_info = f" [exec_user={exec_user}]"
+        print(f"\nCreating: {title}{provider_info}{alias_info}{user_info}")
 
         # Send Request
         try:

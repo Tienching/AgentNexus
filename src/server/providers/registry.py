@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 
 class Executor(Protocol):
     """Protocol for command executors"""
-    async def execute(self, request_model, agent_name: str, output_format: str = "raw"):
+    async def execute(self, request_model, exec_user: str, output_format: str = "raw"):
         ...
 
 

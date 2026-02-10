@@ -84,7 +84,7 @@ class CodexExecutor(BaseExecutor):
             f"Starting Codex processing",
             extra={
                 "process_type": "codex_start",
-                "agent_name": context.agent_name,
+                "exec_user": context.exec_user,
                 "content_preview": context.content[:100] if len(context.content) > 100 else context.content,
                 "exec_dir": str(exec_dir),
             }
