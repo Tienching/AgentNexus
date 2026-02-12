@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""CCR (Claude Code Runner) Executor
+"""CLI Executor (formerly CCR)
 
-This executor runs the CCR/Claude CLI as a subprocess.
+This executor runs provider CLI tools as a subprocess.
 
 IMPORTANT: This module is part of agent_runtime and must NOT depend on
 claude_code_api or server layers. API-specific logic (like slash command 
@@ -34,49 +34,49 @@ DEBUG_STREAM_FILE = os.environ.get("DEBUG_STREAM_FILE", "/tmp/debug_stream.jsonl
 SlashCommandCallback = Callable[[str, Optional[str]], Awaitable[str]]
 
 
-class CCRExecutorConfig(ExecutorConfig):
-    """CCR-specific configuration."""
+class CLIExecutorConfig(ExecutorConfig):
+    """CLI executor configuration."""
     
     def __init__(
         self,
         timeout: float = 120.0,
         user_home_base: str = "/home",
-        ccr_command: str = "ccr",
-        agent_ccr_command_map: Optional[Dict[str, str]] = None,
+        cli_command: str = "claude",
+        agent_cli_command_map: Optional[Dict[str, str]] = None,
         **kwargs,
     ):
         super().__init__(timeout=timeout, user_home_base=user_home_base)
-        self.ccr_command = ccr_command
-        self.agent_ccr_command_map = agent_ccr_command_map or {}
+        self.cli_command = cli_command
+        self.agent_cli_command_map = agent_cli_command_map or {}
         self.extra.update(kwargs)
 
 
-class CCRExecutor(BaseExecutor):
-    """CCR command executor.
+class CLIExecutor(BaseExecutor):
+    """CLI command executor.
     
-    Runs Claude Code Runner CLI and yields stream output.
+    Runs provider CLI tools and yields stream output.
     """
     
     def __init__(
         self,
-        config: Optional[CCRExecutorConfig] = None,
+        config: Optional[CLIExecutorConfig] = None,
         slash_command_handler: Optional[SlashCommandCallback] = None,
         user_dir_manager: Optional[Any] = None,
     ):
-        """Initialize CCR executor.
+        """Initialize CLI executor.
         
         Args:
-            config: CCR configuration
+            config: CLI configuration
             slash_command_handler: Optional callback for handling slash commands
             user_dir_manager: Optional UserDirectoryManager instance
         """
-        super().__init__(config or CCRExecutorConfig())
+        super().__init__(config or CLIExecutorConfig())
         self._slash_command_handler = slash_command_handler
         self._user_dir_manager = user_dir_manager
     
     @property
-    def ccr_config(self) -> CCRExecutorConfig:
-        """Get CCR-specific config."""
+    def cli_config(self) -> CLIExecutorConfig:
+        """Get CLI executor config."""
         return self.config  # type: ignore
     
     async def execute(
@@ -84,7 +84,7 @@ class CCRExecutor(BaseExecutor):
         context: RequestContext,
         output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
-        """Execute CCR command and yield stream output.
+        """Execute CLI command and yield stream output.
         
         Args:
             context: Request context
@@ -153,9 +153,9 @@ class CCRExecutor(BaseExecutor):
         final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
         
         logger.info(
-            f"Starting CCR processing",
+            f"Starting CLI processing",
             extra={
-                "process_type": "ccr_start",
+                "process_type": "cli_start",
                 "api_user": context.user,
                 "exec_user": context.exec_user,
                 "content_preview": cleaned_content[:100] if len(cleaned_content) > 100 else cleaned_content,
@@ -175,13 +175,13 @@ class CCRExecutor(BaseExecutor):
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
             
             duration = time.time() - start_time
-            logger.info(f"CCR processing completed", extra={
-                "process_type": "ccr_complete",
+            logger.info(f"CLI processing completed", extra={
+                "process_type": "cli_complete",
                 "duration_ms": int(duration * 1000),
             })
             
         except asyncio.TimeoutError:
-            logger.error(f"CCR command timeout", extra={"timeout_seconds": self.config.timeout})
+            logger.error(f"CLI command timeout", extra={"timeout_seconds": self.config.timeout})
             try:
                 process.kill()
             except Exception:
@@ -200,39 +200,81 @@ class CCRExecutor(BaseExecutor):
                 yield json.dumps({"type": "error", "message": error_msg})
     
     def _build_command(self, context: RequestContext, use_continue: bool = True) -> List[str]:
-        """Build CCR command."""
+        """Build CLI command."""
         cleaned_content, model_param = self._parse_model_param(context.content)
         
-        ccr_command = self.ccr_config.agent_ccr_command_map.get(
-            context.exec_user, 
-            self.ccr_config.ccr_command
-        )
+        # Determine CLI command name: alias overrides the command map
+        cli_alias = (getattr(context, "alias", None) or "").strip().lower()
+        if cli_alias:
+            cli_command = cli_alias
+        else:
+            cli_command = self.cli_config.agent_cli_command_map.get(
+                context.exec_user, 
+                self.cli_config.cli_command
+            )
         
-        cmd = [ccr_command]
+        cmd = [cli_command]
         
-        if ccr_command == "ccr":
+        if cli_command == "ccr":
             cmd.append("code")
         
+        is_codex = cli_command in ("codex", "codex-internal")
+        is_gemini = cli_command in ("gemini", "gemini-internal")
+
         if cleaned_content.lower() == "/clear":
-            cmd.extend(["-p"])
             message = "你好"
         else:
+            # Provider-aware continue/resume logic:
+            # - codex/codex-internal: -c is --config (not continue), skip it here
+            # - gemini/gemini-internal: use --resume latest (not -c)
+            # - codebuddy / claude / claude-internal: use -c (continue)
+
             if use_continue:
-                cmd.extend(["-c", "-p"])
-            else:
-                cmd.extend(["-p"])
+                if is_codex:
+                    pass  # codex uses "resume --last" appended after prompt
+                elif is_gemini:
+                    cmd.extend(["--resume", "latest"])
+                else:
+                    cmd.extend(["-c"])
             message = cleaned_content
         
-        cmd.extend([
-            "--output-format", "stream-json",
-            "--include-partial-messages",
-            "--verbose",
-        ])
-        
-        if model_param:
-            cmd.extend(["--model", model_param])
-        
-        cmd.extend([message, "--dangerously-skip-permissions"])
+        # Provider-specific command assembly (same logic as server CLIExecutor)
+        is_claude = cli_command in ("claude", "claude-internal")
+        is_codebuddy = cli_command in ("codebuddy",)
+
+        if is_codex:
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend([message, "--dangerously-bypass-approvals-and-sandbox"])
+            if use_continue and cleaned_content.lower() != "/clear":
+                cmd.extend(["resume", "--last"])
+        elif is_gemini:
+            # Gemini: -p <prompt>, --output-format stream-json only
+            cmd.extend(["--output-format", "stream-json"])
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend(["-p", message])
+        elif is_claude or is_codebuddy:
+            # Claude/CodeBuddy: full flag set
+            cmd.extend([
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+            ])
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend(["-p", message, "--dangerously-skip-permissions"])
+        else:
+            # Unknown provider — fall back to Claude-style, log warning
+            logger.warning(f"Unknown provider '{cli_command}', using Claude-style CLI args")
+            cmd.extend([
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+            ])
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend(["-p", message, "--dangerously-skip-permissions"])
         
         return cmd
     

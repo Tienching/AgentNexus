@@ -1,1 +1,1 @@
-"""Tests package for Claude Code API"""
+"""Tests package for Virtual Human Agent"""

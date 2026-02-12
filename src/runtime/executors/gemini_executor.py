@@ -114,7 +114,12 @@ class GeminiExecutor(BaseExecutor):
         """Build Gemini CLI command."""
         cleaned_content, model_param = self._parse_model_param(context.content)
         
-        cmd = [self.gemini_config.gemini_command, "-p", cleaned_content, "--output-format", "stream-json"]
+        is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
+        
+        cmd = [self.gemini_config.gemini_command]
+        if is_chat_continue:
+            cmd.extend(["--resume", "latest"])
+        cmd.extend(["-p", cleaned_content, "--output-format", "stream-json"])
         if model_param:
             cmd.extend(["--model", model_param])
         return cmd

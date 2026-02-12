@@ -68,13 +68,13 @@ class TestProviderRouting:
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CCRExecutor.execute should not be used when provider=gemini")
+            raise AssertionError("CLIExecutor.execute should not be used when provider=gemini")
 
         with patch(
             "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-gem", "r-gem", provider="gemini")
@@ -92,7 +92,7 @@ class TestProviderRouting:
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CCRExecutor.execute should not be used when provider=gemini-internal")
+            raise AssertionError("CLIExecutor.execute should not be used when provider=gemini-internal")
 
         async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("CodexCLIExecutor.execute should not be used when provider=gemini-internal")
@@ -101,7 +101,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ), patch(
             "src.server.services.stream_handler.CodexCLIExecutor.execute",
@@ -125,7 +125,7 @@ class TestProviderRouting:
             })
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CCRExecutor.execute should not be used when provider=codex-internal")
+            raise AssertionError("CLIExecutor.execute should not be used when provider=codex-internal")
 
         async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             raise AssertionError("GeminiExecutor.execute should not be used when provider=codex-internal")
@@ -134,7 +134,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.CodexCLIExecutor.execute",
             new=codex_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ), patch(
             "src.server.services.stream_handler.GeminiExecutor.execute",
@@ -155,13 +155,13 @@ class TestProviderRouting:
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CCRExecutor.execute should not be used when provider=codebuddy")
+            raise AssertionError("CLIExecutor.execute should not be used when provider=codebuddy")
 
         with patch(
             "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cb", "r-cb", provider="codebuddy")
@@ -178,7 +178,7 @@ class TestProviderRouting:
             raise AssertionError("GeminiExecutor.execute should not be used by default")
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            # Claude adapter expects CCR stream_event shape
+            # Claude adapter expects CLI stream_event shape
             yield json.dumps(
                 {
                     "type": "stream_event",
@@ -195,7 +195,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cla", "r-cla", provider=None)
@@ -235,7 +235,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.CodexCLIExecutor.execute",
             new=codex_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cla-int", "r-cla-int", provider="claude-internal")
@@ -262,7 +262,7 @@ class TestProviderRouting:
             yield json.dumps({"type": "message", "role": "assistant", "content": "FromMeta"})
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CCRExecutor.execute should not be used when session meta provider=gemini")
+            raise AssertionError("CLIExecutor.execute should not be used when session meta provider=gemini")
 
         with patch(
             "src.server.providers.registry.get_session_storage",
@@ -271,7 +271,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CCRExecutor.execute",
+            "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-meta", "r-meta", provider=None)

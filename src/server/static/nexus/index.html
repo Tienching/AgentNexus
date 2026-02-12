@@ -50,11 +50,17 @@
                 </a>
                 <!-- Page Navigator -->
                 <div class="page-nav">
-                    <button class="page-nav-btn active" data-page="project" title="Project">
+                    <button class="page-nav-btn active" data-page="chat" title="Chat">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                         </svg>
-                        <span>Project</span>
+                        <span>Chat</span>
+                    </button>
+                    <button class="page-nav-btn" data-page="task" title="Task">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                        </svg>
+                        <span>Task</span>
                     </button>
                     <button class="page-nav-btn" data-page="config" title="Config">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -131,131 +137,83 @@
 
         <!-- Main Content -->
         <main class="main-content">
-            <!-- Project View (original layout) -->
-            <div id="projectView" class="page-view active">
+            <!-- Chat View (multi-pane chat interface) -->
+            <div id="chatView" class="page-view active">
                 <div id="layoutWrapper" class="layout-wrapper" data-mode="single">
-                <!-- Pane 0 (always visible) -->
-                <div class="pane" id="pane-0" data-pane-id="0">
-                    <div class="pane-header">
-                        <div class="pane-tabs" id="pane-0-tabs">
-                            <!-- Tabs will be rendered here -->
-                        </div>
-                        <div class="pane-actions">
-                            <div class="view-switcher" data-pane="0">
-                                <button class="view-btn active" data-view="chat" title="Chat View">
+                    <!-- Pane 0 (always visible) -->
+                    <div class="pane" id="pane-0" data-pane-id="0">
+                        <div class="pane-header">
+                            <div class="pane-tabs" id="pane-0-tabs">
+                                <!-- Tabs will be rendered here -->
+                            </div>
+                            <div class="pane-actions">
+                                <button class="tab-add" data-pane="0" title="Add tab">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                     </svg>
-                                    <span>Chat</span>
-                                </button>
-                                <button class="view-btn" data-view="task" title="Tasks View">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                    </svg>
-                                    <span>Task</span>
                                 </button>
                             </div>
-                            <button class="tab-add" data-pane="0" title="Add tab">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                            </button>
+                        </div>
+                        <div class="pane-content" id="pane-0-content">
+                            <!-- Content will be rendered here -->
                         </div>
                     </div>
-                    <div class="pane-content" id="pane-0-content">
-                        <!-- Content will be rendered here -->
-                    </div>
-                </div>
 
-                <!-- Pane 1 (for horizontal/vertical/quad) -->
-                <div class="pane" id="pane-1" data-pane-id="1" style="display:none;">
-                    <div class="pane-header">
-                        <div class="pane-tabs" id="pane-1-tabs"></div>
-                        <div class="pane-actions">
-                            <div class="view-switcher" data-pane="1">
-                                <button class="view-btn active" data-view="chat" title="Chat View">
+                    <!-- Pane 1 (for horizontal/vertical/quad) -->
+                    <div class="pane" id="pane-1" data-pane-id="1" style="display:none;">
+                        <div class="pane-header">
+                            <div class="pane-tabs" id="pane-1-tabs"></div>
+                            <div class="pane-actions">
+                                <button class="tab-add" data-pane="1" title="Add tab">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                     </svg>
-                                    <span>Chat</span>
-                                </button>
-                                <button class="view-btn" data-view="task" title="Tasks View">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                    </svg>
-                                    <span>Task</span>
                                 </button>
                             </div>
-                            <button class="tab-add" data-pane="1" title="Add tab">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                            </button>
                         </div>
+                        <div class="pane-content" id="pane-1-content"></div>
                     </div>
-                    <div class="pane-content" id="pane-1-content"></div>
-                </div>
 
-                <!-- Pane 2 (for quad) -->
-                <div class="pane" id="pane-2" data-pane-id="2" style="display:none;">
-                    <div class="pane-header">
-                        <div class="pane-tabs" id="pane-2-tabs"></div>
-                        <div class="pane-actions">
-                            <div class="view-switcher" data-pane="2">
-                                <button class="view-btn active" data-view="chat" title="Chat View">
+                    <!-- Pane 2 (for quad) -->
+                    <div class="pane" id="pane-2" data-pane-id="2" style="display:none;">
+                        <div class="pane-header">
+                            <div class="pane-tabs" id="pane-2-tabs"></div>
+                            <div class="pane-actions">
+                                <button class="tab-add" data-pane="2" title="Add tab">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                     </svg>
-                                    <span>Chat</span>
-                                </button>
-                                <button class="view-btn" data-view="task" title="Tasks View">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                    </svg>
-                                    <span>Task</span>
                                 </button>
                             </div>
-                            <button class="tab-add" data-pane="2" title="Add tab">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                            </button>
                         </div>
+                        <div class="pane-content" id="pane-2-content"></div>
                     </div>
-                    <div class="pane-content" id="pane-2-content"></div>
-                </div>
 
-                <!-- Pane 3 (for quad) -->
-                <div class="pane" id="pane-3" data-pane-id="3" style="display:none;">
-                    <div class="pane-header">
-                        <div class="pane-tabs" id="pane-3-tabs"></div>
-                        <div class="pane-actions">
-                            <div class="view-switcher" data-pane="3">
-                                <button class="view-btn active" data-view="chat" title="Chat View">
+                    <!-- Pane 3 (for quad) -->
+                    <div class="pane" id="pane-3" data-pane-id="3" style="display:none;">
+                        <div class="pane-header">
+                            <div class="pane-tabs" id="pane-3-tabs"></div>
+                            <div class="pane-actions">
+                                <button class="tab-add" data-pane="3" title="Add tab">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                     </svg>
-                                    <span>Chat</span>
-                                </button>
-                                <button class="view-btn" data-view="task" title="Tasks View">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                    </svg>
-                                    <span>Task</span>
                                 </button>
                             </div>
-                            <button class="tab-add" data-pane="3" title="Add tab">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                            </button>
                         </div>
+                        <div class="pane-content" id="pane-3-content"></div>
                     </div>
-                    <div class="pane-content" id="pane-3-content"></div>
                 </div>
-            </div>
-            </div><!-- End of projectView -->
+            </div><!-- End of chatView -->
 
+            <!-- Task View (standalone full-screen kanban) -->
+            <div id="taskView" class="page-view">
+                <div class="task-page-container" id="taskPageContainer">
+                    <!-- Task kanban will be rendered here -->
+                </div>
+            </div><!-- End of taskView -->
+
+            <!-- Config View -->
             <!-- Config View -->
             <div id="configView" class="page-view">
                 <div class="config-container">
@@ -279,6 +237,7 @@
                             </svg>
                             Skills
                         </button>
+
                     </div>
 
                     <!-- Config Content -->
@@ -322,6 +281,36 @@
                                 <!-- Alias List -->
                                 <div id="aliasListContainer" class="alias-list">
                                     <!-- Alias items will be rendered here -->
+                                </div>
+                            </div>
+
+                            <div class="config-section">
+                                <h3 class="config-section-title">Concurrency Limits</h3>
+                                <p class="config-section-desc">Control max parallel tasks globally or per provider/alias</p>
+
+                                <!-- Global Concurrency -->
+                                <div style="margin-bottom:16px;">
+                                    <label class="form-label">Global Max Concurrency</label>
+                                    <div style="display:flex; gap:8px; align-items:center;">
+                                        <input id="globalConcurrencyInput" type="number" class="form-input" placeholder="0 = unlimited" min="0" style="width:140px;">
+                                        <button id="setGlobalConcurrencyBtn" class="action-btn primary">Save</button>
+                                        <span id="globalConcurrencyDisplay" style="color:var(--text-secondary); font-size:13px;"></span>
+                                    </div>
+                                </div>
+
+                                <!-- Provider/Alias Concurrency -->
+                                <label class="form-label">Per Provider / Alias Concurrency</label>
+                                <div style="display:flex; gap:8px; align-items:center; margin-bottom:16px;">
+                                    <select id="providerConcurrencySelect" class="form-input form-select" style="flex:1;">
+                                        <!-- Options populated by JS from providers + aliases -->
+                                    </select>
+                                    <input id="providerConcurrencyLimit" type="number" class="form-input" placeholder="Limit" min="0" style="width:100px;">
+                                    <button id="setProviderConcurrencyBtn" class="action-btn primary">Set</button>
+                                </div>
+
+                                <!-- Provider Concurrency List -->
+                                <div id="providerConcurrencyList" class="concurrency-list">
+                                    <!-- Items rendered by JS -->
                                 </div>
                             </div>
                         </div>
@@ -393,6 +382,8 @@
                                 </div>
                             </div>
                         </div>
+
+
                     </div>
                 </div>
             </div><!-- End of configView -->
@@ -543,6 +534,6 @@
 
     <!-- Scripts -->
     <script src="js/api.js?v=22"></script>
-    <script src="js/app.js?v=23"></script>
+    <script src="js/app.js?v=24"></script>
 </body>
 </html>

@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Workspace queue manager for task execution
 
-Manages task queues per workspace with concurrency control.
+Manages task queues with two-layer concurrency control:
+1. Provider / Alias – per provider or alias limit.
+2. Global – overall max concurrent tasks.
 """
 
 from __future__ import annotations
@@ -20,31 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class WorkspaceState:
-    """State tracking for a single workspace"""
-    workspace: str
+class ProviderState:
+    """State tracking for a provider/alias concurrency."""
+    provider_key: str
     executing_tasks: Set[str] = field(default_factory=set)
-    max_concurrency: int = 1
-    
-    @property
-    def available_slots(self) -> int:
-        """Number of available execution slots"""
-        return max(0, self.max_concurrency - len(self.executing_tasks))
-    
+    max_concurrency: int = 0  # 0 = unlimited
+
     @property
     def is_available(self) -> bool:
-        """Check if workspace can accept more tasks"""
-        return self.available_slots > 0
+        if self.max_concurrency <= 0:
+            return True
+        return len(self.executing_tasks) < self.max_concurrency
 
 
 class WorkspaceQueueManager:
-    """Manages task queues across multiple workspaces
-    
-    Features:
-    - Per-workspace concurrency control
-    - Different workspaces can run in parallel
-    - Same workspace tasks run serially (by default)
-    - Configurable max concurrency per workspace
+    """Manages task queues with two-layer concurrency control.
+
+    Layer 1: **Provider / Alias** – per provider or alias limit.
+    Layer 2: **Global** – overall max concurrent tasks.
     """
     
     def __init__(
@@ -52,102 +47,114 @@ class WorkspaceQueueManager:
         task_queue: TaskQueue,
         config: Optional[ExecutorConfig] = None,
     ):
-        """Initialize workspace queue manager
-        
-        Args:
-            task_queue: TaskQueue instance for task operations
-            config: Executor configuration
-        """
         self._task_queue = task_queue
         self._config = config or ExecutorConfig()
-        self._workspaces: Dict[str, WorkspaceState] = {}
+        self._providers: Dict[str, ProviderState] = {}
+        self._global_executing: Set[str] = set()
         self._redis: RedisClient = get_redis_client()
         self._lock = asyncio.Lock()
         
-        logger.info(f"WorkspaceQueueManager initialized with default_max_concurrency={self._config.default_max_concurrency}")
+        logger.info(
+            f"WorkspaceQueueManager initialized: "
+            f"global_max_concurrency={self._config.global_max_concurrency}, "
+            f"provider_concurrency={self._config.provider_concurrency}"
+        )
     
-    def _get_workspace_key(self, workspace: Optional[str]) -> str:
-        """Normalize workspace to a consistent key"""
-        return workspace or "default"
-    
-    def _get_or_create_workspace(self, workspace: Optional[str]) -> WorkspaceState:
-        """Get or create workspace state"""
-        key = self._get_workspace_key(workspace)
-        if key not in self._workspaces:
-            max_concurrency = self._config.get_max_concurrency(workspace)
-            self._workspaces[key] = WorkspaceState(
-                workspace=key,
-                max_concurrency=max_concurrency,
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_provider_key(task: Task) -> str:
+        """Derive the concurrency key for a task: alias > provider > 'default'."""
+        alias = getattr(task, "alias", None)
+        if alias and isinstance(alias, str) and alias.strip():
+            return alias.strip().lower()
+        provider = getattr(task, "provider", None)
+        if provider and isinstance(provider, str) and provider.strip():
+            return provider.strip().lower()
+        return "default"
+
+    def _get_or_create_provider(self, provider_key: str) -> ProviderState:
+        if provider_key not in self._providers:
+            max_c = self._config.get_provider_max_concurrency(provider_key)
+            self._providers[provider_key] = ProviderState(
+                provider_key=provider_key,
+                max_concurrency=max_c,
             )
-            logger.debug(f"Created workspace state for '{key}' with max_concurrency={max_concurrency}")
-        return self._workspaces[key]
-    
-    async def can_execute_task(self, workspace: Optional[str] = None) -> bool:
-        """Check if a task can be executed in the given workspace"""
-        async with self._lock:
-            state = self._get_or_create_workspace(workspace)
-            return state.is_available
+        return self._providers[provider_key]
+
+    def _is_global_available(self) -> bool:
+        if self._config.global_max_concurrency <= 0:
+            return True
+        return len(self._global_executing) < self._config.global_max_concurrency
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
     
     async def acquire_slot(self, task: Task) -> bool:
-        """Try to acquire an execution slot for a task
-        
-        Returns:
-            True if slot acquired, False if workspace is at capacity
-        """
+        """Try to acquire an execution slot – checks both layers."""
         async with self._lock:
-            state = self._get_or_create_workspace(task.workspace)
-            
-            if not state.is_available:
-                logger.debug(f"Workspace '{state.workspace}' at capacity ({len(state.executing_tasks)}/{state.max_concurrency})")
+            # Layer 1: Provider / Alias
+            pkey = self._resolve_provider_key(task)
+            prov_state = self._get_or_create_provider(pkey)
+            if not prov_state.is_available:
+                logger.debug(f"Provider '{pkey}' at capacity ({len(prov_state.executing_tasks)}/{prov_state.max_concurrency})")
                 return False
-            
-            state.executing_tasks.add(task.id)
-            logger.info(f"Acquired slot for task {task.id} in workspace '{state.workspace}' ({len(state.executing_tasks)}/{state.max_concurrency})")
+
+            # Layer 2: Global
+            if not self._is_global_available():
+                logger.debug(f"Global at capacity ({len(self._global_executing)}/{self._config.global_max_concurrency})")
+                return False
+
+            # Both layers OK – acquire
+            prov_state.executing_tasks.add(task.id)
+            self._global_executing.add(task.id)
+
+            logger.info(
+                f"Acquired slot for task {task.id}: "
+                f"provider={pkey}({len(prov_state.executing_tasks)}/{prov_state.max_concurrency}), "
+                f"global={len(self._global_executing)}/{self._config.global_max_concurrency}"
+            )
             return True
     
     async def release_slot(self, task: Task) -> None:
-        """Release an execution slot for a task"""
         async with self._lock:
-            state = self._get_or_create_workspace(task.workspace)
-            state.executing_tasks.discard(task.id)
-            logger.info(f"Released slot for task {task.id} in workspace '{state.workspace}' ({len(state.executing_tasks)}/{state.max_concurrency})")
+            pkey = self._resolve_provider_key(task)
+            prov_state = self._get_or_create_provider(pkey)
+            prov_state.executing_tasks.discard(task.id)
+
+            self._global_executing.discard(task.id)
+
+            logger.info(f"Released slot for task {task.id} (provider={pkey})")
     
     async def get_next_executable_task(self) -> Optional[Task]:
-        """Get next task that can be executed
-        
-        Checks all workspaces and returns a task from one that has available capacity.
-        Also checks task dependencies - a task won't be returned if its dependencies
-        haven't completed (status != DONE).
-        
-        Returns:
-            Task to execute, or None if no tasks available
-        """
+        """Get next task that can be executed (checks both layers)."""
         async with self._lock:
-            # Get all TODO tasks
+            # Quick global check
+            if not self._is_global_available():
+                return None
+
             todo_tasks = self._task_queue.get_pending_tasks(limit=100)
             
             for task in todo_tasks:
-                # Check dependencies first
                 if not self._check_dependencies_satisfied(task):
                     logger.debug(f"Task {task.id} blocked by unsatisfied dependencies: {task.depends_on}")
                     continue
-                
-                state = self._get_or_create_workspace(task.workspace)
-                if state.is_available:
-                    # Found an executable task
-                    return task
+
+                # Layer 1: Provider / Alias
+                pkey = self._resolve_provider_key(task)
+                prov_state = self._get_or_create_provider(pkey)
+                if not prov_state.is_available:
+                    continue
+
+                return task
             
             return None
     
     def _check_dependencies_satisfied(self, task: Task) -> bool:
-        """Check if all task dependencies are satisfied (status == DONE)
-        
-        Args:
-            task: Task to check dependencies for
-            
-        Returns:
-            True if all dependencies are satisfied (or no dependencies), False otherwise
-        """
+        """Check if all task dependencies are satisfied (status == DONE)"""
         depends_on: List[str] = getattr(task, "depends_on", None) or []
         if not depends_on:
             return True
@@ -155,86 +162,78 @@ class WorkspaceQueueManager:
         for dep_task_id in depends_on:
             dep_task = self._task_queue.get_task(dep_task_id)
             if not dep_task:
-                # Dependency task not found - treat as unsatisfied
                 logger.warning(f"Dependency task {dep_task_id} not found for task {task.id}")
                 return False
             
             dep_status = dep_task.status if isinstance(dep_task.status, str) else dep_task.status.value
             if dep_status != TaskStatus.DONE.value:
-                # Dependency not completed
                 return False
         
         return True
     
-    async def get_available_workspaces(self) -> Dict[str, int]:
-        """Get workspaces with available slots
-        
-        Returns:
-            Dict mapping workspace to available slot count
-        """
-        async with self._lock:
-            result = {}
-            for key, state in self._workspaces.items():
-                if state.is_available:
-                    result[key] = state.available_slots
-            return result
-    
     async def get_status(self) -> Dict[str, Any]:
         """Get overall queue manager status"""
         async with self._lock:
-            workspaces_status = {}
-            total_executing = 0
-            total_capacity = 0
-            
-            for key, state in self._workspaces.items():
-                workspaces_status[key] = {
-                    "executing": len(state.executing_tasks),
-                    "max_concurrency": state.max_concurrency,
-                    "available_slots": state.available_slots,
-                    "executing_task_ids": list(state.executing_tasks),
+            providers_status = {}
+            for pkey, pstate in self._providers.items():
+                providers_status[pkey] = {
+                    "executing": len(pstate.executing_tasks),
+                    "max_concurrency": pstate.max_concurrency,
+                    "executing_task_ids": list(pstate.executing_tasks),
                 }
-                total_executing += len(state.executing_tasks)
-                total_capacity += state.max_concurrency
             
             return {
-                "total_workspaces": len(self._workspaces),
-                "total_executing": total_executing,
-                "total_capacity": total_capacity,
-                "workspaces": workspaces_status,
+                "total_executing": len(self._global_executing),
+                "global_max_concurrency": self._config.global_max_concurrency,
+                "providers": providers_status,
                 "config": {
-                    "default_max_concurrency": self._config.default_max_concurrency,
-                    "workspace_concurrency": dict(self._config.workspace_concurrency),
+                    "provider_concurrency": dict(self._config.provider_concurrency),
+                    "global_max_concurrency": self._config.global_max_concurrency,
                 },
             }
-    
-    def set_workspace_concurrency(self, workspace: str, max_concurrency: int) -> None:
-        """Set max concurrency for a specific workspace"""
-        self._config.workspace_concurrency[workspace] = max_concurrency
-        key = self._get_workspace_key(workspace)
-        if key in self._workspaces:
-            self._workspaces[key].max_concurrency = max_concurrency
-        logger.info(f"Set max_concurrency={max_concurrency} for workspace '{workspace}'")
+
+    def set_provider_concurrency(self, provider_key: str, max_concurrency: int) -> None:
+        """Set max concurrency for a provider/alias (runtime hot-reload)."""
+        provider_key = (provider_key or "").strip().lower()
+        if not provider_key:
+            return
+        if max_concurrency <= 0:
+            self._config.provider_concurrency.pop(provider_key, None)
+        else:
+            self._config.provider_concurrency[provider_key] = max_concurrency
+        if provider_key in self._providers:
+            self._providers[provider_key].max_concurrency = max_concurrency
+        logger.info(f"Set provider concurrency: {provider_key}={max_concurrency}")
+
+    def set_global_concurrency(self, max_concurrency: int) -> None:
+        """Set global max concurrency (runtime hot-reload). 0 = unlimited."""
+        self._config.global_max_concurrency = max(0, max_concurrency)
+        logger.info(f"Set global_max_concurrency={self._config.global_max_concurrency}")
     
     async def cleanup_stale_slots(self) -> int:
-        """Clean up slots for tasks that are no longer executing
-        
-        This handles cases where tasks completed but slots weren't properly released.
-        
-        Returns:
-            Number of slots cleaned up
-        """
+        """Clean up slots for tasks that are no longer executing"""
         async with self._lock:
             cleaned = 0
-            for state in self._workspaces.values():
-                stale_tasks = set()
-                for task_id in state.executing_tasks:
+
+            # Clean provider states
+            for pstate in self._providers.values():
+                stale = set()
+                for task_id in pstate.executing_tasks:
                     task = self._task_queue.get_task(task_id)
                     if not task or task.status not in (TaskStatus.DOING.value, TaskStatus.DOING):
-                        stale_tasks.add(task_id)
-                
-                for task_id in stale_tasks:
-                    state.executing_tasks.discard(task_id)
+                        stale.add(task_id)
+                for task_id in stale:
+                    pstate.executing_tasks.discard(task_id)
                     cleaned += 1
                     logger.warning(f"Cleaned up stale slot for task {task_id}")
+
+            # Clean global set
+            stale_global = set()
+            for task_id in self._global_executing:
+                task = self._task_queue.get_task(task_id)
+                if not task or task.status not in (TaskStatus.DOING.value, TaskStatus.DOING):
+                    stale_global.add(task_id)
+            for task_id in stale_global:
+                self._global_executing.discard(task_id)
             
             return cleaned

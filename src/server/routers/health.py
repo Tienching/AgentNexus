@@ -17,7 +17,7 @@ async def health_check():
     用于监控服务状态
     """
     return HealthResponse(
-        status="healthy", service="claude-code-api", version="0.1.0"
+        status="healthy", service="virtual-human-agent", version="0.1.0"
     )
 
 
@@ -33,7 +33,7 @@ async def get_metrics():
     
     return MetricsResponse(
         version="0.1.0",
-        ccr_command=settings.ccr_command,
+        cli_command=settings.cli_command,
         requests_total=metrics["requests_total"],
         requests_active=metrics["requests_active"],
     )
@@ -43,7 +43,7 @@ async def get_metrics():
 async def root():
     """根路径"""
     return {
-        "service": "Claude Code API",
+        "service": "Virtual Human Agent",
         "version": "0.1.0",
         "status": "running",
         "endpoints": {

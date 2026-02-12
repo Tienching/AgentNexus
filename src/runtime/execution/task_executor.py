@@ -300,7 +300,8 @@ class TaskExecutor:
             "queue": queue_status,
             "workspaces": workspace_status,
             "config": {
-                "default_max_concurrency": self._config.default_max_concurrency,
+                "global_max_concurrency": self._config.global_max_concurrency,
+                "provider_concurrency": dict(self._config.provider_concurrency),
                 "poll_interval": self._config.poll_interval,
                 "max_retries": self._config.max_retries,
                 "retry_delay": self._config.retry_delay,
@@ -308,9 +309,13 @@ class TaskExecutor:
             },
         }
     
-    def set_workspace_concurrency(self, workspace: str, max_concurrency: int) -> None:
-        """Set max concurrency for a specific workspace"""
-        self._workspace_manager.set_workspace_concurrency(workspace, max_concurrency)
+    def set_provider_concurrency(self, provider_key: str, max_concurrency: int) -> None:
+        """Set max concurrency for a provider/alias (hot-reload)."""
+        self._workspace_manager.set_provider_concurrency(provider_key, max_concurrency)
+
+    def set_global_concurrency(self, max_concurrency: int) -> None:
+        """Set global max concurrency (hot-reload). 0 = unlimited."""
+        self._workspace_manager.set_global_concurrency(max_concurrency)
 
 
 # Global executor instance

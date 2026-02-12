@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """Claude Provider
 
-Implements Claude Code (CCR) CLI execution and event transformation.
+Implements Claude CLI execution and event transformation.
 """
 
-from .executor import CCRExecutor
+from .executor import CLIExecutor
 from .adapter import AGUIAdapter
 
 __all__ = [
-    "CCRExecutor",
+    "CLIExecutor",
     "AGUIAdapter",
 ]

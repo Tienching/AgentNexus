@@ -111,7 +111,7 @@ class TaskQueue:
             source_session_id: Optional session ID from the source context (e.g., chat session).
                               If provided, task session_id will be {source_session_id}_{task_id}.
                               Otherwise, defaults to task_{task_id}.
-            exec_user: Optional exec_user (CCR user) for task execution.
+            exec_user: Optional exec_user for task execution.
                        If not provided, uses self.exec_user (the queue's default exec_user).
             response_url: Optional callback URL for task completion notification.
             callback_msg_id: Optional message ID to pass back in callback.
