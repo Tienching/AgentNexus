@@ -84,7 +84,8 @@ class ConfigCommand(BaseCommand):
         "defaults": {
             "title": "默认值配置",
             "keys": [
-                ("DEFAULT_PROVIDER", "默认 Provider (claude/gemini/codex/codebuddy)", "claude"),
+                ("DEFAULT_PROVIDER", "默认 Provider (claude/gemini/codex/codebuddy)", "codebuddy"),
+                ("DEFAULT_ALIAS", "默认 Alias (如 claude-internal/gemini-internal 等别名)", ""),
                 ("DEFAULT_EXEC_USER", "默认 Exec User 名称", ""),
             ],
         },

@@ -260,7 +260,7 @@ class SessionStorage:
 
         Args:
             session_id: Current user's session ID
-            provider: The task's provider (e.g., 'claude', 'gemini', 'codex-internal')
+            provider: The task's provider (e.g., 'claude', 'gemini', 'codex')
 
         Returns:
             True if successful

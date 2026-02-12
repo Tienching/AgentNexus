@@ -258,6 +258,7 @@ class CLIExecutor:
                 logger.warning(f"Failed to get workspace provider/alias: {e}")
 
         request_alias = getattr(request, "alias", None) or workspace_alias
+        logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}")
         cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias)
 
         # 检查当前用户
@@ -637,11 +638,8 @@ class CLIExecutor:
         provider = (agent_type or "").strip().lower()
         provider_command_map = {
             "claude": "claude",
-            "claude-internal": "claude-internal",
             "codex": "codex",
-            "codex-internal": "codex-internal",
             "gemini": "gemini",
-            "gemini-internal": "gemini-internal",
             "codebuddy": "codebuddy",
         }
 
@@ -659,8 +657,8 @@ class CLIExecutor:
         if cli_command == "ccr":
             cmd.append("code")
 
-        is_codex = provider in ("codex", "codex-internal")
-        is_gemini = provider in ("gemini", "gemini-internal")
+        is_codex = provider == "codex"
+        is_gemini = provider == "gemini"
 
         if cleaned_content.lower() == "/clear":
             message = "你好"
@@ -668,10 +666,10 @@ class CLIExecutor:
             message = cleaned_content
 
         # Provider-aware continue/resume logic:
-        # - codex/codex-internal: -c is --config (not continue), skip it here;
+        # - codex: -c is --config (not continue), skip it here;
         #   codex uses "resume --last" appended after prompt instead
-        # - gemini/gemini-internal: use --resume latest (not -c)
-        # - codebuddy / claude / claude-internal: use -c (continue)
+        # - gemini: use --resume latest (not -c)
+        # - codebuddy / claude: use -c (continue)
         if use_continue and cleaned_content.lower() != "/clear":
             if is_codex:
                 pass  # codex uses "resume --last" appended after prompt
@@ -683,23 +681,23 @@ class CLIExecutor:
         # Provider-specific command assembly.
         #
         # CLI semantics differ significantly:
-        #   - claude / claude-internal / codebuddy:
+        #   - claude / codebuddy:
         #       -p is a boolean flag (--print), prompt is positional
         #       flags: --output-format stream-json --include-partial-messages --verbose
         #       safety: --dangerously-skip-permissions
-        #   - gemini / gemini-internal:
+        #   - gemini:
         #       -p/--prompt is a [string] option — MUST be immediately followed by
         #       the prompt text (e.g. -p "hello").  Other flags must NOT sit between
         #       -p and the prompt.
         #       flags: --output-format stream-json (ONLY)
         #       no: --include-partial-messages, --verbose, --dangerously-skip-permissions
-        #   - codex / codex-internal:
+        #   - codex:
         #       -p is --profile (disabled), NOT print/prompt.
         #       prompt is positional [PROMPT].  No --output-format, --verbose, etc.
         #       safety: --dangerously-bypass-approvals-and-sandbox
 
-        is_claude = provider in ("claude", "claude-internal")
-        is_codebuddy = provider in ("codebuddy",)
+        is_claude = provider == "claude"
+        is_codebuddy = provider == "codebuddy"
 
         if is_codex:
             if model_param:

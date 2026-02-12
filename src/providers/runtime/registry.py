@@ -27,7 +27,7 @@ class ProviderRegistry:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._providers = {}
-            cls._instance._default_provider = "claude"
+            cls._instance._default_provider = "codebuddy"
         return cls._instance
     
     def register(self, name: str, provider: Provider) -> None:
@@ -77,11 +77,8 @@ class ProviderRegistry:
         names = set(self._providers.keys())
         names.update({
             "claude",
-            "claude-internal",
             "gemini",
-            "gemini-internal",
             "codex",
-            "codex-internal",
             "codebuddy",
         })
         return sorted(names)

@@ -286,11 +286,12 @@ class SlashCommandHandler:
 
         user_cfg = self._user_config_store.get_all(callback_user)
         default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+        default_alias = (getattr(self.config, "default_alias", None) or "").strip()
         default_exec_user = (getattr(self.config, "default_exec_user", None) or "").strip()
 
-        effective_provider = (user_cfg.get("provider") or "").strip() or default_provider or "claude"
+        effective_provider = (user_cfg.get("provider") or "").strip() or default_provider or "codebuddy"
         effective_exec_user = (user_cfg.get("exec_user") or "").strip() or default_exec_user or ""
-        effective_alias = (user_cfg.get("alias") or "").strip() or (user_cfg.get("provider") or "").strip() or effective_provider
+        effective_alias = (user_cfg.get("alias") or "").strip() or default_alias or (user_cfg.get("provider") or "").strip() or effective_provider
 
         def _display(val: str) -> str:
             return val if val else "未设置"
@@ -535,12 +536,13 @@ class SlashCommandHandler:
         user_alias = _safe_str(user_config.get("alias"))
 
         default_provider = _safe_str(getattr(self.config, "default_provider", None))
+        default_alias = _safe_str(getattr(self.config, "default_alias", None))
         default_exec_user = _safe_str(getattr(self.config, "default_exec_user", None))
         effective_exec_user = _safe_str(exec_user) or user_exec_user or default_exec_user or None
 
         # Resolve alias -> provider mapping.
-        # Priority: explicit -l > user config alias
-        effective_alias = _safe_str(alias) or user_alias or None
+        # Priority: explicit -l > user config alias > default_alias
+        effective_alias = _safe_str(alias) or user_alias or default_alias or None
         explicit_provider = _safe_str(provider).lower()
 
         from src.runtime.stores.alias_registry import get_alias_registry
@@ -563,7 +565,7 @@ class SlashCommandHandler:
                     f"```\n/alias -r {effective_alias} <provider>\n```"
                 )
         else:
-            effective_provider = explicit_provider or user_provider or default_provider or "claude"
+            effective_provider = explicit_provider or user_provider or default_provider or "codebuddy"
 
         # Create task (workspace for execution)
         logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, exec_user={effective_exec_user!r}")
@@ -1476,7 +1478,7 @@ class SlashCommandHandler:
 
                     # Store the task's provider so CLI executor uses the correct
                     # resume mechanism (e.g., gemini -> --resume latest, codex -> resume --last)
-                    task_provider = getattr(task, "provider", None) or "claude"
+                    task_provider = getattr(task, "provider", None) or "codebuddy"
                     storage.set_workspace_provider(current_session_id, task_provider)
 
                     # Store the task's original alias so CLI executor uses the correct
