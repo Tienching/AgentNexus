@@ -37,6 +37,8 @@ class StreamOrchestrator:
         archiver: Any,
         initial_messages: list[dict[str, Any]],
         exec_user: str,
+        handoff_pending_target: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Generate AG-UI SSE stream.
 
@@ -49,6 +51,7 @@ class StreamOrchestrator:
         """
 
         event_count = 0
+        summary_text_parts = [] if handoff_pending_target else None
         try:
             await archiver.on_run_started(initial_messages)
 
@@ -65,6 +68,17 @@ class StreamOrchestrator:
                     event_data = json.loads(line)
                 except Exception:
                     continue
+
+                # Collect text for handoff summary from raw events
+                if summary_text_parts is not None:
+                    try:
+                        event = event_data.get("event", {})
+                        if event_data.get("type") == "stream_event" and event.get("type") == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                summary_text_parts.append(delta.get("text", ""))
+                    except Exception:
+                        pass
 
                 try:
                     converted = adapter.convert(event_data)
@@ -90,6 +104,25 @@ class StreamOrchestrator:
             except Exception:
                 pass
             yield adapter.create_error_event(str(e))
+        finally:
+            # Store summary as handoff context for next message
+            if handoff_pending_target and summary_text_parts and session_id:
+                summary_text = "".join(summary_text_parts).strip()
+                if summary_text:
+                    try:
+                        from ..stores.session_storage import get_session_storage
+                        storage = get_session_storage()
+                        storage.set_handoff_context(
+                            session_id,
+                            summary_text,
+                            handoff_pending_target,
+                        )
+                        logger.info(
+                            f"Stored handoff summary ({len(summary_text)} chars) for next switch",
+                            extra={"session_id": session_id, "target": handoff_pending_target},
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to store handoff summary: {e}")
 
     def _schedule_archive_converted(self, converted_sse: str, archiver: Any) -> None:
         for payload in self._iter_agui_payloads(converted_sse):
