@@ -3966,6 +3966,14 @@ class NexusApp {
 
         // Bind global events
         this.bindEvents();
+
+        // Trigger initial rendering for the current page (after refresh)
+        const currentPage = this.pageManager.currentPage;
+        if (currentPage === 'task' && this.taskView) {
+            this.taskView.renderFullPage();
+        } else if (currentPage === 'config' && this.configView) {
+            this.configView.refresh();
+        }
     }
 
     async loadAgents() {
