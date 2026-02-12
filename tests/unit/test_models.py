@@ -152,12 +152,12 @@ class TestHealthResponse:
         """测试有效的健康检查响应"""
         data = {
             "status": "healthy",
-            "service": "claude-code-api",
+            "service": "virtual-human-agent",
             "version": "0.1.0",
         }
         response = HealthResponse(**data)
         assert response.status == "healthy"
-        assert response.service == "claude-code-api"
+        assert response.service == "virtual-human-agent"
         assert response.version == "0.1.0"
 
 
@@ -168,13 +168,13 @@ class TestMetricsResponse:
         """测试有效的指标响应"""
         data = {
             "version": "0.1.0",
-            "ccr_command": "ccr",
+            "cli_command": "ccr",
             "requests_total": 100,
             "requests_active": 5,
         }
         response = MetricsResponse(**data)
         assert response.version == "0.1.0"
-        assert response.ccr_command == "ccr"
+        assert response.cli_command == "ccr"
         assert response.requests_total == 100
         assert response.requests_active == 5
 
@@ -182,7 +182,7 @@ class TestMetricsResponse:
         """测试默认值的指标响应"""
         data = {
             "version": "0.1.0",
-            "ccr_command": "ccr",
+            "cli_command": "ccr",
         }
         response = MetricsResponse(**data)
         assert response.requests_total == 0

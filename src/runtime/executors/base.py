@@ -98,7 +98,7 @@ class BaseExecutor(ABC):
     def resolve_exec_dir(self, context: RequestContext) -> Path:
         """Resolve the execution directory.
         
-        Logic mirrors CCR behavior:
+        Logic mirrors CLIExecutor behavior:
         - If cwd_mode="inplace" and cwd is set, use that directly
         - Otherwise, use session-based directory under user home
         """

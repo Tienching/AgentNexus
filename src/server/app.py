@@ -45,14 +45,14 @@ async def task_handler(task: Task) -> Optional[str]:
     返回 None 表示成功，返回字符串表示失败原因。
 
     关键：为了让 `/nexus/` 的 Task 详情能像 Chat 一样看到对话，
-    这里会把 CCR 的 stream-json 输出转换成 AG-UI 事件并归档到 Redis 会话存储。
+    这里会把 CLI 的 stream-json 输出转换成 AG-UI 事件并归档到 Redis 会话存储。
     """
     import asyncio
     import uuid
 
     from .adapters import ProtocolType, get_router
     from .models import RequestModel
-    from .services import CCRExecutor, get_session_storage
+    from .services import CLIExecutor, get_session_storage
     from .services.stream_archiver import create_archiver
     from src.providers.gemini import GeminiExecutor
     from src.providers.codex import CodexCLIExecutor
@@ -79,7 +79,7 @@ async def task_handler(task: Task) -> Optional[str]:
     elif provider in ("codex", "codex-internal"):
         executor = CodexCLIExecutor()
     else:
-        executor = CCRExecutor(config=settings)
+        executor = CLIExecutor(config=settings)
 
     # Determine the user prompt for this run.
     ctx = getattr(task, "context", None) or {}
@@ -95,22 +95,30 @@ async def task_handler(task: Task) -> Optional[str]:
     
     user_prompt = (ctx.get("next_user_message") or task.description or "").strip()
 
+    # Resolve alias: task.alias if set, otherwise fallback to provider name
+    alias_value = (getattr(task, "alias", None) or provider)
+
     # 构建请求模型
     request = RequestModel(
         content=user_prompt,
         user=task.project_id or "task_executor",  # 使用 project_id 作为用户标识
         session_id=session_id,
         msg_id=run_id,
-        # If task carries an execution workspace, run CCR in that directory.
+        # If task carries an execution workspace, run CLI executor in that directory.
         cwd=task.workspace or "",
         # 传递 cwd_mode，用于控制 Claude Code 是否使用 -c (continue) 选项
         cwd_mode=ctx.get("cwd_mode", ""),
         # 传递 run_kind，用于区分首次执行和续聊
         run_kind=ctx.get("next_run_kind", ""),
+        # Pass provider so CLIExecutor._build_command() uses the correct CLI
+        # (e.g., "codebuddy" instead of defaulting to "claude")
+        provider=provider,
+        # Pass alias so _build_command() uses it as the actual CLI command name
+        # (e.g., "claude-internal" instead of "claude")
+        alias=alias_value,
     )
 
     # 归档器（落 Redis，供 Nexus UI 查询）
-    alias_value = (getattr(task, "alias", None) or provider)
     archiver = create_archiver(
         thread_id=session_id,
         run_id=run_id,
@@ -281,11 +289,11 @@ async def lifespan(app: FastAPI):
     )
     logger = get_logger(__name__)
     logger.info(
-        f"Starting Claude Code API v{app.version} "
+        f"Starting Virtual Human Agent v{app.version} "
         f"on {settings.api_host}:{settings.api_port}"
     )
     logger.info(f"Environment: {settings.environment}")
-    logger.info(f"CCR command: {settings.ccr_command}")
+    logger.info(f"CLI command: {settings.cli_command}")
     
     # 启动任务执行器
     executor = None
@@ -298,9 +306,14 @@ async def lifespan(app: FastAPI):
             # 初始化任务队列
             _task_queue = TaskQueue(exec_user=exec_user)
 
-            # 创建执行器配置
+            # 创建执行器配置（从 Redis 加载并发限制）
+            from src.runtime.stores.concurrency_config import get_concurrency_config_store
+            concurrency_store = get_concurrency_config_store()
+            concurrency_cfg = concurrency_store.get_all()
+
             executor_config = ExecutorConfig(
-                default_max_concurrency=settings.executor_default_max_concurrency,
+                global_max_concurrency=concurrency_cfg.get("global_max_concurrency", 0) or settings.executor_default_max_concurrency,
+                provider_concurrency=concurrency_cfg.get("provider_concurrency", {}),
                 poll_interval=settings.executor_poll_interval,
                 max_retries=settings.executor_max_retries,
                 retry_delay=settings.executor_retry_delay,
@@ -348,13 +361,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error stopping task executor: {e}")
     
-    logger.info("Shutting down Claude Code API")
+    logger.info("Shutting down Virtual Human Agent")
 
 
 # 创建FastAPI应用
 app = FastAPI(
-    title="Claude Code API",
-    description="Stream API wrapper for ccr code CLI",
+    title="Virtual Human Agent",
+    description="Multi-provider CLI wrapper with AG-UI SSE streaming",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -14,7 +14,7 @@ class TestAPIEndpoints:
         response = await client.get("/")
         assert response.status_code == 200
         data = response.json()
-        assert data["service"] == "Claude Code API"
+        assert data["service"] == "Virtual Human Agent"
         assert "version" in data
         assert "endpoints" in data
 
@@ -25,7 +25,7 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert data["service"] == "claude-code-api"
+        assert data["service"] == "virtual-human-agent"
         assert "version" in data
 
     @pytest.mark.asyncio
@@ -35,7 +35,7 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert "version" in data
-        assert "ccr_command" in data
+        assert "cli_command" in data
         assert "requests_total" in data
         assert "requests_active" in data
 
@@ -101,7 +101,7 @@ class TestAPIEndpoints:
 
     @pytest.mark.asyncio
     async def test_chat_stream_with_different_commands(self, client: AsyncClient):
-        """测试不同CCR命令的聊天流"""
+        """测试不同CLI命令的聊天流"""
         minimal_request = {
             "user": "test_user",
             "content": "hi"

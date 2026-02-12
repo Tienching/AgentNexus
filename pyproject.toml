@@ -1,7 +1,7 @@
 [project]
-name = "claude-code-api"
+name = "virtual-human-agent"
 version = "0.1.0"
-description = "Stream API wrapper for ccr code CLI"
+description = "Virtual Human Agent - Multi-provider CLI wrapper with AG-UI SSE streaming"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

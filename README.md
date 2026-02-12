@@ -100,8 +100,8 @@ cp .env.example .env
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `CCR_COMMAND` | `claude` | Claude CLI 命令 |
-| `CCR_TIMEOUT` | `120` | Claude 超时(秒) |
+| `CLI_COMMAND` | `claude` | CLI 执行器默认命令 |
+| `CLI_TIMEOUT` | `120` | CLI 执行器超时(秒) |
 | `GEMINI_COMMAND` | `gemini` | Gemini CLI 命令 |
 
 ### Channels 配置（消息渠道）

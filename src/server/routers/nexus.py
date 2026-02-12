@@ -1218,7 +1218,7 @@ async def stream_task_agui_messages(
 ):
     """以 SSE 方式流式输出任务的 AG-UI 事件（参考 Chat 的 AGUI SSE）。
 
-    说明：Task 在后台跑，浏览器拿不到 CCR 原始 SSE。
+    说明：Task 在后台跑，浏览器拿不到 CLI 原始 SSE。
     我们在任务执行时把"转换后的 AG-UI 事件"写入 Redis 的事件日志，
     这里再把它们按顺序 SSE 推给前端，实现像 Chat 一样的流式回放。
 
@@ -1280,3 +1280,94 @@ async def stream_task_agui_messages(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ============ Concurrency Config API ============
+
+class ConcurrencyConfigResponse(BaseModel):
+    global_max_concurrency: int = 0
+    provider_concurrency: Dict[str, int] = Field(default_factory=dict)
+
+
+class SetProviderConcurrencyRequest(BaseModel):
+    name: str = Field(..., description="Provider or alias name")
+    limit: int = Field(..., ge=0, description="Max concurrency (0 = remove limit)")
+
+
+class SetGlobalConcurrencyRequest(BaseModel):
+    limit: int = Field(..., ge=0, description="Global max concurrency (0 = unlimited)")
+
+
+@router.get("/concurrency", response_model=ConcurrencyConfigResponse)
+async def get_concurrency_config():
+    """Get the current concurrency configuration."""
+    from src.runtime.stores.concurrency_config import get_concurrency_config_store
+    store = get_concurrency_config_store()
+    cfg = store.get_all()
+    return ConcurrencyConfigResponse(**cfg)
+
+
+@router.post("/concurrency/provider", response_model=SuccessResponse)
+async def set_provider_concurrency(request: SetProviderConcurrencyRequest):
+    """Set max concurrency for a provider or alias."""
+    from src.runtime.stores.concurrency_config import get_concurrency_config_store
+    from src.runtime.execution.task_executor import get_executor
+
+    store = get_concurrency_config_store()
+    name = (request.name or "").strip().lower()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    try:
+        ok = store.set_provider_concurrency(name, request.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to set provider concurrency")
+
+    # Hot-reload
+    executor = get_executor()
+    if executor:
+        executor.set_provider_concurrency(name, request.limit)
+
+    return SuccessResponse(message=f"Provider '{name}' concurrency set to {request.limit}")
+
+
+@router.delete("/concurrency/provider/{name}", response_model=SuccessResponse)
+async def remove_provider_concurrency(name: str):
+    """Remove concurrency limit for a provider or alias."""
+    from src.runtime.stores.concurrency_config import get_concurrency_config_store
+    from src.runtime.execution.task_executor import get_executor
+
+    store = get_concurrency_config_store()
+    name = (name or "").strip().lower()
+    store.remove_provider_concurrency(name)
+
+    executor = get_executor()
+    if executor:
+        executor.set_provider_concurrency(name, 0)
+
+    return SuccessResponse(message=f"Provider '{name}' concurrency limit removed")
+
+
+@router.post("/concurrency/global", response_model=SuccessResponse)
+async def set_global_concurrency(request: SetGlobalConcurrencyRequest):
+    """Set global max concurrency (0 = unlimited)."""
+    from src.runtime.stores.concurrency_config import get_concurrency_config_store
+    from src.runtime.execution.task_executor import get_executor
+
+    store = get_concurrency_config_store()
+    try:
+        ok = store.set_global_concurrency(request.limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to set global concurrency")
+
+    executor = get_executor()
+    if executor:
+        executor.set_global_concurrency(request.limit)
+
+    return SuccessResponse(message=f"Global concurrency set to {request.limit}")

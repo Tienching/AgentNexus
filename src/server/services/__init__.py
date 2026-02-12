@@ -5,7 +5,7 @@ Core implementations live in `src.runtime`; this module provides
 API-layer adapters and factory functions with the correct Redis/config bindings.
 """
 
-from .ccr_executor import CCRExecutor
+from .cli_executor import CLIExecutor
 from .stream_handler import StreamHandler
 from .user_directory import UserDirectoryManager
 from .callback_handler import CallbackHandler
@@ -36,10 +36,10 @@ from src.runtime.execution.task_executor import (
     set_executor,
     create_and_start_executor,
 )
-from src.runtime.execution.workspace_queue import WorkspaceQueueManager, WorkspaceState
+from src.runtime.execution.workspace_queue import WorkspaceQueueManager
 
 __all__ = [
-    "CCRExecutor",
+    "CLIExecutor",
     "StreamHandler",
     "UserDirectoryManager",
     "CallbackHandler",
@@ -52,7 +52,7 @@ __all__ = [
     "RedisClient",
     "get_redis_client",
     "WorkspaceQueueManager",
-    "WorkspaceState",
+
     "TaskExecutor",
     "ExecutorState",
     "TaskHandler",

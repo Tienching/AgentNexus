@@ -44,7 +44,7 @@ class CodexExecutorConfig(ExecutorConfig):
 class CodexExecutor(BaseExecutor):
     """Codex CLI executor via MCP JSON-RPC.
     
-    Unlike CCR/Gemini executors that use command-line streaming,
+    Unlike CLI/Gemini executors that use command-line streaming,
     Codex uses MCP protocol for bidirectional communication.
     """
     

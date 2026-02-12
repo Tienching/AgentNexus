@@ -109,7 +109,7 @@ INFER_SUBCMD_FROM_OPTIONS: Dict[str, Dict[str, str]] = {
     "report": {"t": "task", "p": "project", "l": "list"},
     "trash": {"p": "restore", "e": "empty"},
     "chat": {"c": "continue"},
-    "config": {"s": "set", "r": "reset"},
+    "config": {"s": "set", "r": "reset", "c": "concurrency"},
 }
 
 
@@ -238,6 +238,11 @@ SPECS: List[CommandSpec] = [
         cmd="config",
         subcmd="reset",
         options=(OptionDef(short="r", long="reset", type="boolean", required=False, default=True),),
+    ),
+    CommandSpec(
+        cmd="config",
+        subcmd="concurrency",
+        options=(OptionDef(short="c", long="concurrency", type="boolean", required=False, default=True),),
     ),
     # exit
     CommandSpec(cmd="exit", subcmd="now"),

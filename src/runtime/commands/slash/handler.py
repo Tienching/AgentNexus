@@ -26,6 +26,7 @@ from ...stores.session_storage import get_session_storage
 from ...models.session import StoredMessage
 from ...stores.task_storage import TaskQueue
 from ...stores.user_config import UserConfigStore
+from ...stores.concurrency_config import get_concurrency_config_store
 from .worktree import (
     NotGitRepoError,
     WorktreeDirConflictError,
@@ -230,6 +231,8 @@ class SlashCommandHandler:
                 return self._handle_config_set(args=parsed.args, callback_user=callback_user)
             if parsed.cmd == "config" and parsed.subcmd == "reset":
                 return self._handle_config_reset(callback_user=callback_user)
+            if parsed.cmd == "config" and parsed.subcmd == "concurrency":
+                return self._handle_config_concurrency(args=parsed.args)
 
             if parsed.cmd == "exit":
                 return self._handle_exit_impl(current_session_id=source_session_id)
@@ -298,7 +301,8 @@ class SlashCommandHandler:
         response += f"| Provider | {_display(user_cfg.get('provider') or '')} | {effective_provider} |\n"
         response += f"| Exec User | {_display(user_cfg.get('exec_user') or '')} | {_display(effective_exec_user)} |\n"
         response += f"| Alias | {_display(user_cfg.get('alias') or '')} | {effective_alias} |\n"
-        response += "\n**设置示例：** `/config -s provider claude`"
+        response += "\n**设置示例：** `/config -s provider claude`\n"
+        response += "\n**并发配置：** `/config -c` 查看并发限制"
         return response
 
     def _handle_config_set(self, args: list, callback_user: Optional[str]) -> str:
@@ -332,6 +336,111 @@ class SlashCommandHandler:
             return "## ❌ 重置失败\n\n请稍后重试。"
         return "## ✅ 已重置\n\n用户配置已清空。"
 
+    def _handle_config_concurrency(self, args: list) -> str:
+        """Handle ``/config -c [show | set <key> <value> | reset <key>]``.
+
+        Sub-actions (positional args):
+            (empty) / show     – display current concurrency configuration.
+            set global <N>     – set global max concurrency (0 = unlimited).
+            set <alias> <N>    – set per-provider/alias max concurrency.
+            reset global       – remove global concurrency limit.
+            reset <alias>      – remove per-provider/alias limit.
+        """
+        store = get_concurrency_config_store()
+        action = (args[0] if args else "show").strip().lower()
+
+        # ---- show ----
+        if action in ("show", ""):
+            cfg = store.get_all()
+            global_val = cfg.get("global_max_concurrency", 0)
+            provider_map = cfg.get("provider_concurrency", {})
+
+            response = "## ⚙️ 并发配置\n\n"
+            response += f"**全局最大并发** (global): `{global_val if global_val else '无限制'}`\n\n"
+
+            if provider_map:
+                response += "**Provider / Alias 并发限制：**\n\n"
+                response += "| Name | Max Concurrency |\n|---|---|\n"
+                for name, limit in sorted(provider_map.items()):
+                    response += f"| {name} | {limit} |\n"
+            else:
+                response += "_暂无 Provider/Alias 级别的并发限制。_\n"
+
+            response += "\n**设置示例：**\n"
+            response += "- `/config -c set global 10` — 设置全局最大并发为 10\n"
+            response += "- `/config -c set claude 3` — 设置 claude 的最大并发为 3\n"
+            response += "- `/config -c reset claude` — 移除 claude 的并发限制\n"
+
+            # Hot-reload executor hint
+            response += "\n_设置后立即生效。_"
+            return response
+
+        # ---- set ----
+        if action == "set":
+            if len(args) < 3:
+                return "## ❌ 缺少参数\n\n**Usage:** `/config -c set <name|global> <number>`"
+            key = args[1].strip().lower()
+            try:
+                value = int(args[2])
+            except (ValueError, TypeError):
+                return f"## ❌ 无效数值\n\n`{args[2]}` 不是有效的整数。"
+
+            if value < 0:
+                return "## ❌ 无效数值\n\n并发数必须 >= 0（0 表示无限制）。"
+
+            try:
+                if key == "global":
+                    ok = store.set_global_concurrency(value)
+                else:
+                    ok = store.set_provider_concurrency(key, value)
+            except ValueError as e:
+                return f"## ❌ 设置失败\n\n{e}"
+
+            if not ok:
+                return "## ❌ 设置失败\n\n请稍后重试。"
+
+            # Hot-reload into running executor
+            self._apply_concurrency_to_executor(key, value)
+
+            label = "全局" if key == "global" else key
+            desc = str(value) if value > 0 else "无限制"
+            return f"## ✅ 已更新\n\n`{label}` 最大并发已设置为 `{desc}`。"
+
+        # ---- reset ----
+        if action == "reset":
+            if len(args) < 2:
+                return "## ❌ 缺少参数\n\n**Usage:** `/config -c reset <name|global>`"
+            key = args[1].strip().lower()
+            if key == "global":
+                ok = store.set_global_concurrency(0)
+            else:
+                ok = store.remove_provider_concurrency(key)
+            if not ok:
+                return "## ❌ 重置失败\n\n请稍后重试。"
+            self._apply_concurrency_to_executor(key, 0)
+            label = "全局" if key == "global" else key
+            return f"## ✅ 已重置\n\n`{label}` 并发限制已移除。"
+
+        return (
+            "## ❌ 未知操作\n\n"
+            "支持的操作: `show`, `set`, `reset`。\n\n"
+            "**示例:** `/config -c set claude 3`"
+        )
+
+    @staticmethod
+    def _apply_concurrency_to_executor(key: str, value: int) -> None:
+        """Hot-reload concurrency setting into the running executor."""
+        try:
+            from ...execution.task_executor import get_executor
+            executor = get_executor()
+            if executor:
+                if key == "global":
+                    executor.set_global_concurrency(value)
+                else:
+                    executor.set_provider_concurrency(key, value)
+        except Exception as e:
+            logger.warning(f"Failed to hot-reload concurrency to executor: {e}")
+
     def _handle_task_create(
         self,
         description: str,
@@ -351,7 +460,7 @@ class SlashCommandHandler:
         Args:
             source_session_id: Session ID from the source context.
                               Task session_id will be {source_session_id}_{task_id}.
-            exec_user: Optional exec_user (CCR user) for task execution.
+            exec_user: Optional exec_user (CLI executor user) for task execution.
                        If not provided, uses the default exec_user from task queue.
             response_url: Optional callback URL for task completion notification.
             callback_msg_id: Optional message ID to pass back in callback.
@@ -426,10 +535,35 @@ class SlashCommandHandler:
         user_alias = _safe_str(user_config.get("alias"))
 
         default_provider = _safe_str(getattr(self.config, "default_provider", None))
-        effective_provider = _safe_str(provider).lower() or user_provider or default_provider or "claude"
         default_exec_user = _safe_str(getattr(self.config, "default_exec_user", None))
         effective_exec_user = _safe_str(exec_user) or user_exec_user or default_exec_user or None
+
+        # Resolve alias -> provider mapping.
+        # Priority: explicit -l > user config alias
         effective_alias = _safe_str(alias) or user_alias or None
+        explicit_provider = _safe_str(provider).lower()
+
+        from src.runtime.stores.alias_registry import get_alias_registry
+        alias_registry = get_alias_registry()
+
+        if effective_alias:
+            resolved = alias_registry.resolve(effective_alias)
+            if resolved:
+                # Alias is valid.  Use resolved provider unless explicit -r overrides.
+                effective_provider = explicit_provider or resolved
+            else:
+                # Unknown alias — show all registered aliases for reference.
+                all_aliases = alias_registry.list_all()
+                alias_list = ", ".join(f"`{a}`" for a in sorted(all_aliases.keys()))
+                return (
+                    f"## ❌ 未知别名\n\n"
+                    f"别名 `{effective_alias}` 未注册。\n\n"
+                    f"**可用别名**: {alias_list}\n\n"
+                    f"请使用已注册的别名，或先注册：\n"
+                    f"```\n/alias -r {effective_alias} <provider>\n```"
+                )
+        else:
+            effective_provider = explicit_provider or user_provider or default_provider or "claude"
 
         # Create task (workspace for execution)
         logger.info(f"_handle_task_create: source_session_id={source_session_id!r}, exec_user={effective_exec_user!r}")
@@ -1332,7 +1466,26 @@ class SlashCommandHandler:
                     # Also set target_session_id so messages get archived to task's session
                     if found_session_id:
                         storage.set_target_session_id(current_session_id, found_session_id)
-                    response += f"\n(Context will be restored via -c flag)"
+
+                        # Import task session history into current session for context continuity.
+                        # This ensures:
+                        # 1. Web UI can display the full conversation history
+                        # 2. If Claude CLI's -c cannot restore (e.g., different user, cleaned
+                        #    ~/.claude), the history is still available in Redis
+                        self._import_history(found_session_id, current_session_id)
+
+                    # Store the task's provider so CLI executor uses the correct
+                    # resume mechanism (e.g., gemini -> --resume latest, codex -> resume --last)
+                    task_provider = getattr(task, "provider", None) or "claude"
+                    storage.set_workspace_provider(current_session_id, task_provider)
+
+                    # Store the task's original alias so CLI executor uses the correct
+                    # CLI command (e.g., 'gemini-internal' instead of 'gemini')
+                    task_alias = getattr(task, "alias", None)
+                    if task_alias:
+                        storage.set_workspace_alias(current_session_id, task_alias)
+
+                    response += f"\n(Provider: {task_provider}, Alias: {task_alias or 'none'}, context will be restored)"
 
             return response
 
@@ -1382,8 +1535,12 @@ class SlashCommandHandler:
                 storage = get_session_storage()
                 # Clear target_session_id - messages should go back to original session
                 storage.clear_target_session_id(current_session_id)
+                # Clear workspace_provider - no longer in a task workspace
+                storage.clear_workspace_provider(current_session_id)
+                # Clear workspace_alias - no longer in a task workspace
+                storage.clear_workspace_alias(current_session_id)
             except Exception as e:
-                logger.warning(f"Failed to clear target_session_id: {e}")
+                logger.warning(f"Failed to clear target_session_id/workspace_provider/workspace_alias: {e}")
 
             # Return to session directory (the correct "home" for this session)
             base = self.startup_cwd
