@@ -358,11 +358,11 @@ class SessionStorage:
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hdel(key, "workspace_provider")
-            logger.info(f"Cleared workspace provider: {session_id}")
+            self._redis.hdel(key, "workspace_alias")
+            logger.info(f"Cleared workspace alias: {session_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to clear workspace provider: {e}")
+            logger.error(f"Failed to clear workspace alias: {e}")
             return False
 
     # ============ Handoff Context (Agent Switching) ============

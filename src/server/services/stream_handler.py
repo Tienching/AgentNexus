@@ -297,6 +297,8 @@ class StreamHandler:
                 archiver=archiver,
                 initial_messages=initial_messages,
                 exec_user=exec_user,
+                handoff_pending_target=handoff_pending_target,
+                session_id=session_id,
             ),
             media_type="text/event-stream",
             headers={
