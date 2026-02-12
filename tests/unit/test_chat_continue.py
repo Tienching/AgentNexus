@@ -94,7 +94,7 @@ class TestCodexProviderContinue:
     def executor(self):
         from src.providers.codex.cli_executor import CodexCLIExecutor
         cfg = Mock()
-        cfg.codex_command = "codex-internal"
+        cfg.codex_command = "codex"
         cfg.skip_git_repo_check = False
         cfg.sandbox_mode = None
         cfg.full_auto = True
@@ -235,7 +235,7 @@ class TestCLIServerProviderAware:
     def test_codex_skips_c(self, executor):
         cmd = executor._build_command(
             exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="codex-internal",
+            use_continue=True, agent_type="codex",
         )
         assert "-c" not in cmd
         # Codex uses positional args + resume --last, not -p (which is --profile)
@@ -245,7 +245,7 @@ class TestCLIServerProviderAware:
     def test_gemini_uses_resume(self, executor):
         cmd = executor._build_command(
             exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini-internal",
+            use_continue=True, agent_type="gemini",
         )
         assert "--resume" in cmd
         assert "latest" in cmd
@@ -265,7 +265,7 @@ class TestCLIServerProviderAware:
     def test_no_continue_skips_all(self, executor):
         cmd = executor._build_command(
             exec_user="ubuntu", content="Hello",
-            use_continue=False, agent_type="codex-internal",
+            use_continue=False, agent_type="codex",
         )
         assert "-c" not in cmd
         assert "--resume" not in cmd
@@ -274,7 +274,7 @@ class TestCLIServerProviderAware:
         """codex in continue mode should append 'resume --last' after prompt."""
         cmd = executor._build_command(
             exec_user="ubuntu", content="Follow up",
-            use_continue=True, agent_type="codex-internal",
+            use_continue=True, agent_type="codex",
         )
         idx_prompt = cmd.index("Follow up")
         idx_resume = cmd.index("resume")
@@ -286,7 +286,7 @@ class TestCLIServerProviderAware:
         """codex without continue should NOT append 'resume --last'."""
         cmd = executor._build_command(
             exec_user="ubuntu", content="Hello",
-            use_continue=False, agent_type="codex-internal",
+            use_continue=False, agent_type="codex",
         )
         assert "resume" not in cmd
         assert "--last" not in cmd
@@ -300,10 +300,11 @@ class TestCLIServerProviderAware:
         assert cmd[0] == "gemini"
 
     def test_gemini_internal_command_maps_correctly(self, executor):
-        """gemini-internal agent_type should produce 'gemini-internal' CLI command."""
+        """gemini-internal as alias should produce 'gemini-internal' CLI command but gemini params."""
         cmd = executor._build_command(
             exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini-internal",
+            use_continue=True, agent_type="gemini",
+            alias="gemini-internal",
         )
         assert cmd[0] == "gemini-internal"
         # Gemini must NOT have Claude-specific flags

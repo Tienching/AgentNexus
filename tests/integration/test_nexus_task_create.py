@@ -66,8 +66,8 @@ class TestNexusCreateTask:
         assert data["workspace"] == "/tmp/ws"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("provider", ["claude-internal", "gemini-internal", "codex-internal"])
-    async def test_create_task_internal_providers_success(self, client, provider):
+    @pytest.mark.parametrize("provider", ["claude", "gemini", "codex", "codebuddy"])
+    async def test_create_task_valid_providers_success(self, client, provider):
         q = MockTaskQueue()
         with patch("src.server.routers.nexus._get_task_queue", return_value=q):
             resp = await client.post(
@@ -84,6 +84,25 @@ class TestNexusCreateTask:
         assert resp.status_code == 200
         data = resp.json()
         assert data["provider"] == provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alias", ["claude-internal", "gemini-internal", "codex-internal"])
+    async def test_create_task_internal_aliases_rejected_as_provider(self, client, alias):
+        """Aliases like -internal are not valid provider names and should be rejected."""
+        q = MockTaskQueue()
+        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+            resp = await client.post(
+                "/api/nexus/tasks",
+                params={"exec_user": "ubuntu"},
+                json={
+                    "description": "Build feature",
+                    "provider": alias,
+                    "workspace": "/tmp/ws",
+                    "agent": "ubuntu",
+                },
+            )
+
+        assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_create_task_invalid_provider(self, client):

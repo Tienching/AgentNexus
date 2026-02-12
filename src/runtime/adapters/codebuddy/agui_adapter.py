@@ -54,6 +54,10 @@ class CodebuddyAGUIAdapter(BaseAdapter):
             msg = event.get("message") or "Codebuddy CLI error"
             return self.create_error_event(msg)
 
+        # Handle stream_event (primary output format from codebuddy CLI)
+        if event_type == "stream_event":
+            return self._handle_stream_event(event)
+
         if event_type in ("assistant", "user"):
             message = event.get("message")
             if not isinstance(message, dict):
@@ -297,3 +301,145 @@ class CodebuddyAGUIAdapter(BaseAdapter):
             thread_id = self.state.thread_id
             run_id = self.state.run_id
         return RunErrorEvent(threadId=thread_id, runId=run_id, message=error_msg).to_sse()
+
+    # ============ stream_event handlers ============
+
+    def _handle_stream_event(self, event: Dict[str, Any]) -> Optional[str]:
+        """Handle stream_event events from codebuddy CLI"""
+        inner_event = event.get("event", {})
+        if not isinstance(inner_event, dict):
+            return None
+
+        inner_type = inner_event.get("type")
+
+        if inner_type == "content_block_start":
+            return self._handle_content_block_start(inner_event)
+        elif inner_type == "content_block_delta":
+            return self._handle_content_block_delta(inner_event)
+        elif inner_type == "content_block_stop":
+            return self._handle_content_block_stop(inner_event)
+
+        return None
+
+    def _handle_content_block_start(self, event: Dict[str, Any]) -> Optional[str]:
+        """Handle content_block_start event"""
+        content_block = event.get("content_block", {})
+        if not isinstance(content_block, dict):
+            return None
+
+        block_type = content_block.get("type")
+        index = event.get("index", 0)
+
+        if block_type == "tool_use":
+            # Tool call start
+            tool_name = content_block.get("name", "unknown")
+            tool_id = content_block.get("id", str(uuid.uuid4()))
+
+            # Store in buffer
+            self.state.tool_input_buffer[index] = (tool_name, tool_id, "")
+            self.state.active_tool_calls[tool_id] = tool_name
+
+            # Delay sending ToolCallStart until we have args
+            return None
+
+        elif block_type == "text":
+            # Text block start - send TextMessageStart if not started
+            if not self.state.message_started:
+                self.state.current_message_id = self._generate_message_id()
+                self.state.message_started = True
+
+                msg_start = TextMessageStartEvent(
+                    messageId=self.state.current_message_id,
+                    role=MessageRole.ASSISTANT
+                )
+                return msg_start.to_sse()
+
+        return None
+
+    def _handle_content_block_delta(self, event: Dict[str, Any]) -> Optional[str]:
+        """Handle content_block_delta event"""
+        delta = event.get("delta", {})
+        if not isinstance(delta, dict):
+            return None
+
+        delta_type = delta.get("type")
+        index = event.get("index", 0)
+
+        if delta_type == "text_delta":
+            # Text delta
+            text = delta.get("text", "")
+            if not text:
+                return None
+
+            # Ensure message started
+            if not self.state.message_started:
+                self.state.current_message_id = self._generate_message_id()
+                self.state.message_started = True
+
+                results = []
+                msg_start = TextMessageStartEvent(
+                    messageId=self.state.current_message_id,
+                    role=MessageRole.ASSISTANT
+                )
+                results.append(msg_start.to_sse())
+
+                content_event = TextMessageContentEvent(
+                    messageId=self.state.current_message_id,
+                    delta=text,
+                )
+                results.append(content_event.to_sse())
+                return "".join(results)
+
+            content_event = TextMessageContentEvent(
+                messageId=self.state.current_message_id,
+                delta=text,
+            )
+            return content_event.to_sse()
+
+        elif delta_type == "input_json_delta":
+            # Tool args delta
+            partial_json = delta.get("partial_json", "")
+            if not partial_json:
+                return None
+
+            # Find the tool_id for this index
+            if index in self.state.tool_input_buffer:
+                tool_name, tool_id, _ = self.state.tool_input_buffer[index]
+
+                results = []
+
+                # Send ToolCallStart first if not sent
+                if tool_id not in self.state.active_tool_calls:
+                    self.state.active_tool_calls[tool_id] = tool_name
+                    results.append(
+                        ToolCallStartEvent(
+                            toolCallId=tool_id,
+                            toolCallName=tool_name,
+                            parentMessageId=self.state.current_message_id,
+                        ).to_sse()
+                    )
+
+                # Send args delta
+                results.append(
+                    ToolCallArgsEvent(
+                        toolCallId=tool_id,
+                        delta=partial_json,
+                    ).to_sse()
+                )
+
+                return "".join(results) if results else None
+
+        return None
+
+    def _handle_content_block_stop(self, event: Dict[str, Any]) -> Optional[str]:
+        """Handle content_block_stop event"""
+        index = event.get("index", 0)
+
+        # Check if this was a tool_use block
+        if index in self.state.tool_input_buffer:
+            tool_name, tool_id, _ = self.state.tool_input_buffer.pop(index, (None, None, None))
+            if tool_id:
+                # Tool call complete - ToolCallEnd will be sent when we get tool_result
+                pass
+
+        return None

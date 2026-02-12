@@ -273,7 +273,9 @@ class SlashCommandHandler:
                 context["inplace_ignored"] = True
 
         default_provider = (getattr(self.config, "default_provider", None) or "").strip()
-        effective_provider = (provider or "").strip().lower() or default_provider or "claude"
+        default_alias = (getattr(self.config, "default_alias", None) or "").strip()
+        effective_provider = (provider or "").strip().lower() or default_provider or "codebuddy"
+        effective_alias = default_alias or effective_provider
         default_exec_user = (getattr(self.config, "default_exec_user", None) or "").strip()
         effective_exec_user = (exec_user or "").strip() or default_exec_user or None
 
@@ -287,6 +289,7 @@ class SlashCommandHandler:
             project_name=project_name,
             workspace=exec_workspace,
             provider=effective_provider,
+            alias=effective_alias,
             task_id=task_id,
             source_session_id=source_session_id,
             exec_user=effective_exec_user,

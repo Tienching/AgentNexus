@@ -74,9 +74,9 @@ async def task_handler(task: Task) -> Optional[str]:
     provider = (getattr(task, "provider", None) or "claude").strip().lower() or "claude"
 
     # Create provider-specific executor
-    if provider in ("gemini", "gemini-internal"):
+    if provider == "gemini":
         executor = GeminiExecutor(config=settings)
-    elif provider in ("codex", "codex-internal"):
+    elif provider == "codex":
         executor = CodexCLIExecutor()
     else:
         executor = CLIExecutor(config=settings)
@@ -114,7 +114,7 @@ async def task_handler(task: Task) -> Optional[str]:
         # (e.g., "codebuddy" instead of defaulting to "claude")
         provider=provider,
         # Pass alias so _build_command() uses it as the actual CLI command name
-        # (e.g., "claude-internal" instead of "claude")
+        # (e.g., "claude-internal" as alias, while provider remains "claude")
         alias=alias_value,
     )
 
@@ -134,7 +134,7 @@ async def task_handler(task: Task) -> Optional[str]:
     # Adapter: provider-specific stream-json -> AG-UI SSE
     if provider == "gemini":
         adapter = GeminiAGUIAdapter()
-    elif provider in ("codex", "codex-internal"):
+    elif provider == "codex":
         adapter = CodexCLIAGUIAdapter()
     else:
         adapter = get_router().get_adapter(ProtocolType.AGUI)
