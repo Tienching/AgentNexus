@@ -79,7 +79,8 @@ class PluginInstaller:
         main_config = self.config_dir / "config.yaml"
         if not main_config.exists():
             main_config.write_text("""# VHSDK 配置
-default_provider: claude
+default_provider: codebuddy
+default_alias:
 log_level: INFO
 """)
 

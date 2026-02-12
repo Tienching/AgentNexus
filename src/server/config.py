@@ -85,7 +85,7 @@ class ProviderSettings(BaseSettings):
     """Provider 特定配置"""
 
     # CLI Executor 配置（服务于所有 Provider）
-    cli_command: str = "claude"
+    cli_command: str = "codebuddy"
     cli_timeout: int = 120
     agent_cli_command_map: dict = {}
 
@@ -93,7 +93,8 @@ class ProviderSettings(BaseSettings):
     gemini_command: str = "gemini"
     
     # 默认 Provider 和 Exec User
-    default_provider: str = "claude"
+    default_provider: str = "codebuddy"
+    default_alias: str = ""
     default_exec_user: str = ""
 
     model_config = {

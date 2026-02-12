@@ -67,9 +67,9 @@ class StreamHandler:
             return self._cli_executor
 
         provider_lower = (provider or "").strip().lower()
-        if provider_lower in ("gemini", "gemini-internal"):
+        if provider_lower == "gemini":
             return self._gemini_executor
-        elif provider_lower in ("codex", "codex-internal"):
+        elif provider_lower == "codex":
             return self._codex_executor
         elif provider_lower == "codebuddy":
             return self._codebuddy_executor
@@ -77,9 +77,9 @@ class StreamHandler:
 
     def _get_agui_adapter(self, provider: str):
         provider_lower = (provider or "").strip().lower()
-        if provider_lower in ("gemini", "gemini-internal"):
+        if provider_lower == "gemini":
             return GeminiAGUIAdapter()
-        elif provider_lower in ("codex", "codex-internal"):
+        elif provider_lower == "codex":
             return CodexCLIAGUIAdapter()
         elif provider_lower == "codebuddy":
             return CodebuddyAGUIAdapter()
@@ -110,7 +110,7 @@ class StreamHandler:
 
         # In /workspace -t mode, the workspace provider (stored in Redis session)
         # should override the request-level provider for executor and adapter selection.
-        # Without this, a workspace using gemini-internal would get a Claude executor/adapter.
+        # Without this, a workspace using gemini would get a Claude executor/adapter.
         session_id = request_model.session_id or agui_request.threadId
         workspace_provider = None
         workspace_alias = None

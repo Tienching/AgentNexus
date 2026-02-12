@@ -88,14 +88,15 @@ class TestProviderRouting:
 
     @pytest.mark.asyncio
     async def test_agui_provider_gemini_internal_uses_gemini_adapter(self, client):
+        """When alias=gemini-internal is used with provider=gemini, gemini executor should be selected."""
         async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CLIExecutor.execute should not be used when provider=gemini-internal")
+            raise AssertionError("CLIExecutor.execute should not be used when provider=gemini")
 
         async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CodexCLIExecutor.execute should not be used when provider=gemini-internal")
+            raise AssertionError("CodexCLIExecutor.execute should not be used when provider=gemini")
 
         with patch(
             "src.server.services.stream_handler.GeminiExecutor.execute",
@@ -107,7 +108,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.CodexCLIExecutor.execute",
             new=codex_execute,
         ):
-            body = _agui_body("t-gem-int", "r-gem-int", provider="gemini-internal")
+            body = _agui_body("t-gem-int", "r-gem-int", provider="gemini")
             async with client.stream("POST", "/chat/stream/ubuntu", json=body) as resp:
                 assert resp.status_code == 200
                 events = await _collect_agui_events(resp)
@@ -116,7 +117,7 @@ class TestProviderRouting:
         assert any(isinstance(mid, str) and mid.startswith("gemini-msg-") for mid in message_ids)
 
     @pytest.mark.asyncio
-    async def test_agui_provider_codex_internal_uses_codex_adapter(self, client):
+    async def test_agui_provider_codex_uses_codex_adapter(self, client):
         async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps({"type": "thread.started", "thread_id": "t-123"})
             yield json.dumps({
@@ -125,10 +126,10 @@ class TestProviderRouting:
             })
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CLIExecutor.execute should not be used when provider=codex-internal")
+            raise AssertionError("CLIExecutor.execute should not be used when provider=codex")
 
         async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("GeminiExecutor.execute should not be used when provider=codex-internal")
+            raise AssertionError("GeminiExecutor.execute should not be used when provider=codex")
 
         with patch(
             "src.server.services.stream_handler.CodexCLIExecutor.execute",
@@ -140,7 +141,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.GeminiExecutor.execute",
             new=gemini_execute,
         ):
-            body = _agui_body("t-codex-int", "r-codex-int", provider="codex-internal")
+            body = _agui_body("t-codex-int", "r-codex-int", provider="codex")
             async with client.stream("POST", "/chat/stream/ubuntu", json=body) as resp:
                 assert resp.status_code == 200
                 events = await _collect_agui_events(resp)
@@ -208,12 +209,13 @@ class TestProviderRouting:
         assert not any(isinstance(mid, str) and mid.startswith("gemini-msg-") for mid in message_ids)
 
     @pytest.mark.asyncio
-    async def test_agui_provider_claude_internal_uses_claude_executor(self, client):
+    async def test_agui_provider_claude_uses_claude_executor(self, client):
+        """Explicit provider=claude should route to Claude executor."""
         async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("GeminiExecutor.execute should not be used when provider=claude-internal")
+            raise AssertionError("GeminiExecutor.execute should not be used when provider=claude")
 
         async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
-            raise AssertionError("CodexCLIExecutor.execute should not be used when provider=claude-internal")
+            raise AssertionError("CodexCLIExecutor.execute should not be used when provider=claude")
 
         async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
             yield json.dumps(
@@ -238,7 +240,7 @@ class TestProviderRouting:
             "src.server.services.stream_handler.CLIExecutor.execute",
             new=claude_execute,
         ):
-            body = _agui_body("t-cla-int", "r-cla-int", provider="claude-internal")
+            body = _agui_body("t-cla-int", "r-cla-int", provider="claude")
             async with client.stream("POST", "/chat/stream/ubuntu", json=body) as resp:
                 assert resp.status_code == 200
                 events = await _collect_agui_events(resp)

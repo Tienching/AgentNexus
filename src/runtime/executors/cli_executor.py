@@ -199,6 +199,22 @@ class CLIExecutor(BaseExecutor):
             else:
                 yield json.dumps({"type": "error", "message": error_msg})
     
+    # Mapping from CLI command/alias to canonical provider name (no Redis dependency)
+    _CLI_COMMAND_TO_PROVIDER = {
+        "claude": "claude",
+        "claude-internal": "claude",
+        "codex": "codex",
+        "codex-internal": "codex",
+        "gemini": "gemini",
+        "gemini-internal": "gemini",
+        "codebuddy": "codebuddy",
+        "ccr": "claude",
+    }
+
+    def _resolve_provider_from_cli_command(self, cli_command: str) -> str:
+        """Resolve canonical provider name from CLI command/alias."""
+        return self._CLI_COMMAND_TO_PROVIDER.get(cli_command, cli_command)
+
     def _build_command(self, context: RequestContext, use_continue: bool = True) -> List[str]:
         """Build CLI command."""
         cleaned_content, model_param = self._parse_model_param(context.content)
@@ -218,16 +234,18 @@ class CLIExecutor(BaseExecutor):
         if cli_command == "ccr":
             cmd.append("code")
         
-        is_codex = cli_command in ("codex", "codex-internal")
-        is_gemini = cli_command in ("gemini", "gemini-internal")
+        # Resolve canonical provider for type detection (alias -> provider)
+        provider = self._resolve_provider_from_cli_command(cli_command)
+        is_codex = provider == "codex"
+        is_gemini = provider == "gemini"
 
         if cleaned_content.lower() == "/clear":
             message = "你好"
         else:
             # Provider-aware continue/resume logic:
-            # - codex/codex-internal: -c is --config (not continue), skip it here
-            # - gemini/gemini-internal: use --resume latest (not -c)
-            # - codebuddy / claude / claude-internal: use -c (continue)
+            # - codex: -c is --config (not continue), skip it here
+            # - gemini: use --resume latest (not -c)
+            # - codebuddy / claude: use -c (continue)
 
             if use_continue:
                 if is_codex:
@@ -239,8 +257,8 @@ class CLIExecutor(BaseExecutor):
             message = cleaned_content
         
         # Provider-specific command assembly (same logic as server CLIExecutor)
-        is_claude = cli_command in ("claude", "claude-internal")
-        is_codebuddy = cli_command in ("codebuddy",)
+        is_claude = provider == "claude"
+        is_codebuddy = provider == "codebuddy"
 
         if is_codex:
             if model_param:
