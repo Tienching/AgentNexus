@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""CCR Command Executor Service
+"""CLI Command Executor Service
 
 Responsibilities:
-- Build and execute CCR commands
+- Build and execute CLI commands for all providers (Claude, Gemini, Codex, CodeBuddy)
 - Process streaming output
 - 格式化 SSE 响应
 """
@@ -41,8 +41,8 @@ DEBUG_STREAM = os.environ.get("DEBUG_STREAM", "0") == "1"
 DEBUG_STREAM_FILE = os.environ.get("DEBUG_STREAM_FILE", "/tmp/debug_stream.jsonl")
 
 
-class CCRExecutor:
-    """CCR 命令执行器"""
+class CLIExecutor:
+    """CLI 命令执行器（服务于所有 Provider）"""
 
     def __init__(self, config=None):
         self.config = config or settings
@@ -70,7 +70,7 @@ class CCRExecutor:
         output_format: str = "raw"
     ) -> AsyncGenerator[str, None]:
         """
-        执行 CCR 命令并生成流式输出
+        执行 CLI 命令并生成流式输出
 
         Args:
             request: 请求模型
@@ -239,12 +239,31 @@ class CCRExecutor:
             use_continue = (not is_inplace) or is_chat_continue
 
         agent_type = getattr(request, "agent_type", None) or getattr(request, "provider", None)
-        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type)
+
+        # In /workspace -t mode, override agent_type with the task's provider
+        # so that the correct resume mechanism is used (gemini -> --resume latest,
+        # codex -> skip -c, claude -> -c).
+        workspace_alias = None
+        if exec_dir_override:
+            try:
+                workspace_provider = storage.get_workspace_provider(request.session_id)
+                if workspace_provider:
+                    logger.info(f"Overriding agent_type with workspace provider: {agent_type} -> {workspace_provider}")
+                    agent_type = workspace_provider
+                # Also get the workspace alias for CLI command selection
+                workspace_alias = storage.get_workspace_alias(request.session_id)
+                if workspace_alias:
+                    logger.info(f"Using workspace alias for CLI command: {workspace_alias}")
+            except Exception as e:
+                logger.warning(f"Failed to get workspace provider/alias: {e}")
+
+        request_alias = getattr(request, "alias", None) or workspace_alias
+        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
-        ccr_cmd_str = ' '.join(shlex.quote(arg) for arg in cmd)
-        full_cmd = f"cd {shlex.quote(str(exec_dir))} && {ccr_cmd_str}"
+        cli_cmd_str = ' '.join(shlex.quote(arg) for arg in cmd)
+        full_cmd = f"cd {shlex.quote(str(exec_dir))} && {cli_cmd_str}"
         
         if current_user == exec_user:
             cmd = ["bash", "-c", full_cmd]
@@ -261,8 +280,8 @@ class CCRExecutor:
                 "user_dir": str(user_dir),
             })
 
-        logger.info(f"Starting CCR processing", extra={
-            "process_type": "ccr_start",
+        logger.info(f"Starting CLI processing", extra={
+            "process_type": "cli_start",
             "api_user": request.user,
             "exec_user": exec_user,
             "content_preview": cleaned_content[:100] if len(cleaned_content) > 100 else cleaned_content,
@@ -288,16 +307,16 @@ class CCRExecutor:
                 yield output
 
             # 等待进程结束
-            await asyncio.wait_for(process.wait(), timeout=self.config.ccr_timeout)
+            await asyncio.wait_for(process.wait(), timeout=self.config.cli_timeout)
 
             duration = time.time() - start_time
-            logger.info(f"CCR processing completed", extra={
-                "process_type": "ccr_complete",
+            logger.info(f"CLI processing completed", extra={
+                "process_type": "cli_complete",
                 "duration_ms": int(duration * 1000),
             })
 
         except asyncio.TimeoutError:
-            logger.error(f"CCR command timeout", extra={"timeout_seconds": self.config.ccr_timeout})
+            logger.error(f"CLI command timeout", extra={"timeout_seconds": self.config.cli_timeout})
             try:
                 process.kill()
             except Exception:
@@ -399,12 +418,12 @@ class CCRExecutor:
                 try:
                     line = await asyncio.wait_for(
                         process.stdout.readline(),
-                        timeout=self.config.ccr_timeout,
+                        timeout=self.config.cli_timeout,
                     )
                 except asyncio.TimeoutError:
                     logger.error(
                         "Stream read timeout",
-                        extra={"timeout_seconds": self.config.ccr_timeout},
+                        extra={"timeout_seconds": self.config.cli_timeout},
                     )
                     try:
                         process.kill()
@@ -454,7 +473,7 @@ class CCRExecutor:
                         stderr_data = await stderr_data
                     if isinstance(stderr_data, (bytes, bytearray)) and stderr_data:
                         stderr_str = stderr_data.decode('utf-8', errors='ignore')[:1000]
-                        logger.warning(f"CCR stderr: {stderr_str}")
+                        logger.warning(f"CLI stderr: {stderr_str}")
                         if debug_file:
                             debug_file.write(f"\n=== STDERR ===\n{stderr_str}\n")
                 except Exception:
@@ -603,14 +622,16 @@ class CCRExecutor:
         content: str,
         use_continue: bool = True,
         agent_type: Optional[str] = None,
+        alias: Optional[str] = None,
     ) -> List[str]:
-        """构建CCR命令
+        """构建 CLI 命令
 
         Args:
             exec_user: Linux exec user
             content: 用户消息内容
             use_continue: 是否使用 -c (continue) 选项，默认为 True
-            agent_type: Agent类型（如 claude / claude-internal / codex-internal）
+            agent_type: Agent类型（如 claude / codex）决定参数格式
+            alias: CLI 命令名覆盖（如 claude-internal），不影响参数格式
         """
         cleaned_content, model_param = self._parse_model_param(content)
         provider = (agent_type or "").strip().lower()
@@ -619,40 +640,101 @@ class CCRExecutor:
             "claude-internal": "claude-internal",
             "codex": "codex",
             "codex-internal": "codex-internal",
+            "gemini": "gemini",
+            "gemini-internal": "gemini-internal",
+            "codebuddy": "codebuddy",
         }
 
-        if provider in provider_command_map:
-            ccr_command = provider_command_map[provider]
+        # Determine CLI command name: alias overrides provider_command_map
+        cli_alias = (alias or "").strip().lower()
+        if cli_alias:
+            cli_command = cli_alias
+        elif provider in provider_command_map:
+            cli_command = provider_command_map[provider]
         else:
-            ccr_command = self.config.agent_ccr_command_map.get(exec_user, self.config.ccr_command)
+            cli_command = self.config.agent_cli_command_map.get(exec_user, self.config.cli_command)
 
-        cmd = [ccr_command]
+        cmd = [cli_command]
 
-        if ccr_command == "ccr":
+        if cli_command == "ccr":
             cmd.append("code")
 
+        is_codex = provider in ("codex", "codex-internal")
+        is_gemini = provider in ("gemini", "gemini-internal")
+
         if cleaned_content.lower() == "/clear":
-            cmd.extend(["-p"])
             message = "你好"
         else:
-            # 使用 -c 来恢复当前目录的上下文
-            if use_continue:
-                cmd.extend(["-c", "-p"])
-            else:
-                cmd.extend(["-p"])
-
             message = cleaned_content
 
-        cmd.extend([
-            "--output-format", "stream-json",
-            "--include-partial-messages",
-            "--verbose",
-        ])
+        # Provider-aware continue/resume logic:
+        # - codex/codex-internal: -c is --config (not continue), skip it here;
+        #   codex uses "resume --last" appended after prompt instead
+        # - gemini/gemini-internal: use --resume latest (not -c)
+        # - codebuddy / claude / claude-internal: use -c (continue)
+        if use_continue and cleaned_content.lower() != "/clear":
+            if is_codex:
+                pass  # codex uses "resume --last" appended after prompt
+            elif is_gemini:
+                cmd.extend(["--resume", "latest"])
+            else:
+                cmd.extend(["-c"])
 
-        if model_param:
-            cmd.extend(["--model", model_param])
+        # Provider-specific command assembly.
+        #
+        # CLI semantics differ significantly:
+        #   - claude / claude-internal / codebuddy:
+        #       -p is a boolean flag (--print), prompt is positional
+        #       flags: --output-format stream-json --include-partial-messages --verbose
+        #       safety: --dangerously-skip-permissions
+        #   - gemini / gemini-internal:
+        #       -p/--prompt is a [string] option — MUST be immediately followed by
+        #       the prompt text (e.g. -p "hello").  Other flags must NOT sit between
+        #       -p and the prompt.
+        #       flags: --output-format stream-json (ONLY)
+        #       no: --include-partial-messages, --verbose, --dangerously-skip-permissions
+        #   - codex / codex-internal:
+        #       -p is --profile (disabled), NOT print/prompt.
+        #       prompt is positional [PROMPT].  No --output-format, --verbose, etc.
+        #       safety: --dangerously-bypass-approvals-and-sandbox
 
-        cmd.extend([message, "--dangerously-skip-permissions"])
+        is_claude = provider in ("claude", "claude-internal")
+        is_codebuddy = provider in ("codebuddy",)
+
+        if is_codex:
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend([message, "--dangerously-bypass-approvals-and-sandbox"])
+            # For codex in continue mode, append "resume --last" after the prompt
+            if use_continue and cleaned_content.lower() != "/clear":
+                cmd.extend(["resume", "--last"])
+        elif is_gemini:
+            # Gemini: -p <prompt>, --output-format stream-json only
+            cmd.extend(["--output-format", "stream-json"])
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend(["-p", message])
+        elif is_claude or is_codebuddy:
+            # Claude/CodeBuddy: full flag set
+            cmd.extend([
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+            ])
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend(["-p", message, "--dangerously-skip-permissions"])
+        else:
+            # Unknown provider — fall back to Claude-style, log warning
+            logger.warning(f"Unknown provider '{provider}', using Claude-style CLI args")
+            cmd.extend([
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+            ])
+            if model_param:
+                cmd.extend(["--model", model_param])
+            cmd.extend(["-p", message, "--dangerously-skip-permissions"])
 
         return cmd
 

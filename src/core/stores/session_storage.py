@@ -576,7 +576,7 @@ class SessionStorage:
     def append_agui_event(self, session_id: str, event: Dict[str, Any], max_len: int = 5000) -> bool:
         """Append a raw AG-UI event JSON into an ordered event log.
 
-        用途：Task 在后台执行时，前端无法直连 CCR 的 SSE；我们把转换后的 AG-UI 事件写入 Redis，
+        用途：Task 在后台执行时，前端无法直连 CLI 的 SSE；我们把转换后的 AG-UI 事件写入 Redis，
         然后由 `/api/nexus/tasks/{id}/agui/stream` 以 SSE 方式增量推送。
         """
         try:

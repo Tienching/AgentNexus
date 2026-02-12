@@ -2099,8 +2099,22 @@
     flex-direction: column;
 }
 
-#projectView.active {
+#chatView.active {
     display: block;
+}
+
+#taskView.active {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Task Page Container (standalone full-screen kanban) */
+.task-page-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 16px;
 }
 
 /* ========== Config View ========== */

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 后台运行脚本 - 在后台启动 Claude Code API
+# 后台运行脚本 - 在后台启动 Virtual Human Agent
 
 # 配置
 HOST=${API_HOST:-0.0.0.0}
@@ -15,13 +15,13 @@ mkdir -p "$LOG_DIR"
 if [ -f "$PID_FILE" ]; then
     OLD_PID=$(cat "$PID_FILE")
     if ps -p "$OLD_PID" > /dev/null 2>&1; then
-        echo "⚠️  API 已经在运行中 (PID: $OLD_PID)"
+        echo "⚠️  Virtual Human Agent 已经在运行中 (PID: $OLD_PID)"
         echo "使用 './scripts/stop.sh' 停止服务"
         exit 1
     fi
 fi
 
-echo "🚀 在后台启动 Claude Code API..."
+echo "🚀 在后台启动 Virtual Human Agent..."
 echo "   Host: $HOST"
 echo "   Port: $PORT"
 echo "   日志: $LOG_DIR/api.log"
@@ -41,7 +41,7 @@ sleep 2
 
 # 检查服务是否成功启动
 if ps -p $(cat "$PID_FILE") > /dev/null 2>&1; then
-    echo "✅ API 成功启动 (PID: $(cat $PID_FILE))"
+    echo "✅ Virtual Human Agent 成功启动 (PID: $(cat $PID_FILE))"
     echo ""
     echo "测试健康检查："
     curl -s "http://${HOST}:${PORT}/health" | python3 -m json.tool
@@ -49,6 +49,6 @@ if ps -p $(cat "$PID_FILE") > /dev/null 2>&1; then
     echo "查看日志: tail -f $LOG_DIR/api.log"
     echo "停止服务: ./scripts/stop.sh"
 else
-    echo "❌ API 启动失败，请检查日志: $LOG_DIR/api.log"
+    echo "❌ Virtual Human Agent 启动失败，请检查日志: $LOG_DIR/api.log"
     exit 1
 fi

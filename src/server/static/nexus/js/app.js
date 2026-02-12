@@ -28,13 +28,20 @@ class ThemeManager {
 }
 
 // ============================================================
-// Page Manager - Handles Project/Config page switching
+// Page Manager - Handles Chat/Task/Config page switching
 // ============================================================
 class PageManager {
     constructor(app) {
         this.app = app;
-        this.currentPage = localStorage.getItem('nexus-page') || 'project';
-        this.projectView = document.getElementById('projectView');
+        // Migrate old 'project' value to 'chat' for backward compatibility
+        let storedPage = localStorage.getItem('nexus-page');
+        if (storedPage === 'project') {
+            storedPage = 'chat';
+            localStorage.setItem('nexus-page', 'chat');
+        }
+        this.currentPage = storedPage || 'chat';
+        this.chatView = document.getElementById('chatView');
+        this.taskView = document.getElementById('taskView');
         this.configView = document.getElementById('configView');
         this.projectHeaderCenter = document.getElementById('projectHeaderCenter');
         this.projectHeaderRight = document.getElementById('projectHeaderRight');
@@ -54,15 +61,20 @@ class PageManager {
         this.currentPage = page;
         localStorage.setItem('nexus-page', page);
         this.apply();
-        
+
         // Refresh config view when switching to config page
         if (page === 'config' && this.app.configView) {
             this.app.configView.refresh();
         }
 
-        // Refresh project selectors when switching back to project page
-        if (page === 'project' && this.app.refreshProjectProviders) {
-            this.app.refreshProjectProviders();
+        // Refresh task view when switching to task page
+        if (page === 'task' && this.app.taskView) {
+            this.app.taskView.renderFullPage();
+        }
+
+        // Refresh chat providers when switching back to chat page
+        if (page === 'chat' && this.app.refreshChatProviders) {
+            this.app.refreshChatProviders();
         }
     }
 
@@ -73,19 +85,23 @@ class PageManager {
         });
 
         // Show/hide page views
-        if (this.projectView) {
-            this.projectView.classList.toggle('active', this.currentPage === 'project');
+        if (this.chatView) {
+            this.chatView.classList.toggle('active', this.currentPage === 'chat');
+        }
+        if (this.taskView) {
+            this.taskView.classList.toggle('active', this.currentPage === 'task');
         }
         if (this.configView) {
             this.configView.classList.toggle('active', this.currentPage === 'config');
         }
 
-        // Show/hide project-specific header elements
+        // Show/hide chat-specific header elements (layout switcher, user filter, etc.)
+        const isChatPage = this.currentPage === 'chat';
         if (this.projectHeaderCenter) {
-            this.projectHeaderCenter.style.display = this.currentPage === 'project' ? '' : 'none';
+            this.projectHeaderCenter.style.display = isChatPage ? '' : 'none';
         }
         if (this.projectHeaderRight) {
-            this.projectHeaderRight.style.display = this.currentPage === 'project' ? '' : 'none';
+            this.projectHeaderRight.style.display = isChatPage ? '' : 'none';
         }
     }
 }
@@ -166,49 +182,6 @@ class TabManager {
                 this.app.showAddTabDropdown(btn, paneId);
             }
         });
-
-        // View switcher buttons
-        document.addEventListener('click', (e) => {
-            const btn = e.target.closest('.view-btn');
-            if (btn) {
-                const switcher = btn.closest('.view-switcher');
-                const paneId = parseInt(switcher.dataset.pane);
-                const viewType = btn.dataset.view;
-                this.switchView(paneId, viewType);
-                
-                // Update button states
-                switcher.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-            }
-        });
-    }
-
-    switchView(paneId, viewType) {
-        const pane = this.panes[paneId];
-        if (!pane || !pane.activeTabId) return;
-
-        // Switch the current active tab's type (not create new tab)
-        const tab = pane.tabs.find(t => t.id === pane.activeTabId);
-        if (tab && tab.type !== viewType) {
-            tab.type = viewType;
-            tab.title = viewType === 'chat' ? 'Chat' : 'Task';
-            tab.data = {}; // Reset data when switching type
-            this.renderTabs(paneId);
-            this.renderContent(paneId);
-        }
-    }
-
-    updateViewSwitcher(paneId) {
-        const pane = this.panes[paneId];
-        const switcher = document.querySelector(`.view-switcher[data-pane="${paneId}"]`);
-        if (!pane || !switcher) return;
-
-        const activeTab = pane.tabs.find(t => t.id === pane.activeTabId);
-        if (activeTab) {
-            switcher.querySelectorAll('.view-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.view === activeTab.type);
-            });
-        }
     }
 
     initPane(paneId) {
@@ -242,7 +215,6 @@ class TabManager {
 
         this.renderTabs(paneId);
         this.renderContent(paneId);
-        this.updateViewSwitcher(paneId);
         return tabId;
     }
 
@@ -277,7 +249,6 @@ class TabManager {
         pane.activeTabId = tabId;
         this.renderTabs(paneId);
         this.renderContent(paneId);
-        this.updateViewSwitcher(paneId);
     }
 
     getActiveTab(paneId) {
@@ -297,20 +268,6 @@ class TabManager {
         }
     }
 
-    switchTabType(paneId, tabId, newType) {
-        const pane = this.panes[paneId];
-        if (!pane) return;
-
-        const tab = pane.tabs.find(t => t.id === tabId);
-        if (tab && tab.type !== newType) {
-            tab.type = newType;
-            tab.title = newType === 'chat' ? 'Chat' : 'Task';
-            tab.data = {};
-            this.renderTabs(paneId);
-            this.renderContent(paneId);
-        }
-    }
-
     renderTabs(paneId) {
         const pane = this.panes[paneId];
         const container = document.getElementById(`pane-${paneId}-tabs`);
@@ -321,9 +278,7 @@ class TabManager {
                     data-tab-id="${tab.id}" 
                     data-pane-id="${paneId}">
                 <svg class="tab-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    ${tab.type === 'chat' 
-                        ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>'
-                        : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>'}
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
                 </svg>
                 <span class="tab-title">${this.escapeHtml(tab.title)}</span>
                 <span class="tab-close" data-tab-id="${tab.id}" data-pane-id="${paneId}" title="Close tab">
@@ -362,11 +317,8 @@ class TabManager {
         const container = document.getElementById(`pane-${paneId}-content`);
         if (!tab || !container) return;
 
-        if (tab.type === 'chat') {
-            this.app.chatView.render(paneId, tab, container);
-        } else {
-            this.app.taskView.render(paneId, tab, container);
-        }
+        // All tabs are now chat type
+        this.app.chatView.render(paneId, tab, container);
     }
 
     escapeHtml(str) {
@@ -842,18 +794,20 @@ class ChatView {
                 </div>
             </div>
             <div class="chat-input-container">
-                <textarea 
-                    id="chatInput-${paneId}" 
-                    class="chat-input" 
-                    placeholder="Enter message to continue..."
-                    rows="1"
-                    disabled
-                ></textarea>
-                <button class="chat-send-btn" data-pane="${paneId}" disabled>
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
-                    </svg>
-                </button>
+                <div class="chat-input-wrapper">
+                    <textarea 
+                        id="chatInput-${paneId}" 
+                        class="chat-input" 
+                        placeholder="Enter message to continue..."
+                        rows="1"
+                        disabled
+                    ></textarea>
+                    <button class="chat-send-btn" data-pane="${paneId}" disabled>
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
         `;
 
@@ -1428,18 +1382,20 @@ class ChatView {
                     : messages.map(msg => this.renderMessage(msg, toolCalls)).join('')}
             </div>
             <div class="chat-input-container">
-                <textarea 
-                    id="chatInput-${paneId}" 
-                    class="chat-input" 
-                    placeholder="Enter message to continue..."
-                    rows="1"
-                    data-session-id="${sessionId}"
-                ></textarea>
-                <button class="chat-send-btn" data-pane="${paneId}" data-session-id="${sessionId}">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
-                    </svg>
-                </button>
+                <div class="chat-input-wrapper">
+                    <textarea 
+                        id="chatInput-${paneId}" 
+                        class="chat-input" 
+                        placeholder="Enter message to continue..."
+                        rows="1"
+                        data-session-id="${sessionId}"
+                    ></textarea>
+                    <button class="chat-send-btn" data-pane="${paneId}" data-session-id="${sessionId}">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
         `;
 
@@ -2249,6 +2205,99 @@ class TaskView {
             { key: 'cancelled', title: 'Cancelled', color: 'var(--status-cancelled)' },
             { key: 'archived', title: 'Archived', color: 'var(--status-archived)' },
         ];
+        // For standalone task page
+        this.fullPageRendered = false;
+    }
+
+    // Render task view as a standalone full-page view (not in a pane/tab)
+    async renderFullPage() {
+        const container = document.getElementById('taskPageContainer');
+        if (!container) return;
+
+        // Use a fixed paneId for the full-page view
+        const paneId = 'global';
+
+        // Initialize selection state
+        if (!this.selectionMode[paneId]) {
+            this.selectionMode[paneId] = false;
+        }
+        if (!this.selectedTaskIds[paneId]) {
+            this.selectedTaskIds[paneId] = new Set();
+        }
+
+        container.innerHTML = `
+            <div class="task-container" style="height: 100%;">
+                <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                    <div class="task-toolbar">
+                        <div class="task-toolbar-left">
+                            <button class="action-btn primary" data-action="create-task">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                <span>New Task</span>
+                            </button>
+                            <button class="action-btn" data-action="toggle-selection" title="Toggle selection mode">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                </svg>
+                                <span>Select</span>
+                            </button>
+                            <div class="selection-actions" id="selectionActions-${paneId}" style="display: none;">
+                                <button class="action-btn" data-action="select-all">
+                                    <span>Select All</span>
+                                </button>
+                                <button class="action-btn" data-action="deselect-all">
+                                    <span>Clear</span>
+                                </button>
+                                <button class="action-btn danger" data-action="delete-selected" id="deleteSelectedBtn-${paneId}">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                    </svg>
+                                    <span>Delete (0)</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="task-toolbar-right">
+                            <select class="form-input form-select" style="width: 150px; margin-right: 8px;" data-pane="${paneId}" id="taskProjectFilter-${paneId}">
+                                <option value="">All Projects</option>
+                            </select>
+                            <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" data-pane="${paneId}" id="taskSearch-${paneId}">
+                        </div>
+                    </div>
+                    <div class="kanban-board" id="kanbanBoard-${paneId}">
+                        ${this.statusColumns.map(col => `
+                            <div class="kanban-column" data-status="${col.key}">
+                                <div class="kanban-column-header">
+                                    <span class="kanban-column-title">
+                                        <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
+                                        ${col.title}
+                                    </span>
+                                    <span class="kanban-column-count" id="count-${paneId}-${col.key}">0</span>
+                                </div>
+                                <div class="kanban-column-items" id="items-${paneId}-${col.key}">
+                                    <div class="empty-state" style="padding: 24px 16px;">
+                                        <div class="loading-spinner" style="width: 20px; height: 20px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                <div class="task-detail-panel" id="taskDetail-${paneId}">
+                    <div class="empty-state">
+                        <p style="color: var(--text-muted);">Select a task to view details</p>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Bind events for the full-page view
+        this.bindTaskEvents(paneId, container);
+
+        // Load tasks
+        await this.loadTasks(paneId);
+
+        this.fullPageRendered = true;
     }
 
     async render(paneId, tab, container) {
@@ -2882,7 +2931,7 @@ class ConfigView {
             });
         });
 
-        // Parameters tab events
+        // Parameters tab events (includes concurrency)
         this.bindParametersEvents();
         
         // MCP tab events
@@ -2922,7 +2971,7 @@ class ConfigView {
             defaultProviderSelect.addEventListener('change', (e) => {
                 this.app.setDefaultProvider(e.target.value);
                 this.app.showToast('Default provider updated', 'success');
-                this.app.refreshProjectProviders?.();
+                this.app.refreshChatProviders?.();
             });
         }
 
@@ -2938,6 +2987,24 @@ class ConfigView {
             newAliasName.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') this.addAlias();
             });
+        }
+
+        // Global concurrency
+        const setGlobalBtn = document.getElementById('setGlobalConcurrencyBtn');
+        if (setGlobalBtn) {
+            setGlobalBtn.addEventListener('click', () => this.setGlobalConcurrency());
+        }
+        const globalInput = document.getElementById('globalConcurrencyInput');
+        if (globalInput) {
+            globalInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.setGlobalConcurrency();
+            });
+        }
+
+        // Provider concurrency
+        const setProviderBtn = document.getElementById('setProviderConcurrencyBtn');
+        if (setProviderBtn) {
+            setProviderBtn.addEventListener('click', () => this.setProviderConcurrency());
         }
     }
 
@@ -2966,6 +3033,21 @@ class ConfigView {
 
         // Render alias list
         this.renderAliasList();
+
+        // Update concurrency provider/alias dropdown
+        const concurrencySelect = document.getElementById('providerConcurrencySelect');
+        if (concurrencySelect) {
+            const allProviders = this.app.getAllProviders();
+            concurrencySelect.innerHTML = allProviders.map(p => {
+                const label = this.app.isCustomAlias(p)
+                    ? `${p} (${this.app.getBaseProvider(p)})`
+                    : p;
+                return `<option value="${p}">${label}</option>`;
+            }).join('');
+        }
+
+        // Render concurrency data
+        this.renderConcurrency();
     }
 
     renderAliasList() {
@@ -3023,7 +3105,7 @@ class ConfigView {
             this.app.showToast(`Alias "${name}" added`, 'success');
             nameInput.value = '';
             this.renderParameters();
-            this.app.refreshProjectProviders?.();
+            this.app.refreshChatProviders?.();
         } else {
             this.app.showToast('Alias already exists or is invalid', 'error');
         }
@@ -3033,7 +3115,7 @@ class ConfigView {
         if (this.app.removeCustomProvider(name)) {
             this.app.showToast(`Alias "${name}" removed`, 'success');
             this.renderParameters();
-            this.app.refreshProjectProviders?.();
+            this.app.refreshChatProviders?.();
         } else {
             this.app.showToast('Cannot remove this alias', 'error');
         }
@@ -3490,6 +3572,137 @@ class ConfigView {
             }
         }
     }
+
+    // ============================================================
+    // Concurrency Tab
+    // ============================================================
+    async renderConcurrency() {
+        try {
+            const resp = await fetch('/api/nexus/concurrency');
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+
+            // Global
+            const globalInput = document.getElementById('globalConcurrencyInput');
+            const globalDisplay = document.getElementById('globalConcurrencyDisplay');
+            if (globalInput) {
+                globalInput.value = data.global_max_concurrency || 0;
+            }
+            if (globalDisplay) {
+                globalDisplay.textContent = data.global_max_concurrency
+                    ? `Current: ${data.global_max_concurrency}`
+                    : 'Current: unlimited';
+            }
+
+            // Provider list
+            this.renderProviderConcurrencyList(data.provider_concurrency || {});
+        } catch (e) {
+            console.error('Failed to load concurrency config:', e);
+        }
+    }
+
+    renderProviderConcurrencyList(providerMap) {
+        const container = document.getElementById('providerConcurrencyList');
+        if (!container) return;
+
+        const entries = Object.entries(providerMap).sort((a, b) => a[0].localeCompare(b[0]));
+        if (entries.length === 0) {
+            container.innerHTML = '<div class="mcp-empty">No provider concurrency limits configured</div>';
+            return;
+        }
+
+        container.innerHTML = entries.map(([name, limit]) => `
+            <div class="mcp-item" data-provider-name="${name}">
+                <div class="mcp-item-info">
+                    <div class="mcp-item-name">${name}</div>
+                    <div class="mcp-item-command">Max: ${limit}</div>
+                </div>
+                <button class="mcp-item-delete concurrency-remove-btn" title="Remove limit" data-name="${name}">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                    </svg>
+                </button>
+            </div>
+        `).join('');
+
+        container.querySelectorAll('.concurrency-remove-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const name = e.target.closest('.concurrency-remove-btn')?.dataset.name;
+                if (name) {
+                    await this.removeProviderConcurrency(name);
+                }
+            });
+        });
+    }
+
+    async setGlobalConcurrency() {
+        const input = document.getElementById('globalConcurrencyInput');
+        if (!input) return;
+        const limit = parseInt(input.value) || 0;
+
+        try {
+            const resp = await fetch('/api/nexus/concurrency/global', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ limit }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            this.app.showToast(`Global concurrency set to ${limit || 'unlimited'}`, 'success');
+            this.renderConcurrency();
+        } catch (e) {
+            this.app.showToast(`Failed: ${e.message}`, 'error');
+        }
+    }
+
+    async setProviderConcurrency() {
+        const nameSelect = document.getElementById('providerConcurrencySelect');
+        const limitInput = document.getElementById('providerConcurrencyLimit');
+        if (!nameSelect || !limitInput) return;
+
+        const name = nameSelect.value;
+        const limit = parseInt(limitInput.value) || 0;
+
+        if (!name) {
+            this.app.showToast('Please select a provider or alias', 'error');
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/nexus/concurrency/provider', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, limit }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            limitInput.value = '';
+            this.app.showToast(`Concurrency for "${name}" set to ${limit || 'unlimited'}`, 'success');
+            this.renderConcurrency();
+        } catch (e) {
+            this.app.showToast(`Failed: ${e.message}`, 'error');
+        }
+    }
+
+    async removeProviderConcurrency(name) {
+        try {
+            const resp = await fetch(`/api/nexus/concurrency/provider/${encodeURIComponent(name)}`, {
+                method: 'DELETE',
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            this.app.showToast(`Concurrency limit for "${name}" removed`, 'success');
+            this.renderConcurrency();
+        } catch (e) {
+            this.app.showToast(`Failed: ${e.message}`, 'error');
+        }
+    }
 }
 
 // ============================================================
@@ -3827,20 +4040,25 @@ class NexusApp {
     }
 
     refresh() {
-        const panesCount = this.layoutManager.getPanesCount();
-        for (let i = 0; i < panesCount; i++) {
-            const tab = this.tabManager.getActiveTab(i);
-            if (tab) {
-                if (tab.type === 'chat') {
+        const currentPage = this.pageManager.currentPage;
+
+        if (currentPage === 'chat') {
+            // Refresh chat sessions in all visible panes
+            const panesCount = this.layoutManager.getPanesCount();
+            for (let i = 0; i < panesCount; i++) {
+                const tab = this.tabManager.getActiveTab(i);
+                if (tab) {
                     this.chatView.loadSessions(i);
-                } else {
-                    this.taskView.loadTasks(i);
                 }
             }
+        } else if (currentPage === 'task') {
+            // Refresh task list in the standalone task page
+            this.taskView.loadTasks('global');
         }
+        // Config page refresh is handled by ConfigView.refresh()
     }
 
-    refreshProjectProviders() {
+    refreshChatProviders() {
         const panesCount = this.layoutManager.getPanesCount();
         for (let i = 0; i < panesCount; i++) {
             this.chatView.refreshNewSessionSelectors(i);
@@ -4303,52 +4521,8 @@ class NexusApp {
     }
 
     showAddTabDropdown(btn, paneId) {
-        // Remove any existing dropdown
-        const existing = document.querySelector('.tab-add-dropdown');
-        if (existing) existing.remove();
-
-        const dropdown = document.createElement('div');
-        dropdown.className = 'tab-add-dropdown';
-        dropdown.innerHTML = `
-            <div class="tab-add-dropdown-header">New Tab</div>
-            <button class="tab-add-option" data-type="chat">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
-                </svg>
-                <span>New Chat</span>
-                <span class="tab-add-option-desc">Chat session view</span>
-            </button>
-            <button class="tab-add-option" data-type="task">
-                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                </svg>
-                <span>New Task</span>
-                <span class="tab-add-option-desc">Task kanban view</span>
-            </button>
-        `;
-
-        document.body.appendChild(dropdown);
-
-        // Position dropdown below button with proper alignment
-        this.positionDropdown(dropdown, btn);
-
-        // Bind option clicks
-        dropdown.querySelectorAll('.tab-add-option').forEach(option => {
-            option.addEventListener('click', () => {
-                const type = option.dataset.type;
-                this.tabManager.addTab(paneId, type);
-                dropdown.remove();
-            });
-        });
-
-        // Close on outside click
-        const closeHandler = (e) => {
-            if (!dropdown.contains(e.target) && e.target !== btn) {
-                dropdown.remove();
-                document.removeEventListener('click', closeHandler);
-            }
-        };
-        setTimeout(() => document.addEventListener('click', closeHandler), 0);
+        // Simplified: directly add a new chat tab without showing dropdown
+        this.tabManager.addTab(paneId, 'chat');
     }
 
     positionDropdown(dropdown, anchorEl) {

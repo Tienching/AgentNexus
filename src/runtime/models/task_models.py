@@ -182,15 +182,15 @@ class Task(BaseModel):
 
 class ExecutorConfig(BaseModel):
     """Configuration for task executor"""
-    default_max_concurrency: int = Field(default=1, ge=1)
-    workspace_concurrency: Dict[str, int] = Field(default_factory=dict)
+    provider_concurrency: Dict[str, int] = Field(default_factory=dict)
+    global_max_concurrency: int = Field(default=3, ge=0)  # 0 = unlimited
     poll_interval: float = Field(default=1.0, ge=0.1)  # seconds
     max_retries: int = Field(default=3, ge=0)
     retry_delay: float = Field(default=5.0, ge=0)  # seconds
     task_timeout: float = Field(default=3600.0, ge=0)  # seconds, 0 = no timeout
-    
-    def get_max_concurrency(self, workspace: Optional[str]) -> int:
-        """Get max concurrency for a specific workspace"""
-        if workspace and workspace in self.workspace_concurrency:
-            return self.workspace_concurrency[workspace]
-        return self.default_max_concurrency
+
+    def get_provider_max_concurrency(self, provider_key: Optional[str]) -> int:
+        """Get max concurrency for a provider/alias. Returns 0 if unlimited."""
+        if provider_key and provider_key in self.provider_concurrency:
+            return self.provider_concurrency[provider_key]
+        return 0  # no limit

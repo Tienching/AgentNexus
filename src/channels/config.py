@@ -123,7 +123,7 @@ class WhatsAppConfig(ChannelConfig):
 class SignalConfig(ChannelConfig):
     """Signal 配置"""
     type: ChannelType = ChannelType.SIGNAL
-    api_url: str = "http://localhost:8080"  # signal-cli REST API URL
+    api_url: str = "http://localhost:8081"  # signal-cli REST API URL
     phone_number: str = ""  # 绑定的电话号码 (+1234567890)
     account: Optional[str] = None  # 账号别名
     auto_receive: bool = True  # 自动接收消息

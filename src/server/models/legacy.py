@@ -60,6 +60,6 @@ class MetricsResponse(BaseModel):
     """指标响应"""
 
     version: str = Field(..., description="服务版本")
-    ccr_command: str = Field(..., description="CCR命令")
+    cli_command: str = Field(..., description="CLI 执行命令")
     requests_total: int = Field(default=0, description="总请求数")
     requests_active: int = Field(default=0, description="活跃请求数")

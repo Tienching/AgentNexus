@@ -143,7 +143,7 @@ class SessionStorage:
     def set_exec_dir_override(self, session_id: str, exec_dir: str) -> bool:
         """Set execution directory override for a session.
 
-        When set, CCRExecutor will use this directory instead of auto-determining one.
+        When set, CLIExecutor will use this directory instead of auto-determining one.
 
         Args:
             session_id: Session ID
@@ -250,6 +250,119 @@ class SessionStorage:
             return True
         except Exception as e:
             logger.error(f"Failed to clear target session ID: {e}")
+            return False
+
+    def set_workspace_provider(self, session_id: str, provider: str) -> bool:
+        """Store the task's provider when switching workspace via /workspace -t.
+
+        This allows the CLI executor to use the correct resume mechanism
+        (e.g., -c for claude, --resume latest for gemini, resume --last for codex).
+
+        Args:
+            session_id: Current user's session ID
+            provider: The task's provider (e.g., 'claude', 'gemini', 'codex-internal')
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"workspace_provider": provider})
+            logger.info(f"Set workspace provider: {session_id} -> {provider}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set workspace provider: {e}")
+            return False
+
+    def get_workspace_provider(self, session_id: str) -> Optional[str]:
+        """Get the workspace task's provider if set (for /workspace -t mode).
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Provider string if set, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "workspace_provider")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get workspace provider: {e}")
+            return None
+
+    def clear_workspace_provider(self, session_id: str) -> bool:
+        """Clear the workspace provider override.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "workspace_provider")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear workspace provider: {e}")
+            return False
+
+    def set_workspace_alias(self, session_id: str, alias: str) -> bool:
+        """Store the task's original alias when switching workspace via /workspace -t.
+
+        This preserves the original CLI command name (e.g., 'gemini-internal')
+        while using the provider (e.g., 'gemini') for parameter parsing logic.
+
+        Args:
+            session_id: Current user's session ID
+            alias: The task's original alias (e.g., 'gemini-internal', 'codex-internal')
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"workspace_alias": alias})
+            logger.info(f"Set workspace alias: {session_id} -> {alias}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set workspace alias: {e}")
+            return False
+
+    def get_workspace_alias(self, session_id: str) -> Optional[str]:
+        """Get the workspace task's original alias if set (for /workspace -t mode).
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Alias string if set, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "workspace_alias")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get workspace alias: {e}")
+            return None
+
+    def clear_workspace_alias(self, session_id: str) -> bool:
+        """Clear the workspace alias override.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "workspace_provider")
+            logger.info(f"Cleared workspace provider: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear workspace provider: {e}")
             return False
 
     def set_claude_session_id(self, session_id: str, claude_session_id: str) -> bool:
@@ -795,7 +908,7 @@ class SessionStorage:
     def append_agui_event(self, session_id: str, event: Dict[str, Any], max_len: int = 5000) -> bool:
         """Append a raw AG-UI event JSON into an ordered event log.
 
-        用途：Task 在后台执行时，前端无法直连 CCR 的 SSE；我们把转换后的 AG-UI 事件写入 Redis，
+        用途：Task 在后台执行时，前端无法直连 CLI 的 SSE；我们把转换后的 AG-UI 事件写入 Redis，
         然后由 `/api/nexus/tasks/{id}/agui/stream` 以 SSE 方式增量推送。
         """
         try:

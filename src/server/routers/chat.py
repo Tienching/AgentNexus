@@ -30,7 +30,7 @@ async def chat_stream(request: Request, exec_user: str):
 
     Args:
         request: FastAPI请求对象
-        exec_user: Linux系统用户名，通过su切换到该用户运行CCR命令
+        exec_user: Linux系统用户名，通过su切换到该用户运行CLI命令
     """
     # 获取原始请求体
     try:

@@ -52,7 +52,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
         # Backward-compat: accept server settings-like objects.
         super().__init__(
             CodebuddyExecutorConfig(
-                timeout=getattr(config, "ccr_timeout", 120.0),
+                timeout=getattr(config, "cli_timeout", 120.0),
                 user_home_base=getattr(config, "user_home_base", "/home"),
                 codebuddy_command=getattr(config, "codebuddy_command", "codebuddy"),
             )
@@ -71,7 +71,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
     ) -> AsyncGenerator[str, None]:
         """Execute Codebuddy CLI and yield stream output.
 
-        This signature matches CCR/Codex executors for StreamHandler compatibility.
+        This signature matches CLI/Codex executors for StreamHandler compatibility.
 
         Args:
             request: RequestModel or RequestContext
@@ -137,14 +137,20 @@ class CodebuddyCLIExecutor(BaseExecutor):
         """Build Codebuddy CLI command."""
         cleaned_content, model_param = self._parse_model_param(context.content)
 
-        cmd = [
-            self.codebuddy_config.codebuddy_command,
+        is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
+
+        # Use alias as CLI command name if provided, otherwise default
+        cli_command = (getattr(context, "alias", None) or "").strip() or self.codebuddy_config.codebuddy_command
+        cmd = [cli_command]
+        if is_chat_continue:
+            cmd.append("-c")
+        cmd.extend([
             "-p",
             cleaned_content,
             "--output-format",
             "stream-json",
-            "--dangerously-skip-permissions",  # Bypass permission checks for non-interactive execution
-        ]
+            "--dangerously-skip-permissions",
+        ])
         if model_param:
             cmd.extend(["--model", model_param])
         return cmd

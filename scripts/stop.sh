@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 停止后台运行的 Claude Code API
+# 停止后台运行的 Virtual Human Agent
 
 LOG_DIR=${LOG_DIR:-./logs}
 PID_FILE="${LOG_DIR}/claude-api.pid"
@@ -10,14 +10,14 @@ if [ ! -f "$PID_FILE" ]; then
     echo "尝试通过进程名查找..."
 
     # 尝试通过进程名停止
-    PIDS=$(pgrep -f "uvicorn src.claude_code_api.app:app")
+    PIDS=$(pgrep -f "uvicorn src.server.app:app")
     if [ -z "$PIDS" ]; then
-        echo "❌ 没有找到运行中的 API 进程"
+        echo "❌ 没有找到运行中的 Virtual Human Agent 进程"
         exit 1
     else
         echo "找到进程: $PIDS"
         kill $PIDS
-        echo "✅ 已停止所有 API 进程"
+        echo "✅ 已停止所有 Virtual Human Agent 进程"
         exit 0
     fi
 fi
@@ -25,7 +25,7 @@ fi
 PID=$(cat "$PID_FILE")
 
 if ps -p "$PID" > /dev/null 2>&1; then
-    echo "🛑 正在停止 Claude Code API (PID: $PID)..."
+    echo "🛑 正在停止 Virtual Human Agent (PID: $PID)..."
     kill "$PID"
 
     # 等待进程结束
@@ -43,16 +43,16 @@ if ps -p "$PID" > /dev/null 2>&1; then
     fi
 
     rm -f "$PID_FILE"
-    echo "✅ API 已停止"
+    echo "✅ Virtual Human Agent 已停止"
 else
     echo "⚠️  进程不存在 (PID: $PID)"
     rm -f "$PID_FILE"
 
     # 尝试通过进程名停止
-    PIDS=$(pgrep -f "uvicorn src.claude_code_api.app:app")
+    PIDS=$(pgrep -f "uvicorn src.server.app:app")
     if [ ! -z "$PIDS" ]; then
-        echo "找到其他 API 进程: $PIDS"
+        echo "找到其他 Virtual Human Agent 进程: $PIDS"
         kill $PIDS
-        echo "✅ 已停止所有 API 进程"
+        echo "✅ 已停止所有 Virtual Human Agent 进程"
     fi
 fi
