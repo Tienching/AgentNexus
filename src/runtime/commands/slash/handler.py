@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/exit"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/handoff", "/exit"]
 
 
 def slugify_project(name: str) -> str:
@@ -236,6 +236,15 @@ class SlashCommandHandler:
 
             if parsed.cmd == "exit":
                 return self._handle_exit_impl(current_session_id=source_session_id)
+
+            if parsed.cmd == "handoff":
+                return self._handle_handoff(
+                    provider=parsed.options.get("provider"),
+                    alias=parsed.options.get("alias"),
+                    auto_summary=bool(parsed.options.get("auto", False)),
+                    summary=parsed.free_text,
+                    current_session_id=source_session_id,
+                )
 
             if parsed.cmd == "help" and parsed.subcmd == "show":
                 return self._handle_help()
@@ -1574,6 +1583,174 @@ class SlashCommandHandler:
         except Exception as e:
             return f"## ❌ Error\n\nFailed to restore directory: {e}"
 
+    def _handle_handoff(
+        self,
+        provider: Optional[str] = None,
+        alias: Optional[str] = None,
+        auto_summary: bool = False,
+        summary: Optional[str] = None,
+        current_session_id: Optional[str] = None,
+    ) -> str:
+        """Handle /handoff command - switch provider with optional context handoff.
+
+        Usage:
+            /handoff                     # Show current provider
+            /handoff -r <provider>       # Direct switch (no context)
+            /handoff -l <alias>          # Switch by alias (no context)
+            /handoff -r <provider> -a    # Auto-generate summary and switch
+            /handoff -l <alias> -a       # Auto-generate summary and switch by alias
+            /handoff -r <provider> -- <summary>  # Manual summary and switch
+
+        Args:
+            provider: Target provider to switch to
+            alias: Target alias to switch to (alternative to provider)
+            auto_summary: Whether to auto-generate summary from current Agent
+            summary: Manual summary text (after --)
+            current_session_id: Current session ID
+
+        Returns:
+            Markdown response, or special JSON for auto-summary trigger
+        """
+        import json
+
+        # Resolve provider from alias if specified
+        target_alias = None
+        target_provider = provider
+
+        if alias:
+            from ...stores.alias_registry import get_alias_registry
+            alias_registry = get_alias_registry()
+            resolved = alias_registry.resolve(alias)
+            if resolved:
+                target_provider = resolved
+                target_alias = alias
+            else:
+                all_aliases = alias_registry.list_all()
+                alias_list = ", ".join(f"`{a}`" for a in sorted(all_aliases.keys()))
+                return (
+                    f"## ❌ 未知别名\n\n"
+                    f"别名 `{alias}` 未注册。\n\n"
+                    f"**可用别名**: {alias_list}"
+                )
+
+        # No provider/alias specified - show current provider and handoff status
+        if not target_provider:
+            user_cfg = self._user_config_store.get_all(current_session_id) if current_session_id else {}
+            default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+            current_provider = (user_cfg.get("provider") or "").strip() or default_provider or "codebuddy"
+            current_alias = (user_cfg.get("alias") or "").strip() or current_provider
+
+            response = "## 🔄 当前 Provider\n\n"
+            response += f"| 项 | 值 |\n"
+            response += f"|---|---|\n"
+            response += f"| Provider | `{current_provider}` |\n"
+            response += f"| Alias | `{current_alias}` |\n"
+
+            # Check handoff status
+            if current_session_id:
+                storage = get_session_storage()
+                
+                # Check pending summary
+                pending_target = storage.get_handoff_pending_summary(current_session_id)
+                if pending_target:
+                    response += f"\n### ⏳ 交接状态：等待生成摘要\n\n"
+                    response += f"- **目标**: `{pending_target}`\n"
+                    response += f"- **状态**: 待生成摘要\n"
+                    response += f"- **下一步**: 发送任意消息触发摘要生成\n"
+                else:
+                    # Check handoff context
+                    handoff_result = storage.get_handoff_context(current_session_id)
+                    if handoff_result:
+                        ctx, target = handoff_result
+                        if ctx:
+                            # 有摘要内容，等待切换
+                            response += f"\n### ✅ 交接状态：已就绪\n\n"
+                            response += f"- **目标**: `{target}`\n"
+                            response += f"- **状态**: 摘要已生成，等待切换\n"
+                            response += f"- **下一步**: 发送任意消息将切换到 `{target}`\n"
+                            if len(ctx) > 100:
+                                response += f"- **摘要预览**: {ctx[:100]}...\n"
+                            else:
+                                response += f"- **摘要内容**: {ctx}\n"
+                        else:
+                            # 空摘要，可能是直接切换
+                            response += f"\n### 🔄 交接状态：待切换\n\n"
+                            response += f"- **目标**: `{target}`\n"
+                            response += f"- **状态**: 无摘要，直接切换\n"
+                            response += f"- **下一步**: 发送任意消息将切换到 `{target}`\n"
+
+            response += "\n**切换示例：**\n"
+            response += "- `/handoff -r codex` — 直接切换 Provider\n"
+            response += "- `/handoff -l gemini-internal` — 通过别名切换\n"
+            response += "- `/handoff -r codex -a` — 自动生成摘要后切换\n"
+            response += "- `/handoff -r codex -- 手动摘要内容` — 手动摘要切换\n"
+            return response
+
+        # Validate provider
+        from ...stores.alias_registry import get_alias_registry
+        alias_registry = get_alias_registry()
+        resolved = alias_registry.resolve(target_provider)
+        if not resolved:
+            # Check if it's a valid provider name directly
+            valid_providers = ["claude", "codex", "gemini", "codebuddy"]
+            if target_provider.lower() not in valid_providers:
+                all_aliases = alias_registry.list_all()
+                alias_list = ", ".join(f"`{a}`" for a in sorted(all_aliases.keys()))
+                return (
+                    f"## ❌ 未知 Provider\n\n"
+                    f"Provider `{target_provider}` 未注册。\n\n"
+                    f"**可用别名**: {alias_list}\n\n"
+                    f"**内置 Provider**: {', '.join(f'`{p}`' for p in valid_providers)}"
+                )
+
+        # Auto-summary mode: set pending state, next message will trigger summary generation
+        if auto_summary:
+            if not current_session_id:
+                return "## ❌ 无法切换\n\n需要 session_id 才能自动生成摘要。"
+
+            # Store pending switch target (empty context means summary pending)
+            storage = get_session_storage()
+            effective_alias = target_alias or target_provider.lower()
+            storage.set_handoff_pending_summary(current_session_id, effective_alias)
+
+            # Return markdown message
+            response = f"## 🔄 准备切换 Provider\n\n"
+            response += f"- **目标 Provider**: `{target_provider}`\n"
+            if target_alias:
+                response += f"- **目标 Alias**: `{target_alias}`\n"
+            response += f"- **状态**: 等待生成摘要\n\n"
+            response += f"请发送任意消息，当前 Agent 会先生成对话摘要，然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
+
+            return response
+
+        # Direct switch or manual summary
+        if current_session_id:
+            storage = get_session_storage()
+            effective_alias = target_alias or target_provider.lower()
+
+            if summary:
+                # Manual summary provided
+                storage.set_handoff_context(current_session_id, summary, effective_alias)
+                response = f"## ✅ 准备切换\n\n"
+                response += f"- **目标 Provider**: `{target_provider}`\n"
+                if target_alias:
+                    response += f"- **目标 Alias**: `{target_alias}`\n"
+                response += f"- **上下文摘要**: 已保存\n\n"
+                response += f"下一次对话将自动切换到 `{effective_alias}` 并注入摘要上下文。"
+            else:
+                # Direct switch (no context)
+                storage.clear_handoff_context(current_session_id)
+                response = f"## ✅ 切换 Provider\n\n"
+                response += f"- **目标 Provider**: `{target_provider}`\n"
+                if target_alias:
+                    response += f"- **目标 Alias**: `{target_alias}`\n"
+                response += f"- **上下文传递**: 无\n\n"
+                response += f"下一次对话将使用 `{effective_alias}`。"
+
+            return response
+
+        return f"## ✅ 切换 Provider\n\n目标 Provider: `{target_provider}`"
+
     def _handle_help(self) -> str:
         """Handle /help command - show all available commands"""
         return """## 📚 帮助 - 可用命令
@@ -1632,6 +1809,15 @@ class SlashCommandHandler:
 **`/exit`** - 退出
 ```
 /exit                   # 回退到初始目录
+```
+
+**`/handoff`** - 切换 Provider（带上下文传递）
+```
+/handoff                 # 显示当前 Provider
+/handoff -r <provider>   # 直接切换（无上下文）
+/handoff -l <alias>      # 通过别名切换
+/handoff -r <provider> -a    # 自动生成摘要后切换
+/handoff -r <provider> -- <摘要>  # 手动摘要切换
 ```
 
 ---
