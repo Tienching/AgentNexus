@@ -2,7 +2,6 @@
 """服务器配置管理"""
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
 
 
 class ServerSettings(BaseSettings):
@@ -72,7 +71,7 @@ class ServerSettings(BaseSettings):
     whatsapp_session_name: str = "default"
     
     # Signal 配置
-    signal_api_url: str = "http://localhost:8080"
+    signal_api_url: str = "http://localhost:8081"
     signal_phone_number: str | None = None
 
     model_config = {
@@ -85,10 +84,10 @@ class ServerSettings(BaseSettings):
 class ProviderSettings(BaseSettings):
     """Provider 特定配置"""
 
-    # CCR (Claude Code Runner) 配置
-    ccr_command: str = "claude"
-    ccr_timeout: int = 120
-    agent_ccr_command_map: dict = Field(default_factory=dict)
+    # CLI Executor 配置（服务于所有 Provider）
+    cli_command: str = "claude"
+    cli_timeout: int = 120
+    agent_cli_command_map: dict = {}
 
     # Gemini CLI 配置
     gemini_command: str = "gemini"
@@ -120,7 +119,7 @@ class NexusSettings(BaseSettings):
     }
 
 
-# 合并配置（向后兼容）
+# 合并配置
 class Settings(ServerSettings, ProviderSettings, NexusSettings):
     """完整配置（包含服务器和 Provider 配置）"""
     pass

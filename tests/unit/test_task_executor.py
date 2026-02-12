@@ -110,7 +110,7 @@ def mock_task_queue():
 @pytest.fixture
 def config():
     return ExecutorConfig(
-        default_max_concurrency=1,
+        global_max_concurrency=3,
         poll_interval=0.1,
         max_retries=2,
         retry_delay=0.1,
@@ -238,18 +238,6 @@ class TestTaskExecutor:
         
         await executor.stop()
 
-    @pytest.mark.asyncio
-    async def test_set_workspace_concurrency(self, mock_task_queue, config):
-        """Test setting workspace concurrency"""
-        async def handler(task):
-            return None
-        
-        executor = TaskExecutor(mock_task_queue, handler, config)
-        
-        executor.set_workspace_concurrency("/path/to/workspace", 3)
-        
-        status = await executor._workspace_manager.get_status()
-        assert status["config"]["workspace_concurrency"].get("/path/to/workspace") == 3
 
 
 class TestWorkspaceQueueManager:
@@ -269,29 +257,32 @@ class TestWorkspaceQueueManager:
         acquired = await manager.acquire_slot(task)
         assert acquired
         
-        # Check capacity
-        can_execute = await manager.can_execute_task("/path/a")
-        assert not can_execute  # At capacity (max=1)
-        
         # Release slot
         await manager.release_slot(task)
-        
-        can_execute = await manager.can_execute_task("/path/a")
-        assert can_execute
 
     @pytest.mark.asyncio
-    async def test_different_workspaces_parallel(self, mock_task_queue, config):
-        """Test that different workspaces can run in parallel"""
+    async def test_global_concurrency_limit(self, mock_task_queue):
+        """Test global concurrency limit"""
+        config = ExecutorConfig(global_max_concurrency=2)
         manager = WorkspaceQueueManager(mock_task_queue, config)
         
         task_a = Task(description="Task A", workspace="/path/a")
         task_b = Task(description="Task B", workspace="/path/b")
+        task_c = Task(description="Task C", workspace="/path/c")
         
-        # Both should be able to acquire slots
-        acquired_a = await manager.acquire_slot(task_a)
-        acquired_b = await manager.acquire_slot(task_b)
+        # First two should acquire
+        assert await manager.acquire_slot(task_a)
+        assert await manager.acquire_slot(task_b)
         
-        assert acquired_a
+        # Third should be blocked by global limit
+        assert not await manager.acquire_slot(task_c)
+        
+        # Release one, then third can acquire
+        await manager.release_slot(task_a)
+        assert await manager.acquire_slot(task_c)
+        
+        await manager.release_slot(task_b)
+        await manager.release_slot(task_c)
         assert acquired_b
         
         # Clean up
@@ -299,57 +290,30 @@ class TestWorkspaceQueueManager:
         await manager.release_slot(task_b)
 
     @pytest.mark.asyncio
-    async def test_same_workspace_serial(self, mock_task_queue, config):
-        """Test that same workspace tasks run serially"""
+    async def test_provider_concurrency_limit(self, mock_task_queue):
+        """Test provider-level concurrency limit"""
+        config = ExecutorConfig(
+            global_max_concurrency=0,  # unlimited global
+            provider_concurrency={"claude": 1},
+        )
         manager = WorkspaceQueueManager(mock_task_queue, config)
         
-        task_1 = Task(description="Task 1", workspace="/path/a")
-        task_2 = Task(description="Task 2", workspace="/path/a")
+        task_1 = Task(description="Task 1", workspace="/path/a", provider="claude")
+        task_2 = Task(description="Task 2", workspace="/path/a", provider="claude")
         
         # First task acquires slot
-        acquired_1 = await manager.acquire_slot(task_1)
-        assert acquired_1
+        assert await manager.acquire_slot(task_1)
         
-        # Second task should not be able to acquire
-        acquired_2 = await manager.acquire_slot(task_2)
-        assert not acquired_2
+        # Second task should be blocked by provider limit
+        assert not await manager.acquire_slot(task_2)
         
         # Release first task
         await manager.release_slot(task_1)
         
         # Now second task can acquire
-        acquired_2 = await manager.acquire_slot(task_2)
-        assert acquired_2
+        assert await manager.acquire_slot(task_2)
         
         await manager.release_slot(task_2)
-
-    @pytest.mark.asyncio
-    async def test_custom_workspace_concurrency(self, mock_task_queue):
-        """Test custom workspace concurrency"""
-        config = ExecutorConfig(
-            default_max_concurrency=1,
-            workspace_concurrency={"/path/special": 3},
-        )
-        manager = WorkspaceQueueManager(mock_task_queue, config)
-        
-        tasks = [
-            Task(description=f"Task {i}", workspace="/path/special")
-            for i in range(3)
-        ]
-        
-        # All 3 should be able to acquire slots
-        for task in tasks:
-            acquired = await manager.acquire_slot(task)
-            assert acquired
-        
-        # 4th should not
-        task_4 = Task(description="Task 4", workspace="/path/special")
-        acquired = await manager.acquire_slot(task_4)
-        assert not acquired
-        
-        # Clean up
-        for task in tasks:
-            await manager.release_slot(task)
 
     @pytest.mark.asyncio
     async def test_get_status(self, mock_task_queue, config):
@@ -361,9 +325,8 @@ class TestWorkspaceQueueManager:
         
         status = await manager.get_status()
         
-        assert status["total_workspaces"] == 1
         assert status["total_executing"] == 1
-        assert "/path/a" in status["workspaces"] or "default" in status["workspaces"]
+        assert "providers" in status
         
         await manager.release_slot(task)
 
@@ -375,21 +338,20 @@ class TestExecutorConfig:
         """Test default configuration"""
         config = ExecutorConfig()
         
-        assert config.default_max_concurrency == 1
+        assert config.global_max_concurrency == 3
         assert config.poll_interval == 1.0
         assert config.max_retries == 3
         assert config.retry_delay == 5.0
         assert config.task_timeout == 3600.0
 
-    def test_get_max_concurrency(self):
-        """Test getting max concurrency for workspace"""
+    def test_get_provider_max_concurrency(self):
+        """Test getting max concurrency for provider"""
         config = ExecutorConfig(
-            default_max_concurrency=1,
-            workspace_concurrency={"/path/special": 5},
+            provider_concurrency={"claude": 5},
         )
         
-        assert config.get_max_concurrency(None) == 1
-        assert config.get_max_concurrency("/path/default") == 1
-        assert config.get_max_concurrency("/path/special") == 5
+        assert config.get_provider_max_concurrency(None) == 0  # no limit
+        assert config.get_provider_max_concurrency("gemini") == 0  # no limit
+        assert config.get_provider_max_concurrency("claude") == 5
 
 

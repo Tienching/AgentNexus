@@ -13,8 +13,8 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_response_format(self, client: AsyncClient, sample_request):
         """测试流式响应格式"""
-        # 模拟CCR输出
-        mock_ccr_output = [
+        # 模拟CLI执行器输出
+        mock_cli_output = [
             json.dumps({
                 "type": "stream_event",
                 "event": {
@@ -44,9 +44,9 @@ class TestStreamResponse:
 
         with patch('asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
-            # CCRExecutor._process_stream() uses stdout.readline(), not __aiter__
+            # CLIExecutor._process_stream() uses stdout.readline(), not __aiter__
             mock_process.stdout.readline = AsyncMock(
-                side_effect=[(line + "\n").encode() for line in mock_ccr_output] + [b""]
+                side_effect=[(line + "\n").encode() for line in mock_cli_output] + [b""]
             )
             mock_process.stderr.read = AsyncMock(return_value=b"")
             mock_process.wait.return_value = None
@@ -76,7 +76,7 @@ class TestStreamResponse:
     @pytest.mark.asyncio
     async def test_stream_with_thinking_tags(self, client: AsyncClient, sample_request):
         """测试包含思考标签的流式响应"""
-        mock_ccr_output = [
+        mock_cli_output = [
             json.dumps({
                 "type": "stream_event",
                 "event": {
@@ -113,9 +113,9 @@ class TestStreamResponse:
 
         with patch('asyncio.create_subprocess_exec') as mock_subprocess:
             mock_process = AsyncMock()
-            # CCRExecutor._process_stream() uses stdout.readline(), not __aiter__
+            # CLIExecutor._process_stream() uses stdout.readline(), not __aiter__
             mock_process.stdout.readline = AsyncMock(
-                side_effect=[(line + "\n").encode() for line in mock_ccr_output] + [b""]
+                side_effect=[(line + "\n").encode() for line in mock_cli_output] + [b""]
             )
             mock_process.stderr.read = AsyncMock(return_value=b"")
             mock_process.wait.return_value = None
@@ -180,7 +180,7 @@ class TestStreamResponse:
             mock_subprocess.return_value = mock_process
 
             # 需要设置较短的超时以便测试
-            with patch('src.server.config.settings.ccr_timeout', 0.1):
+            with patch('src.server.config.settings.cli_timeout', 0.1):
                 async with client.stream("POST", "/chat/stream/testuser", json=sample_request) as response:
                     assert response.status_code == 200
 

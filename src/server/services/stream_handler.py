@@ -20,7 +20,7 @@ from ..adapters import ProtocolType, get_router
 from ..config import settings
 from ..logger import get_logger
 from ..providers import get_provider_registry
-from .ccr_executor import CCRExecutor
+from .cli_executor import CLIExecutor
 from .callback_handler import CallbackHandler
 from .stream_archiver import create_archiver
 from .session_storage import get_session_storage
@@ -39,7 +39,7 @@ class StreamHandler:
     """流式处理器 - 统一使用 AG-UI 协议"""
 
     def __init__(self):
-        self._ccr_executor = CCRExecutor(config=settings)
+        self._cli_executor = CLIExecutor(config=settings)
         self._gemini_executor = GeminiExecutor(config=settings)
         self._codex_executor = CodexCLIExecutor()
         self._codebuddy_executor = CodebuddyCLIExecutor()
@@ -56,7 +56,7 @@ class StreamHandler:
 
         Notes:
         - Backward compat: unknown provider still uses Claude backend.
-        - Slash commands are local operations; always route them to CCR.
+        - Slash commands are local operations; always route them to CLIExecutor.
         """
         try:
             content = (getattr(request_model, "content", "") or "").strip()
@@ -64,7 +64,7 @@ class StreamHandler:
             content = ""
 
         if content.startswith("/"):
-            return self._ccr_executor
+            return self._cli_executor
 
         provider_lower = (provider or "").strip().lower()
         if provider_lower in ("gemini", "gemini-internal"):
@@ -73,7 +73,7 @@ class StreamHandler:
             return self._codex_executor
         elif provider_lower == "codebuddy":
             return self._codebuddy_executor
-        return self._ccr_executor
+        return self._cli_executor
 
     def _get_agui_adapter(self, provider: str):
         provider_lower = (provider or "").strip().lower()
@@ -93,7 +93,6 @@ class StreamHandler:
     ) -> StreamingResponse:
         """处理 AG-UI 协议请求"""
         provider = self._get_provider(request, body_dict)
-        adapter = self._get_agui_adapter(provider)
         
         try:
             agui_request = AGUIRequest.model_validate(body_dict)
@@ -108,9 +107,46 @@ class StreamHandler:
         if not legacy_data.get("user"):
             legacy_data["user"] = "anonymous"
         request_model = RequestModel.model_validate(legacy_data)
+
+        # In /workspace -t mode, the workspace provider (stored in Redis session)
+        # should override the request-level provider for executor and adapter selection.
+        # Without this, a workspace using gemini-internal would get a Claude executor/adapter.
+        session_id = request_model.session_id or agui_request.threadId
+        workspace_provider = None
+        workspace_alias = None
+        if session_id:
+            try:
+                storage = get_session_storage()
+                workspace_provider = storage.get_workspace_provider(session_id)
+                if workspace_provider:
+                    logger.info(
+                        f"Workspace provider override for executor/adapter selection: {provider} -> {workspace_provider}",
+                        extra={"session_id": session_id, "workspace_provider": workspace_provider}
+                    )
+                    provider = workspace_provider
+                # Also restore the original alias (e.g., 'gemini-internal') for CLI command selection
+                workspace_alias = storage.get_workspace_alias(session_id)
+                if workspace_alias:
+                    logger.info(f"Workspace alias restored: {workspace_alias}")
+                # Set exec_dir override (cwd) for non-CLIExecutor executors (e.g., GeminiExecutor)
+                exec_dir_override = storage.get_exec_dir_override(session_id)
+                if exec_dir_override:
+                    request_model.cwd = exec_dir_override
+                    request_model.cwd_mode = "inplace"
+                    logger.info(f"Workspace exec_dir override: {exec_dir_override}")
+            except Exception as e:
+                logger.warning(f"Failed to check workspace provider/alias: {e}")
+
         request_model.provider = provider
         request_model.agent_type = provider
+        # Set alias on request_model so executors (e.g., GeminiExecutor) use the correct CLI command
+        if workspace_alias and not getattr(request_model, "alias", None):
+            request_model.alias = workspace_alias
+        # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
+        if workspace_provider:
+            request_model.run_kind = "chat_continue"
         
+        adapter = self._get_agui_adapter(provider)
         executor = self._get_executor(provider, request_model=request_model)
 
         adapter.init_state(
@@ -200,7 +236,7 @@ class StreamHandler:
         """支持超时回调的 AG-UI 流式处理
         
         在 5分30秒 时发送超时提示并结束 SSE 流，
-        后台继续收集 CCR 回复，完成后通过 response_url 发送剩余结果。
+        后台继续收集 CLI 回复，完成后通过 response_url 发送剩余结果。
         """
         STREAM_TIMEOUT = 330  # 5分30秒
         
@@ -238,7 +274,7 @@ class StreamHandler:
         }
         
         async def producer():
-            """后台生产者：执行 CCR 并收集事件"""
+            """后台生产者：执行 CLI 并收集事件"""
             try:
                 # Initialize archiver
                 await archiver.on_run_started(initial_messages)

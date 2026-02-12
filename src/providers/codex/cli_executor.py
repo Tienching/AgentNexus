@@ -72,7 +72,7 @@ class CodexCLIExecutor(BaseExecutor):
     ) -> AsyncGenerator[str, None]:
         """Execute Codex CLI and yield stream output.
         
-        This method signature matches CCRExecutor for compatibility with StreamOrchestrator.
+        This method signature matches CLIExecutor for compatibility with StreamOrchestrator.
         
         Args:
             request: RequestModel instance (from server layer)
@@ -170,8 +170,10 @@ class CodexCLIExecutor(BaseExecutor):
         """
         cleaned_content, model_param = self._parse_model_param(context.content)
         
+        # Use alias as CLI command name if provided, otherwise default
+        cli_command = (getattr(context, "alias", None) or "").strip() or self.codex_config.codex_command
         cmd = [
-            self.codex_config.codex_command,
+            cli_command,
             "exec",
             "--json",
         ]
@@ -194,6 +196,12 @@ class CodexCLIExecutor(BaseExecutor):
         
         # Add the prompt
         cmd.append(cleaned_content)
+        
+        # When continuing a chat session, append "resume --last" after the prompt
+        # Format: codex-internal exec [options] "prompt" resume --last
+        is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
+        if is_chat_continue:
+            cmd.extend(["resume", "--last"])
         
         return cmd
     

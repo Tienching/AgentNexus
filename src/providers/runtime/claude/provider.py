@@ -2,7 +2,7 @@
 """
 Claude Provider 实现
 
-将 Claude Code (CCR) 的 raw 输出转换为统一事件流。
+将 Claude Code (CLI Executor) 的 raw 输出转换为统一事件流。
 """
 
 import json
@@ -22,11 +22,11 @@ from src.runtime.events import (
     ErrorEvent,
     SystemEvent,
 )
-from src.runtime.executors import CCRExecutor, RequestContext
+from src.runtime.executors import CLIExecutor, RequestContext
 
 
 class ClaudeProvider:
-    """Claude Provider - 包装 CCR Executor 并转换为统一事件"""
+    """Claude Provider - 包装 CLI Executor 并转换为统一事件"""
     
     name: str = "claude"
     
@@ -43,7 +43,7 @@ class ClaudeProvider:
         """获取底层执行器"""
         if self._executor is None:
             # Use runtime executor (no API layer dependency)
-            self._executor = CCRExecutor()
+            self._executor = CLIExecutor()
         return self._executor
     
     def set_executor(self, executor: Executor) -> None:

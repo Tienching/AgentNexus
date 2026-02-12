@@ -204,7 +204,7 @@ class StreamArchiver:
         This method dispatches to specific handlers based on event type.
         
         Args:
-            event_data: Raw event data from CCR
+            event_data: Raw event data from CLI
         """
         try:
             event_type = event_data.get("type", "")

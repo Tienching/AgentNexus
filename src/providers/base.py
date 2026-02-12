@@ -44,6 +44,7 @@ class RequestContext:
     cwd: Optional[str] = None
     cwd_mode: str = ""
     run_kind: str = ""
+    alias: Optional[str] = None  # CLI command name override
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
@@ -57,6 +58,7 @@ class RequestContext:
             cwd=getattr(model, "cwd", None),
             cwd_mode=getattr(model, "cwd_mode", "") or "",
             run_kind=getattr(model, "run_kind", "") or "",
+            alias=getattr(model, "alias", None) or None,
         )
 
 
@@ -98,7 +100,7 @@ class BaseExecutor(ABC):
     def resolve_exec_dir(self, context: RequestContext) -> Path:
         """Resolve the execution directory.
         
-        Logic mirrors CCR behavior:
+        Logic mirrors CLIExecutor behavior:
         - If cwd_mode="inplace" and cwd is set, use that directly
         - Otherwise, use session-based directory under user home
         """

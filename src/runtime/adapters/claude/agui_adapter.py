@@ -853,7 +853,7 @@ class AGUIAdapter(BaseAdapter):
     def _handle_result_event(self, event: Dict[str, Any]) -> Optional[str]:
         """处理 result 事件
         
-        当 CCR 返回错误时（is_error=true），发送错误文本消息和 RUN_ERROR 事件通知前端
+        当 CLI 返回错误时（is_error=true），发送错误文本消息和 RUN_ERROR 事件通知前端
         """
         is_error = event.get("is_error", False)
         
@@ -864,7 +864,7 @@ class AGUIAdapter(BaseAdapter):
             # 记录错误日志
             import logging
             logger = logging.getLogger(__name__)
-            logger.error(f"CCR returned error: {error_msg}")
+            logger.error(f"CLI returned error: {error_msg}")
             
             results = []
             

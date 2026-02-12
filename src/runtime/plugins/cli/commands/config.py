@@ -69,15 +69,15 @@ class ConfigCommand(BaseCommand):
                 ("WHATSAPP_BRIDGE_URL", "WhatsApp Bridge URL (ws://...)", ""),
                 ("WHATSAPP_BRIDGE_AUTH_TOKEN", "WhatsApp Bridge Auth Token (可选)", ""),
                 ("WHATSAPP_SESSION_NAME", "WhatsApp Session 名称", "default"),
-                ("SIGNAL_API_URL", "Signal API URL", "http://localhost:8080"),
+                ("SIGNAL_API_URL", "Signal API URL", "http://localhost:8081"),
                 ("SIGNAL_PHONE_NUMBER", "Signal 绑定手机号 (+123456)", ""),
             ],
         },
         "providers": {
             "title": "Provider 配置",
             "keys": [
-                ("CCR_COMMAND", "Claude CLI 命令", "claude"),
-                ("CCR_TIMEOUT", "Claude CLI 超时（秒）", "120"),
+                ("CLI_COMMAND", "CLI 执行命令（默认 Provider）", "claude"),
+                ("CLI_TIMEOUT", "CLI 执行超时（秒）", "120"),
                 ("GEMINI_COMMAND", "Gemini CLI 命令", "gemini"),
             ],
         },

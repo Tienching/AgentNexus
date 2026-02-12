@@ -369,7 +369,7 @@ class TestChannelService:
         monkeypatch.setattr(settings, "whatsapp_bridge_auth_token", "token")
         monkeypatch.setattr(settings, "whatsapp_session_name", "test")
         monkeypatch.setattr(settings, "signal_phone_number", "+123")
-        monkeypatch.setattr(settings, "signal_api_url", "http://localhost:8080")
+        monkeypatch.setattr(settings, "signal_api_url", "http://localhost:8081")
 
         service = ChannelService()
         ok = await service.initialize()

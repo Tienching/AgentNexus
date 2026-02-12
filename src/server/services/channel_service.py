@@ -198,7 +198,7 @@ class ChannelService:
 
     async def _process_with_ai(self, message: InboundMessage, session_id: str) -> Optional[str]:
         """使用 AI 处理消息"""
-        from ..services import CCRExecutor
+        from ..services import CLIExecutor
         from ..models import RequestModel
         
         # 构建请求
@@ -210,7 +210,7 @@ class ChannelService:
         )
         
         # 创建执行器
-        executor = CCRExecutor(config=settings)
+        executor = CLIExecutor(config=settings)
         
         # 使用配置的 exec_user 名称（默认是 "ubuntu"）
         exec_user = settings.exec_user or "ubuntu"
@@ -218,7 +218,7 @@ class ChannelService:
         # 收集响应
         response_parts = []
         
-        timeout = settings.ccr_timeout or 120
+        timeout = settings.cli_timeout or 120
 
         try:
             async with asyncio.timeout(timeout):
@@ -226,7 +226,7 @@ class ChannelService:
                     if not output:
                         continue
 
-                    logger.debug(f"CCR output: {output[:200] if len(output) > 200 else output}")
+                    logger.debug(f"CLI output: {output[:200] if len(output) > 200 else output}")
 
                     try:
                         data = json.loads(output)
