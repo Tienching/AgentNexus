@@ -727,12 +727,13 @@ async def create_task(
     if not desc:
         raise HTTPException(status_code=400, detail="description is required")
 
-    default_provider = (settings.default_provider or "").strip().lower() or "claude"
+    default_provider = (settings.default_provider or "").strip().lower() or "codebuddy"
+    default_alias = (settings.default_alias or "").strip().lower()
     provider = (request.provider or "").strip().lower() or default_provider
     allowed = set(get_provider_registry().list_providers())
     if provider not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
-    alias_value = (request.alias or "").strip() or provider
+    alias_value = (request.alias or "").strip() or default_alias or provider
 
     default_exec_user = (settings.default_exec_user or "").strip() or None
     effective_exec_user = (request.exec_user or "").strip() or default_exec_user
@@ -791,7 +792,8 @@ async def bulk_create_tasks(
     
     queue = _get_task_queue(exec_user)
     allowed_providers = set(get_provider_registry().list_providers())
-    default_provider = (settings.default_provider or "").strip().lower() or "claude"
+    default_provider = (settings.default_provider or "").strip().lower() or "codebuddy"
+    default_alias = (settings.default_alias or "").strip().lower()
     default_exec_user = (settings.default_exec_user or "").strip() or None
     
     created: List[TaskItem] = []
@@ -811,7 +813,7 @@ async def bulk_create_tasks(
             if provider not in allowed_providers:
                 errors.append({"index": str(idx), "error": f"Invalid provider: {provider}"})
                 continue
-            alias_value = (getattr(task_req, "alias", None) or "").strip() or provider
+            alias_value = (getattr(task_req, "alias", None) or "").strip() or default_alias or provider
 
             effective_exec_user = (task_req.exec_user or "").strip() or default_exec_user
             

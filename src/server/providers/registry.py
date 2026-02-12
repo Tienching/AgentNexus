@@ -121,9 +121,9 @@ class ProviderRegistry:
 
         name = resolved.provider_name if resolved.provider_name else "claude"
         # Map backend based on provider name
-        if name in ("gemini", "gemini-internal"):
+        if name == "gemini":
             backend = "gemini"
-        elif name in ("codex", "codex-internal"):
+        elif name == "codex":
             backend = "codex"
         elif name == "codebuddy":
             backend = "codebuddy"

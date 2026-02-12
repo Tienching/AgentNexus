@@ -285,7 +285,7 @@ class AGUIRequest(BaseModel):
     
     def to_legacy_request(self) -> Dict[str, Any]:
         """转换为易事厅请求格式"""
-        return {
+        result = {
             "user": self.get_username(),
             "content": self.get_user_content(),
             "session_id": self.threadId,
@@ -293,6 +293,11 @@ class AGUIRequest(BaseModel):
             "msg_type": "text",
             "response_url": self.get_response_url() or "",
         }
+        # Include alias from forwardedProps if present
+        alias = self.get_alias()
+        if alias:
+            result["alias"] = alias
+        return result
 
 
 # ============ Event Factory ============

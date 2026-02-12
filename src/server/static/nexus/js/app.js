@@ -2377,6 +2377,66 @@ class TaskView {
         await this.loadTasks(paneId);
     }
 
+    bindTaskEvents(paneId, container) {
+        // Create task button
+        const createBtn = container.querySelector(`[data-action="create-task"]`);
+        if (createBtn) {
+            createBtn.addEventListener('click', () => {
+                this.app.showCreateTaskModal('single');
+            });
+        }
+
+        // Toggle selection mode button
+        const toggleSelectionBtn = container.querySelector(`[data-action="toggle-selection"]`);
+        if (toggleSelectionBtn) {
+            toggleSelectionBtn.addEventListener('click', () => {
+                this.toggleSelectionMode(paneId);
+            });
+        }
+
+        // Select all button
+        const selectAllBtn = container.querySelector(`[data-action="select-all"]`);
+        if (selectAllBtn) {
+            selectAllBtn.addEventListener('click', () => {
+                this.selectAllTasks(paneId);
+            });
+        }
+
+        // Deselect all button
+        const deselectAllBtn = container.querySelector(`[data-action="deselect-all"]`);
+        if (deselectAllBtn) {
+            deselectAllBtn.addEventListener('click', () => {
+                this.deselectAllTasks(paneId);
+            });
+        }
+
+        // Delete selected button
+        const deleteSelectedBtn = container.querySelector(`[data-action="delete-selected"]`);
+        if (deleteSelectedBtn) {
+            deleteSelectedBtn.addEventListener('click', () => {
+                this.deleteSelectedTasks(paneId);
+            });
+        }
+
+        // Search input
+        const searchInput = document.getElementById(`taskSearch-${paneId}`);
+        if (searchInput) {
+            let timeout;
+            searchInput.addEventListener('input', () => {
+                clearTimeout(timeout);
+                timeout = setTimeout(() => this.loadTasks(paneId), 300);
+            });
+        }
+
+        // Project filter
+        const projectFilter = document.getElementById(`taskProjectFilter-${paneId}`);
+        if (projectFilter) {
+            projectFilter.addEventListener('change', () => {
+                this.loadTasks(paneId);
+            });
+        }
+    }
+
     bindEvents(paneId) {
         // Create task button
         const createBtn = document.querySelector(`#pane-${paneId}-content [data-action="create-task"]`);
@@ -3912,10 +3972,7 @@ class NexusApp {
         try {
             const data = await NexusAPI.getAgents();
             const agents = data.agents || [];
-            this.availableAgents = agents.filter(agent => {
-                const agentType = (agent.agent_type || '').toLowerCase();
-                return !agentType.endsWith('-internal');
-            });
+            this.availableAgents = agents;
 
             const select = document.getElementById('globalUserFilter');
             if (select) {
