@@ -85,6 +85,42 @@ class StreamHandler:
             return CodebuddyAGUIAdapter()
         return get_router().get_adapter(ProtocolType.AGUI)
 
+    def _build_summary_from_history(self, session_id: str, max_messages: int = 50) -> str:
+        """Build a summary text from the stored conversation history in Redis.
+
+        Instead of asking the agent (which uses stateless exec mode) to summarise,
+        we construct a condensed view of the recent conversation directly from the
+        ``StoredMessage`` records kept by the archiver.
+        """
+        try:
+            storage = get_session_storage()
+            messages = storage.get_session_messages(session_id)
+            if not messages:
+                return ""
+
+            # Take the most recent messages
+            recent = messages[-max_messages:]
+
+            parts: list[str] = []
+            for msg in recent:
+                role_label = {"user": "用户", "assistant": "助手"}.get(msg.role, msg.role)
+                content = (msg.content or "").strip()
+                if not content:
+                    continue
+                # Truncate very long messages
+                if len(content) > 500:
+                    content = content[:500] + "…(截断)"
+                parts.append(f"[{role_label}] {content}")
+
+            if not parts:
+                return ""
+
+            header = f"以下是之前对话的记录摘要（最近 {len(parts)} 条消息）：\n\n"
+            return header + "\n\n".join(parts)
+        except Exception as e:
+            logger.error(f"Failed to build summary from history: {e}")
+            return ""
+
     async def handle_agui_request(
         self,
         request: Request,
@@ -147,10 +183,10 @@ class StreamHandler:
             request_model.run_kind = "chat_continue"
 
         # Check for pending handoff summary (from /handoff -a)
-        # This replaces user message with summary generation prompt
-        # Must be checked here (not in executor) because different providers use different executors
+        # Build summary from stored conversation history instead of asking the agent,
+        # because CLI agents use stateless exec mode and have no conversation context.
         handoff_pending_target = None
-        if session_id:
+        if session_id and not (request_model.content or "").strip().startswith("/"):
             try:
                 storage = get_session_storage()
                 handoff_pending_target = storage.get_handoff_pending_summary(session_id)
@@ -161,18 +197,26 @@ class StreamHandler:
                     # Clear the pending state immediately
                     storage.clear_handoff_pending_summary(session_id)
 
-                    # Replace user message with summary generation request
-                    summary_prompt = f"""请总结当前对话的核心内容，包括：
-
-1. **已完成的工作** - 主要完成的任务和改动
-2. **未完成的任务** - 还在进行中或待办的事项
-3. **重要决策和代码变更** - 关键的技术决策和代码修改
-
-这个摘要将传递给下一个 Agent ({handoff_pending_target}) 作为上下文，帮助新 Agent 无缝继续工作。
-
-请直接输出摘要内容，不需要多余的解释。"""
-
-                    request_model.content = summary_prompt
+                    # Build summary from stored conversation history in Redis
+                    summary_text = self._build_summary_from_history(session_id)
+                    if summary_text:
+                        storage.set_handoff_context(
+                            session_id,
+                            summary_text,
+                            handoff_pending_target,
+                        )
+                        logger.info(
+                            f"Built handoff summary from history ({len(summary_text)} chars)",
+                            extra={"session_id": session_id, "target": handoff_pending_target},
+                        )
+                    else:
+                        logger.warning(
+                            f"No conversation history to build summary, handoff will proceed without context",
+                            extra={"session_id": session_id},
+                        )
+                    # Summary is built inline; no need to ask the agent.
+                    # Clear handoff_pending_target so downstream won't try to collect from stream.
+                    handoff_pending_target = None
             except Exception as e:
                 logger.warning(f"Failed to check pending handoff summary: {e}")
 
@@ -262,7 +306,6 @@ class StreamHandler:
         if response_url:
             return await self._stream_agui_with_callback(
                 request, request_model, agui_request, adapter, exec_user, executor, provider,
-                handoff_pending_target=handoff_pending_target,
             )
         
         # 标准 AG-UI 流式处理
@@ -297,8 +340,6 @@ class StreamHandler:
                 archiver=archiver,
                 initial_messages=initial_messages,
                 exec_user=exec_user,
-                handoff_pending_target=handoff_pending_target,
-                session_id=session_id,
             ),
             media_type="text/event-stream",
             headers={
@@ -318,7 +359,6 @@ class StreamHandler:
         exec_user: str,
         executor,
         provider: str = "claude",
-        handoff_pending_target: str = None,
     ) -> StreamingResponse:
         """支持超时回调的 AG-UI 流式处理
         
@@ -362,7 +402,6 @@ class StreamHandler:
         
         async def producer():
             """后台生产者：执行 CLI 并收集事件"""
-            summary_text_parts = [] if handoff_pending_target else None
             try:
                 # Initialize archiver
                 await archiver.on_run_started(initial_messages)
@@ -375,17 +414,6 @@ class StreamHandler:
                         event_data = json.loads(line)
                         converted = adapter.convert(event_data)
                         
-                        # Collect text for handoff summary from raw events
-                        if summary_text_parts is not None:
-                            try:
-                                event = event_data.get("event", {})
-                                if event_data.get("type") == "stream_event" and event.get("type") == "content_block_delta":
-                                    delta = event.get("delta", {})
-                                    if delta.get("type") == "text_delta":
-                                        summary_text_parts.append(delta.get("text", ""))
-                            except Exception:
-                                pass
-                        
                         # Archive converted AG-UI events asynchronously
                         if converted:
                             for _evt in converted.split('\n\n'):
@@ -395,14 +423,6 @@ class StreamHandler:
                                 if _evt.startswith('data:'):
                                     try:
                                         payload = _evt.replace('data:', '', 1).strip()
-                                        # Also collect text from AG-UI TEXT_MESSAGE_CONTENT events
-                                        if summary_text_parts is not None:
-                                            try:
-                                                payload_data = json.loads(payload)
-                                                if payload_data.get("type") == "TEXT_MESSAGE_CONTENT":
-                                                    summary_text_parts.append(payload_data.get("delta", ""))
-                                            except Exception:
-                                                pass
                                         asyncio.create_task(archiver.archive_event(json.loads(payload)))
                                     except Exception:
                                         pass
@@ -428,25 +448,6 @@ class StreamHandler:
             finally:
                 stream_state["producer_done"] = True
                 await message_queue.put(("done", None))
-                
-                # Store summary as handoff context for next message
-                if handoff_pending_target and summary_text_parts:
-                    summary_text = "".join(summary_text_parts).strip()
-                    if summary_text:
-                        try:
-                            storage = get_session_storage()
-                            _session_id = request_model.session_id or agui_request.threadId
-                            storage.set_handoff_context(
-                                _session_id,
-                                summary_text,
-                                handoff_pending_target,
-                            )
-                            logger.info(f"Stored handoff summary ({len(summary_text)} chars) for next switch", extra={
-                                "session_id": _session_id,
-                                "target": handoff_pending_target,
-                            })
-                        except Exception as e:
-                            logger.error(f"Failed to store handoff summary: {e}")
                 
                 # Finalize archiver
                 if not stream_state.get("error_occurred"):
