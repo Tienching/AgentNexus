@@ -84,6 +84,7 @@ KNOWN_SLASH_COMMANDS = [
     "/chat",
     "/workspace",
     "/config",
+    "/handoff",
     "/exit",
 ]
 
@@ -100,6 +101,7 @@ DEFAULT_SUBCMD: Dict[str, Optional[str]] = {
     "chat": "history",
     "workspace": "switch",
     "config": "show",
+    "handoff": "now",
     "exit": "now",
 }
 
@@ -243,6 +245,18 @@ SPECS: List[CommandSpec] = [
         cmd="config",
         subcmd="concurrency",
         options=(OptionDef(short="c", long="concurrency", type="boolean", required=False, default=True),),
+    ),
+    # handoff
+    CommandSpec(
+        cmd="handoff",
+        subcmd="now",
+        options=(
+            OptionDef(short="r", long="provider", type="string", required=False),
+            OptionDef(short="l", long="alias", type="string", required=False),
+            OptionDef(short="a", long="auto", type="boolean", required=False, default=False),
+        ),
+        allow_free_text=True,
+        free_text_required=False,
     ),
     # exit
     CommandSpec(cmd="exit", subcmd="now"),
