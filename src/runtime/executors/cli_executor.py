@@ -142,7 +142,104 @@ class CLIExecutor(BaseExecutor):
         
         # Resolve execution directory
         exec_dir = await self._resolve_exec_dir(context)
-        
+
+        # Check for pending handoff summary request (from /handoff -a)
+        # This must be checked BEFORE handoff_context
+        handoff_pending_target = None
+        if context.session_id:
+            try:
+                from ..stores.session_storage import get_session_storage
+                storage = get_session_storage()
+                handoff_pending_target = storage.get_handoff_pending_summary(context.session_id)
+                if handoff_pending_target:
+                    logger.info(f"Found pending handoff summary for session {context.session_id}: target={handoff_pending_target}")
+                    # Clear the pending state
+                    storage.clear_handoff_pending_summary(context.session_id)
+            except Exception as e:
+                logger.warning(f"Failed to check pending handoff summary: {e}")
+
+        # If pending summary, inject summary request instead of user message
+        if handoff_pending_target:
+            summary_prompt = f"""请总结当前对话的核心内容，包括：
+
+1. **已完成的工作** - 主要完成的任务和改动
+2. **未完成的任务** - 还在进行中或待办的事项
+3. **重要决策和代码变更** - 关键的技术决策和代码修改
+
+这个摘要将传递给下一个 Agent ({handoff_pending_target}) 作为上下文，帮助新 Agent 无缝继续工作。
+
+请直接输出摘要内容，不需要多余的解释。"""
+
+            # Replace current message with summary request
+            injected_content = f"""[Agent 切换准备]
+
+用户请求切换到 {handoff_pending_target}，需要你生成当前对话的摘要。
+
+{summary_prompt}
+
+---
+（用户的原始消息将在摘要生成后由新 Agent 处理）"""
+
+            context = RequestContext(
+                session_id=context.session_id,
+                user=context.user,
+                exec_user=context.exec_user,
+                content=injected_content,
+                cwd=context.cwd,
+                cwd_mode=context.cwd_mode,
+                run_kind=context.run_kind,
+                alias=context.alias,  # Keep current provider
+            )
+            cleaned_content = injected_content
+
+            # Store target for later use after stream ends
+            self._handoff_summary_target = handoff_pending_target
+            self._handoff_session_id = context.session_id
+
+        # Check for handoff context (Agent switching via /handoff command)
+        handoff_context = None
+        handoff_provider = None
+        if context.session_id and not handoff_pending_target:
+            try:
+                from ..stores.session_storage import get_session_storage
+                storage = get_session_storage()
+                handoff_result = storage.get_handoff_context(context.session_id)
+                if handoff_result:
+                    handoff_context, handoff_provider = handoff_result
+                    logger.info(f"Found handoff context for session {context.session_id}: target={handoff_provider}")
+                    # Clear the handoff context after retrieving
+                    storage.clear_handoff_context(context.session_id)
+            except Exception as e:
+                logger.warning(f"Failed to check handoff context: {e}")
+
+        # Inject handoff context as initial prompt
+        if handoff_context and handoff_provider:
+            # Prepend handoff context to the message
+            injected_content = f"""[Handoff Context - 从上一个 Agent 切换]
+
+以下是上一个 Agent 传递的上下文摘要：
+
+{handoff_context}
+
+---
+
+请基于以上上下文继续工作。
+
+用户的当前请求：
+{cleaned_content}"""
+            context = RequestContext(
+                session_id=context.session_id,
+                user=context.user,
+                exec_user=context.exec_user,
+                content=injected_content,
+                cwd=context.cwd,
+                cwd_mode=context.cwd_mode,
+                run_kind=context.run_kind,
+                alias=handoff_provider,  # Switch to target provider
+            )
+            # Also update cleaned_content
+            cleaned_content = injected_content
+
         # Build command
         is_inplace = context.cwd_mode == "inplace"
         is_chat_continue = context.run_kind == "chat_continue"
@@ -169,10 +266,48 @@ class CLIExecutor(BaseExecutor):
         try:
             process = await self.run_subprocess(final_cmd)
             
+            # Collect summary text if in handoff summary mode
+            summary_text_parts = []
+            is_summary_mode = hasattr(self, '_handoff_summary_target') and self._handoff_summary_target
+            
             async for output in self._process_stream(process, output_format):
+                # Collect text content for summary
+                if is_summary_mode and output_format != "raw":
+                    try:
+                        data = json.loads(output)
+                        if data.get("type") == "stream_event":
+                            event = data.get("event", {})
+                            if event.get("type") == "content_block_delta":
+                                delta = event.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    summary_text_parts.append(delta.get("text", ""))
+                    except:
+                        pass
                 yield output
             
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
+            
+            # Store summary and set handoff context for next message
+            if is_summary_mode and summary_text_parts:
+                summary_text = "".join(summary_text_parts).strip()
+                if summary_text and hasattr(self, '_handoff_session_id'):
+                    try:
+                        from ..stores.session_storage import get_session_storage
+                        storage = get_session_storage()
+                        storage.set_handoff_context(
+                            self._handoff_session_id,
+                            summary_text,
+                            self._handoff_summary_target
+                        )
+                        logger.info(f"Stored handoff summary for session {self._handoff_session_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to store handoff summary: {e}")
+            
+            # Clear handoff summary state
+            if hasattr(self, '_handoff_summary_target'):
+                delattr(self, '_handoff_summary_target')
+            if hasattr(self, '_handoff_session_id'):
+                delattr(self, '_handoff_session_id')
             
             duration = time.time() - start_time
             logger.info(f"CLI processing completed", extra={

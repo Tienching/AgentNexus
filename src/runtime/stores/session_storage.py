@@ -365,6 +365,134 @@ class SessionStorage:
             logger.error(f"Failed to clear workspace provider: {e}")
             return False
 
+    # ============ Handoff Context (Agent Switching) ============
+
+    def set_handoff_context(self, session_id: str, context: str, target_provider_or_alias: str) -> bool:
+        """Store handoff context for agent switching.
+
+        When switching agents, the current agent generates a summary which is
+        stored here. The new agent will receive this as initial context.
+
+        Args:
+            session_id: Current session ID
+            context: Summary/context text from previous agent
+            target_provider_or_alias: The provider or alias to switch to
+                                     (used as CLI command name, e.g., 'codex' or 'gemini-internal')
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {
+                "handoff_context": context,
+                "handoff_target_provider": target_provider_or_alias,
+            })
+            logger.info(f"Set handoff context: {session_id} -> {target_provider_or_alias}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set handoff context: {e}")
+            return False
+
+    def get_handoff_context(self, session_id: str) -> Optional[Tuple[str, str]]:
+        """Get handoff context if set.
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Tuple of (context, target_provider) if set, None otherwise.
+            Context may be empty string if summary is pending.
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            context = self._redis.hget(key, "handoff_context")
+            target_provider = self._redis.hget(key, "handoff_target_provider")
+            # Return if target_provider is set (context can be empty string)
+            if target_provider:
+                return (context or "", target_provider)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get handoff context: {e}")
+            return None
+
+    def clear_handoff_context(self, session_id: str) -> bool:
+        """Clear handoff context after it has been consumed.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "handoff_context", "handoff_target_provider")
+            logger.info(f"Cleared handoff context: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear handoff context: {e}")
+            return False
+
+    def set_handoff_pending_summary(self, session_id: str, target_provider_or_alias: str) -> bool:
+        """Store pending handoff summary request.
+
+        When user requests /handoff -a, we set this flag. The next message
+        will trigger the current agent to generate a summary first.
+
+        Args:
+            session_id: Current session ID
+            target_provider_or_alias: The provider or alias to switch to after summary
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {
+                "handoff_pending_summary": target_provider_or_alias,
+            })
+            logger.info(f"Set handoff pending summary: {session_id} -> {target_provider_or_alias}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set handoff pending summary: {e}")
+            return False
+
+    def get_handoff_pending_summary(self, session_id: str) -> Optional[str]:
+        """Get pending handoff summary target provider.
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            Target provider/alias if pending, None otherwise
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            target = self._redis.hget(key, "handoff_pending_summary")
+            return target
+        except Exception as e:
+            logger.error(f"Failed to get handoff pending summary: {e}")
+            return None
+
+    def clear_handoff_pending_summary(self, session_id: str) -> bool:
+        """Clear pending handoff summary request.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "handoff_pending_summary")
+            logger.info(f"Cleared handoff pending summary: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear handoff pending summary: {e}")
+            return False
+
     def set_claude_session_id(self, session_id: str, claude_session_id: str) -> bool:
         """Store Claude CLI session UUID for resumption.
 
