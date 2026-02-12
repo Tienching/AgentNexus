@@ -145,6 +145,89 @@ class StreamHandler:
         # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
         if workspace_provider:
             request_model.run_kind = "chat_continue"
+
+        # Check for pending handoff summary (from /handoff -a)
+        # This replaces user message with summary generation prompt
+        # Must be checked here (not in executor) because different providers use different executors
+        handoff_pending_target = None
+        if session_id:
+            try:
+                storage = get_session_storage()
+                handoff_pending_target = storage.get_handoff_pending_summary(session_id)
+                if handoff_pending_target:
+                    logger.info(f"Found pending handoff summary: target={handoff_pending_target}", extra={
+                        "session_id": session_id,
+                    })
+                    # Clear the pending state immediately
+                    storage.clear_handoff_pending_summary(session_id)
+
+                    # Replace user message with summary generation request
+                    summary_prompt = f"""请总结当前对话的核心内容，包括：
+
+1. **已完成的工作** - 主要完成的任务和改动
+2. **未完成的任务** - 还在进行中或待办的事项
+3. **重要决策和代码变更** - 关键的技术决策和代码修改
+
+这个摘要将传递给下一个 Agent ({handoff_pending_target}) 作为上下文，帮助新 Agent 无缝继续工作。
+
+请直接输出摘要内容，不需要多余的解释。"""
+
+                    request_model.content = summary_prompt
+            except Exception as e:
+                logger.warning(f"Failed to check pending handoff summary: {e}")
+
+        # Check for handoff context (agent switching via /handoff command)
+        # This overrides provider/alias for this request and injects context
+        handoff_context = None
+        handoff_target = None
+        if session_id:
+            try:
+                storage = get_session_storage()
+                handoff_result = storage.get_handoff_context(session_id)
+                if handoff_result:
+                    handoff_context, handoff_target = handoff_result
+                    if handoff_context and handoff_target:
+                        logger.info(
+                            f"Handoff context found, switching provider",
+                            extra={
+                                "session_id": session_id,
+                                "target": handoff_target,
+                                "context_length": len(handoff_context),
+                            }
+                        )
+                        # Clear handoff context after consuming
+                        storage.clear_handoff_context(session_id)
+
+                        # Resolve provider from alias
+                        from src.runtime.stores.alias_registry import get_alias_registry
+                        alias_registry = get_alias_registry()
+                        resolved_provider = alias_registry.resolve(handoff_target)
+                        if resolved_provider:
+                            provider = resolved_provider
+                        else:
+                            # Try as direct provider name
+                            provider = handoff_target
+
+                        request_model.provider = provider
+                        request_model.agent_type = provider
+                        request_model.alias = handoff_target
+
+                        # Inject handoff context into user message
+                        original_content = request_model.content
+                        request_model.content = f"""[Handoff Context - 从上一个 Agent 切换]
+
+以下是上一个 Agent 传递的上下文摘要：
+
+{handoff_context}
+
+---
+
+请基于以上上下文继续工作。
+
+用户的当前请求：
+{original_content}"""
+            except Exception as e:
+                logger.warning(f"Failed to check handoff context: {e}")
         
         adapter = self._get_agui_adapter(provider)
         executor = self._get_executor(provider, request_model=request_model)
@@ -178,7 +261,8 @@ class StreamHandler:
         # 如果有 response_url，启用超时回调模式
         if response_url:
             return await self._stream_agui_with_callback(
-                request, request_model, agui_request, adapter, exec_user, executor, provider
+                request, request_model, agui_request, adapter, exec_user, executor, provider,
+                handoff_pending_target=handoff_pending_target,
             )
         
         # 标准 AG-UI 流式处理
@@ -232,6 +316,7 @@ class StreamHandler:
         exec_user: str,
         executor,
         provider: str = "claude",
+        handoff_pending_target: str = None,
     ) -> StreamingResponse:
         """支持超时回调的 AG-UI 流式处理
         
@@ -275,6 +360,7 @@ class StreamHandler:
         
         async def producer():
             """后台生产者：执行 CLI 并收集事件"""
+            summary_text_parts = [] if handoff_pending_target else None
             try:
                 # Initialize archiver
                 await archiver.on_run_started(initial_messages)
@@ -287,6 +373,17 @@ class StreamHandler:
                         event_data = json.loads(line)
                         converted = adapter.convert(event_data)
                         
+                        # Collect text for handoff summary from raw events
+                        if summary_text_parts is not None:
+                            try:
+                                event = event_data.get("event", {})
+                                if event_data.get("type") == "stream_event" and event.get("type") == "content_block_delta":
+                                    delta = event.get("delta", {})
+                                    if delta.get("type") == "text_delta":
+                                        summary_text_parts.append(delta.get("text", ""))
+                            except Exception:
+                                pass
+                        
                         # Archive converted AG-UI events asynchronously
                         if converted:
                             for _evt in converted.split('\n\n'):
@@ -296,6 +393,14 @@ class StreamHandler:
                                 if _evt.startswith('data:'):
                                     try:
                                         payload = _evt.replace('data:', '', 1).strip()
+                                        # Also collect text from AG-UI TEXT_MESSAGE_CONTENT events
+                                        if summary_text_parts is not None:
+                                            try:
+                                                payload_data = json.loads(payload)
+                                                if payload_data.get("type") == "TEXT_MESSAGE_CONTENT":
+                                                    summary_text_parts.append(payload_data.get("delta", ""))
+                                            except Exception:
+                                                pass
                                         asyncio.create_task(archiver.archive_event(json.loads(payload)))
                                     except Exception:
                                         pass
@@ -321,6 +426,25 @@ class StreamHandler:
             finally:
                 stream_state["producer_done"] = True
                 await message_queue.put(("done", None))
+                
+                # Store summary as handoff context for next message
+                if handoff_pending_target and summary_text_parts:
+                    summary_text = "".join(summary_text_parts).strip()
+                    if summary_text:
+                        try:
+                            storage = get_session_storage()
+                            _session_id = request_model.session_id or agui_request.threadId
+                            storage.set_handoff_context(
+                                _session_id,
+                                summary_text,
+                                handoff_pending_target,
+                            )
+                            logger.info(f"Stored handoff summary ({len(summary_text)} chars) for next switch", extra={
+                                "session_id": _session_id,
+                                "target": handoff_pending_target,
+                            })
+                        except Exception as e:
+                            logger.error(f"Failed to store handoff summary: {e}")
                 
                 # Finalize archiver
                 if not stream_state.get("error_occurred"):
