@@ -85,12 +85,11 @@ class StreamHandler:
             return CodebuddyAGUIAdapter()
         return get_router().get_adapter(ProtocolType.AGUI)
 
-    def _build_summary_from_history(self, session_id: str, max_messages: int = 50) -> str:
-        """Build a summary text from the stored conversation history in Redis.
+    def _build_conversation_history_text(self, session_id: str, max_messages: int = 50) -> str:
+        """Build a formatted conversation history text from Redis stored messages.
 
-        Instead of asking the agent (which uses stateless exec mode) to summarise,
-        we construct a condensed view of the recent conversation directly from the
-        ``StoredMessage`` records kept by the archiver.
+        This is used to provide the current Agent with conversation context so it
+        can generate an intelligent summary — even in stateless ``exec`` mode.
         """
         try:
             storage = get_session_storage()
@@ -98,7 +97,6 @@ class StreamHandler:
             if not messages:
                 return ""
 
-            # Take the most recent messages
             recent = messages[-max_messages:]
 
             parts: list[str] = []
@@ -107,19 +105,114 @@ class StreamHandler:
                 content = (msg.content or "").strip()
                 if not content:
                     continue
-                # Truncate very long messages
-                if len(content) > 500:
-                    content = content[:500] + "…(截断)"
+                # Truncate very long messages to keep prompt reasonable
+                if len(content) > 800:
+                    content = content[:800] + "…(截断)"
                 parts.append(f"[{role_label}] {content}")
 
             if not parts:
                 return ""
 
-            header = f"以下是之前对话的记录摘要（最近 {len(parts)} 条消息）：\n\n"
-            return header + "\n\n".join(parts)
+            return "\n\n".join(parts)
         except Exception as e:
-            logger.error(f"Failed to build summary from history: {e}")
+            logger.error(f"Failed to build conversation history text: {e}")
             return ""
+
+    def _build_summary_prompt(self, conversation_history: str, target: str) -> str:
+        """Build a prompt that asks the agent to summarise the conversation."""
+        return f"""请总结以下对话的核心内容，包括：
+
+1. **已完成的工作** - 主要完成的任务和改动
+2. **未完成的任务** - 还在进行中或待办的事项
+3. **重要决策和代码变更** - 关键的技术决策和代码修改
+
+这个摘要将传递给下一个 Agent ({target}) 作为上下文，帮助新 Agent 无缝继续工作。
+
+请直接输出摘要内容，不需要多余的解释。
+
+---
+
+以下是需要总结的对话记录：
+
+{conversation_history}"""
+
+    def _prepare_summary_prompt(self, session_id: str, target: str) -> str:
+        """Build a summary prompt by fetching conversation history from Redis.
+
+        Shared helper used by both the inline ``/handoff -a`` path and the
+        fallback ``pending_summary`` path to avoid code duplication.
+        """
+        conversation_history = self._build_conversation_history_text(session_id)
+        if conversation_history:
+            return self._build_summary_prompt(conversation_history, target)
+        else:
+            logger.warning(
+                "No conversation history found for summary generation",
+                extra={"session_id": session_id},
+            )
+            return self._build_summary_prompt(
+                "(对话记录为空，没有可总结的内容)", target
+            )
+
+    def _try_inline_handoff_auto(
+        self,
+        session_id: str,
+        content: str,
+        request_model: RequestModel,
+    ) -> str | None:
+        """Try to handle ``/handoff ... -a`` inline in the current request.
+
+        If the slash command is a valid ``/handoff -a`` (auto-summary), this
+        method resolves the target, builds the summary prompt and rewrites
+        ``request_model.content`` so the request goes through the LLM path
+        (not the CLIExecutor path) to generate the summary immediately.
+
+        Returns:
+            The resolved handoff target alias if handled, ``None`` otherwise.
+        """
+        from src.runtime.commands.slash.parser import parse_slash_command, SlashCommandParseError
+        from src.runtime.stores.alias_registry import get_alias_registry
+
+        try:
+            parsed = parse_slash_command(content)
+        except SlashCommandParseError:
+            return None  # let CLIExecutor handle and show error
+
+        if parsed.cmd != "handoff":
+            return None
+        if not parsed.options.get("auto"):
+            return None
+
+        alias = parsed.options.get("alias")
+        provider_arg = parsed.options.get("provider")
+
+        # Resolve target
+        alias_registry = get_alias_registry()
+        target_alias = None
+        target_provider = provider_arg
+
+        if alias:
+            resolved = alias_registry.resolve(alias)
+            if not resolved:
+                return None  # let CLIExecutor handle and show error
+            target_provider = resolved
+            target_alias = alias
+
+        if not target_provider:
+            return None
+
+        effective_alias = target_alias or target_provider.lower()
+
+        logger.info(
+            f"Inline /handoff -a detected, generating summary immediately",
+            extra={
+                "session_id": session_id,
+                "target": effective_alias,
+            },
+        )
+
+        request_model.content = self._prepare_summary_prompt(session_id, effective_alias)
+        return effective_alias
 
     async def handle_agui_request(
         self,
@@ -147,6 +240,7 @@ class StreamHandler:
         # In /workspace -t mode, the workspace provider (stored in Redis session)
         # should override the request-level provider for executor and adapter selection.
         # Without this, a workspace using gemini would get a Claude executor/adapter.
+        # Priority: workspace_provider (from /workspace -t) > handoff_provider > request default
         session_id = request_model.session_id or agui_request.threadId
         workspace_provider = None
         workspace_alias = None
@@ -160,10 +254,23 @@ class StreamHandler:
                         extra={"session_id": session_id, "workspace_provider": workspace_provider}
                     )
                     provider = workspace_provider
+                else:
+                    # No workspace provider — check for handoff provider
+                    handoff_prov = storage.get_handoff_provider(session_id)
+                    if handoff_prov:
+                        hp, ha = handoff_prov
+                        logger.info(
+                            f"Handoff provider override: {provider} -> {hp}",
+                            extra={"session_id": session_id, "handoff_provider": hp, "handoff_alias": ha}
+                        )
+                        provider = hp
+                        workspace_alias = ha  # reuse variable for alias propagation below
+
                 # Also restore the original alias (e.g., 'gemini-internal') for CLI command selection
-                workspace_alias = storage.get_workspace_alias(session_id)
+                if not workspace_alias:
+                    workspace_alias = storage.get_workspace_alias(session_id)
                 if workspace_alias:
-                    logger.info(f"Workspace alias restored: {workspace_alias}")
+                    logger.info(f"Alias restored: {workspace_alias}")
                 # Set exec_dir override (cwd) for non-CLIExecutor executors (e.g., GeminiExecutor)
                 exec_dir_override = storage.get_exec_dir_override(session_id)
                 if exec_dir_override:
@@ -171,7 +278,7 @@ class StreamHandler:
                     request_model.cwd_mode = "inplace"
                     logger.info(f"Workspace exec_dir override: {exec_dir_override}")
             except Exception as e:
-                logger.warning(f"Failed to check workspace provider/alias: {e}")
+                logger.warning(f"Failed to check workspace/handoff provider/alias: {e}")
 
         request_model.provider = provider
         request_model.agent_type = provider
@@ -182,11 +289,24 @@ class StreamHandler:
         if workspace_provider:
             request_model.run_kind = "chat_continue"
 
-        # Check for pending handoff summary (from /handoff -a)
-        # Build summary from stored conversation history instead of asking the agent,
-        # because CLI agents use stateless exec mode and have no conversation context.
+        # ---- /handoff -a inline handling ----
+        # When the user sends `/handoff ... -a`, we want to generate the summary
+        # *in this very request* instead of deferring to the next message.
+        # Parse the slash command, detect auto-summary, replace content with
+        # summary prompt and let the request proceed through the LLM path.
         handoff_pending_target = None
-        if session_id and not (request_model.content or "").strip().startswith("/"):
+        content_stripped = (request_model.content or "").strip()
+        if session_id and content_stripped.startswith("/handoff") and " -a" in content_stripped:
+            try:
+                handoff_pending_target = self._try_inline_handoff_auto(
+                    session_id, content_stripped, request_model
+                )
+            except Exception as e:
+                logger.warning(f"Failed to process inline handoff auto-summary: {e}")
+
+        # Check for pending handoff summary set by a *previous* request's /handoff -a
+        # (backward compat: if something else set pending_summary, pick it up here)
+        if not handoff_pending_target and session_id and not content_stripped.startswith("/"):
             try:
                 storage = get_session_storage()
                 handoff_pending_target = storage.get_handoff_pending_summary(session_id)
@@ -194,29 +314,10 @@ class StreamHandler:
                     logger.info(f"Found pending handoff summary: target={handoff_pending_target}", extra={
                         "session_id": session_id,
                     })
-                    # Clear the pending state immediately
                     storage.clear_handoff_pending_summary(session_id)
-
-                    # Build summary from stored conversation history in Redis
-                    summary_text = self._build_summary_from_history(session_id)
-                    if summary_text:
-                        storage.set_handoff_context(
-                            session_id,
-                            summary_text,
-                            handoff_pending_target,
-                        )
-                        logger.info(
-                            f"Built handoff summary from history ({len(summary_text)} chars)",
-                            extra={"session_id": session_id, "target": handoff_pending_target},
-                        )
-                    else:
-                        logger.warning(
-                            f"No conversation history to build summary, handoff will proceed without context",
-                            extra={"session_id": session_id},
-                        )
-                    # Summary is built inline; no need to ask the agent.
-                    # Clear handoff_pending_target so downstream won't try to collect from stream.
-                    handoff_pending_target = None
+                    request_model.content = self._prepare_summary_prompt(
+                        session_id, handoff_pending_target
+                    )
             except Exception as e:
                 logger.warning(f"Failed to check pending handoff summary: {e}")
 
@@ -255,6 +356,16 @@ class StreamHandler:
                         request_model.provider = provider
                         request_model.agent_type = provider
                         request_model.alias = handoff_target
+
+                        # Persist the new provider/alias at session level so
+                        # subsequent requests keep using the switched provider
+                        # (without this, handoff only lasts one request).
+                        # Uses independent handoff_provider field so it does
+                        # not overwrite workspace_provider set by /workspace -t.
+                        try:
+                            storage.set_handoff_provider(session_id, provider, handoff_target)
+                        except Exception as persist_err:
+                            logger.warning(f"Failed to persist handoff provider: {persist_err}")
 
                         # Inject handoff context into user message
                         original_content = request_model.content
@@ -306,6 +417,8 @@ class StreamHandler:
         if response_url:
             return await self._stream_agui_with_callback(
                 request, request_model, agui_request, adapter, exec_user, executor, provider,
+                handoff_pending_target=handoff_pending_target,
+                session_id=session_id,
             )
         
         # 标准 AG-UI 流式处理
@@ -340,6 +453,8 @@ class StreamHandler:
                 archiver=archiver,
                 initial_messages=initial_messages,
                 exec_user=exec_user,
+                handoff_pending_target=handoff_pending_target,
+                session_id=session_id,
             ),
             media_type="text/event-stream",
             headers={
@@ -359,6 +474,8 @@ class StreamHandler:
         exec_user: str,
         executor,
         provider: str = "claude",
+        handoff_pending_target: str = None,
+        session_id: str = None,
     ) -> StreamingResponse:
         """支持超时回调的 AG-UI 流式处理
         
@@ -402,6 +519,7 @@ class StreamHandler:
         
         async def producer():
             """后台生产者：执行 CLI 并收集事件"""
+            summary_text_parts = [] if handoff_pending_target else None
             try:
                 # Initialize archiver
                 await archiver.on_run_started(initial_messages)
@@ -423,6 +541,14 @@ class StreamHandler:
                                 if _evt.startswith('data:'):
                                     try:
                                         payload = _evt.replace('data:', '', 1).strip()
+                                        # Collect text from AG-UI TEXT_MESSAGE_CONTENT events for handoff summary
+                                        if summary_text_parts is not None:
+                                            try:
+                                                payload_data = json.loads(payload)
+                                                if payload_data.get("type") == "TEXT_MESSAGE_CONTENT":
+                                                    summary_text_parts.append(payload_data.get("delta", ""))
+                                            except Exception:
+                                                pass
                                         asyncio.create_task(archiver.archive_event(json.loads(payload)))
                                     except Exception:
                                         pass
@@ -444,8 +570,82 @@ class StreamHandler:
             except Exception as e:
                 logger.error(f"AG-UI producer error: {e}", exc_info=True)
                 await archiver.on_run_error(str(e))
+                stream_state["error_occurred"] = True
                 await message_queue.put(("error", str(e)))
             finally:
+                # Store agent-generated summary and send notification BEFORE signaling done
+                if handoff_pending_target and summary_text_parts:
+                    summary_text = "".join(summary_text_parts).strip()
+                    if summary_text:
+                        try:
+                            storage = get_session_storage()
+                            _session_id = session_id or request_model.session_id or agui_request.threadId
+                            storage.set_handoff_context(
+                                _session_id,
+                                summary_text,
+                                handoff_pending_target,
+                            )
+                            logger.info(f"Stored handoff summary ({len(summary_text)} chars) for next switch", extra={
+                                "session_id": _session_id,
+                                "target": handoff_pending_target,
+                            })
+
+                            # Build notification text
+                            summary_preview = summary_text[:200] + "..." if len(summary_text) > 200 else summary_text
+                            notify_text = (
+                                f"\n\n---\n"
+                                f"✅ **Agent 切换准备完成**\n\n"
+                                f"**目标 Agent**: `{handoff_pending_target}`\n"
+                                f"**上下文摘要** ({len(summary_text)} 字符):\n"
+                                f"> {summary_preview}\n\n"
+                                f"请发送下一条消息，将自动切换到 `{handoff_pending_target}` 并携带以上摘要。"
+                            )
+
+                            # Inject as AG-UI TEXT_MESSAGE_CONTENT event into the SSE stream
+                            msg_id_for_notify = getattr(getattr(adapter, "state", None), "current_message_id", None)
+                            if msg_id_for_notify:
+                                notify_payload = {
+                                    "type": "TEXT_MESSAGE_CONTENT",
+                                    "messageId": msg_id_for_notify,
+                                    "delta": notify_text,
+                                }
+                                notify_sse = f"data: {json.dumps(notify_payload, ensure_ascii=False)}\n\n"
+                                stream_state["all_events"].append(notify_sse)
+                                await message_queue.put(("events", notify_sse))
+
+                            # Proactively send notification via response_url callback
+                            # so enterprise WeChat users can see it (SSE stream alone is
+                            # consumed by the intermediate proxy, not the end user)
+                            if response_url:
+                                try:
+                                    await self.callback_handler.send_callback(
+                                        response_url,
+                                        [notify_text],
+                                        {
+                                            "user": request_model.user,
+                                            "msg_id": msg_id or request_model.msg_id,
+                                            "session_id": request_model.session_id,
+                                            "content": request_model.content,
+                                        },
+                                    )
+                                    logger.info(
+                                        "Handoff notification sent via response_url callback",
+                                        extra={
+                                            "session_id": _session_id,
+                                            "target": handoff_pending_target,
+                                        },
+                                    )
+                                except Exception as cb_err:
+                                    logger.warning(
+                                        f"Failed to send handoff notification via callback: {cb_err}",
+                                        extra={
+                                            "session_id": _session_id,
+                                            "target": handoff_pending_target,
+                                        },
+                                    )
+                        except Exception as e:
+                            logger.error(f"Failed to store handoff summary: {e}")
+
                 stream_state["producer_done"] = True
                 await message_queue.put(("done", None))
                 
@@ -453,20 +653,32 @@ class StreamHandler:
                 if not stream_state.get("error_occurred"):
                     await archiver.on_run_finished()
                 
-                # 如果超时或断开，发送剩余事件到 response_url
-                if (stream_state["stream_timeout"] or stream_state["client_disconnected"]) and response_url:
-                    pending_events = stream_state["all_events"][stream_state["sent_count"]:]
-                    if pending_events:
+                # Send results via response_url callback.
+                # - Timeout / disconnect: send unsent (remaining) events.
+                # - Handoff summary flow (normal completion): send ALL events
+                #   so the enterprise WeChat user sees the handoff notification.
+                if response_url and stream_state["all_events"]:
+                    if stream_state["stream_timeout"] or stream_state["client_disconnected"]:
+                        callback_events = stream_state["all_events"][stream_state["sent_count"]:]
+                        label = "remaining"
+                    elif handoff_pending_target:
+                        callback_events = stream_state["all_events"]
+                        label = "all (handoff)"
+                    else:
+                        callback_events = None
+                        label = None
+
+                    if callback_events:
                         logger.info(
-                            "Sending remaining AG-UI events via callback",
+                            f"Sending {label} AG-UI events via callback",
                             extra={
-                                "pending_count": len(pending_events),
+                                "event_count": len(callback_events),
                                 "total_count": len(stream_state["all_events"]),
                             }
                         )
                         await self.callback_handler.send_agui_callback(
                             response_url,
-                            pending_events,
+                            callback_events,
                             {
                                 "user": request_model.user,
                                 "msg_id": msg_id or request_model.msg_id,
