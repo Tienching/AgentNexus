@@ -59,6 +59,9 @@ class AGUIAdapter(BaseAdapter):
         self._tool_start_sent: set = set()  # 已发送 ToolCallStart 的 tool_id
         # 缓存未发送的 TOOL_CALL_ARGS（等待 TOOL_CALL_START 发送后再发送）
         self._pending_tool_args: dict = {}  # tool_id -> list of partial_json
+        # 跟踪思考标签状态（处理分割的标签）
+        self._in_thinking_block: bool = False  # 是否在思考块中
+        self._thinking_buffer: str = ""  # 累积的缓冲区文本（用于检测分割的思考标签）
     
     def init_state(self, thread_id: str, run_id: str) -> None:
         """初始化适配器状态（重写父类方法）"""
@@ -89,18 +92,64 @@ class AGUIAdapter(BaseAdapter):
     def _sanitize_text(self, text: str) -> str:
         """清理文本中的特殊标签
         
+        处理分割的思考标签：由于流式输出可能将思考标签分割到多个事件中，
+        需要维护状态来正确过滤。
+        
         注意：清理后可能变成空字符串，调用方需要检查
-        注意：不再清理 <tool_call> 标签，由 _parse_subagent_tool_calls 单独处理
+        注意：不再清理  标签，由 _parse_subagent_tool_calls 单独处理
         """
         if not text:
             return ""
-        # 移除 <think> 标签及其内容
-        result = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        # 移除单独的 <think> 或 </think> 标签
-        result = re.sub(r'</?think>', '', result)
-        # 注意：不再移除 <tool_call> 标签，由 _parse_subagent_tool_calls 单独处理
+        
+        # 将新文本追加到缓冲区
+        self._thinking_buffer += text
+        
+        # 处理缓冲区中的思考标签
+        result_parts = []
+        buffer = self._thinking_buffer
+        
+        # 使用正则表达式处理思考标签
+        # 支持 <think class="hidden">content</think 格式
+        while buffer:
+            if self._in_thinking_block:
+                # 在思考块中，查找结束标签 </think
+                end_match = re.search(r'</think\s*>', buffer)
+                if end_match:
+                    # 找到结束标签，跳过整个思考块
+                    buffer = buffer[end_match.end():]
+                    self._in_thinking_block = False
+                else:
+                    # 还没找到结束标签，继续等待
+                    break
+            else:
+                # 不在思考块中，查找开始标签 <think
+                start_match = re.search(r'<think[^>]*>', buffer)
+                if start_match:
+                    # 找到开始标签，输出之前的内容
+                    result_parts.append(buffer[:start_match.start()])
+                    buffer = buffer[start_match.end():]
+                    self._in_thinking_block = True
+                else:
+                    # 没有开始标签，检查是否有部分标签在末尾
+                    # 保留可能的部分开始标签在缓冲区中
+                    partial_match = re.search(r'<(?:thi|th|t)$', buffer)
+                    if partial_match:
+                        result_parts.append(buffer[:partial_match.start()])
+                        self._thinking_buffer = buffer[partial_match.start():]
+                        result = "".join(result_parts)
+                        return result
+                    else:
+                        # 没有部分标签，输出全部
+                        result_parts.append(buffer)
+                        buffer = ""
+        
+        # 更新缓冲区
+        self._thinking_buffer = buffer
+        
+        # 合并结果
+        result = "".join(result_parts)
+        
         return result
-    
     def _parse_subagent_tool_calls(self, text: str) -> Tuple[List[ParsedToolCall], str]:
         """解析 subagent 结果中的 <tool_call> 标签
         
