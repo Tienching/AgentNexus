@@ -59,7 +59,7 @@ async def root():
             "api_user": "请求体中的user字段，用于创建工作目录/home/{exec_user}/{api_user}"
         },
         "protocols": {
-            "legacy": "易事厅格式（默认）",
+            "legacy": "Legacy 格式（默认）",
             "agui": "AG-UI协议（通过?protocol=agui或Accept: application/x-agui-stream启用）"
         }
     }

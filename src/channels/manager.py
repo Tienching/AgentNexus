@@ -17,7 +17,7 @@ class ChannelManager:
     Channel 管理器
 
     统一管理多个消息通道的生命周期和消息路由。
-    参考 nanobot 的 manager 实现。
+    统一管理多个消息通道的生命周期和消息路由。
 
     Usage:
         config = {

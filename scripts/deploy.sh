@@ -5,7 +5,7 @@
 # 用法:
 #   ./deploy.sh <username>
 #   ./deploy.sh ubuntu        # 部署到 /home/ubuntu/.claude-internal
-#   ./deploy.sh tencent       # 部署到 /home/tencent/.claude-internal
+#   ./deploy.sh myuser        # 部署到 /home/myuser/.claude-internal
 #   ./deploy.sh root          # 部署到 /root/.claude-internal
 #
 
@@ -40,7 +40,7 @@ usage() {
     echo "将 prompts 目录下的配置部署到指定用户的 .claude-internal 目录"
     echo ""
     echo "参数:"
-    echo "  username    目标用户名 (例如: ubuntu, tencent, root)"
+    echo "  username    目标用户名 (例如: ubuntu, myuser, root)"
     echo ""
     echo "示例:"
     echo "  $0 ubuntu       # 部署到 /home/ubuntu/.claude-internal"

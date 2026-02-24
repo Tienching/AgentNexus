@@ -27,7 +27,7 @@ class BaseChannel(ABC):
     消息通道基类
 
     所有具体通道实现（Telegram, Slack, Discord 等）都应继承此类。
-    参考 nanobot 的实现模式，提供统一的接口。
+    提供统一的接口。
 
     Usage:
         class MyChannel(BaseChannel):
