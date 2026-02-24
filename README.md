@@ -1,154 +1,204 @@
-# Virtual Human Agent
+# Agent Runtime SDK
 
-将多种 CLI Provider（`claude-internal` / `gemini` / `codex`）封装为支持 **AG-UI SSE** 的 HTTP 服务，并内置 Nexus Web UI 用于会话与任务管理。
+[中文文档 (Chinese Documentation)](./README_CN.md)
 
-## 特性
+A multi-provider agent runtime that wraps CLI-based AI providers (Claude, Gemini, Codex, etc.) into an HTTP service with **AG-UI SSE** streaming, built-in session/task management, and multi-channel integrations.
 
-- **AG-UI 协议优先**：统一以 AG-UI 事件流输出
-- **Legacy 兼容**：支持最简 `{user, content}` 请求，后端自动转为 AG-UI
-- **多 Provider**：`claude` / `gemini` / `codex` 及其 `-internal` 变体
-- **多用户隔离**：按 `exec_user + session_id` 进行目录隔离
-- **Nexus Web UI**：会话回放 + 任务看板 + 文件浏览
-- **任务系统**：支持单任务/批量/依赖链
+## Features
 
-## 环境要求
+- **AG-UI Protocol First** — Unified AG-UI event stream output for all providers
+- **Legacy Compatible** — Accepts minimal `{user, content}` requests; backend auto-converts to AG-UI
+- **Multi-Provider** — Claude / Gemini / Codex / CodeBuddy and their `-internal` variants
+- **Multi-User Isolation** — Directory isolation by `exec_user + session_id`
+- **Nexus Web UI** — Session replay + Task board + File browser
+- **Task System** — Single task / bulk create / dependency chains with concurrency control
+- **Multi-Channel** — Telegram, Slack, Discord, WhatsApp, Signal integrations
+- **CLI Tool (`vhsdk`)** — Init, install, start, stop, status, config, list subcommands
+- **Systemd Ready** — Includes `.service` file for production deployment
 
-- Python 3.10+
+## Requirements
+
+- Python 3.11+
 - Redis
-- `uv`（推荐）
-- 对应 Provider CLI（如 `claude-internal`、`gemini`、`codex`）
+- [`uv`](https://github.com/astral-sh/uv) (recommended)
+- Corresponding provider CLI (e.g., `claude`, `gemini`, `codex`)
 
-## 快速开始
+## Quick Start
 
-### 安装
+### Installation
 
 ```bash
-# 安装 uv
+# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 克隆项目并安装依赖
-git clone <repository>
-cd virtual-human-sdk-feature-aionui
+# Clone and install dependencies
+git clone <repository-url>
+cd <project-directory>
 uv sync
 
-# 配置环境
+# Configure environment
 cp .env.example .env
+# Edit .env with your settings
 ```
 
-### 运行
+### Running
 
 ```bash
-# 前台启动
+# Foreground (development with hot-reload)
 ./scripts/run.sh
 
-# 后台运行
+# Background (daemon mode)
 ./scripts/run-background.sh
 
-# 查看状态
+# Check status
 ./scripts/status.sh
 
-# 停止服务
+# Stop service
 ./scripts/stop.sh
 ```
 
-## 配置
+## Configuration
 
-复制 `.env.example` 为 `.env` 并根据需要修改：
+Copy `.env.example` to `.env` and customize as needed:
 
 ```bash
 cp .env.example .env
 ```
 
-### 服务器配置
+### Server
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `API_HOST` | `0.0.0.0` | 监听地址 |
-| `API_PORT` | `8081` | 端口 |
-| `API_WORKERS` | `1` | 进程数 |
-| `ENVIRONMENT` | `development` | 运行环境 |
-| `DEBUG` | `false` | 调试模式 |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `API_HOST` | `0.0.0.0` | Listen address |
+| `API_PORT` | `8081` | Listen port |
+| `API_WORKERS` | `1` | Worker processes |
+| `ENVIRONMENT` | `development` | Runtime environment |
+| `DEBUG` | `false` | Debug mode |
 
-### 日志配置
+### Logging
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `LOG_LEVEL` | `INFO` | 日志级别 |
-| `LOG_DIR` | `./logs` | 日志目录 |
-| `LOG_MAX_BYTES` | `10485760` | 单日志文件大小 |
-| `LOG_BACKUP_COUNT` | `5` | 日志备份数 |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `LOG_LEVEL` | `INFO` | Log level |
+| `LOG_DIR` | `./logs` | Log directory |
+| `LOG_MAX_BYTES` | `10485760` | Max log file size (bytes) |
+| `LOG_BACKUP_COUNT` | `5` | Log backup count |
 
-### 用户目录配置
+### User Directory
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `USER_HOME_BASE` | `/home` | 用户目录根路径 |
-| `AUTO_CREATE_USER_DIR` | `true` | 自动创建用户目录 |
-| `EXEC_USER` | `ubuntu` | 默认执行用户（Linux 用户名） |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `USER_HOME_BASE` | `/home` | User home base path |
+| `AUTO_CREATE_USER_DIR` | `true` | Auto-create user directories |
+| `EXEC_USER` | `ubuntu` | Default execution user (Linux username) |
 
-### Redis 配置
+### Redis
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `REDIS_HOST` | `localhost` | Redis 地址 |
-| `REDIS_PORT` | `6379` | Redis 端口 |
-| `REDIS_DB` | `0` | Redis DB |
-| `REDIS_PASSWORD` | | Redis 密码 |
-| `REDIS_KEY_PREFIX` | `aona:` | Redis Key 前缀 |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_DB` | `0` | Redis database |
+| `REDIS_PASSWORD` | | Redis password |
+| `REDIS_KEY_PREFIX` | `aona:` | Redis key prefix |
 
-### Provider 配置
+### Provider
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `CLI_COMMAND` | `claude` | CLI 执行器默认命令 |
-| `CLI_TIMEOUT` | `120` | CLI 执行器超时(秒) |
-| `GEMINI_COMMAND` | `gemini` | Gemini CLI 命令 |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `CLI_COMMAND` | `claude` | Default CLI command |
+| `CLI_TIMEOUT` | `120` | CLI execution timeout (seconds) |
+| `GEMINI_COMMAND` | `gemini` | Gemini CLI command |
+| `DEFAULT_PROVIDER` | `codebuddy` | Default provider |
+| `DEFAULT_ALIAS` | | Default provider alias |
 
-### Channels 配置（消息渠道）
+### Streaming
 
-通过配置以下环境变量启用不同的消息渠道：
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `STREAM_CHUNK_SIZE` | `100` | Characters per chunk |
+| `STREAM_DELAY_MS` | `50` | Delay between chunks (ms) |
+| `STREAM_BUFFER_SIZE` | `1000` | Stream buffer size |
+
+### Task Executor
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `EXECUTOR_ENABLED` | `true` | Enable task executor |
+| `EXECUTOR_DEFAULT_MAX_CONCURRENCY` | `3` | Max concurrent tasks |
+
+### Nexus Web UI
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `NEXUS_PASSWORD` | | UI password (empty = no auth) |
+| `NEXUS_SESSION_TTL` | `86400` | Session TTL (seconds) |
+
+### Channels (Messaging)
+
+Enable messaging channels by configuring these environment variables:
 
 **Telegram:**
-| 参数 | 说明 |
-|------|------|
-| `TELEGRAM_BOT_TOKEN` | Bot Token（从 @BotFather 获取） |
-| `TELEGRAM_ALLOWED_USERS` | 允许的用户 ID（逗号分隔，留空允许所有） |
+
+| Parameter | Description |
+|-----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Bot token (from @BotFather) |
+| `TELEGRAM_ALLOWED_USERS` | Allowed user IDs (comma-separated, empty = allow all) |
 
 **Slack:**
-| 参数 | 说明 |
-|------|------|
-| `SLACK_BOT_TOKEN` | Bot OAuth Token（xoxb-开头） |
-| `SLACK_APP_TOKEN` | App Token for Socket Mode（xapp-开头） |
+
+| Parameter | Description |
+|-----------|-------------|
+| `SLACK_BOT_TOKEN` | Bot OAuth Token (xoxb-) |
+| `SLACK_APP_TOKEN` | App Token for Socket Mode (xapp-) |
 
 **Discord:**
-| 参数 | 说明 |
-|------|------|
-| `DISCORD_BOT_TOKEN` | Bot Token |
 
-安装 Channel 依赖：
+| Parameter | Description |
+|-----------|-------------|
+| `DISCORD_BOT_TOKEN` | Bot token |
+
+**WhatsApp:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `WHATSAPP_API_TOKEN` | API token |
+| `WHATSAPP_PHONE_NUMBER_ID` | Phone number ID |
+| `WHATSAPP_VERIFY_TOKEN` | Webhook verify token |
+
+**Signal:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `SIGNAL_API_URL` | Signal API URL |
+| `SIGNAL_PHONE_NUMBER` | Phone number |
+
+Install channel dependencies:
+
 ```bash
-# 单独安装
+# Individual
 pip install -e ".[telegram]"
 pip install -e ".[slack]"
 pip install -e ".[discord]"
 
-# 或安装全部
+# All channels
 pip install -e ".[all-channels]"
 ```
 
 ## API
 
-### 基础端点
+### Core Endpoints
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/health` | GET | 健康检查 |
-| `/chat/stream` | POST | 默认用户 (`ubuntu`) 流式聊天 |
-| `/chat/stream/{exec_user}` | POST | 指定执行用户流式聊天 |
-| `/agui/test` | GET | AG-UI SSE 测试 |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/metrics` | GET | Service metrics |
+| `/chat/stream` | POST | Stream chat (default user) |
+| `/chat/stream/{exec_user}` | POST | Stream chat (specified user) |
+| `/agui/test` | GET | AG-UI SSE test endpoint |
 | `/nexus/` | GET | Nexus Web UI |
 
-### AG-UI 请求示例（推荐）
+### AG-UI Request (Recommended)
 
 ```bash
 curl --no-buffer -X POST http://localhost:8081/chat/stream/ubuntu \
@@ -156,85 +206,91 @@ curl --no-buffer -X POST http://localhost:8081/chat/stream/ubuntu \
   -d '{
     "threadId": "thread-123",
     "runId": "run-456",
-    "messages": [{"id": "msg-1", "role": "user", "content": "你好"}],
+    "messages": [{"id": "msg-1", "role": "user", "content": "Hello"}],
     "forwardedProps": {"username": "test"},
-    "provider": "gemini-internal"
+    "provider": "gemini"
   }'
 ```
 
-### Legacy 最简请求（自动转 AG-UI）
+### Legacy Request (Auto-converts to AG-UI)
 
 ```bash
 curl --no-buffer -X POST http://localhost:8081/chat/stream/ubuntu \
   -H "Content-Type: application/json" \
-  -d '{"user": "test", "content": "你好", "provider": "claude-internal"}'
+  -d '{"user": "test", "content": "Hello", "provider": "claude"}'
 ```
 
-> Provider 也可通过 `X-Provider` 头或 `provider` 字段指定；若缺省，则默认 `claude`。
+> Provider can also be specified via the `X-Provider` header or `provider` field. Defaults to the configured `DEFAULT_PROVIDER` if omitted.
 
 ## Nexus Web UI
 
-访问：
-```
-http://localhost:8081/nexus/
-```
+Access at: `http://localhost:8081/nexus/`
 
-### 会话 API
+### Session API
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/nexus/sessions` | GET | 会话列表（分页/搜索/状态） |
-| `/api/nexus/sessions/{id}` | GET | 会话详情 |
-| `/api/nexus/sessions/{id}/messages` | GET | 会话消息+工具调用 |
-| `/api/nexus/sessions/{id}/cancel` | POST | 取消会话 |
-| `/api/nexus/sessions/{id}` | DELETE | 删除会话 |
-| `/api/nexus/sessions/bulk_delete` | POST | 批量删除会话 |
-| `/api/nexus/usernames` | GET | 用户名列表 |
-| `/api/nexus/agents` | GET | 可用 Agent 列表 |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/nexus/sessions` | GET | List sessions (paginated, searchable) |
+| `/api/nexus/sessions/{id}` | GET | Session details |
+| `/api/nexus/sessions/{id}/messages` | GET | Session messages + tool calls |
+| `/api/nexus/sessions/{id}/cancel` | POST | Cancel session |
+| `/api/nexus/sessions/{id}` | DELETE | Delete session |
+| `/api/nexus/sessions/bulk_delete` | POST | Bulk delete sessions |
+| `/api/nexus/usernames` | GET | Username list |
+| `/api/nexus/agents` | GET | Available agents |
 
-### 任务 API
+### Task API
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/nexus/tasks` | GET | 任务列表 |
-| `/api/nexus/tasks` | POST | 创建任务 |
-| `/api/nexus/tasks/bulk` | POST | 批量创建任务 |
-| `/api/nexus/tasks/{id}` | GET | 任务详情 |
-| `/api/nexus/tasks/{id}` | DELETE | 删除任务 |
-| `/api/nexus/tasks/{id}/status` | PATCH | 更新任务状态 |
-| `/api/nexus/tasks/bulk_archive` | POST | 批量归档 |
-| `/api/nexus/tasks/bulk_unarchive` | POST | 批量反归档 |
-| `/api/nexus/tasks/bulk_clear` | POST | 清理归档任务 |
-| `/api/nexus/tasks/bulk_delete` | POST | 强制批量删除 |
-| `/api/nexus/tasks/{id}/agui/messages` | GET | 任务对话快照 |
-| `/api/nexus/tasks/{id}/agui/stream` | GET | 任务对话 SSE 回放 |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/nexus/tasks` | GET | List tasks |
+| `/api/nexus/tasks` | POST | Create task |
+| `/api/nexus/tasks/bulk` | POST | Bulk create tasks |
+| `/api/nexus/tasks/{id}` | GET | Task details |
+| `/api/nexus/tasks/{id}` | DELETE | Delete task |
+| `/api/nexus/tasks/{id}/status` | PATCH | Update task status |
+| `/api/nexus/tasks/bulk_archive` | POST | Bulk archive |
+| `/api/nexus/tasks/bulk_unarchive` | POST | Bulk unarchive |
+| `/api/nexus/tasks/bulk_clear` | POST | Clear archived tasks |
+| `/api/nexus/tasks/bulk_delete` | POST | Force bulk delete |
+| `/api/nexus/tasks/{id}/agui/messages` | GET | Task conversation snapshot |
+| `/api/nexus/tasks/{id}/agui/stream` | GET | Task conversation SSE replay |
 
-### Task 创建模式
+### Task Creation Modes
 
-- **Single Task**：创建 1 条任务
-- **Bulk Create**：一行一个任务，互不依赖
-- **Task Chain**：一行一个任务，后一个依赖前一个
+- **Single Task** — Create one task
+- **Bulk Create** — One task per line, independent
+- **Task Chain** — One task per line, each depends on the previous
 
-## 项目结构（核心）
+## Project Structure
 
 ```
-virtual-human-sdk-feature-aionui/
-├── .env.example                # 配置模板
-├── src/server/                 # FastAPI 服务（路由/服务/适配器/模型）
-├── src/runtime/                # 运行时核心（事件/适配器/存储/执行流）
-├── src/providers/              # Provider 实现（claude/gemini/codex）
-├── src/providers/runtime/      # Provider 运行时抽象
-├── src/channels/               # 消息渠道（Telegram/Slack/Discord 等）
-├── src/server/static/nexus/    # Nexus Web UI
-├── scripts/                    # 启停脚本
-└── tests/                      # 测试
+├── .env.example                 # Configuration template
+├── src/
+│   ├── server/                  # FastAPI service (routers, services, adapters, models)
+│   ├── runtime/                 # Runtime core (events, adapters, stores, execution)
+│   ├── core/                    # Core business logic (archiving, commands, models, tasks)
+│   ├── protocols/               # Protocol layer (AG-UI, base)
+│   ├── providers/               # Provider implementations (Claude, Gemini, Codex, CodeBuddy)
+│   │   └── runtime/             # Provider runtime abstraction and registry
+│   ├── channels/                # Messaging channels (Telegram, Slack, Discord, WhatsApp, Signal)
+│   └── server/static/nexus/     # Nexus Web UI static files
+├── scripts/                     # Run, stop, status, test, deploy scripts
+├── config/                      # Configuration files
+├── examples/                    # Example code
+└── tests/                       # Unit and integration tests
 ```
 
-## 测试
+## Testing
 
 ```bash
+# Run all tests
 ./scripts/test.sh
+
+# Unit tests only
 ./scripts/test.sh unit
+
+# With coverage report
 ./scripts/test.sh coverage
 ```
 
