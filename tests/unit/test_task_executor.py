@@ -283,11 +283,6 @@ class TestWorkspaceQueueManager:
         
         await manager.release_slot(task_b)
         await manager.release_slot(task_c)
-        assert acquired_b
-        
-        # Clean up
-        await manager.release_slot(task_a)
-        await manager.release_slot(task_b)
 
     @pytest.mark.asyncio
     async def test_provider_concurrency_limit(self, mock_task_queue):

@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, AsyncGenerator, Iterable
+from typing import Any, AsyncGenerator, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,8 @@ class StreamOrchestrator:
         archiver: Any,
         initial_messages: list[dict[str, Any]],
         exec_user: str,
+        handoff_pending_target: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Generate AG-UI SSE stream.
 
@@ -49,6 +51,7 @@ class StreamOrchestrator:
         """
 
         event_count = 0
+        summary_text_parts = [] if handoff_pending_target else None
         try:
             await archiver.on_run_started(initial_messages)
 
@@ -74,8 +77,45 @@ class StreamOrchestrator:
                 if converted:
                     # Archive converted AG-UI events asynchronously (non-blocking)
                     self._schedule_archive_converted(converted, archiver)
+                    # Collect text from AG-UI events for handoff summary
+                    if summary_text_parts is not None:
+                        for payload in self._iter_agui_payloads(converted):
+                            if payload.get("type") == "TEXT_MESSAGE_CONTENT":
+                                summary_text_parts.append(payload.get("delta", ""))
                     event_count += self._count_sse_events(converted)
                     yield converted
+
+            # Store agent-generated summary and append notification before end event
+            if handoff_pending_target and summary_text_parts and session_id:
+                summary_text = "".join(summary_text_parts).strip()
+                if summary_text:
+                    try:
+                        from ..stores.session_storage import get_session_storage
+                        storage = get_session_storage()
+                        storage.set_handoff_context(
+                            session_id,
+                            summary_text,
+                            handoff_pending_target,
+                        )
+                        logger.info(
+                            f"Stored handoff summary ({len(summary_text)} chars) for next switch",
+                            extra={"session_id": session_id, "target": handoff_pending_target},
+                        )
+                        # Append a notification message in the SSE stream
+                        summary_preview = summary_text[:200] + "..." if len(summary_text) > 200 else summary_text
+                        notify_text = (
+                            f"\n\n---\n"
+                            f"✅ **Agent 切换准备完成**\n\n"
+                            f"**目标 Agent**: `{handoff_pending_target}`\n"
+                            f"**上下文摘要** ({len(summary_text)} 字符):\n"
+                            f"> {summary_preview}\n\n"
+                            f"请发送下一条消息，将自动切换到 `{handoff_pending_target}` 并携带以上摘要。"
+                        )
+                        notify_sse = self._build_text_content_sse(adapter, notify_text)
+                        if notify_sse:
+                            yield notify_sse
+                    except Exception as e:
+                        logger.error(f"Failed to store handoff summary: {e}")
 
             end_event = adapter.create_end_event()
             if end_event:
@@ -121,3 +161,22 @@ class StreamOrchestrator:
     def _count_sse_events(self, sse: str) -> int:
         # Each event is separated by blank line.
         return sum(1 for part in str(sse).split("\n\n") if part.strip())
+
+    def _build_text_content_sse(self, adapter: Any, text: str) -> Optional[str]:
+        """Build a TEXT_MESSAGE_CONTENT SSE event using the adapter's current state.
+
+        Returns the SSE string or None if unable to build.
+        """
+        try:
+            message_id = getattr(getattr(adapter, "state", None), "current_message_id", None)
+            if not message_id:
+                return None
+            payload = {
+                "type": "TEXT_MESSAGE_CONTENT",
+                "messageId": message_id,
+                "delta": text,
+            }
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            logger.warning(f"Failed to build text content SSE: {e}")
+            return None

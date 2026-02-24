@@ -493,6 +493,61 @@ class SessionStorage:
             logger.error(f"Failed to clear handoff pending summary: {e}")
             return False
 
+    # ============ Handoff Provider Persistence ============
+
+    def set_handoff_provider(self, session_id: str, provider: str, alias: str) -> bool:
+        """Persist the provider/alias chosen by a handoff switch.
+
+        Unlike ``workspace_provider`` (set by ``/workspace -t``), this field is
+        set exclusively when a handoff context is consumed.  It ensures that
+        *subsequent* requests in the same session keep using the new provider
+        without overwriting any workspace-level setting.
+
+        Args:
+            session_id: Current session ID
+            provider: Resolved provider name (e.g. ``"codex"``)
+            alias: Original alias (e.g. ``"codex-internal"``)
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {
+                "handoff_provider": provider,
+                "handoff_alias": alias,
+            })
+            logger.info(f"Set handoff provider: {session_id} -> {provider} (alias={alias})")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set handoff provider: {e}")
+            return False
+
+    def get_handoff_provider(self, session_id: str) -> Optional[Tuple[str, str]]:
+        """Get the persisted handoff provider/alias.
+
+        Returns:
+            ``(provider, alias)`` if set, ``None`` otherwise.
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            provider = self._redis.hget(key, "handoff_provider")
+            alias = self._redis.hget(key, "handoff_alias")
+            if provider:
+                return (provider, alias or provider)
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get handoff provider: {e}")
+            return None
+
+    def clear_handoff_provider(self, session_id: str) -> bool:
+        """Clear the persisted handoff provider."""
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "handoff_provider", "handoff_alias")
+            logger.info(f"Cleared handoff provider: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear handoff provider: {e}")
+            return False
+
     def set_claude_session_id(self, session_id: str, claude_session_id: str) -> bool:
         """Store Claude CLI session UUID for resumption.
 
