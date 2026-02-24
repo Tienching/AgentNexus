@@ -2,6 +2,7 @@
 """Codebuddy CLI -> AG-UI adapter"""
 
 import json
+import re
 import uuid
 from typing import Any, Dict, Optional
 
@@ -23,10 +24,79 @@ from src.runtime.events.agui import (
 
 class CodebuddyAGUIAdapter(BaseAdapter):
     """Codebuddy CLI stream-json to AG-UI adapter"""
+    
+    def __init__(self):
+        super().__init__()
+        self._reset_tracking_state()
+    
+    def _reset_tracking_state(self):
+        """Reset tracking state (called before each request)"""
+        self._in_thinking_block: bool = False
+        self._thinking_buffer: str = ""
+
+    def init_state(self, thread_id: str, run_id: str) -> None:
+        """Initialize adapter state (override parent method)"""
+        super().init_state(thread_id, run_id)
+        self._reset_tracking_state()
 
     @property
     def protocol_type(self) -> ProtocolType:
         return ProtocolType.AGUI
+
+    def _sanitize_text(self, text: str) -> str:
+        """Sanitize text by removing thinking tags.
+        
+        Handles split thinking tags across stream events.
+        """
+        if not text:
+            return ""
+        
+        # Append new text to buffer
+        self._thinking_buffer += text
+        
+        # Process thinking tags in buffer
+        result_parts = []
+        buffer = self._thinking_buffer
+        
+        while buffer:
+            if self._in_thinking_block:
+                # In thinking block, look for end tag
+                end_match = re.search(r'</think\s*>', buffer)
+                if end_match:
+                    # Found end tag, skip the thinking block
+                    buffer = buffer[end_match.end():]
+                    self._in_thinking_block = False
+                else:
+                    # Still waiting for end tag
+                    break
+            else:
+                # Not in thinking block, look for start tag
+                start_match = re.search(r'<think[^>]*>', buffer)
+                if start_match:
+                    # Found start tag, output content before it
+                    result_parts.append(buffer[:start_match.start()])
+                    buffer = buffer[start_match.end():]
+                    self._in_thinking_block = True
+                else:
+                    # No start tag, check for partial tag at end
+                    partial_match = re.search(r'<(?:thi|th|t)$', buffer)
+                    if partial_match:
+                        result_parts.append(buffer[:partial_match.start()])
+                        self._thinking_buffer = buffer[partial_match.start():]
+                        result = "".join(result_parts)
+                        return result
+                    else:
+                        # No partial tag, output all
+                        result_parts.append(buffer)
+                        buffer = ""
+        
+        # Update buffer
+        self._thinking_buffer = buffer
+        
+        # Combine results
+        result = "".join(result_parts)
+        
+        return result
 
     def _generate_message_id(self) -> str:
         return f"codebuddy-msg-{uuid.uuid4().hex}"
@@ -368,7 +438,11 @@ class CodebuddyAGUIAdapter(BaseAdapter):
         if delta_type == "text_delta":
             # Text delta
             text = delta.get("text", "")
-            if not text:
+            # Sanitize thinking tags
+            text = self._sanitize_text(text)
+            
+            # Skip empty text
+            if not text or not text.strip():
                 return None
 
             # Ensure message started
