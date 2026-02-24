@@ -1,7 +1,6 @@
 """Telegram Channel 实现
 
 基于 python-telegram-bot 库，使用 Long Polling 模式。
-参考 nanobot 的 telegram 实现。
 """
 
 import logging

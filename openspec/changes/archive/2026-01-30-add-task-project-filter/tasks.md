@@ -1,7 +1,0 @@
-- [x] 1.  **Backend Core**: Implement `get_unique_projects` method in `NexusTaskQueue` to retrieve distinct project IDs/names from storage.
-- [x] 2.  **Backend API**: Add `GET /api/nexus/projects` endpoint in `src/server/routers/nexus.py`.
-- [x] 3.  **Frontend API**: Add `getProjects()` method to `NexusAPI` class in `src/server/static/nexus/js/api.js`.
-- [x] 4.  **Frontend UI**: Update `renderTaskView` in `src/server/static/nexus/js/app.js` to:
-    -   Fetch projects on load.
-    -   Render a `<select>` element in the toolbar.
-    -   Handle `change` events to reload tasks with the selected `project_id`.

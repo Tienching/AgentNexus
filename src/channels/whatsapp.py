@@ -1,7 +1,6 @@
 """WhatsApp Channel 实现
 
 通过 WebSocket 连接到 Node.js Bridge（基于 Baileys 库）。
-参考 nanobot 的 whatsapp 实现。
 """
 
 import asyncio
