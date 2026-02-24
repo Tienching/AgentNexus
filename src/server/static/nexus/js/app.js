@@ -1553,7 +1553,7 @@ class ChatView {
         const execUser = sessionMeta?.username || globalUserFilter?.value || 'ubuntu';
         const provider = sessionMeta?.provider || '';
         
-        // Build legacy (易事厅) request payload with session_id to continue conversation
+        // Build legacy request payload with session_id to continue conversation
         const payload = {
             content: message,
             user: execUser,

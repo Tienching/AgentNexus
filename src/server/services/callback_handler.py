@@ -179,7 +179,7 @@ class CallbackHandler:
         messages: List[str],
         request_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """构建回调请求体（企业微信 AI 助手格式）"""
+        """构建回调请求体（IM AI 助手格式）"""
         MAX_CONTENT_BYTES = 20000
 
         message_bytes = [(msg, len(msg.encode('utf-8'))) for msg in messages]
