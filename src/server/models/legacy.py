@@ -6,13 +6,13 @@ from typing import List, Optional
 
 
 class RequestModel(BaseModel):
-    """易事厅请求体模型（宽松模式）"""
+    """Legacy 请求体模型（宽松模式）"""
 
     user: Optional[str] = Field(None, description="用户名")
     msg_type: Optional[str] = Field(default="text", description="消息类型，目前只回调text类型")
     content: str = Field(..., description="用户消息文本内容")
-    msg_id: Optional[str] = Field(default="", description="用户消息ID，异步模式调易事厅OpenAPI发送消息需要回传该值")
-    raw_msg: Optional[str] = Field(default="", description="企业微信解密后的消息回调")
+    msg_id: Optional[str] = Field(default="", description="用户消息ID，异步模式回调发送消息需要回传该值")
+    raw_msg: Optional[str] = Field(default="", description="解密后的消息回调")
     session_id: Optional[str] = Field(default="", description="助手号场景的会话id，其他场景忽略")
     business_keys: Optional[List[str]] = Field(default_factory=list, description="服务标识")
     response_url: Optional[str] = Field(default="", description="流式连接断开后的回调URL，用于发送剩余消息")

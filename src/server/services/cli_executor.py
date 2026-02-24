@@ -75,7 +75,7 @@ class CLIExecutor:
         Args:
             request: 请求模型
             exec_user: Linux系统用户名
-            output_format: 输出格式 - "raw"(原始JSON行), "legacy"(易事厅格式)
+            output_format: 输出格式 - "raw"(原始JSON行), "legacy"(Legacy格式)
 
         Yields:
             原始JSON行或格式化的SSE
@@ -485,7 +485,7 @@ class CLIExecutor:
                 debug_file.close()
 
     def _process_legacy_event(self, data: Dict[str, Any], event_type: str, tool_input_buffer: Dict[int, str]) -> List[str]:
-        """处理易事厅格式的事件"""
+        """处理 Legacy 格式的事件"""
         results = []
         
         if event_type == "result":
@@ -554,7 +554,7 @@ class CLIExecutor:
         return ""
 
     def _format_user_message_legacy(self, data: Dict[str, Any]) -> str:
-        """格式化 user 消息（工具结果）（易事厅格式）"""
+        """格式化 user 消息（工具结果）（Legacy 格式）"""
         message = data.get("message", {})
         content = message.get("content", [])
         
@@ -749,7 +749,7 @@ class CLIExecutor:
         return f"处理错误: {error}"
 
     def format_legacy_sse(self, response: str, finished: bool = False, answer_success: int = 1) -> str:
-        """格式化为易事厅 SSE 格式"""
+        """格式化为 Legacy SSE 格式"""
         data = {
             "response": response,
             "finished": finished,
@@ -763,5 +763,5 @@ class CLIExecutor:
         return f"event:delta\ndata:{json_data}\n\n"
 
     def format_legacy_error(self, error_msg: str) -> str:
-        """发送易事厅格式的错误消息"""
+        """发送 Legacy 格式的错误消息"""
         return self.format_legacy_sse(error_msg, finished=True, answer_success=0)

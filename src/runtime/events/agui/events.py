@@ -288,7 +288,7 @@ class AGUIRequest(BaseModel):
         return None
     
     def to_legacy_request(self) -> Dict[str, Any]:
-        """转换为易事厅请求格式"""
+        """转换为 Legacy 请求格式"""
         result = {
             "user": self.get_username(),
             "content": self.get_user_content(),
