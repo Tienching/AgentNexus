@@ -135,7 +135,8 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
     def _build_command(self, context: RequestContext) -> List[str]:
         """Build Codebuddy CLI command."""
-        cleaned_content, model_param = self._parse_model_param(context.content)
+        cleaned_content, inline_model = self._parse_model_param(context.content)
+        model_param = inline_model or getattr(context, "model", None) or None
 
         is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
 

@@ -73,6 +73,7 @@ async def chat_stream(request: Request, exec_user: str):
         user = body_dict.get("user")
         provider = (body_dict.get("provider") or "").strip()
         alias = (body_dict.get("alias") or "").strip()
+        model_name = (body_dict.get("model") or "").strip()
         forwarded_props = {}
         original_forwarded = body_dict.get("forwardedProps")
         if isinstance(original_forwarded, dict):
@@ -83,6 +84,8 @@ async def chat_stream(request: Request, exec_user: str):
             forwarded_props.setdefault("provider", provider)
         if alias:
             forwarded_props.setdefault("alias", alias)
+        if model_name:
+            forwarded_props.setdefault("model", model_name)
         body_dict = {
             "threadId": thread_id,
             "runId": run_id,

@@ -8,7 +8,7 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -159,7 +159,7 @@ class StreamHandler:
         session_id: str,
         content: str,
         request_model: RequestModel,
-    ) -> str | None:
+    ) -> tuple[str, str | None] | None:
         """Try to handle ``/handoff ... -a`` inline in the current request.
 
         If the slash command is a valid ``/handoff -a`` (auto-summary), this
@@ -168,7 +168,7 @@ class StreamHandler:
         (not the CLIExecutor path) to generate the summary immediately.
 
         Returns:
-            The resolved handoff target alias if handled, ``None`` otherwise.
+            Tuple of (effective_alias, model) if handled, ``None`` otherwise.
         """
         from src.runtime.commands.slash.parser import parse_slash_command, SlashCommandParseError
         from src.runtime.stores.alias_registry import get_alias_registry
@@ -185,6 +185,7 @@ class StreamHandler:
 
         alias = parsed.options.get("alias")
         provider_arg = parsed.options.get("provider")
+        model_arg = (parsed.options.get("model") or "").strip() or None
 
         # Resolve target
         alias_registry = get_alias_registry()
@@ -212,7 +213,7 @@ class StreamHandler:
         )
 
         request_model.content = self._prepare_summary_prompt(session_id, effective_alias)
-        return effective_alias
+        return (effective_alias, model_arg)
 
     async def handle_agui_request(
         self,
@@ -285,6 +286,14 @@ class StreamHandler:
         # Set alias on request_model so executors (e.g., GeminiExecutor) use the correct CLI command
         if workspace_alias and not getattr(request_model, "alias", None):
             request_model.alias = workspace_alias
+
+        # Extract model from forwardedProps or body_dict and set on request_model
+        forwarded = body_dict.get("forwardedProps") or {}
+        model_name = (forwarded.get("model") if isinstance(forwarded, dict) else None) or body_dict.get("model") or ""
+        model_name = model_name.strip() if model_name else ""
+        if model_name:
+            request_model.model = model_name
+
         # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
         if workspace_provider:
             request_model.run_kind = "chat_continue"
@@ -295,12 +304,15 @@ class StreamHandler:
         # Parse the slash command, detect auto-summary, replace content with
         # summary prompt and let the request proceed through the LLM path.
         handoff_pending_target = None
+        handoff_pending_model = None
         content_stripped = (request_model.content or "").strip()
         if session_id and content_stripped.startswith("/handoff") and " -a" in content_stripped:
             try:
-                handoff_pending_target = self._try_inline_handoff_auto(
+                result = self._try_inline_handoff_auto(
                     session_id, content_stripped, request_model
                 )
+                if result:
+                    handoff_pending_target, handoff_pending_model = result
             except Exception as e:
                 logger.warning(f"Failed to process inline handoff auto-summary: {e}")
 
@@ -311,7 +323,9 @@ class StreamHandler:
                 storage = get_session_storage()
                 handoff_pending_target = storage.get_handoff_pending_summary(session_id)
                 if handoff_pending_target:
-                    logger.info(f"Found pending handoff summary: target={handoff_pending_target}", extra={
+                    # Also retrieve model stored with pending summary
+                    handoff_pending_model = storage.get_handoff_model(session_id)
+                    logger.info(f"Found pending handoff summary: target={handoff_pending_target}, model={handoff_pending_model}", extra={
                         "session_id": session_id,
                     })
                     storage.clear_handoff_pending_summary(session_id)
@@ -331,13 +345,17 @@ class StreamHandler:
                 handoff_result = storage.get_handoff_context(session_id)
                 if handoff_result:
                     handoff_context, handoff_target = handoff_result
-                    if handoff_context and handoff_target:
+                    if handoff_target:
+                        # Read handoff model before clearing
+                        handoff_model = storage.get_handoff_model(session_id)
+
                         logger.info(
                             f"Handoff context found, switching provider",
                             extra={
                                 "session_id": session_id,
                                 "target": handoff_target,
-                                "context_length": len(handoff_context),
+                                "context_length": len(handoff_context) if handoff_context else 0,
+                                "model": handoff_model,
                             }
                         )
                         # Clear handoff context after consuming
@@ -357,6 +375,10 @@ class StreamHandler:
                         request_model.agent_type = provider
                         request_model.alias = handoff_target
 
+                        # Apply handoff model if specified
+                        if handoff_model:
+                            request_model.model = handoff_model
+
                         # Persist the new provider/alias at session level so
                         # subsequent requests keep using the switched provider
                         # (without this, handoff only lasts one request).
@@ -367,9 +389,10 @@ class StreamHandler:
                         except Exception as persist_err:
                             logger.warning(f"Failed to persist handoff provider: {persist_err}")
 
-                        # Inject handoff context into user message
-                        original_content = request_model.content
-                        request_model.content = f"""[Handoff Context - 从上一个 Agent 切换]
+                        # Inject handoff context into user message (only if non-empty)
+                        if handoff_context:
+                            original_content = request_model.content
+                            request_model.content = f"""[Handoff Context - 从上一个 Agent 切换]
 
 以下是上一个 Agent 传递的上下文摘要：
 
@@ -418,6 +441,7 @@ class StreamHandler:
             return await self._stream_agui_with_callback(
                 request, request_model, agui_request, adapter, exec_user, executor, provider,
                 handoff_pending_target=handoff_pending_target,
+                handoff_pending_model=handoff_pending_model,
                 session_id=session_id,
             )
         
@@ -454,6 +478,7 @@ class StreamHandler:
                 initial_messages=initial_messages,
                 exec_user=exec_user,
                 handoff_pending_target=handoff_pending_target,
+                handoff_pending_model=handoff_pending_model,
                 session_id=session_id,
             ),
             media_type="text/event-stream",
@@ -474,8 +499,9 @@ class StreamHandler:
         exec_user: str,
         executor,
         provider: str = "claude",
-        handoff_pending_target: str = None,
-        session_id: str = None,
+        handoff_pending_target: Optional[str] = None,
+        handoff_pending_model: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> StreamingResponse:
         """支持超时回调的 AG-UI 流式处理
         
@@ -584,6 +610,7 @@ class StreamHandler:
                                 _session_id,
                                 summary_text,
                                 handoff_pending_target,
+                                model=handoff_pending_model,
                             )
                             logger.info(f"Stored handoff summary ({len(summary_text)} chars) for next switch", extra={
                                 "session_id": _session_id,

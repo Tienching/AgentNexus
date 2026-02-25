@@ -108,6 +108,8 @@ class Task(BaseModel):
     provider: str = "claude"
     # Optional alias (defaults to provider)
     alias: Optional[str] = None
+    # Optional LLM model name (e.g., claude-opus-4.6, gemini-2.5-pro)
+    model: Optional[str] = None
     
     # Session ID for conversation storage (format: {session_id}_{task_id})
     session_id: Optional[str] = None

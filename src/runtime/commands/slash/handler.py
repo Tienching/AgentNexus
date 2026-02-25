@@ -166,6 +166,7 @@ class SlashCommandHandler:
                     inplace=bool(parsed.options.get("inplace", False)),
                     provider=parsed.options.get("provider"),
                     alias=parsed.options.get("alias"),
+                    model=parsed.options.get("model"),
                     source_session_id=source_session_id,
                     exec_user=parsed.options.get("exec-user"),
                     response_url=response_url,
@@ -182,6 +183,7 @@ class SlashCommandHandler:
                 return self._handle_chat_continue(
                     task_id=parsed.options["task"],
                     message=parsed.free_text,
+                    model=parsed.options.get("model"),
                     response_url=response_url,
                     callback_msg_id=callback_msg_id,
                     callback_user=callback_user,
@@ -241,6 +243,7 @@ class SlashCommandHandler:
                 return self._handle_handoff(
                     provider=parsed.options.get("provider"),
                     alias=parsed.options.get("alias"),
+                    model=parsed.options.get("model"),
                     auto_summary=bool(parsed.options.get("auto", False)),
                     summary=parsed.free_text,
                     current_session_id=source_session_id,
@@ -459,6 +462,7 @@ class SlashCommandHandler:
         inplace: bool = False,
         provider: Optional[str] = None,
         alias: Optional[str] = None,
+        model: Optional[str] = None,
         source_session_id: Optional[str] = None,
         exec_user: Optional[str] = None,
         response_url: Optional[str] = None,
@@ -587,6 +591,7 @@ class SlashCommandHandler:
             workspace=exec_workspace,
             provider=effective_provider,
             alias=effective_alias,
+            model=(model or "").strip() or None,
             task_id=task_id,
             source_session_id=source_session_id,
             exec_user=effective_exec_user,
@@ -609,6 +614,8 @@ class SlashCommandHandler:
             response += f"| Alias | {effective_alias} |\n"
         if effective_exec_user:
             response += f"| Exec User | {effective_exec_user} |\n"
+        if task.model:
+            response += f"| Model | {task.model} |\n"
         if project_name:
             response += f"| Project | {project_name} |\n"
         if requested_workspace:
@@ -623,6 +630,7 @@ class SlashCommandHandler:
         self,
         task_id: str,
         message: str,
+        model: Optional[str] = None,
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
@@ -663,6 +671,7 @@ class SlashCommandHandler:
             self.task_queue.enqueue_chat_continue(
                 task_id,
                 msg,
+                model=model,
                 response_url=response_url,
                 callback_msg_id=callback_msg_id,
                 callback_user=callback_user,
@@ -1587,6 +1596,7 @@ class SlashCommandHandler:
         self,
         provider: Optional[str] = None,
         alias: Optional[str] = None,
+        model: Optional[str] = None,
         auto_summary: bool = False,
         summary: Optional[str] = None,
         current_session_id: Optional[str] = None,
@@ -1597,6 +1607,7 @@ class SlashCommandHandler:
             /handoff                     # Show current provider
             /handoff -r <provider>       # Direct switch (no context)
             /handoff -l <alias>          # Switch by alias (no context)
+            /handoff -r <provider> -m <model>  # Switch with model override
             /handoff -r <provider> -a    # Auto-generate summary and switch
             /handoff -l <alias> -a       # Auto-generate summary and switch by alias
             /handoff -r <provider> -- <summary>  # Manual summary and switch
@@ -1604,6 +1615,7 @@ class SlashCommandHandler:
         Args:
             provider: Target provider to switch to
             alias: Target alias to switch to (alternative to provider)
+            model: LLM model name to use after switching
             auto_summary: Whether to auto-generate summary from current Agent
             summary: Manual summary text (after --)
             current_session_id: Current session ID
@@ -1703,6 +1715,9 @@ class SlashCommandHandler:
                     f"**内置 Provider**: {', '.join(f'`{p}`' for p in valid_providers)}"
                 )
 
+        # Resolve effective model
+        effective_model = (model or "").strip() or None
+
         # Auto-summary mode: set pending state, next message will trigger summary generation
         if auto_summary:
             if not current_session_id:
@@ -1711,13 +1726,15 @@ class SlashCommandHandler:
             # Store pending switch target (empty context means summary pending)
             storage = get_session_storage()
             effective_alias = target_alias or target_provider.lower()
-            storage.set_handoff_pending_summary(current_session_id, effective_alias)
+            storage.set_handoff_pending_summary(current_session_id, effective_alias, model=effective_model)
 
             # Return markdown message
             response = f"## 🔄 准备切换 Provider\n\n"
             response += f"- **目标 Provider**: `{target_provider}`\n"
             if target_alias:
                 response += f"- **目标 Alias**: `{target_alias}`\n"
+            if effective_model:
+                response += f"- **Model**: `{effective_model}`\n"
             response += f"- **状态**: 等待生成摘要\n\n"
             response += f"请发送任意消息，当前 Agent 会先生成对话摘要，然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
 
@@ -1730,20 +1747,27 @@ class SlashCommandHandler:
 
             if summary:
                 # Manual summary provided
-                storage.set_handoff_context(current_session_id, summary, effective_alias)
+                storage.set_handoff_context(current_session_id, summary, effective_alias, model=effective_model)
                 response = f"## ✅ 准备切换\n\n"
                 response += f"- **目标 Provider**: `{target_provider}`\n"
                 if target_alias:
                     response += f"- **目标 Alias**: `{target_alias}`\n"
+                if effective_model:
+                    response += f"- **Model**: `{effective_model}`\n"
                 response += f"- **上下文摘要**: 已保存\n\n"
                 response += f"下一次对话将自动切换到 `{effective_alias}` 并注入摘要上下文。"
             else:
-                # Direct switch (no context)
-                storage.clear_handoff_context(current_session_id)
+                # Direct switch (no context) — store model via handoff_context with empty context
+                if effective_model:
+                    storage.set_handoff_context(current_session_id, "", effective_alias, model=effective_model)
+                else:
+                    storage.clear_handoff_context(current_session_id)
                 response = f"## ✅ 切换 Provider\n\n"
                 response += f"- **目标 Provider**: `{target_provider}`\n"
                 if target_alias:
                     response += f"- **目标 Alias**: `{target_alias}`\n"
+                if effective_model:
+                    response += f"- **Model**: `{effective_model}`\n"
                 response += f"- **上下文传递**: 无\n\n"
                 response += f"下一次对话将使用 `{effective_alias}`。"
 
@@ -1766,17 +1790,19 @@ class SlashCommandHandler:
 
 **`/task`** - 创建任务
 ```
-/task [-p <项目>] [-w <路径> [-i]] [-r <provider>] [-u <exec_user>] [-l <alias>] -- <描述>
+/task [-p <项目>] [-w <路径> [-i]] [-r <provider>] [-u <exec_user>] [-l <alias>] [-m <model>] -- <描述>
 ```
 - 可选 `-r/--provider` 指定执行 Provider（未指定则使用默认配置）
 - 可选 `-u/--exec-user` 指定执行用户（未指定则使用默认配置）
 - 可选 `-l/--alias` 指定别名（未指定则默认等于 Provider）
+- 可选 `-m/--model` 指定 LLM 模型（如 claude-opus-4.6, gemini-2.5-pro）
 
 **`/chat`** - 对话管理
 ```
 /chat -t <任务ID>              # 查看记录
 /chat -t <ID> -n <N>           # 最近N条
 /chat -c -t <ID> -- <msg>      # 续聊
+/chat -c -t <ID> -m <model> -- <msg>  # 续聊并切换模型
 ```
 
 **`/check`** - 系统状态
@@ -1816,6 +1842,7 @@ class SlashCommandHandler:
 /handoff                 # 显示当前 Provider
 /handoff -r <provider>   # 直接切换（无上下文）
 /handoff -l <alias>      # 通过别名切换
+/handoff -r <provider> -m <model>  # 切换并指定模型
 /handoff -r <provider> -a    # 自动生成摘要后切换
 /handoff -r <provider> -- <摘要>  # 手动摘要切换
 ```
