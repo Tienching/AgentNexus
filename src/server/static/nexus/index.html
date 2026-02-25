@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="css/styles.css?v=22">
+    <link rel="stylesheet" href="css/styles.css?v=23">
 </head>
 <body>
     <!-- Login Modal (shown when auth is required) -->
@@ -258,6 +258,14 @@
                             </div>
 
                             <div class="config-section">
+                                <h3 class="config-section-title">Provider Default Models</h3>
+                                <p class="config-section-desc">Set a default LLM model per provider/alias (e.g., claude-opus-4.6, gemini-2.5-pro). Leave empty to use provider default.</p>
+                                <div id="providerModelsContainer">
+                                    <!-- Rendered by JS -->
+                                </div>
+                            </div>
+
+                            <div class="config-section">
                                 <h3 class="config-section-title">Provider Aliases</h3>
                                 <p class="config-section-desc">Create custom aliases for providers</p>
                                 
@@ -270,6 +278,7 @@
                                         <option value="codex">codex</option>
                                         <option value="codebuddy">codebuddy</option>
                                     </select>
+                                    <input id="newAliasConfigPath" type="text" class="form-input" placeholder="Config path (e.g. ~/.codex-internal, optional)">
                                     <button id="addAliasBtn" class="action-btn primary">
                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -352,33 +361,12 @@
 
                         <!-- Skills Tab -->
                         <div class="config-tab-content" data-config-content="skills">
+                            <!-- Provider Skills (discovered from filesystem) -->
                             <div class="config-section">
-                                <h3 class="config-section-title">Global Skills</h3>
-                                <p class="config-section-desc">Skills available to all providers</p>
-                                
-                                <!-- Add Skill Form -->
-                                <div class="skill-form">
-                                    <input id="globalSkillName" type="text" class="form-input" placeholder="Skill name">
-                                    <button id="addGlobalSkillBtn" class="action-btn primary">
-                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                        </svg>
-                                        Add
-                                    </button>
-                                </div>
-
-                                <!-- Global Skills List -->
-                                <div id="globalSkillsList" class="skills-list">
-                                    <!-- Skill items will be rendered here -->
-                                </div>
-                            </div>
-
-                            <!-- Provider-specific Skills -->
-                            <div class="config-section">
-                                <h3 class="config-section-title">Provider-specific Skills</h3>
-                                <p class="config-section-desc">Configure skills for individual providers</p>
+                                <h3 class="config-section-title">Provider Skills</h3>
+                                <p class="config-section-desc">Skills discovered from provider config directories (e.g. ~/.claude/skills/). Create new skills or manage existing ones.</p>
                                 <div id="providerSkillsPanels" class="provider-panels">
-                                    <!-- Provider panels will be rendered here -->
+                                    <div class="skills-loading">Loading skills...</div>
                                 </div>
                             </div>
                         </div>
@@ -420,6 +408,11 @@
                         <p class="form-hint">Select a user and model for this task</p>
                     </div>
                     <div class="form-group">
+                        <label class="form-label">LLM Model</label>
+                        <input id="taskLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, gemini-2.5-pro (optional)">
+                        <p class="form-hint">Optional: Specify a specific LLM model name to use</p>
+                    </div>
+                    <div class="form-group">
                         <label class="form-label">Description <span class="required">*</span></label>
                         <textarea id="taskDescription" class="form-input form-textarea" placeholder="What should this task do?" rows="4"></textarea>
                     </div>
@@ -446,6 +439,11 @@
                         <p class="form-hint">Select a user and model for these tasks</p>
                     </div>
                     <div class="form-group">
+                        <label class="form-label">LLM Model</label>
+                        <input id="bulkLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, gemini-2.5-pro (optional)">
+                        <p class="form-hint">Optional: Specify a specific LLM model name to use</p>
+                    </div>
+                    <div class="form-group">
                         <label class="form-label">Workspace (shared)</label>
                         <input id="bulkWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
                     </div>
@@ -465,6 +463,11 @@
                             <select id="chainModel" class="form-input form-select" style="min-width:180px;"></select>
                         </div>
                         <p class="form-hint">Select a user and model for this task chain</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">LLM Model</label>
+                        <input id="chainLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6 (optional)">
+                        <p class="form-hint">Optional: Specify a specific LLM model name</p>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Workspace (shared)</label>
@@ -533,7 +536,7 @@
     <div id="toastContainer" class="toast-container"></div>
 
     <!-- Scripts -->
-    <script src="js/api.js?v=22"></script>
-    <script src="js/app.js?v=24"></script>
+    <script src="js/api.js?v=23"></script>
+    <script src="js/app.js?v=28"></script>
 </body>
 </html>

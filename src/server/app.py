@@ -97,6 +97,8 @@ async def task_handler(task: Task) -> Optional[str]:
 
     # Resolve alias: task.alias if set, otherwise fallback to provider name
     alias_value = (getattr(task, "alias", None) or provider)
+    # Resolve model: task.model if set
+    model_value = (getattr(task, "model", None) or "").strip() or None
 
     # 构建请求模型
     request = RequestModel(
@@ -116,6 +118,8 @@ async def task_handler(task: Task) -> Optional[str]:
         # Pass alias so _build_command() uses it as the actual CLI command name
         # (e.g., "claude-internal" as alias, while provider remains "claude")
         alias=alias_value,
+        # Pass model so _build_command() uses the correct LLM model
+        model=model_value,
     )
 
     # 归档器（落 Redis，供 Nexus UI 查询）

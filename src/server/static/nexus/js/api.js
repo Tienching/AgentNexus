@@ -4,7 +4,26 @@
 
 const API_BASE = '/api/nexus';
 
+/**
+ * Default exec_user, loaded from server defaults.
+ * Updated by NexusApp after loading server defaults.
+ */
+let _defaultExecUser = 'ubuntu';
+
 class NexusAPI {
+
+    /**
+     * Set the default exec_user for all API calls.
+     * Called by NexusApp after loading server defaults.
+     */
+    static setDefaultExecUser(user) {
+        _defaultExecUser = user || 'ubuntu';
+    }
+
+    static getDefaultExecUser() {
+        return _defaultExecUser;
+    }
+
     // ============ Auth API ============
 
     /**
@@ -205,7 +224,7 @@ class NexusAPI {
      */
     static async getProjects(options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
         const response = await fetch(`${API_BASE}/projects?${params}`);
         if (!response.ok) {
@@ -214,11 +233,89 @@ class NexusAPI {
         return response.json();
     }
 
+    // ============ Server Defaults API ============
+
+    /**
+     * Get server-side default configuration from .env
+     * @returns {Promise<Object>} Server defaults (exec_user, default_provider, default_model, etc.)
+     */
+    static async getDefaults() {
+        const response = await fetch(`${API_BASE}/defaults`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch server defaults: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    // ============ Skills API ============
+
+    /**
+     * Get skills from all provider directories
+     * @param {Object} options - Query options
+     * @returns {Promise<Object>} Skills response { providers: { [provider]: SkillInfo[] } }
+     */
+    static async getSkills(options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        if (options.customPaths) {
+            params.append('custom_paths', JSON.stringify(options.customPaths));
+        }
+        const response = await fetch(`${API_BASE}/skills?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch skills: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Create a new skill
+     * @param {Object} payload - { provider, skill_name, description, content, skills_path? }
+     * @returns {Promise<Object>} Success response
+     */
+    static async createSkill(payload) {
+        const response = await fetch(`${API_BASE}/skills`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to create skill: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Delete a skill
+     * @param {string} provider - Provider name
+     * @param {string} skillName - Skill name
+     * @param {Object} options - { execUser?, skillsPath? }
+     * @returns {Promise<Object>} Success response
+     */
+    static async deleteSkill(provider, skillName, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        if (options.skillsPath) {
+            params.append('skills_path', options.skillsPath);
+        }
+        const response = await fetch(
+            `${API_BASE}/skills/${encodeURIComponent(provider)}/${encodeURIComponent(skillName)}?${params}`,
+            { method: 'DELETE' }
+        );
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to delete skill: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     // ============ Tasks API ============
 
     static async getTasks(options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
             page: options.page || 1,
             page_size: options.pageSize || 50,
         });
@@ -237,7 +334,7 @@ class NexusAPI {
 
     static async getTask(taskId, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`);
@@ -252,7 +349,7 @@ class NexusAPI {
 
     static async createTask(payload, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks?${params}`, {
@@ -271,7 +368,7 @@ class NexusAPI {
 
     static async deleteTask(taskId, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`, {
@@ -285,7 +382,7 @@ class NexusAPI {
 
     static async bulkArchiveTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_archive?${params}`, {
@@ -302,7 +399,7 @@ class NexusAPI {
 
     static async bulkUnarchiveTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_unarchive?${params}`, {
@@ -319,7 +416,7 @@ class NexusAPI {
 
     static async bulkClearTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_clear?${params}`, {
@@ -336,7 +433,7 @@ class NexusAPI {
 
     static async bulkDeleteTasks(taskIds = [], options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk_delete?${params}`, {
@@ -359,7 +456,7 @@ class NexusAPI {
      */
     static async bulkCreateTasks(tasks = [], options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/bulk?${params}`, {
@@ -384,7 +481,7 @@ class NexusAPI {
      */
     static async updateTaskStatus(taskId, status, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/status?${params}`, {
@@ -402,7 +499,7 @@ class NexusAPI {
 
     static async getTaskMessages(taskId, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         if (options.tail) params.append('tail', options.tail);
@@ -420,7 +517,7 @@ class NexusAPI {
 
     static streamTaskMessages(taskId, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
             tail: options.tail || 200,
         });
 
@@ -466,7 +563,7 @@ class NexusAPI {
      */
     static async getSessionFiles(sessionId, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
         });
 
         if (options.subpath) {
@@ -492,7 +589,7 @@ class NexusAPI {
      */
     static getFileDownloadUrl(sessionId, filePath, options = {}) {
         const params = new URLSearchParams({
-            exec_user: options.execUser || 'ubuntu',
+            exec_user: options.execUser || _defaultExecUser,
             file_path: filePath,
         });
         return `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/files/download?${params}`;
