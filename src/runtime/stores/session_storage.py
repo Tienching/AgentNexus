@@ -367,7 +367,7 @@ class SessionStorage:
 
     # ============ Handoff Context (Agent Switching) ============
 
-    def set_handoff_context(self, session_id: str, context: str, target_provider_or_alias: str) -> bool:
+    def set_handoff_context(self, session_id: str, context: str, target_provider_or_alias: str, model: Optional[str] = None) -> bool:
         """Store handoff context for agent switching.
 
         When switching agents, the current agent generates a summary which is
@@ -378,17 +378,23 @@ class SessionStorage:
             context: Summary/context text from previous agent
             target_provider_or_alias: The provider or alias to switch to
                                      (used as CLI command name, e.g., 'codex' or 'gemini-internal')
+            model: Optional LLM model name to use after switching
 
         Returns:
             True if successful
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hset(key, {
+            fields = {
                 "handoff_context": context,
                 "handoff_target_provider": target_provider_or_alias,
-            })
-            logger.info(f"Set handoff context: {session_id} -> {target_provider_or_alias}")
+            }
+            if model:
+                fields["handoff_model"] = model
+            self._redis.hset(key, fields)
+            if not model:
+                self._redis.hdel(key, "handoff_model")
+            logger.info(f"Set handoff context: {session_id} -> {target_provider_or_alias} (model={model})")
             return True
         except Exception as e:
             logger.error(f"Failed to set handoff context: {e}")
@@ -416,6 +422,14 @@ class SessionStorage:
             logger.error(f"Failed to get handoff context: {e}")
             return None
 
+    def get_handoff_model(self, session_id: str) -> Optional[str]:
+        """Get handoff model if set."""
+        try:
+            key = f"session:{session_id}:meta"
+            return self._redis.hget(key, "handoff_model") or None
+        except Exception:
+            return None
+
     def clear_handoff_context(self, session_id: str) -> bool:
         """Clear handoff context after it has been consumed.
 
@@ -427,14 +441,14 @@ class SessionStorage:
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hdel(key, "handoff_context", "handoff_target_provider")
+            self._redis.hdel(key, "handoff_context", "handoff_target_provider", "handoff_model")
             logger.info(f"Cleared handoff context: {session_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to clear handoff context: {e}")
             return False
 
-    def set_handoff_pending_summary(self, session_id: str, target_provider_or_alias: str) -> bool:
+    def set_handoff_pending_summary(self, session_id: str, target_provider_or_alias: str, model: Optional[str] = None) -> bool:
         """Store pending handoff summary request.
 
         When user requests /handoff -a, we set this flag. The next message
@@ -443,16 +457,22 @@ class SessionStorage:
         Args:
             session_id: Current session ID
             target_provider_or_alias: The provider or alias to switch to after summary
+            model: Optional LLM model name to use after switching
 
         Returns:
             True if successful
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hset(key, {
+            fields = {
                 "handoff_pending_summary": target_provider_or_alias,
-            })
-            logger.info(f"Set handoff pending summary: {session_id} -> {target_provider_or_alias}")
+            }
+            if model:
+                fields["handoff_model"] = model
+            self._redis.hset(key, fields)
+            if not model:
+                self._redis.hdel(key, "handoff_model")
+            logger.info(f"Set handoff pending summary: {session_id} -> {target_provider_or_alias} (model={model})")
             return True
         except Exception as e:
             logger.error(f"Failed to set handoff pending summary: {e}")
@@ -486,7 +506,7 @@ class SessionStorage:
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hdel(key, "handoff_pending_summary")
+            self._redis.hdel(key, "handoff_pending_summary", "handoff_model")
             logger.info(f"Cleared handoff pending summary: {session_id}")
             return True
         except Exception as e:

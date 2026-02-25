@@ -13,13 +13,11 @@ from .redis_client import get_redis_client, RedisClient
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_USER_CONFIG_KEYS = {"provider", "exec_user", "alias", "model"}
+ALLOWED_USER_CONFIG_KEYS = {"provider", "exec_user", "alias"}
 
 
 def normalize_config_key(key: str) -> str:
     normalized = (key or "").strip().lower()
-    if normalized == "model":
-        return "exec_user"
     return normalized
 
 

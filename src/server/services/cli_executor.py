@@ -258,8 +258,9 @@ class CLIExecutor:
                 logger.warning(f"Failed to get workspace provider/alias: {e}")
 
         request_alias = getattr(request, "alias", None) or workspace_alias
-        logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}")
-        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias)
+        request_model_name = getattr(request, "model", None) or None
+        logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}, model={request_model_name}")
+        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
@@ -624,6 +625,7 @@ class CLIExecutor:
         use_continue: bool = True,
         agent_type: Optional[str] = None,
         alias: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> List[str]:
         """构建 CLI 命令
 
@@ -633,8 +635,10 @@ class CLIExecutor:
             use_continue: 是否使用 -c (continue) 选项，默认为 True
             agent_type: Agent类型（如 claude / codex）决定参数格式
             alias: CLI 命令名覆盖（如 claude-internal），不影响参数格式
+            model: Explicit LLM model name override. Inline --model in content takes priority.
         """
-        cleaned_content, model_param = self._parse_model_param(content)
+        cleaned_content, inline_model = self._parse_model_param(content)
+        model_param = inline_model or model or None
         provider = (agent_type or "").strip().lower()
         provider_command_map = {
             "claude": "claude",

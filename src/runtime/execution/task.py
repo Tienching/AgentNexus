@@ -28,6 +28,7 @@ class Task:
     session_id: Optional[str] = None
     exec_user: Optional[str] = None
     workspace: Optional[str] = None
+    model: Optional[str] = None
     status: TaskStatus = TaskStatus.PENDING
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -41,6 +42,7 @@ class Task:
             "task_id": self.task_id,
             "description": self.description,
             "provider": self.provider,
+            "model": self.model,
             "session_id": self.session_id,
             "exec_user": self.exec_user,
             "workspace": self.workspace,
@@ -67,6 +69,7 @@ class TaskManager:
         session_id: Optional[str] = None,
         exec_user: Optional[str] = None,
         workspace: Optional[str] = None,
+        model: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Task:
         """创建任务"""
@@ -78,6 +81,7 @@ class TaskManager:
             session_id=session_id,
             exec_user=exec_user,
             workspace=workspace,
+            model=model,
             metadata=metadata or {},
         )
         self._tasks[task_id] = task
