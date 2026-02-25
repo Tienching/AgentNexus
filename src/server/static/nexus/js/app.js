@@ -526,7 +526,8 @@ class ChatView {
     }
 
     parseAgentSelection(value) {
-        const fallback = { username: 'ubuntu', agentType: 'claude', label: 'ubuntu / claude' };
+        const defUser = NexusAPI.getDefaultExecUser();
+        const fallback = { username: defUser, agentType: 'claude', label: `${defUser} / claude` };
         if (!value) return fallback;
 
         const agents = this.app.availableAgents || [];
@@ -540,7 +541,7 @@ class ChatView {
         }
 
         const parts = value.split('::');
-        const username = parts[0] || 'ubuntu';
+        const username = parts[0] || NexusAPI.getDefaultExecUser();
         const agentType = parts[1] || 'claude';
         return {
             username,
@@ -573,10 +574,10 @@ class ChatView {
         const selectedUser = globalUserFilter?.value || '';
         const allAgents = this.getAvailableAgents('');
         const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
-        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const usernames = rawUsernames.length ? rawUsernames : [NexusAPI.getDefaultExecUser()];
         const initialUser = (selectedUser && usernames.includes(selectedUser))
             ? selectedUser
-            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+            : (usernames.includes(NexusAPI.getDefaultExecUser()) ? NexusAPI.getDefaultExecUser() : (usernames[0] || NexusAPI.getDefaultExecUser()));
 
         const buildModelOptions = (user) => {
             const agents = this.getAvailableAgents(user);
@@ -671,7 +672,7 @@ class ChatView {
             textarea.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    const selectedUser = userSelect?.value || initialUser || 'ubuntu';
+                    const selectedUser = userSelect?.value || initialUser || NexusAPI.getDefaultExecUser();
                     const selectedModel = modelSelect?.value || this.app.getDefaultProvider();
                     this.createNewSession(paneId, textarea.value, selectedUser, selectedModel, selectedModel);
                 }
@@ -680,7 +681,7 @@ class ChatView {
 
         if (sendBtn) {
             sendBtn.addEventListener('click', () => {
-                const selectedUser = userSelect?.value || initialUser || 'ubuntu';
+                const selectedUser = userSelect?.value || initialUser || NexusAPI.getDefaultExecUser();
                 const selectedModel = modelSelect?.value || this.app.getDefaultProvider();
                 this.createNewSession(paneId, textarea?.value || '', selectedUser, selectedModel, selectedModel);
             });
@@ -696,10 +697,10 @@ class ChatView {
         const selectedUser = globalUserFilter?.value || '';
         const allAgents = this.getAvailableAgents('');
         const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
-        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const usernames = rawUsernames.length ? rawUsernames : [NexusAPI.getDefaultExecUser()];
         const fallbackUser = (selectedUser && usernames.includes(selectedUser))
             ? selectedUser
-            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+            : (usernames.includes(NexusAPI.getDefaultExecUser()) ? NexusAPI.getDefaultExecUser() : (usernames[0] || NexusAPI.getDefaultExecUser()));
 
         const buildModelOptions = (user) => {
             const agents = this.getAvailableAgents(user);
@@ -743,7 +744,8 @@ class ChatView {
         modelSelect.value = selected;
     }
 
-    async createNewSession(paneId, message, execUser = 'ubuntu', agentType = 'claude', alias = null) {
+    async createNewSession(paneId, message, execUser = null, agentType = 'claude', alias = null) {
+        execUser = execUser || NexusAPI.getDefaultExecUser();
         if (!message.trim()) {
             this.app.showToast('Please enter a message', 'warning');
             return;
@@ -1550,7 +1552,7 @@ class ChatView {
     async streamMessage(paneId, sessionId, message, thinkingId) {
         const sessionMeta = this.getSessionMeta(paneId, sessionId);
         const globalUserFilter = document.getElementById('globalUserFilter');
-        const execUser = sessionMeta?.username || globalUserFilter?.value || 'ubuntu';
+        const execUser = sessionMeta?.username || globalUserFilter?.value || NexusAPI.getDefaultExecUser();
         const provider = sessionMeta?.provider || '';
         
         // Build legacy request payload with session_id to continue conversation
@@ -2059,7 +2061,7 @@ class ChatView {
 
     async showFilesModal(sessionId, subpath = '') {
         // Get agent name
-        const execUser = document.getElementById('globalUserFilter')?.value || 'ubuntu';
+        const execUser = document.getElementById('globalUserFilter')?.value || NexusAPI.getDefaultExecUser();
 
         try {
             const data = await NexusAPI.getSessionFiles(sessionId, { execUser, subpath });
@@ -2504,7 +2506,7 @@ class TaskView {
 
         try {
             const projects = await NexusAPI.getProjects({
-                execUser: globalUserFilter?.value || 'ubuntu'
+                execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser()
             });
 
             // Keep current selection
@@ -2540,7 +2542,7 @@ class TaskView {
             }
 
             const options = {
-                execUser: globalUserFilter?.value || 'ubuntu',
+                execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
                 pageSize: 100,
                 search: searchInput?.value || '',
                 projectId: projectFilter?.value || ''
@@ -2701,7 +2703,7 @@ class TaskView {
         try {
             const globalUserFilter = document.getElementById('globalUserFilter');
             const task = await NexusAPI.getTask(taskId, { 
-                execUser: globalUserFilter?.value || 'ubuntu' 
+                execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser() 
             });
             this.renderTaskDetail(paneId, task);
         } catch (error) {
@@ -2818,7 +2820,7 @@ class TaskView {
         try {
             const globalUserFilter = document.getElementById('globalUserFilter');
             await NexusAPI.deleteTask(taskId, { 
-                execUser: globalUserFilter?.value || 'ubuntu' 
+                execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser() 
             });
             this.app.showToast('Task deleted', 'success');
             this.selectedTask[paneId] = null;
@@ -2954,7 +2956,7 @@ class TaskView {
             try {
                 const globalUserFilter = document.getElementById('globalUserFilter');
                 const result = await NexusAPI.bulkDeleteTasks(taskIds, {
-                    execUser: globalUserFilter?.value || 'ubuntu'
+                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser()
                 });
 
                 const deletedCount = result.result?.count || taskIds.length;
@@ -3094,6 +3096,9 @@ class ConfigView {
         // Render alias list
         this.renderAliasList();
 
+        // Render per-provider/alias default model settings
+        this.renderProviderModels();
+
         // Update concurrency provider/alias dropdown
         const concurrencySelect = document.getElementById('providerConcurrencySelect');
         if (concurrencySelect) {
@@ -3108,6 +3113,48 @@ class ConfigView {
 
         // Render concurrency data
         this.renderConcurrency();
+    }
+
+    renderProviderModels() {
+        const container = document.getElementById('providerModelsContainer');
+        if (!container) return;
+
+        const allProviders = this.app.getAllProviders();
+        container.innerHTML = allProviders.map(name => {
+            const currentModel = this.app.getProviderDefaultModel(name);
+            const isAlias = this.app.isCustomAlias(name);
+            const label = isAlias ? `${name} <span class="alias-item-base">${this.app.getBaseProvider(name)}</span>` : name;
+            return `
+                <div class="provider-model-row" data-provider="${name}" style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                    <span style="min-width:140px; font-weight:500; font-size:13px;">${label}</span>
+                    <input type="text" class="form-input provider-model-input" data-provider="${name}"
+                           value="${currentModel}" placeholder="Use provider default"
+                           style="flex:1; max-width:300px;">
+                    <button class="action-btn small provider-model-save" data-provider="${name}" style="padding:4px 10px; font-size:12px;">Save</button>
+                </div>
+            `;
+        }).join('');
+
+        // Bind save buttons and Enter key
+        container.querySelectorAll('.provider-model-save').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const prov = btn.dataset.provider;
+                const input = container.querySelector(`.provider-model-input[data-provider="${prov}"]`);
+                if (input) {
+                    this.app.setProviderDefaultModel(prov, input.value.trim());
+                    this.app.showToast(`Default model for ${prov} updated`, 'success');
+                }
+            });
+        });
+        container.querySelectorAll('.provider-model-input').forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const prov = input.dataset.provider;
+                    this.app.setProviderDefaultModel(prov, input.value.trim());
+                    this.app.showToast(`Default model for ${prov} updated`, 'success');
+                }
+            });
+        });
     }
 
     renderAliasList() {
@@ -3126,6 +3173,7 @@ class ConfigView {
                 <div class="alias-item-info">
                     <span class="alias-item-name">${alias.name}</span>
                     <span class="alias-item-base">${alias.baseProvider}</span>
+                    ${alias.configPath ? `<span class="alias-item-path" title="${alias.configPath}">${alias.configPath}</span>` : ''}
                 </div>
                 <button class="alias-item-delete" title="Delete alias">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3150,21 +3198,25 @@ class ConfigView {
     addAlias() {
         const nameInput = document.getElementById('newAliasName');
         const baseSelect = document.getElementById('newAliasBase');
+        const configPathInput = document.getElementById('newAliasConfigPath');
         
         if (!nameInput || !baseSelect) return;
 
         const name = nameInput.value.trim();
         const base = baseSelect.value;
+        const configPath = configPathInput?.value.trim() || '';
 
         if (!name) {
             this.app.showToast('Please enter an alias name', 'error');
             return;
         }
 
-        if (this.app.addCustomProvider(name, base)) {
+        if (this.app.addCustomProvider(name, base, configPath)) {
             this.app.showToast(`Alias "${name}" added`, 'success');
             nameInput.value = '';
+            if (configPathInput) configPathInput.value = '';
             this.renderParameters();
+            this.renderSkills();
             this.app.refreshChatProviders?.();
         } else {
             this.app.showToast('Alias already exists or is invalid', 'error');
@@ -3175,6 +3227,7 @@ class ConfigView {
         if (this.app.removeCustomProvider(name)) {
             this.app.showToast(`Alias "${name}" removed`, 'success');
             this.renderParameters();
+            this.renderSkills();
             this.app.refreshChatProviders?.();
         } else {
             this.app.showToast('Cannot remove this alias', 'error');
@@ -3412,98 +3465,90 @@ class ConfigView {
     }
 
     // ============================================================
-    // Skills Tab
+    // Skills Tab (backend API driven)
     // ============================================================
     bindSkillsEvents() {
-        // Add global skill button
-        const addGlobalSkillBtn = document.getElementById('addGlobalSkillBtn');
-        if (addGlobalSkillBtn) {
-            addGlobalSkillBtn.addEventListener('click', () => this.addGlobalSkill());
-        }
-
-        // Add skill on Enter key
-        const globalSkillName = document.getElementById('globalSkillName');
-        if (globalSkillName) {
-            globalSkillName.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') this.addGlobalSkill();
-            });
-        }
+        // Events are bound dynamically after rendering provider panels
     }
 
-    renderSkills() {
-        const skillsConfig = this.app.loadSkillsConfig();
-        
-        // Render global skills list
-        this.renderSkillsList('globalSkillsList', skillsConfig.global, null);
-        
-        // Render provider panels
-        this.renderProviderSkillsPanels(skillsConfig.providers);
-    }
-
-    renderSkillsList(containerId, skills, provider) {
-        const container = document.getElementById(containerId);
+    async renderSkills() {
+        const container = document.getElementById('providerSkillsPanels');
         if (!container) return;
 
-        if (!skills || skills.length === 0) {
-            container.innerHTML = '<div class="skills-empty">No skills configured</div>';
-            return;
+        container.innerHTML = '<div class="skills-loading">Loading skills...</div>';
+
+        try {
+            const execUser = document.getElementById('globalUserFilter')?.value || NexusAPI.getDefaultExecUser();
+            const customPaths = this.app.getAliasSkillsPaths();
+            const data = await NexusAPI.getSkills({ execUser, customPaths: Object.keys(customPaths).length ? customPaths : undefined });
+            this._skillsData = data.providers || {};
+            this.renderProviderSkillsPanels(this._skillsData);
+        } catch (error) {
+            console.error('Failed to load skills:', error);
+            container.innerHTML = '<div class="skills-empty">Failed to load skills. Check server connection.</div>';
         }
-
-        container.innerHTML = skills.map((skill, index) => `
-            <div class="skill-item" data-index="${index}" data-provider="${provider || 'global'}">
-                <span>${skill}</span>
-                <button class="skill-item-delete" title="Remove skill">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                    </svg>
-                </button>
-            </div>
-        `).join('');
-
-        // Bind delete buttons
-        container.querySelectorAll('.skill-item-delete').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const item = e.target.closest('.skill-item');
-                const index = parseInt(item?.dataset.index);
-                const prov = item?.dataset.provider;
-                if (!isNaN(index)) {
-                    this.deleteSkill(prov === 'global' ? null : prov, index);
-                }
-            });
-        });
     }
 
     renderProviderSkillsPanels(providersSkills) {
         const container = document.getElementById('providerSkillsPanels');
         if (!container) return;
 
-        const providers = this.app.getDefaultProviders();
-        
-        container.innerHTML = providers.map(provider => {
-            const skillsList = providersSkills[provider] || [];
+        const defaultProviders = ['claude', 'codebuddy', 'codex', 'gemini'];
+        // Include custom aliases
+        const aliasNames = this.app.getCustomProviderNames();
+        const allProviders = [...defaultProviders, ...aliasNames.filter(n => !defaultProviders.includes(n))];
+        // Also include any extra providers from the response
+        for (const key of Object.keys(providersSkills)) {
+            if (!allProviders.includes(key)) allProviders.push(key);
+        }
+
+        // Default provider config dirs (for display)
+        const _DEFAULT_CONFIG_DIRS = {
+            claude: '~/.claude', codebuddy: '~/.codebuddy', codex: '~/.codex', gemini: '~/.gemini'
+        };
+
+        container.innerHTML = allProviders.map(provider => {
+            const skills = providersSkills[provider] || [];
+            const isAlias = this.app.isCustomAlias(provider);
+            const baseInfo = isAlias ? ` <span class="alias-item-base">${this.app.getBaseProvider(provider)}</span>` : '';
+            // Show config path for both default providers and aliases
+            let configPath;
+            if (isAlias) {
+                configPath = this.app.getAliasConfigPath(provider) || '';
+            } else {
+                configPath = _DEFAULT_CONFIG_DIRS[provider] || '';
+            }
+            const pathInfo = configPath ? ` <span class="alias-item-path" title="${configPath}">${configPath}</span>` : '';
             return `
-                <div class="provider-panel" data-provider="${provider}">
+                <div class="provider-panel expanded" data-provider="${provider}" data-config-path="${configPath || ''}">
                     <div class="provider-panel-header">
                         <div class="provider-panel-title">
-                            ${provider}
-                            <span class="provider-panel-count">${skillsList.length}</span>
+                            ${provider}${baseInfo}${pathInfo}
+                            <span class="provider-panel-count">${skills.length}</span>
                         </div>
                         <svg class="provider-panel-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                         </svg>
                     </div>
                     <div class="provider-panel-body">
-                        <div class="skill-form">
-                            <input type="text" class="form-input provider-skill-name" placeholder="Skill name">
-                            <button class="action-btn primary provider-skill-add">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                                Add
-                            </button>
+                        <!-- Create Skill Form -->
+                        <div class="skill-create-form">
+                            <div class="skill-create-row">
+                                <input type="text" class="form-input skill-new-name" placeholder="Skill name">
+                                <input type="text" class="form-input skill-new-desc" placeholder="Description (optional)">
+                                <button class="action-btn primary skill-create-btn" title="Create new skill">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                    </svg>
+                                    Create
+                                </button>
+                            </div>
+                            <textarea class="form-input skill-new-content" placeholder="SKILL.md content (markdown, optional)" rows="3" style="display:none;"></textarea>
+                            <button class="skill-toggle-content-btn" title="Toggle content editor">+ Add content</button>
                         </div>
+                        <!-- Skills List -->
                         <div class="skills-list" id="providerSkillsList-${provider}">
-                            ${this.renderProviderSkillsItems(skillsList, provider)}
+                            ${this._renderSkillCards(skills, provider)}
                         </div>
                     </div>
                 </div>
@@ -3517,119 +3562,129 @@ class ConfigView {
             });
         });
 
-        // Bind add buttons
-        container.querySelectorAll('.provider-skill-add').forEach(btn => {
+        // Bind create skill buttons
+        container.querySelectorAll('.skill-create-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 const panel = e.target.closest('.provider-panel');
                 const provider = panel?.dataset.provider;
-                if (provider) {
-                    this.addProviderSkill(provider, panel);
+                if (provider) this._createSkill(provider, panel);
+            });
+        });
+
+        // Bind "Enter" on name input
+        container.querySelectorAll('.skill-new-name').forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const panel = e.target.closest('.provider-panel');
+                    const provider = panel?.dataset.provider;
+                    if (provider) this._createSkill(provider, panel);
                 }
             });
         });
 
-        // Bind delete buttons
-        container.querySelectorAll('.skill-item-delete').forEach(btn => {
+        // Bind toggle content button
+        container.querySelectorAll('.skill-toggle-content-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
-                const item = e.target.closest('.skill-item');
-                const index = parseInt(item?.dataset.index);
-                const prov = item?.dataset.provider;
-                if (!isNaN(index) && prov) {
-                    this.deleteSkill(prov, index);
+                const form = e.target.closest('.skill-create-form');
+                const textarea = form?.querySelector('.skill-new-content');
+                if (textarea) {
+                    const isHidden = textarea.style.display === 'none';
+                    textarea.style.display = isHidden ? 'block' : 'none';
+                    e.target.textContent = isHidden ? '- Hide content' : '+ Add content';
                 }
+            });
+        });
+
+        // Bind delete skill buttons
+        container.querySelectorAll('.skill-card-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const card = e.target.closest('.skill-card');
+                const provider = card?.dataset.provider;
+                const skillName = card?.dataset.skillName;
+                if (provider && skillName) this._deleteSkill(provider, skillName);
             });
         });
     }
 
-    renderProviderSkillsItems(skillsList, provider) {
-        if (!skillsList || skillsList.length === 0) {
-            return '<div class="skills-empty">No skills for this provider</div>';
+    _renderSkillCards(skills, provider) {
+        if (!skills || skills.length === 0) {
+            return '<div class="skills-empty">No skills discovered for this provider</div>';
         }
 
-        return skillsList.map((skill, index) => `
-            <div class="skill-item" data-index="${index}" data-provider="${provider}">
-                <span>${skill}</span>
-                <button class="skill-item-delete" title="Remove skill">
+        return skills.map(skill => `
+            <div class="skill-card" data-provider="${provider}" data-skill-name="${skill.name}">
+                <div class="skill-card-info">
+                    <div class="skill-card-name">${skill.name}</div>
+                    ${skill.description ? `<div class="skill-card-desc">${skill.description.length > 120 ? skill.description.slice(0, 120) + '...' : skill.description}</div>` : ''}
+                    <div class="skill-card-meta">
+                        ${skill.version ? `<span class="skill-card-version">v${skill.version}</span>` : ''}
+                        ${skill.path ? `<span class="skill-card-path" title="${skill.path}">${skill.path.length > 40 ? '...' + skill.path.slice(-37) : skill.path}</span>` : ''}
+                    </div>
+                </div>
+                <button class="skill-card-delete" title="Delete skill">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                     </svg>
                 </button>
             </div>
         `).join('');
     }
 
-    addGlobalSkill() {
-        const nameInput = document.getElementById('globalSkillName');
-        if (!nameInput) return;
+    async _createSkill(provider, panel) {
+        const nameInput = panel.querySelector('.skill-new-name');
+        const descInput = panel.querySelector('.skill-new-desc');
+        const contentTextarea = panel.querySelector('.skill-new-content');
 
-        const name = nameInput.value.trim();
-        if (!name) {
+        const skillName = nameInput?.value.trim();
+        if (!skillName) {
             this.app.showToast('Please enter a skill name', 'error');
             return;
         }
 
-        const config = this.app.loadSkillsConfig();
-        if (config.global.includes(name)) {
-            this.app.showToast('Skill already exists', 'error');
-            return;
+        const description = descInput?.value.trim() || '';
+        const content = contentTextarea?.value.trim() || '';
+        const configPath = panel.dataset.configPath || '';
+
+        const payload = {
+            provider,
+            skill_name: skillName,
+            description,
+            content: content || `# ${skillName}\n`,
+        };
+        // If alias has custom config path, pass skills_path
+        if (configPath) {
+            payload.skills_path = configPath.endsWith('/skills') ? configPath : configPath + '/skills';
         }
 
-        config.global.push(name);
-        this.app.saveSkillsConfig(config);
-
-        nameInput.value = '';
-        this.app.showToast(`Skill "${name}" added`, 'success');
-        this.renderSkills();
+        try {
+            await NexusAPI.createSkill(payload);
+            this.app.showToast(`Skill "${skillName}" created for ${provider}`, 'success');
+            if (nameInput) nameInput.value = '';
+            if (descInput) descInput.value = '';
+            if (contentTextarea) contentTextarea.value = '';
+            await this.renderSkills();
+        } catch (error) {
+            this.app.showToast(`Failed to create skill: ${error.message}`, 'error');
+        }
     }
 
-    addProviderSkill(provider, panel) {
-        const nameInput = panel.querySelector('.provider-skill-name');
-        if (!nameInput) return;
-
-        const name = nameInput.value.trim();
-        if (!name) {
-            this.app.showToast('Please enter a skill name', 'error');
+    async _deleteSkill(provider, skillName) {
+        if (!confirm(`Delete skill "${skillName}" from ${provider}? This will remove the skill directory from the filesystem.`)) {
             return;
         }
 
-        const config = this.app.loadSkillsConfig();
-        if (!config.providers[provider]) {
-            config.providers[provider] = [];
-        }
-        if (config.providers[provider].includes(name)) {
-            this.app.showToast('Skill already exists for this provider', 'error');
-            return;
-        }
-
-        config.providers[provider].push(name);
-        this.app.saveSkillsConfig(config);
-
-        nameInput.value = '';
-        this.app.showToast(`Skill "${name}" added to ${provider}`, 'success');
-        this.renderSkills();
-    }
-
-    deleteSkill(provider, index) {
-        const config = this.app.loadSkillsConfig();
-        
-        if (provider === null) {
-            // Global
-            if (config.global[index]) {
-                const name = config.global[index];
-                config.global.splice(index, 1);
-                this.app.saveSkillsConfig(config);
-                this.app.showToast(`Skill "${name}" removed`, 'success');
-                this.renderSkills();
+        try {
+            const execUser = document.getElementById('globalUserFilter')?.value || NexusAPI.getDefaultExecUser();
+            const configPath = this.app.getAliasConfigPath(provider);
+            const opts = { execUser };
+            if (configPath) {
+                opts.skillsPath = configPath.endsWith('/skills') ? configPath : configPath + '/skills';
             }
-        } else {
-            // Provider specific
-            if (config.providers[provider] && config.providers[provider][index]) {
-                const name = config.providers[provider][index];
-                config.providers[provider].splice(index, 1);
-                this.app.saveSkillsConfig(config);
-                this.app.showToast(`Skill "${name}" removed from ${provider}`, 'success');
-                this.renderSkills();
-            }
+            await NexusAPI.deleteSkill(provider, skillName, opts);
+            this.app.showToast(`Skill "${skillName}" deleted from ${provider}`, 'success');
+            await this.renderSkills();
+        } catch (error) {
+            this.app.showToast(`Failed to delete skill: ${error.message}`, 'error');
         }
     }
 
@@ -3779,6 +3834,7 @@ class NexusApp {
         this.pageManager = new PageManager(this);
         this.availableAgents = [];
         this.customProviders = this.loadCustomProviders();
+        this.serverDefaults = null; // loaded from GET /api/nexus/defaults
 
         this.deleteCallback = null;
         this.renameTabCallback = null;
@@ -3789,7 +3845,7 @@ class NexusApp {
 
     // ============================================================
     // Custom Providers Management (localStorage persistence)
-    // Storage format: [{name: string, baseProvider: string}, ...]
+    // Storage format: [{name: string, baseProvider: string, configPath?: string, defaultModel?: string}, ...]
     // ============================================================
     loadCustomProviders() {
         try {
@@ -3800,11 +3856,9 @@ class NexusApp {
             if (Array.isArray(parsed)) {
                 return parsed.map(item => {
                     if (typeof item === 'string') {
-                        // Old format: convert string to object with default baseProvider
-                        return { name: item, baseProvider: 'claude' };
+                        return { name: item, baseProvider: 'claude', configPath: '', defaultModel: '' };
                     }
-                    // New format: already an object
-                    return item;
+                    return { ...item, configPath: item.configPath || '', defaultModel: item.defaultModel || '' };
                 });
             }
             return [];
@@ -3822,38 +3876,33 @@ class NexusApp {
         }
     }
 
-    addCustomProvider(name, baseProvider = 'claude') {
+    addCustomProvider(name, baseProvider = 'claude', configPath = '') {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim();
         if (!trimmed) return false;
 
-        // Default providers that shouldn't be duplicated
         const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
         
-        // Check if already exists in defaults or custom list
         if (defaultProviders.includes(trimmed.toLowerCase()) || 
             this.customProviders.some(p => p.name.toLowerCase() === trimmed.toLowerCase())) {
             return false;
         }
 
-        this.customProviders.push({ name: trimmed, baseProvider: baseProvider });
+        this.customProviders.push({ name: trimmed, baseProvider: baseProvider, configPath: (configPath || '').trim(), defaultModel: '' });
         this.saveCustomProviders();
         return true;
     }
 
-    // Check if a name is a custom alias (not a default provider)
     isCustomAlias(name) {
         if (!name) return false;
         const trimmed = name.trim().toLowerCase();
         return this.customProviders.some(p => p.name.toLowerCase() === trimmed);
     }
 
-    // Get all custom provider names (for dropdown options)
     getCustomProviderNames() {
         return this.customProviders.map(p => p.name);
     }
 
-    // Get base provider for an alias
     getBaseProvider(aliasName) {
         if (!aliasName) return null;
         const trimmed = aliasName.trim().toLowerCase();
@@ -3861,12 +3910,67 @@ class NexusApp {
         return found ? found.baseProvider : null;
     }
 
-    // Remove a custom provider alias
+    // Get config path for an alias (empty string means use baseProvider default)
+    getAliasConfigPath(aliasName) {
+        if (!aliasName) return '';
+        const trimmed = aliasName.trim().toLowerCase();
+        const found = this.customProviders.find(p => p.name.toLowerCase() === trimmed);
+        return found ? (found.configPath || '') : '';
+    }
+
+    // ============================================================
+    // Per-Provider/Alias Default Model Management
+    // Default providers: stored in localStorage 'nexus-provider-models' ({provider: model})
+    // Custom aliases: stored in customProviders[].defaultModel
+    // ============================================================
+    _loadProviderModels() {
+        try {
+            const stored = localStorage.getItem('nexus-provider-models');
+            return stored ? JSON.parse(stored) : {};
+        } catch { return {}; }
+    }
+
+    _saveProviderModels(models) {
+        try {
+            localStorage.setItem('nexus-provider-models', JSON.stringify(models));
+        } catch (e) { console.error('Failed to save provider models:', e); }
+    }
+
+    getProviderDefaultModel(providerOrAlias) {
+        if (!providerOrAlias) return '';
+        const name = providerOrAlias.trim().toLowerCase();
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        if (defaultProviders.includes(name)) {
+            const models = this._loadProviderModels();
+            return models[name] || '';
+        }
+        // Custom alias
+        const found = this.customProviders.find(p => p.name.toLowerCase() === name);
+        return found ? (found.defaultModel || '') : '';
+    }
+
+    setProviderDefaultModel(providerOrAlias, model) {
+        if (!providerOrAlias) return;
+        const name = providerOrAlias.trim().toLowerCase();
+        const val = (model || '').trim();
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        if (defaultProviders.includes(name)) {
+            const models = this._loadProviderModels();
+            if (val) { models[name] = val; } else { delete models[name]; }
+            this._saveProviderModels(models);
+        } else {
+            const found = this.customProviders.find(p => p.name.toLowerCase() === name);
+            if (found) {
+                found.defaultModel = val;
+                this.saveCustomProviders();
+            }
+        }
+    }
+
     removeCustomProvider(name) {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim().toLowerCase();
         
-        // Can't remove default providers
         const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
         if (defaultProviders.includes(trimmed)) {
             return false;
@@ -3878,6 +3982,25 @@ class NexusApp {
         this.customProviders.splice(index, 1);
         this.saveCustomProviders();
         return true;
+    }
+
+    // Build custom_paths map for Skills API: alias -> skills_dir
+    getAliasSkillsPaths() {
+        const _PROVIDER_CONFIG_DIRS = {
+            claude: '.claude', codebuddy: '.codebuddy', codex: '.codex', gemini: '.gemini'
+        };
+        const paths = {};
+        for (const alias of this.customProviders) {
+            if (alias.configPath) {
+                // User specified a config dir like ~/.codex-internal → skills subdir
+                let cp = alias.configPath;
+                if (cp.startsWith('~/')) cp = cp; // backend will resolve ~
+                paths[alias.name] = cp.endsWith('/skills') ? cp : cp + '/skills';
+            }
+            // If no configPath, backend will skip unknown provider names
+            // unless we map it to its baseProvider's skills dir
+        }
+        return paths;
     }
 
     getDefaultProviders() {
@@ -3892,11 +4015,20 @@ class NexusApp {
     // Default Provider Management
     // ============================================================
     getDefaultProvider() {
-        return localStorage.getItem('nexus-default-provider') || 'claude';
+        return localStorage.getItem('nexus-default-provider')
+            || (this.serverDefaults?.default_provider)
+            || 'codebuddy';
     }
 
     setDefaultProvider(provider) {
         localStorage.setItem('nexus-default-provider', provider);
+    }
+
+    // ============================================================
+    // Default Exec User Management
+    // ============================================================
+    getDefaultExecUser() {
+        return (this.serverDefaults?.exec_user) || 'ubuntu';
     }
 
     // ============================================================
@@ -3929,39 +4061,23 @@ class NexusApp {
     }
 
     // ============================================================
-    // Skills Configuration Management
-    // Storage format: { global: [...], providers: { claude: [...], ... } }
+    // Skills Configuration (deprecated - now API-driven)
+    // Kept as no-ops for backward compatibility if referenced elsewhere
     // ============================================================
     loadSkillsConfig() {
-        try {
-            const stored = localStorage.getItem('nexus-skills-config');
-            if (!stored) {
-                return { global: [], providers: {} };
-            }
-            const parsed = JSON.parse(stored);
-            return {
-                global: Array.isArray(parsed.global) ? parsed.global : [],
-                providers: parsed.providers || {}
-            };
-        } catch (e) {
-            console.error('Failed to load skills config:', e);
-            return { global: [], providers: {} };
-        }
+        return { global: [], providers: {} };
     }
 
     saveSkillsConfig(config) {
-        try {
-            localStorage.setItem('nexus-skills-config', JSON.stringify(config));
-        } catch (e) {
-            console.error('Failed to save skills config:', e);
-        }
+        // No-op: skills are now managed via backend API
     }
 
     init() {
         // Initialize layout
         this.layoutManager.setMode(this.layoutManager.mode);
 
-        // Load agents for filter
+        // Load server defaults and agents
+        this.loadServerDefaults();
         this.loadAgents();
 
         // Bind global events
@@ -3973,6 +4089,25 @@ class NexusApp {
             this.taskView.renderFullPage();
         } else if (currentPage === 'config' && this.configView) {
             this.configView.refresh();
+        }
+    }
+
+    /**
+     * Load server-side defaults from .env via API.
+     * These are used as fallback when localStorage has no value.
+     */
+    async loadServerDefaults() {
+        try {
+            this.serverDefaults = await NexusAPI.getDefaults();
+            // Update API-level default exec_user so all API calls use it
+            NexusAPI.setDefaultExecUser(this.serverDefaults.exec_user);
+            // Re-render config view if it's currently active so it picks up server defaults
+            if (this.pageManager.currentPage === 'config' && this.configView) {
+                this.configView.renderParameters();
+            }
+        } catch (error) {
+            console.warn('Failed to load server defaults, using built-in fallbacks:', error);
+            this.serverDefaults = {};
         }
     }
 
@@ -3990,18 +4125,19 @@ class NexusApp {
             }
         } catch (error) {
             console.error('Failed to load agents:', error);
+            const defUser = NexusAPI.getDefaultExecUser();
             this.availableAgents = [
                 {
-                    id: 'ubuntu::claude',
-                    username: 'ubuntu',
+                    id: `${defUser}::claude`,
+                    username: defUser,
                     agent_type: 'claude',
-                    display_name: 'ubuntu / claude',
+                    display_name: `${defUser} / claude`,
                     available: true
                 }
             ];
             const select = document.getElementById('globalUserFilter');
             if (select) {
-                select.innerHTML = '<option value="">All Users</option><option value="ubuntu">ubuntu</option>';
+                select.innerHTML = `<option value="">All Users</option><option value="${defUser}">${defUser}</option>`;
             }
         }
     }
@@ -4139,10 +4275,10 @@ class NexusApp {
         const selectedUser = globalUserFilter?.value || '';
         const allAgents = this.chatView.getAvailableAgents('');
         const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
-        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const usernames = rawUsernames.length ? rawUsernames : [NexusAPI.getDefaultExecUser()];
         const fallbackUser = (selectedUser && usernames.includes(selectedUser))
             ? selectedUser
-            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+            : (usernames.includes(NexusAPI.getDefaultExecUser()) ? NexusAPI.getDefaultExecUser() : (usernames[0] || NexusAPI.getDefaultExecUser()));
 
         const buildModelOptions = (user) => {
             const agents = this.chatView.getAvailableAgents(user);
@@ -4209,14 +4345,20 @@ class NexusApp {
         if (taskDependsOn) taskDependsOn.value = '';
         const taskAlias = document.getElementById('taskAlias');
         if (taskAlias) taskAlias.value = '';
+        const taskLlmModel = document.getElementById('taskLlmModel');
+        if (taskLlmModel) taskLlmModel.value = '';
         const bulkTasks = document.getElementById('bulkTasks');
         if (bulkTasks) bulkTasks.value = '';
         const bulkAlias = document.getElementById('bulkAlias');
         if (bulkAlias) bulkAlias.value = '';
+        const bulkLlmModel = document.getElementById('bulkLlmModel');
+        if (bulkLlmModel) bulkLlmModel.value = '';
         const chainTasks = document.getElementById('chainTasks');
         if (chainTasks) chainTasks.value = '';
         const chainAlias = document.getElementById('chainAlias');
         if (chainAlias) chainAlias.value = '';
+        const chainLlmModel = document.getElementById('chainLlmModel');
+        if (chainLlmModel) chainLlmModel.value = '';
         const bulkWorkspace = document.getElementById('bulkWorkspace');
         if (bulkWorkspace) bulkWorkspace.value = '';
         const chainWorkspace = document.getElementById('chainWorkspace');
@@ -4236,10 +4378,10 @@ class NexusApp {
         const selectedUser = globalUserFilter?.value || '';
         const allAgents = this.chatView.getAvailableAgents('');
         const rawUsernames = [...new Set(allAgents.map(agent => agent.username))];
-        const usernames = rawUsernames.length ? rawUsernames : ['ubuntu'];
+        const usernames = rawUsernames.length ? rawUsernames : [NexusAPI.getDefaultExecUser()];
         const initialUser = (selectedUser && usernames.includes(selectedUser))
             ? selectedUser
-            : (usernames.includes('ubuntu') ? 'ubuntu' : (usernames[0] || 'ubuntu'));
+            : (usernames.includes(NexusAPI.getDefaultExecUser()) ? NexusAPI.getDefaultExecUser() : (usernames[0] || NexusAPI.getDefaultExecUser()));
 
         const buildModelOptions = (user) => {
             const agents = this.chatView.getAvailableAgents(user);
@@ -4308,8 +4450,8 @@ class NexusApp {
             chain: { userId: 'chainUser', modelId: 'chainModel' },
         };
         const ids = mapping[mode] || mapping.single;
-        const execUser = document.getElementById(ids.userId)?.value || globalUserFilter?.value || 'ubuntu';
-        const provider = document.getElementById(ids.modelId)?.value || 'claude';
+        const execUser = document.getElementById(ids.userId)?.value || globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+        const provider = document.getElementById(ids.modelId)?.value || this.getDefaultProvider();
         return { execUser, provider };
     }
 
@@ -4337,6 +4479,7 @@ class NexusApp {
         const description = document.getElementById('taskDescription')?.value.trim();
         const workspace = document.getElementById('taskWorkspace')?.value.trim();
         const dependsOnStr = document.getElementById('taskDependsOn')?.value.trim();
+        const llmModel = document.getElementById('taskLlmModel')?.value.trim();
         const selectedProvider = provider || this.getDefaultProvider();
         const aliasValue = selectedProvider;
 
@@ -4348,6 +4491,7 @@ class NexusApp {
             description,
             provider: selectedProvider,
             alias: aliasValue,
+            model: llmModel || this.getProviderDefaultModel(aliasValue) || undefined,
             workspace: workspace || undefined,
             depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
         };
@@ -4359,6 +4503,7 @@ class NexusApp {
     async submitBulkTasks(execUser, provider) {
         const tasksText = document.getElementById('bulkTasks')?.value.trim();
         const workspace = document.getElementById('bulkWorkspace')?.value.trim();
+        const llmModel = document.getElementById('bulkLlmModel')?.value.trim();
         const selectedProvider = provider || this.getDefaultProvider();
         const aliasValue = selectedProvider;
 
@@ -4375,10 +4520,12 @@ class NexusApp {
         }
 
         // Use bulk create API
+        const effectiveModel = llmModel || this.getProviderDefaultModel(aliasValue) || undefined;
         const tasks = taskDescriptions.map(description => ({
             description,
             provider: selectedProvider,
             alias: aliasValue,
+            model: effectiveModel,
             workspace: workspace || undefined
         }));
 
@@ -4394,6 +4541,7 @@ class NexusApp {
     async submitTaskChain(execUser, provider) {
         const tasksText = document.getElementById('chainTasks')?.value.trim();
         const workspace = document.getElementById('chainWorkspace')?.value.trim();
+        const llmModel = document.getElementById('chainLlmModel')?.value.trim();
         const selectedProvider = provider || this.getDefaultProvider();
         const aliasValue = selectedProvider;
 
@@ -4410,10 +4558,12 @@ class NexusApp {
         }
 
         // Use bulk create API with temp_id dependencies for chain
+        const effectiveModel = llmModel || this.getProviderDefaultModel(aliasValue) || undefined;
         const tasks = taskDescriptions.map((description, index) => ({
             description,
             provider: selectedProvider,
             alias: aliasValue,
+            model: effectiveModel,
             workspace: workspace || undefined,
             depends_on: index > 0 ? [`temp_${index - 1}`] : undefined
         }));
@@ -4537,7 +4687,7 @@ class NexusApp {
             const globalUserFilter = document.getElementById('globalUserFilter');
             const result = await NexusAPI.createSession({
                 title: title || `New Session ${new Date().toLocaleTimeString()}`,
-                username: globalUserFilter?.value || 'ubuntu'
+                username: globalUserFilter?.value || NexusAPI.getDefaultExecUser()
             });
             
             this.showToast('Session created successfully', 'success');

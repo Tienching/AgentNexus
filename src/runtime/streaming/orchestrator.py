@@ -38,6 +38,7 @@ class StreamOrchestrator:
         initial_messages: list[dict[str, Any]],
         exec_user: str,
         handoff_pending_target: Optional[str] = None,
+        handoff_pending_model: Optional[str] = None,
         session_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Generate AG-UI SSE stream.
@@ -96,6 +97,7 @@ class StreamOrchestrator:
                             session_id,
                             summary_text,
                             handoff_pending_target,
+                            model=handoff_pending_model,
                         )
                         logger.info(
                             f"Stored handoff summary ({len(summary_text)} chars) for next switch",

@@ -97,6 +97,7 @@ class TaskQueue:
         workspace: Optional[str] = None,
         provider: Optional[str] = None,
         alias: Optional[str] = None,
+        model: Optional[str] = None,
         task_id: Optional[str] = None,
         source_session_id: Optional[str] = None,
         exec_user: Optional[str] = None,
@@ -145,6 +146,7 @@ class TaskQueue:
             exec_user=effective_exec_user,
             provider=normalized_provider,
             alias=alias_value,
+            model=(model or "").strip() or None,
             session_id=session_id,
             source_session_id=source_session_id,
             depends_on=depends_on or [],
@@ -187,6 +189,7 @@ class TaskQueue:
         self,
         task_id: str,
         message: str,
+        model: Optional[str] = None,
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
@@ -239,6 +242,12 @@ class TaskQueue:
         if callback_user:
             task.callback_user = callback_user
             updates["callback_user"] = callback_user
+
+        # Update model if specified (allows switching model on continue)
+        effective_model = (model or "").strip()
+        if effective_model:
+            task.model = effective_model
+            updates["model"] = effective_model
 
         self._redis.hset(self._task_key(task.id), updates)
 

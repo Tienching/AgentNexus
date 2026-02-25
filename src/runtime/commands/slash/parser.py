@@ -146,6 +146,7 @@ SPECS: List[CommandSpec] = [
             OptionDef(short="u", long="exec-user", type="string", required=False, default=None),
             OptionDef(short="r", long="provider", type="string", required=False, default=None),
             OptionDef(short="l", long="alias", type="string", required=False, default=None),
+            OptionDef(short="m", long="model", type="string", required=False, default=None),
         ),
         allow_free_text=True,
         free_text_required=True,
@@ -157,6 +158,7 @@ SPECS: List[CommandSpec] = [
         options=(
             OptionDef(short="c", long="continue", type="boolean", required=False, default=True),
             OptionDef(short="t", long="task", type="string", required=True),
+            OptionDef(short="m", long="model", type="string", required=False, default=None),
         ),
         allow_free_text=True,
         free_text_required=True,
@@ -253,6 +255,7 @@ SPECS: List[CommandSpec] = [
         options=(
             OptionDef(short="r", long="provider", type="string", required=False),
             OptionDef(short="l", long="alias", type="string", required=False),
+            OptionDef(short="m", long="model", type="string", required=False),
             OptionDef(short="a", long="auto", type="boolean", required=False, default=False),
         ),
         allow_free_text=True,

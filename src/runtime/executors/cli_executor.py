@@ -217,7 +217,8 @@ class CLIExecutor(BaseExecutor):
 
     def _build_command(self, context: RequestContext, use_continue: bool = True) -> List[str]:
         """Build CLI command."""
-        cleaned_content, model_param = self._parse_model_param(context.content)
+        cleaned_content, inline_model = self._parse_model_param(context.content)
+        model_param = inline_model or getattr(context, "model", None) or None
         
         # Determine CLI command name: alias overrides the command map
         cli_alias = (getattr(context, "alias", None) or "").strip().lower()

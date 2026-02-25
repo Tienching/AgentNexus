@@ -21,6 +21,7 @@ class MockTaskQueue:
         workspace=None,
         provider=None,
         alias=None,
+        model=None,
         task_id=None,
         source_session_id=None,
         exec_user=None,
@@ -35,6 +36,7 @@ class MockTaskQueue:
             workspace=workspace,
             provider=provider or "claude",
             alias=alias,
+            model=model,
             exec_user=exec_user,
             session_id=(source_session_id + "_" if source_session_id else "task_") + (task_id or "new"),
         )

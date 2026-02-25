@@ -44,19 +44,21 @@ class RequestContext:
     cwd: Optional[str] = None
     cwd_mode: str = ""
     run_kind: str = ""
+    model: Optional[str] = None  # LLM model name override
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
-    def from_request_model(cls, model: Any, exec_user: str = "default") -> "RequestContext":
+    def from_request_model(cls, model_obj: Any, exec_user: str = "default") -> "RequestContext":
         """Create from legacy RequestModel for backward compatibility."""
         return cls(
-            content=getattr(model, "content", "") or "",
-            user=getattr(model, "user", None) or "anonymous",
-            session_id=getattr(model, "session_id", None) or "default",
+            content=getattr(model_obj, "content", "") or "",
+            user=getattr(model_obj, "user", None) or "anonymous",
+            session_id=getattr(model_obj, "session_id", None) or "default",
             exec_user=exec_user,
-            cwd=getattr(model, "cwd", None),
-            cwd_mode=getattr(model, "cwd_mode", "") or "",
-            run_kind=getattr(model, "run_kind", "") or "",
+            cwd=getattr(model_obj, "cwd", None),
+            cwd_mode=getattr(model_obj, "cwd_mode", "") or "",
+            run_kind=getattr(model_obj, "run_kind", "") or "",
+            model=getattr(model_obj, "model", None) or None,
         )
 
 
