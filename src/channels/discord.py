@@ -160,6 +160,23 @@ class DiscordChannel(BaseChannel):
 
         return await channel.send(**kwargs)
 
+    async def send_typing(self, chat_id: str) -> None:
+        """Send a typing indicator to the target channel."""
+        if not self._client:
+            return
+
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                user = await self._client.fetch_user(int(chat_id))
+                if user:
+                    channel = await user.create_dm()
+
+            if channel and hasattr(channel, "trigger_typing"):
+                await channel.trigger_typing()
+        except Exception as e:
+            logger.debug(f"[{self.name}] Failed to send typing indicator: {e}")
+
 
 class DiscordClient:
     """Discord 客户端基类占位符（当 discord.py 不可用时）"""

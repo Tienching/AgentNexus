@@ -12,6 +12,9 @@ from .base import NotificationSink
 from .models import NotificationTarget, NotificationResult
 from .http_webhook_sink import HttpWebhookSink
 from .telegram_sink import TelegramSink
+from .discord_sink import DiscordSink
+from .feishu_sink import FeishuSink
+from .slack_sink import SlackSink
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +29,9 @@ class UnifiedNotificationHandler:
         self._sinks: Dict[str, NotificationSink] = {
             "response_url": HttpWebhookSink(),
             "telegram": TelegramSink(),
-            # Add more sinks here as they are implemented:
-            # "slack": SlackSink(),
-            # "discord": DiscordSink(),
+            "discord": DiscordSink(),
+            "feishu": FeishuSink(),
+            "slack": SlackSink(),
         }
 
     def register_sink(self, sink_type: str, sink: NotificationSink) -> None:

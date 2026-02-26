@@ -65,6 +65,13 @@ class ServerSettings(BaseSettings):
     # Discord 配置
     discord_bot_token: str | None = None
     
+    # 飞书 (Feishu) 配置
+    feishu_app_id: str | None = None
+    feishu_app_secret: str | None = None
+    feishu_verification_token: str | None = None
+    feishu_encrypt_key: str | None = None
+    feishu_domain: str = "feishu"  # "feishu" 或 "lark"
+    
     # WhatsApp 配置
     whatsapp_bridge_url: str | None = None
     whatsapp_bridge_auth_token: str | None = None
