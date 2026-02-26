@@ -41,7 +41,8 @@ def _lazy_import():
     from .config import ConfigCommand
     from .install import InstallCommand
     from .list import ListCommand
-    return InitCommand, StartCommand, StopCommand, StatusCommand, ConfigCommand, InstallCommand, ListCommand
+    from .onboard import OnboardCommand
+    return InitCommand, StartCommand, StopCommand, StatusCommand, ConfigCommand, InstallCommand, ListCommand, OnboardCommand
 
 
 # 导出命令类
@@ -52,6 +53,7 @@ StatusCommand: type
 ConfigCommand: type
 InstallCommand: type
 ListCommand: type
+OnboardCommand: type
 
 
 def __getattr__(name: str):
@@ -64,6 +66,7 @@ def __getattr__(name: str):
         "ConfigCommand": 4,
         "InstallCommand": 5,
         "ListCommand": 6,
+        "OnboardCommand": 7,
     }
     if name in commands:
         classes = _lazy_import()
@@ -80,4 +83,5 @@ __all__ = [
     "ConfigCommand",
     "InstallCommand",
     "ListCommand",
+    "OnboardCommand",
 ]

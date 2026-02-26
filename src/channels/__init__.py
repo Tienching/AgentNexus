@@ -29,6 +29,7 @@ from .config import (
     DiscordConfig,
     WhatsAppConfig,
     SignalConfig,
+    FeishuConfig,
 )
 from .manager import ChannelManager
 from .registry import ChannelRegistry
@@ -50,6 +51,7 @@ __all__ = [
     "DiscordConfig",
     "WhatsAppConfig",
     "SignalConfig",
+    "FeishuConfig",
     # 管理类
     "ChannelManager",
     "ChannelRegistry",
@@ -75,3 +77,7 @@ def _get_whatsapp():
 def _get_signal():
     from .signal_ import SignalChannel
     return SignalChannel
+
+def _get_feishu():
+    from .feishu import FeishuChannel
+    return FeishuChannel

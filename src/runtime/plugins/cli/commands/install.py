@@ -31,6 +31,7 @@ class InstallCommand(BaseCommand):
         "telegram": "telegram",
         "slack": "slack",
         "discord": "discord",
+        "feishu": "feishu",
         "whatsapp": "whatsapp",
         "signal": "signal",
         "all": "all-channels",
@@ -220,7 +221,8 @@ class InstallCommand(BaseCommand):
             "telegram": "TELEGRAM_BOT_TOKEN",
             "slack": "SLACK_BOT_TOKEN 和 SLACK_APP_TOKEN",
             "discord": "DISCORD_BOT_TOKEN",
-            "whatsapp": "WHATSAPP_BRIDGE_URL（可选 WHATSAPP_BRIDGE_AUTH_TOKEN / WHATSAPP_SESSION_NAME）",
+            "feishu": "FEISHU_APP_ID 和 FEISHU_APP_SECRET",
+            "whatsapp": "WHATSAPP_API_TOKEN（可选 WHATSAPP_PHONE_NUMBER_ID / WHATSAPP_VERIFY_TOKEN）",
             "signal": "SIGNAL_API_URL 和 SIGNAL_PHONE_NUMBER",
             "all-channels": "相应的 Channel Token",
         }

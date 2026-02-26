@@ -12,6 +12,7 @@ class ChannelType(str, Enum):
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
     SIGNAL = "signal"
+    FEISHU = "feishu"
 
 
 @dataclass
@@ -135,6 +136,24 @@ class SignalConfig(ChannelConfig):
             raise ValueError("Signal phone_number is required")
 
 
+@dataclass
+class FeishuConfig(ChannelConfig):
+    """飞书 (Feishu/Lark) 配置"""
+    type: ChannelType = ChannelType.FEISHU
+    app_id: str = ""  # 飞书应用 App ID
+    app_secret: str = ""  # 飞书应用 App Secret
+    verification_token: Optional[str] = None  # Webhook 验证令牌
+    encrypt_key: Optional[str] = None  # 事件加密密钥
+    domain: str = "feishu"  # "feishu" (中国) 或 "lark" (国际)
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not self.app_id:
+            raise ValueError("Feishu app_id is required")
+        if not self.app_secret:
+            raise ValueError("Feishu app_secret is required")
+
+
 # 配置类型映射
 CONFIG_MAP = {
     ChannelType.TELEGRAM: TelegramConfig,
@@ -142,6 +161,7 @@ CONFIG_MAP = {
     ChannelType.DISCORD: DiscordConfig,
     ChannelType.WHATSAPP: WhatsAppConfig,
     ChannelType.SIGNAL: SignalConfig,
+    ChannelType.FEISHU: FeishuConfig,
 }
 
 
