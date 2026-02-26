@@ -21,6 +21,7 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
+  vhsdk onboard                 # 一站式配置向导（推荐首次使用）
   vhsdk init                    # 初始化项目配置
   vhsdk start                   # 前台启动服务
   vhsdk start --daemon          # 后台启动服务
@@ -48,6 +49,7 @@ def create_parser() -> argparse.ArgumentParser:
     )
     
     # 注册各子命令
+    _add_onboard_parser(subparsers)
     _add_init_parser(subparsers)
     _add_start_parser(subparsers)
     _add_stop_parser(subparsers)
@@ -57,6 +59,35 @@ def create_parser() -> argparse.ArgumentParser:
     _add_list_parser(subparsers)
     
     return parser
+
+
+def _add_onboard_parser(subparsers) -> None:
+    """添加 onboard 命令解析器"""
+    parser = subparsers.add_parser(
+        "onboard",
+        help="一站式配置向导 — 引导完成 Channel 选择、Token 配置、依赖安装和服务启动",
+        description="交互式引导向导，帮助你一次性完成 VHSDK 的完整配置和启动。",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="重置 .env 文件为默认值后重新配置",
+    )
+    parser.add_argument(
+        "--skip-install",
+        action="store_true",
+        help="跳过 Channel 依赖安装",
+    )
+    parser.add_argument(
+        "--skip-start",
+        action="store_true",
+        help="跳过服务启动",
+    )
+    parser.add_argument(
+        "--no-interactive",
+        action="store_true",
+        help="非交互模式（目前不支持）",
+    )
 
 
 def _add_init_parser(subparsers) -> None:
@@ -271,7 +302,7 @@ def _add_install_parser(subparsers) -> None:
     channel_parser.add_argument(
         "name",
         type=str,
-        choices=["telegram", "slack", "discord", "whatsapp", "signal", "all"],
+        choices=["telegram", "slack", "discord", "feishu", "whatsapp", "signal", "all"],
         help="Channel 名称或 'all' 安装所有",
     )
     

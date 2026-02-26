@@ -12,8 +12,8 @@ A multi-provider agent runtime that wraps CLI-based AI providers (Claude, Gemini
 - **Multi-User Isolation** — Directory isolation by `exec_user + session_id`
 - **Nexus Web UI** — Session replay + Task board + File browser
 - **Task System** — Single task / bulk create / dependency chains with concurrency control
-- **Multi-Channel** — Telegram, Slack, Discord, WhatsApp, Signal integrations
-- **CLI Tool (`vhsdk`)** — Init, install, start, stop, status, config, list subcommands
+- **Multi-Channel** — Telegram, Slack, Discord, Feishu (Lark), WhatsApp, Signal integrations
+- **CLI Tool (`vhsdk`)** — Onboard wizard, init, install, start, stop, status, config, list subcommands
 - **Systemd Ready** — Includes `.service` file for production deployment
 
 ## Requirements
@@ -35,8 +35,29 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone <repository-url>
 cd <project-directory>
 uv sync
+```
 
-# Configure environment
+### Onboard (Recommended for First-Time Setup)
+
+```bash
+vhsdk onboard
+```
+
+The interactive wizard walks you through **6 steps**:
+
+1. **Environment check** — Creates directories and `.env` file
+2. **Core config** — API host, port, execution user
+3. **Provider selection** — Choose default provider (CodeBuddy / Claude / Gemini / Codex)
+4. **Channel selection** — Multi-select channels (Telegram, Slack, Discord, Feishu, WhatsApp, Signal) with guided token input
+5. **Dependency install** — Auto-installs selected channel dependencies
+6. **Service launch** — Start in foreground or daemon mode
+
+Options: `--reset` (reset .env), `--skip-install`, `--skip-start`
+
+### Manual Setup
+
+```bash
+# Configure environment manually
 cp .env.example .env
 # Edit .env with your settings
 ```
@@ -158,6 +179,15 @@ Enable messaging channels by configuring these environment variables:
 |-----------|-------------|
 | `DISCORD_BOT_TOKEN` | Bot token |
 
+**Feishu (Lark):**
+
+| Parameter | Description |
+|-----------|-------------|
+| `FEISHU_APP_ID` | App ID (from [Feishu Open Platform](https://open.feishu.cn/app)) |
+| `FEISHU_APP_SECRET` | App Secret |
+| `FEISHU_VERIFICATION_TOKEN` | Event subscription verification token (optional) |
+| `FEISHU_ENCRYPT_KEY` | Event encryption key (optional) |
+
 **WhatsApp:**
 
 | Parameter | Description |
@@ -180,6 +210,7 @@ Install channel dependencies:
 pip install -e ".[telegram]"
 pip install -e ".[slack]"
 pip install -e ".[discord]"
+pip install -e ".[feishu]"
 
 # All channels
 pip install -e ".[all-channels]"
@@ -273,7 +304,7 @@ Access at: `http://localhost:8081/nexus/`
 │   ├── protocols/               # Protocol layer (AG-UI, base)
 │   ├── providers/               # Provider implementations (Claude, Gemini, Codex, CodeBuddy)
 │   │   └── runtime/             # Provider runtime abstraction and registry
-│   ├── channels/                # Messaging channels (Telegram, Slack, Discord, WhatsApp, Signal)
+│   ├── channels/                # Messaging channels (Telegram, Slack, Discord, Feishu, WhatsApp, Signal)
 │   └── server/static/nexus/     # Nexus Web UI static files
 ├── scripts/                     # Run, stop, status, test, deploy scripts
 ├── config/                      # Configuration files

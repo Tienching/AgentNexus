@@ -45,6 +45,9 @@ from .notification import (
     NotificationSink,
     UnifiedNotificationHandler,
     get_notification_handler,
+    DiscordSink,
+    FeishuSink,
+    SlackSink,
 )
 
 __all__ = [
@@ -85,4 +88,7 @@ __all__ = [
     "NotificationSink",
     "UnifiedNotificationHandler",
     "get_notification_handler",
+    "DiscordSink",
+    "FeishuSink",
+    "SlackSink",
 ]

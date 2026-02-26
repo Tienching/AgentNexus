@@ -25,6 +25,7 @@ from src.channels import (
     DiscordConfig,
     WhatsAppConfig,
     SignalConfig,
+    FeishuConfig,
 )
 from .notification import (
     NotificationTarget,
@@ -37,7 +38,8 @@ logger = get_logger(__name__)
 CHANNEL_MAX_LENGTH = {
     "telegram": 4000,
     "discord": 1900,
-    "slack": 39000,
+    "slack": 3800,
+    "feishu": 3800,
     "whatsapp": 65000,
     "signal": 65000,
 }
@@ -113,6 +115,21 @@ class ChannelService:
                 logger.info("Discord channel configured")
             except Exception as e:
                 logger.error(f"Failed to configure Discord: {e}")
+
+        # 飞书 配置
+        if settings.feishu_app_id and settings.feishu_app_secret:
+            try:
+                configs["feishu"] = FeishuConfig(
+                    name="feishu",
+                    app_id=settings.feishu_app_id,
+                    app_secret=settings.feishu_app_secret,
+                    verification_token=settings.feishu_verification_token,
+                    encrypt_key=settings.feishu_encrypt_key,
+                    domain=settings.feishu_domain,
+                )
+                logger.info("Feishu channel configured")
+            except Exception as e:
+                logger.error(f"Failed to configure Feishu: {e}")
 
         # WhatsApp 配置
         if settings.whatsapp_bridge_url:

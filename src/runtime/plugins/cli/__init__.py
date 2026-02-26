@@ -3,6 +3,7 @@
 vhsdk CLI - Virtual Human SDK 命令行工具
 
 提供以下命令：
+    vhsdk onboard   - 一站式配置向导（推荐首次使用）
     vhsdk init      - 初始化项目配置
     vhsdk start     - 启动服务
     vhsdk stop      - 停止服务
@@ -26,12 +27,14 @@ from .commands import (
     ConfigCommand,
     InstallCommand,
     ListCommand,
+    OnboardCommand,
 )
 
 __version__ = "0.1.0"
 
 # 命令注册表
 COMMANDS = {
+    "onboard": OnboardCommand(),
     "init": InitCommand(),
     "start": StartCommand(),
     "stop": StopCommand(),
