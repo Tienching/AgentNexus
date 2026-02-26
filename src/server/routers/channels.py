@@ -66,3 +66,50 @@ async def slack_webhook(request: Request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook")
 
     return JSONResponse({"ok": True})
+
+
+@router.post("/feishu/webhook")
+async def feishu_webhook(request: Request):
+    """飞书 Webhook 入口
+
+    处理飞书事件订阅回调，包括 URL 验证和消息事件。
+    """
+    service = get_channel_service()
+    if not service or not service.manager:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Channel service not initialized",
+        )
+
+    channel = service.manager.get_channel("feishu")
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Feishu channel not configured",
+        )
+
+    body = await request.body()
+
+    # 先检查是否是 URL 验证 challenge
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid JSON payload",
+        )
+
+    # 处理 challenge 验证
+    challenge_resp = channel.get_challenge_response(payload)
+    if challenge_resp:
+        return JSONResponse(challenge_resp)
+
+    # 处理正常事件
+    handled = await channel.handle_webhook(body, dict(request.headers))
+    if not handled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid webhook event",
+        )
+
+    return JSONResponse({"ok": True})

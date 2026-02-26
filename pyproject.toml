@@ -35,12 +35,14 @@ telegram = ["python-telegram-bot>=20.0"]
 discord = ["discord.py>=2.3.0"]
 whatsapp = ["websockets>=12.0"]
 signal = []  # 使用 httpx，已是核心依赖
+feishu = []  # 使用 httpx，已是核心依赖
 all-channels = [
     "slack-sdk>=3.0.0",
     "aiohttp>=3.9.0",
     "python-telegram-bot>=20.0",
     "discord.py>=2.3.0",
     "websockets>=12.0",
+    "httpx>=0.25.2",
 ]
 
 [dependency-groups]

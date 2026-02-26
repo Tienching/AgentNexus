@@ -12,8 +12,8 @@
 - **多用户隔离** — 按 `exec_user + session_id` 进行目录隔离
 - **Nexus Web UI** — 会话回放 + 任务看板 + 文件浏览
 - **任务系统** — 支持单任务/批量/依赖链，带并发控制
-- **多渠道集成** — Telegram、Slack、Discord、WhatsApp、Signal
-- **CLI 工具 (`vhsdk`)** — 支持 init/install/start/stop/status/config/list 子命令
+- **多渠道集成** — Telegram、Slack、Discord、飞书 (Feishu/Lark)、WhatsApp、Signal
+- **CLI 工具 (`vhsdk`)** — 支持 onboard/init/install/start/stop/status/config/list 子命令
 - **Systemd 就绪** — 自带 `.service` 文件，可直接用于生产部署
 
 ## 环境要求
@@ -35,8 +35,29 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone <仓库地址>
 cd <项目目录>
 uv sync
+```
 
-# 配置环境
+### 一站式配置向导（推荐首次使用）
+
+```bash
+vhsdk onboard
+```
+
+交互式向导将引导你完成 **6 个步骤**：
+
+1. **环境检查** — 创建目录和 `.env` 文件
+2. **核心配置** — API 地址、端口、执行用户
+3. **Provider 选择** — 选择默认 Provider（CodeBuddy / Claude / Gemini / Codex）
+4. **Channel 选择** — 多选消息渠道（Telegram、Slack、Discord、飞书、WhatsApp、Signal），逐个引导配置 Token
+5. **依赖安装** — 自动安装已选渠道的依赖
+6. **启动服务** — 前台或守护进程模式启动
+
+可选参数：`--reset`（重置 .env）、`--skip-install`、`--skip-start`
+
+### 手动配置
+
+```bash
+# 手动配置环境变量
 cp .env.example .env
 # 编辑 .env 填入你的配置
 ```
@@ -158,6 +179,15 @@ cp .env.example .env
 |------|------|
 | `DISCORD_BOT_TOKEN` | Bot Token |
 
+**飞书 (Feishu/Lark):**
+
+| 参数 | 说明 |
+|------|------|
+| `FEISHU_APP_ID` | 应用 App ID（从[飞书开放平台](https://open.feishu.cn/app)获取） |
+| `FEISHU_APP_SECRET` | 应用 App Secret |
+| `FEISHU_VERIFICATION_TOKEN` | 事件订阅验证 Token（可选） |
+| `FEISHU_ENCRYPT_KEY` | 事件加密密钥（可选） |
+
 **WhatsApp:**
 
 | 参数 | 说明 |
@@ -180,6 +210,7 @@ cp .env.example .env
 pip install -e ".[telegram]"
 pip install -e ".[slack]"
 pip install -e ".[discord]"
+pip install -e ".[feishu]"
 
 # 安装全部
 pip install -e ".[all-channels]"
@@ -273,7 +304,7 @@ curl --no-buffer -X POST http://localhost:8081/chat/stream/ubuntu \
 │   ├── protocols/               # 协议层（AG-UI、基类）
 │   ├── providers/               # Provider 实现（Claude/Gemini/Codex/CodeBuddy）
 │   │   └── runtime/             # Provider 运行时抽象与注册
-│   ├── channels/                # 消息渠道（Telegram/Slack/Discord/WhatsApp/Signal）
+│   ├── channels/                # 消息渠道（Telegram/Slack/Discord/飞书/WhatsApp/Signal）
 │   └── server/static/nexus/     # Nexus Web UI 静态文件
 ├── scripts/                     # 启停/测试/部署脚本
 ├── config/                      # 配置文件
