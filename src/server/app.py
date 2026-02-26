@@ -257,13 +257,16 @@ async def task_handler(task: Task) -> Optional[str]:
         except Exception:
             pass
 
-        # Send task completion notification if response_url is set
-        if getattr(task, "response_url", None):
+        # Send task completion notification if response_url or notification target is set
+        _has_notification = getattr(task, "response_url", None) or getattr(task, "notification_sink_type", None)
+        if _has_notification:
             try:
                 from .services.task_notifier import TaskNotifier
                 notifier = TaskNotifier()
                 # Check if _task_error was set in except block
                 task_succeeded = "_task_error" not in dir() or _task_error is None
+                # Build unified notification target from task fields
+                notification_target = task.get_notification_target() if hasattr(task, "get_notification_target") else None
                 await notifier.notify_task_completion(
                     task_id=task.id,
                     session_id=session_id,
@@ -273,6 +276,7 @@ async def task_handler(task: Task) -> Optional[str]:
                     success=task_succeeded,
                     error_message=_task_error if not task_succeeded else None,
                     source_session_id=getattr(task, "source_session_id", None),
+                    notification_target=notification_target,
                 )
             except Exception as notify_err:
                 logger.warning(f"Failed to send task completion notification: {notify_err}")
