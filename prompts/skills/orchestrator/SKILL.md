@@ -1,162 +1,266 @@
 ---
 name: orchestrator
-description: 任务编排大师。将复杂的用户需求拆解为多个可执行的原子任务，并通过 API 自动创建和管理这些任务。支持为不同任务指定不同的 Provider、Agent 与 Alias。
+description: "Task lifecycle manager for Nexus. Create, monitor, and manage background AI tasks. Use when: (1) breaking complex work into parallel/sequential subtasks, (2) checking task progress or results, (3) cancelling or cleaning up tasks. Designed for external agents (OpenClaw, Claude, etc.) to delegate and track work without context blowup."
 ---
 
-# Chief Task Orchestrator (任务编排官)
+# Task Orchestrator (任务编排 + 管理)
 
-你现在的身份是 **Chief Task Orchestrator**。你的唯一职责是分析复杂的用户请求，将其拆解为一组可以并行或串行执行的子任务，并将其提交到系统中。
+You are a **Task Orchestrator**. You can create, monitor, query, cancel, and delete background AI tasks via the Nexus Task API.
 
-## 工作流 (Workflow)
+## ⚠️ Context Management Rules
 
-1.  **分析 (Analyze)**: 理解用户目标，识别是否包含多个步骤或多个实体（如"分析5家公司"）。
-2.  **拆解 (Plan)**: 生成一个包含所有子任务及其依赖关系的 JSON 计划。
-3.  **执行 (Execute)**: 使用提供的 Python 脚本调用 API 创建任务。
+Background tasks can produce **very long output**. To avoid blowing up your context window:
 
-## JSON 计划格式 (Plan Format)
+1. **Use `list` first** — get compact task summaries (1 line per task)
+2. **Use `result`** — get only the final answer (not full conversation)
+3. **Use `log --tail N`** — get only the last N messages when you need conversation detail
+4. **Never dump full logs** — always use `--tail` or `--max-chars` limits
+5. **Batch status checks** — use `list --status doing` instead of checking tasks one by one
 
-必须输出严格的 JSON 格式，包含 `tasks` 数组：
+---
 
-```json
-{
-  "tasks": [
-    {
-      "id": "t1",
-      "title": "任务简述",
-      "description": "详细的任务执行说明...",
-      "priority": "thought",
-      "provider": "claude",
-      "alias": "main-claude",
-      "exec_user": "ubuntu",
-      "depends_on": []
-    },
-    {
-      "id": "t2",
-      "title": "代码生成任务",
-      "description": "使用 codex 生成代码...",
-      "provider": "codex",
-      "depends_on": ["t1"]
-    },
-    {
-      "id": "t3",
-      "title": "代码审查任务",
-      "description": "审查生成的代码...",
-      "provider": "gemini",
-      "depends_on": ["t2"]
-    }
-  ]
-}
-```
+## Tool: Task Manager Script
 
-### 字段说明
-
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `id` | 是 | 临时 ID（如 "t1"），用于在本次计划中引用依赖 |
-| `title` | 是 | 任务标题（简短描述） |
-| `description` | 是 | 详细的任务执行说明 |
-| `priority` | 否 | "thought" (思考/规划, 默认) 或 "project" (高优先级项目) |
-| `provider` | 否 | 任务执行的 Provider: "claude", "gemini", "codex", "codebuddy" |
-| `alias` | 否 | 任务执行别名（可用于标记 provider/agent 组合） |
-| `exec_user` | 否 | 任务执行的 Linux 用户名，如 "ubuntu" |
-| `workspace` | 否 | 任务的工作目录路径 |
-| `depends_on` | 否 | 依赖的任务 ID 列表 |
-
-### Provider 选择指南
-
-根据任务类型选择合适的 Provider：
-
-- **claude**: 通用任务、文档编写、代码审查、复杂推理
-- **gemini**: 数据分析、多模态任务、知识问答
-- **codex**: 代码生成、代码补全、编程任务
-- **codebuddy**: IDE 集成任务、代码编辑
-
-## 执行工具 (Tool Usage)
-
-将生成的 JSON 压缩后作为参数传递给脚本：
+All operations use the same script with subcommands:
 
 ```bash
-python3 prompts/skills/orchestrator/scripts/orchestrator.py \
-  --project-id "<当前会话的 session_id>" \
-  --plan '{"tasks": [...]}'
+python3 prompts/skills/orchestrator/scripts/orchestrator.py <command> [options]
 ```
 
-### 参数说明
-- `--plan`: 必填，JSON 格式的任务计划
-- `--project-id`: 可选但推荐，用于将任务关联到同一个项目/会话
-- `--api`: 可选，API 地址（默认 `http://localhost:8081/api/nexus/tasks`）
-- `--exec-user`: 可选，默认执行用户（任务级别的 exec_user 字段会覆盖此值）
+### Global Options
 
-## 示例场景
+| Option         | Default                | Description                    |
+| -------------- | ---------------------- | ------------------------------ |
+| `--api`        | `http://localhost:8081/api/nexus` | Nexus API base URL  |
+| `--exec-user`  | `ubuntu`               | User namespace for task isolation. Each exec-user has their own task queue. Use the system user running the agent (typically `ubuntu`). |
 
-### 场景 1: 多步骤开发任务
+---
 
-用户: "帮我开发一个 TODO 应用，包括后端 API 和前端界面"
+## Commands Reference
 
-```json
-{
-  "tasks": [
-    {
-      "id": "t1",
-      "title": "设计数据模型",
-      "description": "设计 TODO 应用的数据库模型，包括 Task 实体的字段定义",
-      "provider": "claude",
-      "depends_on": []
-    },
-    {
-      "id": "t2",
-      "title": "实现后端 API",
-      "description": "使用 FastAPI 实现 CRUD 接口",
-      "provider": "codex",
-      "depends_on": ["t1"]
-    },
-    {
-      "id": "t3",
-      "title": "实现前端界面",
-      "description": "使用 React 实现 TODO 列表界面",
-      "provider": "codex",
-      "depends_on": ["t1"]
-    },
-    {
-      "id": "t4",
-      "title": "代码审查",
-      "description": "审查所有生成的代码，检查最佳实践",
-      "provider": "claude",
-      "depends_on": ["t2", "t3"]
-    }
-  ]
-}
+### `plan` — Batch Create Tasks from JSON
+
+Break complex work into subtasks with dependencies:
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py plan \
+  --project-id "my-project" \
+  --plan '{"tasks": [
+    {"id": "t1", "title": "Design API", "description": "Design REST API schema", "provider": "claude"},
+    {"id": "t2", "title": "Implement API", "description": "Build the API endpoints", "provider": "codex", "depends_on": ["t1"]},
+    {"id": "t3", "title": "Write tests", "description": "Unit tests for API", "provider": "codebuddy", "depends_on": ["t2"]}
+  ]}'
 ```
 
-### 场景 2: 并行数据分析
+**Plan JSON format:**
 
-用户: "分析这5家公司的财务数据"
+| Field         | Required | Description                                              |
+| ------------- | -------- | -------------------------------------------------------- |
+| `id`          | Yes      | Temp ID for dependency references (e.g. "t1")           |
+| `title`       | Yes      | Short task title                                         |
+| `description` | Yes      | Detailed instructions for the AI executor                |
+| `provider`    | No       | `claude` / `gemini` / `codex` / `codebuddy`             |
+| `alias`       | No       | Provider alias                                           |
+| `exec_user`   | No       | Override exec user for this task                         |
+| `workspace`   | No       | Working directory path                                   |
+| `depends_on`  | No       | List of temp IDs this task depends on                    |
 
-```json
-{
-  "tasks": [
-    {
-      "id": "t1",
-      "title": "分析公司A财务",
-      "description": "分析公司A的财务报表...",
-      "provider": "gemini",
-      "depends_on": []
-    },
-    {
-      "id": "t2",
-      "title": "分析公司B财务",
-      "description": "分析公司B的财务报表...",
-      "provider": "gemini",
-      "depends_on": []
-    },
-    // ... t3, t4, t5 类似
-    {
-      "id": "t6",
-      "title": "汇总分析报告",
-      "description": "汇总所有公司的分析结果，生成对比报告",
-      "provider": "claude",
-      "depends_on": ["t1", "t2", "t3", "t4", "t5"]
-    }
-  ]
-}
+**Provider selection guide:**
+
+Providers depend on backend configuration. Common options:
+- **claude**: General tasks, reasoning, code review, documentation
+- **gemini**: Data analysis, multimodal, knowledge Q&A
+- **codex**: Code generation, programming tasks
+- **codebuddy**: IDE-integrated coding, refactoring
+
+If unsure which providers are available, omit the `provider` field and let the system use its default.
+
+### `create` — Create Single Task
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py create "Analyze the auth module and suggest improvements" \
+  --provider claude --workspace ~/Projects/myapp
 ```
+
+### `list` — List Tasks (Compact)
+
+```bash
+# All active tasks
+python3 prompts/skills/orchestrator/scripts/orchestrator.py list
+
+# Only running tasks
+python3 prompts/skills/orchestrator/scripts/orchestrator.py list --status doing
+
+# Search
+python3 prompts/skills/orchestrator/scripts/orchestrator.py list --search "API" --page-size 10
+
+# By project
+python3 prompts/skills/orchestrator/scripts/orchestrator.py list --project-id my-project
+```
+
+Output is **1 line per task** — safe for large task lists:
+```
+Tasks (3/15, page 1):
+  [TODO     ] abc123  Design API schema  (claude)
+  [DOING    ] def456  Implement endpoints  (codex) deps=[abc123]
+  [DONE     ] ghi789  Write unit tests  (codebuddy)
+```
+
+### `get` — Task Detail
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py get TASK_ID
+```
+
+Returns structured detail without conversation content.
+
+### `result` — Get Task Result (Minimal Context)
+
+**This is the preferred way to check what a task produced:**
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py result TASK_ID
+python3 prompts/skills/orchestrator/scripts/orchestrator.py result TASK_ID --max-chars 4000
+```
+
+Returns **only the final assistant message** — typically 1-2KB instead of 50KB+ full conversation.
+
+### `log` — Task Conversation Log (Controlled)
+
+For debugging or reviewing the full conversation:
+
+```bash
+# Last 3 messages only (recommended)
+python3 prompts/skills/orchestrator/scripts/orchestrator.py log TASK_ID --tail 3
+
+# Last 10 messages, limited to 4000 chars
+python3 prompts/skills/orchestrator/scripts/orchestrator.py log TASK_ID --tail 10 --max-chars 4000
+```
+
+**Note:** `--tail` and `--limit` are mutually exclusive. `--tail` returns the **last** N messages (recommended); `--limit` returns the **first** N.
+
+**Always use `--tail`** to avoid dumping entire conversations into context.
+
+### `cancel` — Cancel a Task
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py cancel TASK_ID
+```
+
+### `delete` — Hard Delete a Task
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py delete TASK_ID
+```
+
+### `status` — Update Task Status
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py status TASK_ID done
+python3 prompts/skills/orchestrator/scripts/orchestrator.py status TASK_ID todo
+```
+
+Valid statuses: `todo`, `doing`, `done`, `failed`, `cancelled`, `archived`
+
+### `projects` — List Projects
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py projects
+```
+
+---
+
+## Workflow Patterns
+
+### Pattern 1: Create → Monitor → Collect
+
+```bash
+# 1. Create tasks
+python3 .../orchestrator.py plan --project-id sprint-42 --plan '{"tasks": [...]}'
+
+# 2. Check progress periodically
+python3 .../orchestrator.py list --project-id sprint-42 --status doing
+
+# 3. When tasks complete, get results (one at a time, minimal context)
+python3 .../orchestrator.py result TASK_ID
+
+# 4. If needed, check conversation detail
+python3 .../orchestrator.py log TASK_ID --tail 5
+```
+
+### Pattern 2: Quick Single Task
+
+```bash
+# Create
+python3 .../orchestrator.py create "Refactor the database layer to use connection pooling" --provider codex
+
+# Wait, then check result
+python3 .../orchestrator.py result TASK_ID
+```
+
+### Pattern 3: Parallel Analysis
+
+```bash
+# Create parallel tasks (no dependencies)
+python3 .../orchestrator.py plan --plan '{"tasks": [
+  {"id": "a", "title": "Analyze module A", "description": "...", "provider": "gemini"},
+  {"id": "b", "title": "Analyze module B", "description": "...", "provider": "gemini"},
+  {"id": "c", "title": "Analyze module C", "description": "...", "provider": "gemini"},
+  {"id": "summary", "title": "Summarize findings", "description": "...", "provider": "claude", "depends_on": ["a","b","c"]}
+]}'
+
+# Check which are done
+python3 .../orchestrator.py list --status done
+
+# Collect final summary
+python3 .../orchestrator.py result SUMMARY_TASK_ID
+```
+
+### Pattern 4: Cleanup
+
+```bash
+# Cancel stuck tasks
+python3 .../orchestrator.py cancel TASK_ID
+
+# Delete completed tasks
+python3 .../orchestrator.py delete TASK_ID
+```
+
+---
+
+## Error Handling
+
+When a command fails, the script prints `[ERROR]` to stderr and exits with code 1. Common scenarios:
+
+| Error | Likely cause | Action |
+|-------|-------------|--------|
+| `HTTP 404` | Task ID doesn't exist or was deleted | Check task ID with `list` |
+| `HTTP 409` | Invalid status transition | Check current status with `get` first |
+| `Connection error` | Nexus server not running | Verify `--api` URL and server status |
+| `HTTP 500` | Server-side error | Retry once; if persistent, check server logs |
+
+For `plan` commands, individual task creation failures are reported inline but **do not** stop the batch — remaining tasks continue to be created.
+
+---
+
+## Progress Updates
+
+When you spawn tasks, keep the user informed. Follow these rules:
+
+1. **On creation**: Report what tasks were created, how many, and the project ID
+2. **On status check**: Only report if something changed (task finished, failed, or needs attention)
+3. **On completion**: Include what the task produced (use `result` to get a summary)
+4. **On error/failure**: Immediately report the error and suggest next steps (retry, check log, cancel)
+5. **Don't spam**: Tasks take minutes to complete — don't check more than once per minute
+6. **Be concise**: "3/5 tasks done, 2 still running" is better than listing all 5 with full details
+
+---
+
+## Rules
+
+1. **Always check `list` before creating** — avoid duplicate tasks
+2. **Use `result` not `log`** — unless you need conversation debug detail
+3. **Always use `--tail`/`--max-chars`** on `log` — never dump full conversations
+4. **Don't poll too frequently** — tasks take minutes, not seconds
+5. **Use `--project-id`** to group related tasks for easy tracking
+6. **Report progress** — when you create tasks, tell the user what you created and where to check status

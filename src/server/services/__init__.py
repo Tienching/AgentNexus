@@ -38,6 +38,15 @@ from src.runtime.execution.task_executor import (
 )
 from src.runtime.execution.workspace_queue import WorkspaceQueueManager
 
+# Unified notification system
+from .notification import (
+    NotificationTarget,
+    NotificationResult,
+    NotificationSink,
+    UnifiedNotificationHandler,
+    get_notification_handler,
+)
+
 __all__ = [
     "CLIExecutor",
     "StreamHandler",
@@ -69,4 +78,11 @@ __all__ = [
     "WorktreeCommandError",
     "WorktreeResult",
     "ensure_task_worktree",
+
+    # Unified notification system
+    "NotificationTarget",
+    "NotificationResult",
+    "NotificationSink",
+    "UnifiedNotificationHandler",
+    "get_notification_handler",
 ]
