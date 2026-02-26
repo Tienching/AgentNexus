@@ -2,10 +2,14 @@
 
 将 channels 模块集成到 virtual-human-sdk 服务中，
 实现 Telegram、Slack 等平台的消息接收和 AI 回复。
+
+Supports non-blocking AI processing with real-time progress updates
+via the unified notification system.
 """
 
 import asyncio
 import json
+import time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -22,6 +26,11 @@ from src.channels import (
     WhatsAppConfig,
     SignalConfig,
 )
+from .notification import (
+    NotificationTarget,
+    UnifiedNotificationHandler,
+    get_notification_handler,
+)
 
 logger = get_logger(__name__)
 
@@ -33,6 +42,9 @@ CHANNEL_MAX_LENGTH = {
     "signal": 65000,
 }
 
+# Progress update interval (seconds) — how often to edit the placeholder message
+PROGRESS_UPDATE_INTERVAL = 8
+
 # 全局 channel 服务实例
 _channel_service: Optional["ChannelService"] = None
 
@@ -42,12 +54,16 @@ class ChannelService:
     
     管理多平台消息通道，将收到的消息转发给 AI 处理，
     并将 AI 回复发送回用户。
+
+    Uses the unified notification system for progress updates and
+    completion notifications so users don't stare at a blank screen.
     """
     
     def __init__(self):
         self.manager: Optional[ChannelManager] = None
         self._executor = None  # AI 执行器
         self._active_sessions: Dict[str, Dict[str, Any]] = {}
+        self._background_tasks: Dict[str, asyncio.Task] = {}
         
     async def initialize(self) -> bool:
         """初始化 channel 服务
@@ -145,50 +161,94 @@ class ChannelService:
     
     async def stop(self) -> None:
         """停止所有通道"""
+        # Cancel background processing tasks
+        for key, task in list(self._background_tasks.items()):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(
+                *self._background_tasks.values(), return_exceptions=True
+            )
+            self._background_tasks.clear()
+
         if self.manager:
             await self.manager.stop()
             logger.info("Channel service stopped")
     
     async def _handle_message(self, message: InboundMessage) -> None:
-        """处理收到的消息
-        
-        将消息转发给 AI 执行器处理，并返回结果。
+        """处理收到的消息（非阻塞模式）
+
+        1. 立即发送 "⏳ 正在处理…" 占位消息
+        2. 后台异步执行 AI 处理
+        3. 定期更新占位消息显示进度
+        4. 完成后编辑占位消息（短回复）或发送新消息（长回复）
         """
         logger.info(f"[{message.channel}] Message from {message.sender_id}: {message.content[:100]}")
-        
-        # 生成会话 ID（基于 channel + chat_id）
+
         session_id = f"channel_{message.channel}_{message.chat_id}"
-        
-        # 发送"正在处理"提示
-        if message.content:
-            await self._send_typing_indicator(message)
-        
+
+        # 1. Send an immediate "processing" placeholder
+        handler = get_notification_handler()
+        target = handler.build_target_from_channel(
+            channel_name=message.channel,
+            chat_id=message.chat_id,
+        )
+        progress_result = await handler.notify_progress(
+            target, "⏳ 正在处理，请稍候…"
+        )
+        if progress_result.success and progress_result.message_id:
+            target.message_id = progress_result.message_id
+
+        # 2. Launch background processing task
+        task = asyncio.create_task(
+            self._process_and_notify(message, session_id, target, handler)
+        )
+        task_key = f"{message.channel}_{message.chat_id}_{message.internal_id}"
+        self._background_tasks[task_key] = task
+
+        # Cleanup on completion
+        def _cleanup(t: asyncio.Task, key: str = task_key):
+            self._background_tasks.pop(key, None)
+        task.add_done_callback(_cleanup)
+
+    async def _process_and_notify(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        target: NotificationTarget,
+        handler: UnifiedNotificationHandler,
+    ) -> None:
+        """Background task: run AI processing with progress updates."""
         try:
-            # 调用 AI 处理消息
-            response = await self._process_with_ai(message, session_id)
-            
-            # 发送回复
+            response = await self._process_with_ai(message, session_id, target, handler)
+
             if response:
-                reply = OutboundMessage(
-                    channel=message.channel,
-                    chat_id=message.chat_id,
-                    content=response,
-                    reply_to=message.message_id,
-                )
-                await self.manager.send(message.channel, reply)
-                
+                # Edit the progress placeholder with the final result,
+                # or send new message(s) if the response is too long.
+                max_len = CHANNEL_MAX_LENGTH.get(message.channel, 4000)
+                if len(response) <= max_len and target.message_id:
+                    await handler.notify_completion(target, response, success=True)
+                else:
+                    # For long responses, edit placeholder to summary, then send full content
+                    if target.message_id:
+                        summary = response[:200] + "…" if len(response) > 200 else response
+                        await handler.notify_progress(target, f"✅ 处理完成（共 {len(response)} 字符）\n\n{summary}")
+                    # Send full response via send_text (auto-splits)
+                    full_target = handler.build_target_from_channel(
+                        channel_name=message.channel,
+                        chat_id=message.chat_id,
+                    )
+                    await handler.notify(full_target, response)
+            else:
+                # No response content
+                await handler.notify_progress(target, "⚠️ 未能获取有效回复，请重试。")
+
         except Exception as e:
-            logger.error(f"Error processing message: {e}", exc_info=True)
-            
-            # 发送错误提示
-            error_reply = OutboundMessage(
-                channel=message.channel,
-                chat_id=message.chat_id,
-                content="抱歉，处理消息时出现错误，请稍后重试。",
-                reply_to=message.message_id,
-            )
-            await self.manager.send(message.channel, error_reply)
-    
+            logger.error(f"Error in background processing: {e}", exc_info=True)
+            try:
+                await handler.notify_progress(target, f"❌ 处理出错：{str(e)[:200]}")
+            except Exception:
+                pass
+
     def _truncate_response(self, content: str, channel: str) -> str:
         """根据通道限制截断响应"""
         max_len = CHANNEL_MAX_LENGTH.get(channel, 4000)
@@ -196,8 +256,14 @@ class ChannelService:
             return content[:max_len] + "\n\n... (响应被截断)"
         return content
 
-    async def _process_with_ai(self, message: InboundMessage, session_id: str) -> Optional[str]:
-        """使用 AI 处理消息"""
+    async def _process_with_ai(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        target: NotificationTarget,
+        handler: UnifiedNotificationHandler,
+    ) -> Optional[str]:
+        """使用 AI 处理消息，带进度更新"""
         from ..services import CLIExecutor
         from ..models import RequestModel
         
@@ -219,6 +285,9 @@ class ChannelService:
         response_parts = []
         
         timeout = settings.cli_timeout or 120
+
+        last_progress_time = time.time()
+        collected_chars = 0
 
         try:
             async with asyncio.timeout(timeout):
@@ -243,23 +312,35 @@ class ChannelService:
                                     if delta.get("type") == "text_delta":
                                         text = delta.get("text", "")
                                         if text:
-                                            logger.debug(f"Found text_delta: {text}")
                                             response_parts.append(text)
+                                            collected_chars += len(text)
+
+                                            # Periodic progress update
+                                            now = time.time()
+                                            if now - last_progress_time >= PROGRESS_UPDATE_INTERVAL:
+                                                last_progress_time = now
+                                                await handler.notify_progress(
+                                                    target,
+                                                    f"⏳ 正在处理… 已收集 {collected_chars} 字符"
+                                                )
 
                             # result 事件包含完整的回复
                             elif event_type == "result":
                                 content = data.get("content", "") or data.get("result", "")
                                 if content:
-                                    logger.debug(f"Found result content: {content[:100]}")
                                     content = self._truncate_response(content, message.channel)
                                     return content
 
-                    except json.JSONDecodeError as e:
-                        logger.debug(f"Failed to parse JSON: {e}")
+                    except json.JSONDecodeError:
                         continue
 
         except TimeoutError:
             logger.error(f"AI execution timed out after {timeout}s")
+            # If we have partial content, return it
+            if response_parts:
+                partial = "".join(response_parts).strip()
+                if partial:
+                    return f"⏰ **处理超时** (已收集部分结果)\n\n{self._truncate_response(partial, message.channel)}"
             return "抱歉，处理超时，请稍后重试。"
         except Exception as e:
             logger.error(f"AI execution error: {e}")

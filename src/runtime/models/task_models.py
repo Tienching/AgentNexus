@@ -128,6 +128,13 @@ class Task(BaseModel):
     callback_msg_id: Optional[str] = None       # Message ID to pass back in callback
     callback_user: Optional[str] = None         # User identifier for callback
 
+    # Unified notification target (replaces response_url for channel-based notifications)
+    # Serialised as JSON dict when stored in Redis
+    notification_sink_type: Optional[str] = None    # e.g. "response_url", "telegram", "slack"
+    notification_channel: Optional[str] = None      # channel name
+    notification_chat_id: Optional[str] = None      # chat/channel ID
+    notification_message_id: Optional[str] = None   # for editing existing progress message
+
     model_config = ConfigDict(use_enum_values=True)
     
     def to_redis_hash(self) -> Dict[str, str]:
@@ -180,6 +187,41 @@ class Task(BaseModel):
     
     def __repr__(self):
         return f"<Task(id={self.id}, priority={self.priority}, status={self.status})>"
+
+    def get_notification_target(self):
+        """Build a NotificationTarget from task fields, or None if not configured.
+
+        Returns a NotificationTarget (from the notification module) if either:
+        - notification_sink_type is set (unified notification)
+        - response_url is set (legacy HTTP webhook)
+        """
+        from src.server.services.notification.models import NotificationTarget
+
+        if self.notification_sink_type:
+            return NotificationTarget(
+                sink_type=self.notification_sink_type,
+                response_url=self.response_url or "",
+                channel_name=self.notification_channel or "",
+                chat_id=self.notification_chat_id or "",
+                message_id=self.notification_message_id or "",
+                request_data={
+                    "msg_id": self.callback_msg_id,
+                    "user": self.callback_user,
+                    "session_id": self.source_session_id or self.session_id,
+                },
+            )
+        elif self.response_url:
+            # Legacy: create HTTP webhook target for backward compat
+            return NotificationTarget(
+                sink_type="response_url",
+                response_url=self.response_url,
+                request_data={
+                    "msg_id": self.callback_msg_id,
+                    "user": self.callback_user,
+                    "session_id": self.source_session_id or self.session_id,
+                },
+            )
+        return None
 
 
 class ExecutorConfig(BaseModel):
