@@ -62,20 +62,44 @@ cp .env.example .env
 # 编辑 .env 填入你的配置
 ```
 
-### 运行
+### 通过 `vhsdk` CLI 运行
 
 ```bash
-# 前台启动（开发模式，带热重载）
-./scripts/run.sh
+# 初始化项目（创建 .env、目录等）
+vhsdk init
 
-# 后台运行（守护进程模式）
-./scripts/run-background.sh
+# 安装渠道依赖
+vhsdk install channel telegram
+vhsdk install channel discord
+vhsdk install channel feishu
+vhsdk install channel all        # 安装所有渠道
 
-# 查看状态
-./scripts/status.sh
+# 前台启动服务
+vhsdk start
+
+# 后台启动服务（守护进程模式）
+vhsdk start --daemon
+
+# 查看服务状态
+vhsdk status
 
 # 停止服务
-./scripts/stop.sh
+vhsdk stop
+
+# 交互式配置向导
+vhsdk config wizard
+
+# 列出已安装的插件
+vhsdk list
+```
+
+### 通过脚本运行（备选方式）
+
+```bash
+./scripts/run.sh                  # 前台启动（开发模式，带热重载）
+./scripts/run-background.sh       # 后台运行（守护进程模式）
+./scripts/status.sh               # 查看状态
+./scripts/stop.sh                 # 停止服务
 ```
 
 ## 配置
@@ -206,13 +230,15 @@ cp .env.example .env
 安装渠道依赖：
 
 ```bash
-# 单独安装
-pip install -e ".[telegram]"
-pip install -e ".[slack]"
-pip install -e ".[discord]"
-pip install -e ".[feishu]"
+# 使用 vhsdk CLI（推荐）
+vhsdk install channel telegram
+vhsdk install channel slack
+vhsdk install channel discord
+vhsdk install channel feishu
+vhsdk install channel all        # 安装全部渠道
 
-# 安装全部
+# 或直接使用 pip
+pip install -e ".[telegram]"
 pip install -e ".[all-channels]"
 ```
 
