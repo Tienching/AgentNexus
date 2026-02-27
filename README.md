@@ -62,20 +62,44 @@ cp .env.example .env
 # Edit .env with your settings
 ```
 
-### Running
+### Running with `vhsdk` CLI
 
 ```bash
-# Foreground (development with hot-reload)
-./scripts/run.sh
+# Initialize project (create .env, directories)
+vhsdk init
 
-# Background (daemon mode)
-./scripts/run-background.sh
+# Install channel dependencies
+vhsdk install channel telegram
+vhsdk install channel discord
+vhsdk install channel feishu
+vhsdk install channel all        # Install all channels
 
-# Check status
-./scripts/status.sh
+# Start service (foreground)
+vhsdk start
+
+# Start service (daemon mode)
+vhsdk start --daemon
+
+# Check service status
+vhsdk status
 
 # Stop service
-./scripts/stop.sh
+vhsdk stop
+
+# Interactive config wizard
+vhsdk config wizard
+
+# List installed plugins
+vhsdk list
+```
+
+### Running with Scripts (Alternative)
+
+```bash
+./scripts/run.sh                  # Foreground (dev, hot-reload)
+./scripts/run-background.sh       # Background (daemon)
+./scripts/status.sh               # Check status
+./scripts/stop.sh                 # Stop service
 ```
 
 ## Configuration
@@ -206,13 +230,15 @@ Enable messaging channels by configuring these environment variables:
 Install channel dependencies:
 
 ```bash
-# Individual
-pip install -e ".[telegram]"
-pip install -e ".[slack]"
-pip install -e ".[discord]"
-pip install -e ".[feishu]"
+# Using vhsdk CLI (recommended)
+vhsdk install channel telegram
+vhsdk install channel slack
+vhsdk install channel discord
+vhsdk install channel feishu
+vhsdk install channel all        # All channels
 
-# All channels
+# Or using pip directly
+pip install -e ".[telegram]"
 pip install -e ".[all-channels]"
 ```
 
