@@ -10,6 +10,7 @@ from src.server.app import app
 from src.server.models import (
     SessionMeta,
     SessionStatus,
+    SessionMessagesResponse,
     StoredMessage,
     MessageStatus,
     StoredToolCall,
@@ -27,6 +28,8 @@ class MockSessionStorage:
         self.sessions = {}
         self.messages = {}
         self.tool_calls = {}
+        self.history_runtime_map = {}
+        self.history_bootstrap = {}
     
     def get_session_meta(self, session_id: str):
         return self.sessions.get(session_id)
@@ -93,16 +96,50 @@ class MockSessionStorage:
     def save_session_meta(self, meta: SessionMeta):
         self.sessions[meta.id] = meta
         return True
-    
+
+    def add_session_message(self, session_id: str, message: StoredMessage):
+        self.add_message(session_id, message)
+        return True
+
     def add_message(self, session_id: str, message: StoredMessage):
         if session_id not in self.messages:
             self.messages[session_id] = []
         self.messages[session_id].append(message)
-    
+
+    def save_tool_call(self, session_id: str, tool_call: StoredToolCall):
+        self.add_tool_call(session_id, tool_call)
+        return True
+
     def add_tool_call(self, session_id: str, tool_call: StoredToolCall):
         if session_id not in self.tool_calls:
             self.tool_calls[session_id] = {}
         self.tool_calls[session_id][tool_call.id] = tool_call
+
+    def get_history_runtime_mapping(self, provider: str, history_session_id: str, project_path: str):
+        return self.history_runtime_map.get((provider, history_session_id, project_path))
+
+    def set_history_runtime_mapping(self, provider: str, history_session_id: str, project_path: str, runtime_session_id: str):
+        self.history_runtime_map[(provider, history_session_id, project_path)] = runtime_session_id
+        return True
+
+    def set_history_bootstrap_context(self, session_id: str, context: str):
+        self.history_bootstrap[session_id] = context
+        return True
+
+    def consume_history_bootstrap_context(self, session_id: str):
+        return self.history_bootstrap.pop(session_id, None)
+
+    def set_exec_dir_override(self, session_id: str, exec_dir: str):
+        return True
+
+    def set_workspace_provider(self, session_id: str, provider: str):
+        return True
+
+    def set_workspace_alias(self, session_id: str, alias: str):
+        return True
+
+    def set_inherited_session(self, session_id: str, inherited_from: str):
+        return True
 
 
 @pytest.fixture
@@ -520,6 +557,97 @@ class TestAPIEdgeCases:
         
         assert response.status_code == 200
         # Should not cause any errors, just return no matches
+
+
+class _MockHistoryService:
+    async def get_session_detail(self, provider, config_path, session_id):
+        msg_user = StoredMessage(
+            id="hist-u1",
+            role="user",
+            content="历史问题",
+            status=MessageStatus.COMPLETE,
+        )
+        msg_assistant = StoredMessage(
+            id="hist-a1",
+            role="assistant",
+            content="历史回答",
+            status=MessageStatus.COMPLETE,
+        )
+        meta = SessionMeta(
+            id=session_id,
+            thread_id=session_id,
+            title="History Session",
+            username="ubuntu",
+            status=SessionStatus.COMPLETED,
+            created_at=1704067200000,
+            updated_at=1704067200000,
+            message_count=2,
+            provider=provider,
+            source="history",
+        )
+        return SessionMessagesResponse(
+            session_id=session_id,
+            messages=[msg_user, msg_assistant],
+            tool_calls=[],
+            session=meta,
+        )
+
+
+class TestHistoryPromoteAPI:
+    @pytest.mark.asyncio
+    async def test_promote_history_session_creates_runtime(self, client, mock_storage):
+        history_service = _MockHistoryService()
+        with patch('src.server.routers.nexus_history.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus_history._get_history_service', return_value=history_service):
+            response = await client.post(
+                "/api/nexus/history/sessions/codebuddy/hist-sess-1/promote",
+                json={
+                    "project_path": "/home/ubuntu/demo-project",
+                    "exec_user": "ubuntu",
+                    "mode": "full",
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        runtime_session_id = data["runtime_session_id"]
+        assert runtime_session_id in mock_storage.sessions
+        assert data["created"] is True
+        assert len(mock_storage.messages.get(runtime_session_id, [])) >= 2
+        assert mock_storage.history_bootstrap.get(runtime_session_id)
+
+    @pytest.mark.asyncio
+    async def test_promote_history_session_reuses_mapping(self, client, mock_storage):
+        history_service = _MockHistoryService()
+        existing_runtime_session = SessionMeta(
+            id="chat_existing_001",
+            thread_id="chat_existing_001",
+            title="Existing Runtime",
+            username="ubuntu",
+            status=SessionStatus.IDLE,
+            created_at=1704067200000,
+            updated_at=1704067200000,
+            message_count=0,
+            provider="codebuddy",
+        )
+        mock_storage.save_session_meta(existing_runtime_session)
+        mock_storage.set_history_runtime_mapping("codebuddy", "hist-sess-2", "/home/ubuntu/demo-project", "chat_existing_001")
+
+        with patch('src.server.routers.nexus_history.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus_history._get_history_service', return_value=history_service):
+            response = await client.post(
+                "/api/nexus/history/sessions/codebuddy/hist-sess-2/promote",
+                json={
+                    "project_path": "/home/ubuntu/demo-project",
+                    "exec_user": "ubuntu",
+                    "mode": "full",
+                },
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["runtime_session_id"] == "chat_existing_001"
+        assert data["created"] is False
 
 
 class MockTaskQueue:

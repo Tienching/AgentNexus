@@ -388,6 +388,355 @@ class TestChannelService:
         with pytest.raises(ImportError):
             signal_module.SignalChannel(SignalConfig(phone_number="+123"))
 
+    # ---------- _get_tool_display_name ----------
+
+    def test_tool_display_name_read(self):
+        name = ChannelService._get_tool_display_name("Read", {"filePath": "/home/ubuntu/app.py"})
+        assert name == "Read: /home/ubuntu/app.py"
+
+    def test_tool_display_name_write(self):
+        name = ChannelService._get_tool_display_name("Write", {"file_path": "/src/index.ts"})
+        assert name == "Write: /src/index.ts"
+
+    def test_tool_display_name_edit(self):
+        name = ChannelService._get_tool_display_name("Edit", {"filePath": "/config.yaml"})
+        assert name == "Edit: /config.yaml"
+
+    def test_tool_display_name_bash(self):
+        name = ChannelService._get_tool_display_name("Bash", {"explanation": "安装依赖包"})
+        assert name == "Bash: 安装依赖包"
+
+    def test_tool_display_name_grep(self):
+        name = ChannelService._get_tool_display_name("Grep", {"directory": "/home/ubuntu/project"})
+        assert name == "Grep: /home/ubuntu/project"
+
+    def test_tool_display_name_glob(self):
+        name = ChannelService._get_tool_display_name("Glob", {"pattern": "*.ts", "target_directory": "/src"})
+        assert name == "Glob: *.ts in /src"
+
+    def test_tool_display_name_task(self):
+        name = ChannelService._get_tool_display_name("Task", {"subagent_name": "codebuddy", "description": "修复API"})
+        assert name == "Task: codebuddy - 修复API"
+
+    def test_tool_display_name_search(self):
+        name = ChannelService._get_tool_display_name("WebSearch", {"searchTerm": "GLM-5"})
+        assert name == "Search: GLM-5"
+
+    def test_tool_display_name_todos(self):
+        import json as _json
+        todos = _json.dumps([{"id": "1", "status": "in_progress", "content": "修复登录页"}, {"id": "2", "status": "pending", "content": "优化首页"}])
+        name = ChannelService._get_tool_display_name("TodoWrite", {"todos": todos})
+        assert name == "Todos: 1/2 - 修复登录页"
+
+    def test_tool_display_name_fallback(self):
+        name = ChannelService._get_tool_display_name("mcp__custom_tool", {"foo": "bar"})
+        assert name == "mcp__custom_tool"
+
+    def test_tool_display_name_non_dict(self):
+        assert ChannelService._get_tool_display_name("Read", "not a dict") == "Read"
+        assert ChannelService._get_tool_display_name("Read", None) == "Read"
+
+
+# ============== _process_with_ai Tool Call Tests ==============
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.server.services.notification.models import NotificationTarget
+
+
+def _make_stream_event(event: dict) -> str:
+    """Helper: wrap an inner event dict into a stream_event JSON line."""
+    return json.dumps({"type": "stream_event", "event": event})
+
+
+async def _fake_executor_factory(events):
+    """Create a mock CLIExecutor whose execute() yields the given event strings."""
+    mock_executor = MagicMock()
+
+    async def fake_execute(*args, **kwargs):
+        for ev in events:
+            yield ev
+
+    mock_executor.execute = fake_execute
+    return mock_executor
+
+
+class TestProcessWithAiToolCalls:
+    """Tests for tool-call event handling inside _process_with_ai."""
+
+    @pytest.fixture
+    def service(self):
+        return ChannelService()
+
+    @pytest.fixture
+    def inbound(self):
+        return InboundMessage(
+            channel="telegram",
+            sender_id="123",
+            content="hello",
+        )
+
+    @pytest.fixture
+    def target(self):
+        return NotificationTarget(sink_type="telegram", chat_id="123")
+
+    @pytest.fixture
+    def handler(self):
+        h = AsyncMock()
+        h.notify_progress = AsyncMock()
+        return h
+
+    # --- AG-UI format ---
+
+    @pytest.mark.asyncio
+    async def test_agui_tool_call_start_appears_in_response(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """TOOL_CALL_START events should produce 🔧 tool name in the response."""
+        events = [
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Let me check."}}),
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "tc1", "toolCallName": "read_file"}),
+            _make_stream_event({"type": "TOOL_CALL_ARGS", "toolCallId": "tc1", "delta": '{"filePath": "/app.py"}'}),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": " Done."}}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "🔧" in result
+        assert "`Read: /app.py`" in result
+        assert "Let me check." in result
+        assert "Done." in result
+
+    @pytest.mark.asyncio
+    async def test_agui_tool_call_params_brief(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """TOOL_CALL_END should append brief params extracted from accumulated args."""
+        events = [
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "tc1", "toolCallName": "replace_in_file"}),
+            _make_stream_event({"type": "TOOL_CALL_ARGS", "toolCallId": "tc1", "delta": '{"filePath": "/a.py"'}),
+            _make_stream_event({"type": "TOOL_CALL_ARGS", "toolCallId": "tc1", "delta": ', "old_str": "x"}'}),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`Edit: /a.py`" in result
+
+    @pytest.mark.asyncio
+    async def test_agui_multiple_tool_calls(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """Multiple TOOL_CALL_START events should all appear."""
+        events = [
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "tc1", "toolCallName": "read_file"}),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "middle"}}),
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "tc2", "toolCallName": "write_to_file"}),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc2"}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`read_file`" in result
+        assert "`write_to_file`" in result
+        assert "middle" in result
+
+    # --- Legacy Claude format ---
+
+    @pytest.mark.asyncio
+    async def test_legacy_content_block_start_tool_use(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """Legacy content_block_start with tool_use should produce 🔧 in response."""
+        events = [
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Checking..."}}),
+            _make_stream_event({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "name": "execute_command"}}),
+            _make_stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"command": "ls -la"}'}}),
+            _make_stream_event({"type": "content_block_stop", "index": 1}),
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": " All done."}}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "🔧" in result
+        assert "`Bash: ls -la`" in result
+        assert "Checking..." in result
+        assert "All done." in result
+
+    @pytest.mark.asyncio
+    async def test_legacy_tool_params_accumulated_across_deltas(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """input_json_delta chunks should be accumulated and parsed on content_block_stop."""
+        events = [
+            _make_stream_event({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "name": "search_content"}}),
+            _make_stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"pattern"'}}),
+            _make_stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": ': "TODO", "directory": "/src"}'}}),
+            _make_stream_event({"type": "content_block_stop", "index": 1}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`Grep: /src`" in result
+
+    # --- result event takes precedence ---
+
+    @pytest.mark.asyncio
+    async def test_result_event_returns_content_directly(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """A 'result' event should return its content immediately, ignoring accumulated parts."""
+        events = [
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "partial"}}),
+            json.dumps({"type": "result", "content": "Final answer from result event."}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert result == "Final answer from result event."
+
+    @pytest.mark.asyncio
+    async def test_result_event_prepends_tool_info(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """When tool calls precede a result event, tool info is prepended to the final answer."""
+        events = [
+            _make_stream_event({"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "name": "WebSearch"}}),
+            _make_stream_event({"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": '{"searchTerm": "GLM-5"}'}}),
+            _make_stream_event({"type": "content_block_stop", "index": 2}),
+            json.dumps({"type": "result", "content": "GLM-5 is a large language model."}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "🔧" in result
+        assert "`Search: GLM-5`" in result
+        assert "GLM-5 is a large language model." in result
+        # Tool section should come before the result
+        tool_pos = result.index("🔧")
+        answer_pos = result.index("GLM-5 is a large language model.")
+        assert tool_pos < answer_pos
+
+    # --- text only (no tool calls) still works ---
+
+    @pytest.mark.asyncio
+    async def test_text_only_no_tool_calls(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """When there are no tool-call events, only text is returned."""
+        events = [
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hello "}}),
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "world"}}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert result == "Hello world"
+        assert "🔧" not in result
+
+    # --- empty stream ---
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_returns_none(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """An empty stream should return None."""
+        events = []
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert result is None
+
+    # --- mixed AG-UI and legacy (unlikely but defensive) ---
+
+    @pytest.mark.asyncio
+    async def test_mixed_agui_and_legacy_tool_calls(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """Both AG-UI and legacy tool call formats in the same stream."""
+        events = [
+            # AG-UI tool call
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "tc1", "toolCallName": "read_file"}),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
+            # Legacy tool call
+            _make_stream_event({"type": "content_block_start", "index": 2, "content_block": {"type": "tool_use", "name": "write_to_file"}}),
+            _make_stream_event({"type": "content_block_stop", "index": 2}),
+            # Text
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "done"}}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`read_file`" in result
+        assert "`write_to_file`" in result
+        assert "done" in result
+
+    # --- malformed JSON in tool args is silently skipped ---
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_args_skipped(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """Invalid JSON in tool args should not crash; params brief is just omitted."""
+        events = [
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "tc1", "toolCallName": "some_tool"}),
+            _make_stream_event({"type": "TOOL_CALL_ARGS", "toolCallId": "tc1", "delta": "NOT VALID JSON{{{"}),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "ok"}}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`some_tool`" in result
+        assert "ok" in result
+
 
 # ============== 集成测试 ==============
 

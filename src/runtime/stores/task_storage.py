@@ -292,6 +292,40 @@ class TaskQueue:
             logger.error(f"Failed to parse task {task_id}: {e}")
             return None
 
+    def find_task_by_session_id(self, session_id: str) -> Optional[Task]:
+        """Find a task whose session_id matches the given value.
+
+        Task session_id formats:
+          - ``task_{task_id}``  (standalone task)
+          - ``{source_session_id}_{task_id}``  (task derived from a chat session)
+
+        For ``task_`` prefixed session IDs we can look up the task directly.
+        Otherwise we scan all tasks for a matching ``session_id`` field.
+
+        Returns:
+            The matching Task, or None.
+        """
+        # Fast path: task_ prefix → direct lookup
+        if session_id.startswith("task_"):
+            task_id = session_id[len("task_"):]
+            task = self.get_task(task_id)
+            if task:
+                return task
+
+        # Slow path: scan all tasks and match session_id field
+        all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
+        for task_id in all_task_ids:
+            try:
+                # Quick check via Redis hash field to avoid full deserialization
+                stored_sid = self._redis.hget(self._task_key(task_id), "session_id")
+                if stored_sid == session_id:
+                    task = self.get_task(task_id)
+                    if task:
+                        return task
+            except Exception:
+                continue
+        return None
+
     def get_pending_tasks(self, limit: int = 10) -> List[Task]:
         """Get TODO tasks sorted by priority (SERIOUS first, then by creation time)"""
         task_ids = self._redis.smembers(self._status_key(TaskStatus.TODO))

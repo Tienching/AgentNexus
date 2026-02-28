@@ -34,6 +34,7 @@ class SessionMeta(BaseModel):
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000), description="Updated timestamp (ms)")
     message_count: int = Field(0, description="Total message count")
     status: SessionStatus = Field(SessionStatus.IDLE, description="Session status")
+    source: Optional[str] = Field(None, description="Session source ('history' for parsed local files, None for runtime)")
 
     def to_redis_hash(self) -> Dict[str, str]:
         """Convert to Redis hash mapping (all values as strings)"""

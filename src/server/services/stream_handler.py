@@ -85,29 +85,29 @@ class StreamHandler:
             return CodebuddyAGUIAdapter()
         return get_router().get_adapter(ProtocolType.AGUI)
 
-    def _build_conversation_history_text(self, session_id: str, max_messages: int = 50) -> str:
-        """Build a formatted conversation history text from Redis stored messages.
-
-        This is used to provide the current Agent with conversation context so it
-        can generate an intelligent summary — even in stateless ``exec`` mode.
-        """
+    def _build_conversation_history_text(
+        self,
+        session_id: str,
+        max_messages: Optional[int] = 50,
+        truncate_each: Optional[int] = 800,
+    ) -> str:
+        """Build a formatted conversation history text from Redis stored messages."""
         try:
             storage = get_session_storage()
             messages = storage.get_session_messages(session_id)
             if not messages:
                 return ""
 
-            recent = messages[-max_messages:]
+            selected = messages[-max_messages:] if max_messages and max_messages > 0 else messages
 
             parts: list[str] = []
-            for msg in recent:
+            for msg in selected:
                 role_label = {"user": "用户", "assistant": "助手"}.get(msg.role, msg.role)
                 content = (msg.content or "").strip()
                 if not content:
                     continue
-                # Truncate very long messages to keep prompt reasonable
-                if len(content) > 800:
-                    content = content[:800] + "…(截断)"
+                if truncate_each and truncate_each > 0 and len(content) > truncate_each:
+                    content = content[:truncate_each] + "…(截断)"
                 parts.append(f"[{role_label}] {content}")
 
             if not parts:
@@ -118,48 +118,70 @@ class StreamHandler:
             logger.error(f"Failed to build conversation history text: {e}")
             return ""
 
-    def _build_summary_prompt(self, conversation_history: str, target: str) -> str:
-        """Build a prompt that asks the agent to summarise the conversation."""
-        return f"""请总结以下对话的核心内容，包括：
+    def _prepare_handoff_prompt(self, session_id: str, target: str, context_mode: str = "full") -> str:
+        """Build handoff prompt by fetching conversation history from Redis.
 
-1. **已完成的工作** - 主要完成的任务和改动
-2. **未完成的任务** - 还在进行中或待办的事项
-3. **重要决策和代码变更** - 关键的技术决策和代码修改
+        Args:
+            session_id: Current session ID.
+            target: Target provider/alias name.
+            context_mode: ``"full"`` (default, all messages, no truncation) or
+                ``"windowed"`` (last 50 messages, each truncated to 800 chars).
+        """
+        mode = (context_mode or "full").strip().lower()
+        # Backward compat: treat legacy "summary" as "windowed"
+        if mode == "summary":
+            mode = "windowed"
+        if mode not in ("full", "windowed"):
+            mode = "full"
 
-这个摘要将传递给下一个 Agent ({target}) 作为上下文，帮助新 Agent 无缝继续工作。
+        if mode == "windowed":
+            conversation_history = self._build_conversation_history_text(
+                session_id,
+                max_messages=50,
+                truncate_each=800,
+            )
+            if not conversation_history:
+                conversation_history = "(对话记录为空，没有可注入的内容)"
 
-请直接输出摘要内容，不需要多余的解释。
+            return f"""请整理并输出以下窗口范围内的历史对话上下文，原样保留关键信息与时序。
+
+这个上下文将传递给下一个 Agent ({target}) 作为续聊输入。
+
+请直接输出上下文内容，不要额外解释。
 
 ---
 
-以下是需要总结的对话记录：
+以下是最近的对话记录（窗口截断）：
 
 {conversation_history}"""
 
-    def _prepare_summary_prompt(self, session_id: str, target: str) -> str:
-        """Build a summary prompt by fetching conversation history from Redis.
+        # full mode
+        conversation_history = self._build_conversation_history_text(
+            session_id,
+            max_messages=None,
+            truncate_each=None,
+        )
+        if not conversation_history:
+            conversation_history = "(对话记录为空，没有可注入的内容)"
 
-        Shared helper used by both the inline ``/handoff -a`` path and the
-        fallback ``pending_summary`` path to avoid code duplication.
-        """
-        conversation_history = self._build_conversation_history_text(session_id)
-        if conversation_history:
-            return self._build_summary_prompt(conversation_history, target)
-        else:
-            logger.warning(
-                "No conversation history found for summary generation",
-                extra={"session_id": session_id},
-            )
-            return self._build_summary_prompt(
-                "(对话记录为空，没有可总结的内容)", target
-            )
+        return f"""请整理并输出完整的历史对话上下文，原样保留关键信息与时序，不要省略重要细节。
+
+这个完整上下文将传递给下一个 Agent ({target}) 作为续聊输入。
+
+请直接输出上下文内容，不要额外解释。
+
+---
+
+以下是历史对话记录：
+
+{conversation_history}"""
 
     def _try_inline_handoff_auto(
         self,
         session_id: str,
         content: str,
         request_model: RequestModel,
-    ) -> tuple[str, str | None] | None:
+    ) -> tuple[str, str | None, str] | None:
         """Try to handle ``/handoff ... -a`` inline in the current request.
 
         If the slash command is a valid ``/handoff -a`` (auto-summary), this
@@ -168,7 +190,7 @@ class StreamHandler:
         (not the CLIExecutor path) to generate the summary immediately.
 
         Returns:
-            Tuple of (effective_alias, model) if handled, ``None`` otherwise.
+            Tuple of (effective_alias, model, context_mode) if handled, ``None`` otherwise.
         """
         from src.runtime.commands.slash.parser import parse_slash_command, SlashCommandParseError
         from src.runtime.stores.alias_registry import get_alias_registry
@@ -186,6 +208,12 @@ class StreamHandler:
         alias = parsed.options.get("alias")
         provider_arg = parsed.options.get("provider")
         model_arg = (parsed.options.get("model") or "").strip() or None
+        context_mode = (parsed.options.get("context-mode") or "full").strip().lower()
+        # Backward compat: treat legacy "summary" as "windowed"
+        if context_mode == "summary":
+            context_mode = "windowed"
+        if context_mode not in ("full", "windowed"):
+            context_mode = "full"
 
         # Resolve target
         alias_registry = get_alias_registry()
@@ -212,8 +240,8 @@ class StreamHandler:
             },
         )
 
-        request_model.content = self._prepare_summary_prompt(session_id, effective_alias)
-        return (effective_alias, model_arg)
+        request_model.content = self._prepare_handoff_prompt(session_id, effective_alias, context_mode=context_mode)
+        return (effective_alias, model_arg, context_mode)
 
     async def handle_agui_request(
         self,
@@ -312,7 +340,7 @@ class StreamHandler:
                     session_id, content_stripped, request_model
                 )
                 if result:
-                    handoff_pending_target, handoff_pending_model = result
+                    handoff_pending_target, handoff_pending_model, _handoff_context_mode = result
             except Exception as e:
                 logger.warning(f"Failed to process inline handoff auto-summary: {e}")
 
@@ -328,12 +356,40 @@ class StreamHandler:
                     logger.info(f"Found pending handoff summary: target={handoff_pending_target}, model={handoff_pending_model}", extra={
                         "session_id": session_id,
                     })
+                    pending_context_mode = storage.get_handoff_pending_context_mode(session_id)
                     storage.clear_handoff_pending_summary(session_id)
-                    request_model.content = self._prepare_summary_prompt(
-                        session_id, handoff_pending_target
+                    request_model.content = self._prepare_handoff_prompt(
+                        session_id, handoff_pending_target, context_mode=pending_context_mode
                     )
             except Exception as e:
                 logger.warning(f"Failed to check pending handoff summary: {e}")
+
+        # Check one-time bootstrap context for history->runtime promoted sessions.
+        # It is injected into the first follow-up message, then cleared.
+        if session_id and not content_stripped.startswith("/"):
+            try:
+                storage = get_session_storage()
+                bootstrap_context = storage.consume_history_bootstrap_context(session_id)
+                if bootstrap_context:
+                    original_content = request_model.content
+                    request_model.content = f"""[History Bootstrap Context]
+
+以下是该会话从本地历史迁移到 Runtime 时注入的上下文摘要：
+
+{bootstrap_context}
+
+---
+
+请基于以上历史上下文继续回答用户问题。
+
+用户的当前请求：
+{original_content}"""
+                    logger.info(
+                        "Injected one-time history bootstrap context",
+                        extra={"session_id": session_id, "context_length": len(bootstrap_context)},
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to inject history bootstrap context: {e}")
 
         # Check for handoff context (agent switching via /handoff command)
         # This overrides provider/alias for this request and injects context
