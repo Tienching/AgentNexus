@@ -338,6 +338,11 @@ class ChatView {
         this.currentSessionByTab = {}; // tabId -> sessionId
         this.selectionMode = {};  // paneId -> boolean
         this.selectedSessionIds = {}; // paneId -> Set<sessionId>
+        this.sessionSource = {};  // paneId -> 'runtime' | 'history'
+        this.historyProjectPath = {}; // paneId -> string
+        this.historyViewMode = {}; // paneId -> 'projects' | 'sessions'
+        this.historyProjects = {}; // paneId -> array of project entries
+        this.taskSessionStreams = {}; // paneId -> EventSource (for task_* sessions)
     }
 
     async render(paneId, tab, container) {
@@ -348,31 +353,52 @@ class ChatView {
         if (!this.selectedSessionIds[paneId]) {
             this.selectedSessionIds[paneId] = new Set();
         }
+        if (!this.sessionSource[paneId]) {
+            this.sessionSource[paneId] = 'runtime';
+        }
+        if (!this.historyViewMode[paneId]) {
+            this.historyViewMode[paneId] = 'projects';
+        }
 
         if (tab?.id && this.currentSessionByTab[tab.id] === undefined) {
             this.currentSessionByTab[tab.id] = tab.data?.sessionId || null;
         }
+
+        const isHistory = this.sessionSource[paneId] === 'history';
+        const isHistorySessions = isHistory && this.historyViewMode[paneId] === 'sessions' && this.historyProjectPath[paneId];
+        const isHistoryProjects = isHistory && !isHistorySessions;
+        const selectedProjectPath = this.historyProjectPath[paneId] || '';
 
         container.innerHTML = `
             <div class="chat-container">
                 <div class="session-list" id="sessionList-${paneId}">
                     <div class="session-list-header">
                         <div class="session-header-row">
-                            <span class="session-header-title">Sessions</span>
+                            <span class="session-header-title">${isHistorySessions ? 'History Sessions' : isHistoryProjects ? 'History Projects' : 'Sessions'}</span>
                             <div class="session-header-actions">
-                                <button class="action-btn primary" data-action="new-session" data-pane="${paneId}">
+                                <button class="action-btn primary" data-action="new-session" data-pane="${paneId}" ${isHistory ? 'style="display:none"' : ''}>
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                     </svg>
                                     <span>New Chat</span>
                                 </button>
-                                <button class="action-btn" data-action="toggle-session-selection" data-pane="${paneId}" title="Batch select">
+                                <button class="action-btn" data-action="toggle-session-selection" data-pane="${paneId}" title="Batch select" ${isHistory ? 'style="display:none"' : ''}>
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
                                     </svg>
                                     <span>Select</span>
                                 </button>
                             </div>
+                        </div>
+                        <div class="session-source-tabs" style="display:flex;gap:0;margin:6px 0 4px 0;">
+                            <button class="session-source-tab ${!isHistory ? 'active' : ''}" data-source="runtime" data-pane="${paneId}"
+                                style="flex:1;padding:4px 0;font-size:12px;border:1px solid var(--border);background:${!isHistory ? 'var(--primary)' : 'var(--bg-secondary)'};color:${!isHistory ? '#fff' : 'var(--text-secondary)'};border-radius:4px 0 0 4px;cursor:pointer;">
+                                Runtime
+                            </button>
+                            <button class="session-source-tab ${isHistory ? 'active' : ''}" data-source="history" data-pane="${paneId}"
+                                style="flex:1;padding:4px 0;font-size:12px;border:1px solid var(--border);border-left:none;background:${isHistory ? 'var(--primary)' : 'var(--bg-secondary)'};color:${isHistory ? '#fff' : 'var(--text-secondary)'};border-radius:0 4px 4px 0;cursor:pointer;">
+                                History
+                            </button>
                         </div>
                         <div class="session-selection-actions" id="sessionSelectionActions-${paneId}" style="display: none;">
                             <button class="action-btn" data-action="select-all-sessions" data-pane="${paneId}">
@@ -388,18 +414,42 @@ class ChatView {
                                 <span>Delete (0)</span>
                             </button>
                         </div>
-                        <div class="session-search">
+                        ${isHistorySessions ? `
+                            <div style="display:flex;align-items:center;gap:6px;margin:4px 0;padding:4px 6px;background:var(--bg-tertiary,#2a2a2a);border-radius:4px;">
+                                <button class="history-back-btn" data-pane="${paneId}" style="background:none;border:none;cursor:pointer;color:var(--text-secondary);padding:2px;display:flex;align-items:center;" title="Back to projects">
+                                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                                </button>
+                                <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-mono,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${this.escapeHtml(selectedProjectPath)}">${this.escapeHtml(selectedProjectPath)}</span>
+                            </div>
+                        ` : ''}
+                        ${isHistoryProjects ? `
+                            <div class="history-project-path" id="historyProjectPath-${paneId}" style="margin:4px 0;">
+                                <input type="text" class="session-search-input history-path-input" placeholder="Or type a path and press Enter..."
+                                    data-pane="${paneId}" value="${this.escapeHtml(this.historyProjectPath[paneId] || '')}"
+                                    style="width:100%;font-size:11px;font-family:var(--font-mono,monospace);">
+                            </div>
+                        ` : ''}
+                        <div class="session-search" style="${isHistoryProjects ? 'display:none' : ''}">
                             <svg class="session-search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                             </svg>
                             <input type="text" class="session-search-input" placeholder="Search sessions..." data-pane="${paneId}">
                         </div>
-                        <div class="session-filter">
+                        <div class="session-filter" id="sessionFilter-${paneId}" style="${isHistory ? 'display:none' : ''}">
                             <select class="session-filter-select" data-pane="${paneId}" data-filter="status">
                                 <option value="">All Status</option>
                                 <option value="running">Running</option>
                                 <option value="completed">Completed</option>
                                 <option value="error">Error</option>
+                            </select>
+                        </div>
+                        <div class="session-filter" id="historyProviderFilter-${paneId}" style="${isHistorySessions ? '' : 'display:none'}">
+                            <select class="session-filter-select history-provider-filter" data-pane="${paneId}" data-filter="provider">
+                                <option value="">All Providers</option>
+                                <option value="claude">Claude</option>
+                                <option value="codebuddy">CodeBuddy</option>
+                                <option value="codex">Codex</option>
+                                <option value="gemini">Gemini</option>
                             </select>
                         </div>
                     </div>
@@ -440,7 +490,7 @@ class ChatView {
     }
 
     bindEvents(paneId) {
-        const searchInput = document.querySelector(`.session-search-input[data-pane="${paneId}"]`);
+        const searchInput = document.querySelector(`.session-search-input:not(.history-path-input)[data-pane="${paneId}"]`);
         if (searchInput) {
             let timeout;
             searchInput.addEventListener('input', () => {
@@ -449,9 +499,71 @@ class ChatView {
             });
         }
 
-        const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"]`);
+        const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"][data-filter="status"]`);
         if (statusFilter) {
             statusFilter.addEventListener('change', () => this.loadSessions(paneId));
+        }
+
+        // Source tab switching (Runtime / History)
+        document.querySelectorAll(`.session-source-tab[data-pane="${paneId}"]`).forEach(btn => {
+            btn.addEventListener('click', () => {
+                const source = btn.dataset.source;
+                if (this.sessionSource[paneId] === source) return;
+                this.sessionSource[paneId] = source;
+                // When switching to History, reset to projects view
+                if (source === 'history') {
+                    this.historyViewMode[paneId] = 'projects';
+                    this.historyProjectPath[paneId] = '';
+                }
+                // Re-render the whole pane to update UI state
+                const tab = this.getActiveTab(paneId);
+                const container = document.getElementById(`sessionList-${paneId}`)?.parentElement?.parentElement;
+                if (container) {
+                    this.render(paneId, tab, container);
+                }
+            });
+        });
+
+        // History back button (sessions -> projects)
+        const historyBackBtn = document.querySelector(`.history-back-btn[data-pane="${paneId}"]`);
+        if (historyBackBtn) {
+            historyBackBtn.addEventListener('click', () => {
+                this.historyViewMode[paneId] = 'projects';
+                this.historyProjectPath[paneId] = '';
+                const tab = this.getActiveTab(paneId);
+                const container = document.getElementById(`sessionList-${paneId}`)?.parentElement?.parentElement;
+                if (container) {
+                    this.render(paneId, tab, container);
+                }
+            });
+        }
+
+        // History project path input (manual entry)
+        const historyPathInput = document.querySelector(`.history-path-input[data-pane="${paneId}"]`);
+        if (historyPathInput) {
+            historyPathInput.addEventListener('input', () => {
+                this.historyProjectPath[paneId] = historyPathInput.value;
+            });
+            historyPathInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    const path = historyPathInput.value.trim();
+                    if (path) {
+                        this.historyProjectPath[paneId] = path;
+                        this.historyViewMode[paneId] = 'sessions';
+                        const tab = this.getActiveTab(paneId);
+                        const container = document.getElementById(`sessionList-${paneId}`)?.parentElement?.parentElement;
+                        if (container) {
+                            this.render(paneId, tab, container);
+                        }
+                    }
+                }
+            });
+        }
+
+        // History provider filter
+        const providerFilter = document.querySelector(`.history-provider-filter[data-pane="${paneId}"]`);
+        if (providerFilter) {
+            providerFilter.addEventListener('change', () => this.loadSessions(paneId));
         }
 
         // New session button
@@ -883,9 +995,7 @@ class ChatView {
     async streamChatResponse(paneId, execUser, payload, thinkingId) {
         const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
         const thinkingEl = document.getElementById(thinkingId);
-        
-        // Replace thinking indicator with streaming response container
-        // Start with an empty bubble - content will be added dynamically
+
         if (thinkingEl) {
             thinkingEl.innerHTML = `
                 <div class="message-avatar assistant">
@@ -898,246 +1008,209 @@ class ChatView {
                 </div>
             `;
         }
-        
+
         const bubbleEl = document.getElementById(`streaming-bubble-${thinkingId}`);
-        let currentTextEl = null; // Will be created on demand when text arrives
-        let currentTextContent = ''; // Current text segment content
-        let textSegmentIndex = 0; // Track text segments for unique IDs
-        
-        // Helper function to ensure we have a text element to write to
+        let currentTextEl = null;
+        let currentTextContent = '';
+        let textSegmentIndex = 0;
+        const streamingToolCalls = new Map();
+
         const ensureTextElement = () => {
             if (!currentTextEl && bubbleEl) {
                 const textId = `streaming-content-${thinkingId}-seg${textSegmentIndex}`;
                 bubbleEl.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
                 currentTextEl = document.getElementById(textId);
-                currentTextContent = '';
             }
             return currentTextEl;
         };
-        
-        // Track streaming tool calls
-        const streamingToolCalls = new Map(); // toolCallId -> { name, args, status }
-        
-        // Call streaming API
+
+        const appendText = (value) => {
+            if (value === undefined || value === null) return;
+            const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+            if (!text) return;
+            const textEl = ensureTextElement();
+            currentTextContent += text;
+            if (textEl) {
+                textEl.innerHTML = this.formatMessageContent(currentTextContent);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+        };
+
+        const endCurrentTextSegment = () => {
+            if (currentTextEl) {
+                currentTextEl.classList.remove('streaming');
+            }
+            currentTextEl = null;
+            currentTextContent = '';
+            textSegmentIndex++;
+        };
+
+        const processDataEvent = (data, eventType) => {
+            const sseDelta = data.response ?? data.delta;
+            const aguiText = data.delta ?? data.content ?? data.text ?? data.response;
+
+            if (eventType === 'delta' && sseDelta !== undefined) {
+                appendText(sseDelta);
+                if (data.finished === true) endCurrentTextSegment();
+                return;
+            }
+
+            if (data.type === 'TEXT_MESSAGE_START') {
+                return;
+            }
+
+            if (data.type === 'TEXT_MESSAGE_CONTENT') {
+                appendText(aguiText);
+                return;
+            }
+
+            if (data.type === 'TEXT_MESSAGE_END') {
+                endCurrentTextSegment();
+                return;
+            }
+
+            if (data.type === 'result') {
+                appendText(data.content ?? data.result);
+                return;
+            }
+
+            if (data.type === 'TOOL_CALL_START') {
+                const toolCallId = data.toolCallId || `tool-${Date.now()}`;
+                const toolName = data.toolCallName || 'Tool';
+                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+                endCurrentTextSegment();
+                if (bubbleEl) {
+                    bubbleEl.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+                return;
+            }
+
+            if (data.type === 'TOOL_CALL_ARGS') {
+                const toolCallId = data.toolCallId;
+                const argsDelta = data.delta || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    tc.args += argsDelta;
+                    const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
+                    if (argsEl) argsEl.textContent = tc.args;
+                }
+                return;
+            }
+
+            if (data.type === 'TOOL_CALL_END' || data.type === 'TOOL_CALL_RESULT') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || data.content || '';
+                const error = data.error;
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    if (data.type === 'TOOL_CALL_END') {
+                        tc.status = error ? 'failed' : 'completed';
+                    }
+                    tc.result = result;
+
+                    const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-status-icon`);
+                    if (statusEl && data.type === 'TOOL_CALL_END') {
+                        statusEl.textContent = error ? '✗' : '✓';
+                        statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
+                    }
+
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+
+                    if (error) {
+                        const errorSection = document.getElementById(`streaming-tool-error-section-${toolCallId}`);
+                        const errorEl = document.getElementById(`streaming-tool-error-${toolCallId}`);
+                        if (errorSection && errorEl) {
+                            errorSection.style.display = 'block';
+                            errorEl.textContent = error;
+                        }
+                    }
+
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+                return;
+            }
+
+            if (data.delta && !data.type) {
+                appendText(data.delta);
+                return;
+            }
+
+            if (data.type === 'RUN_FINISHED') {
+                endCurrentTextSegment();
+                return;
+            }
+
+            if (data.type === 'RUN_ERROR' || data.error) {
+                throw new Error(data.message || data.error || 'Stream error');
+            }
+        };
+
+        const processSSEEvent = (rawEvent) => {
+            if (!rawEvent || !rawEvent.trim()) return;
+            const lines = rawEvent.split('\n');
+            let eventType = '';
+            const dataLines = [];
+            for (const line of lines) {
+                if (line.startsWith('event:')) {
+                    eventType = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    dataLines.push(line.slice(5).trim());
+                }
+            }
+            const eventData = dataLines.join('\n').trim();
+            if (!eventData || eventData === '[DONE]') return;
+            try {
+                const data = JSON.parse(eventData);
+                processDataEvent(data, eventType);
+            } catch (e) {
+                if (e.message && (e.message.includes('Stream error') || e.message.includes('RUN_ERROR'))) {
+                    throw e;
+                }
+            }
+        };
+
         const response = await NexusAPI.chatStream(execUser, payload);
-        
         const reader = response.body?.getReader();
         const decoder = new TextDecoder();
-        
+
         if (!reader) {
             throw new Error('No response body');
         }
-        
+
         let buffer = '';
-        
+
         try {
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                
                 buffer += decoder.decode(value, { stream: true });
-                
-                // Process complete SSE events
                 const events = buffer.split('\n\n');
-                buffer = events.pop() || ''; // Keep incomplete event in buffer
-                
+                buffer = events.pop() || '';
                 for (const event of events) {
-                    if (!event.trim()) continue;
-                    
-                    // Parse legacy SSE format: event:delta\ndata:{"delta":"...","finished":false}
-                    const lines = event.split('\n');
-                    let eventType = '';
-                    let eventData = '';
-                    
-                    for (const line of lines) {
-                        if (line.startsWith('event:')) {
-                            eventType = line.slice(6).trim();
-                        } else if (line.startsWith('data:')) {
-                            eventData = line.slice(5).trim();
-                        } else if (line.startsWith('data: ')) {
-                            eventData = line.slice(6).trim();
-                        }
-                    }
-                    
-                    if (!eventData) continue;
-                    if (eventData === '[DONE]') continue;
-                    
-                    try {
-                        const data = JSON.parse(eventData);
-                        
-                        // Handle legacy format with response field (event:delta, data.response)
-                        if (eventType === 'delta' && data.response !== undefined) {
-                            if (data.response) {
-                                currentTextContent += data.response;
-                                const textEl = ensureTextElement();
-                                if (textEl) {
-                                    textEl.innerHTML = this.formatMessageContent(currentTextContent);
-                                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                                }
-                            }
-                            // Check if stream is finished
-                            if (data.finished === true) {
-                                // Stream completed, remove streaming indicator
-                                if (currentTextEl) {
-                                    currentTextEl.classList.remove('streaming');
-                                }
-                            }
-                        }
-                        // Handle legacy format (event:delta, data.delta)
-                        else if (eventType === 'delta' && data.delta) {
-                            currentTextContent += data.delta;
-                            const textEl = ensureTextElement();
-                            if (textEl) {
-                                textEl.innerHTML = this.formatMessageContent(currentTextContent);
-                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            }
-                        }
-                        // Handle AGUI format - TEXT_MESSAGE_CONTENT
-                        else if (data.type === 'TEXT_MESSAGE_CONTENT' && data.delta) {
-                            currentTextContent += data.delta;
-                            const textEl = ensureTextElement();
-                            if (textEl) {
-                                textEl.innerHTML = this.formatMessageContent(currentTextContent);
-                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            }
-                        }
-                        // Handle AGUI format - TOOL_CALL_START
-                        else if (data.type === 'TOOL_CALL_START') {
-                            const toolCallId = data.toolCallId || `tool-${Date.now()}`;
-                            const toolName = data.toolCallName || 'Tool';
-                            
-                            // Initialize tool call state
-                            streamingToolCalls.set(toolCallId, {
-                                name: toolName,
-                                args: '',
-                                status: 'executing',
-                                result: ''
-                            });
-                            
-                            // Close current text element (if any) and prepare for new one after tool call
-                            if (currentTextEl) {
-                                currentTextEl.classList.remove('streaming');
-                            }
-                            currentTextEl = null; // Reset so next text creates a new element after the tool call
-                            textSegmentIndex++;
-                            
-                            // Create tool call UI element in the bubble
-                            if (bubbleEl) {
-                                const toolCallHtml = this.renderStreamingToolCall(toolCallId, toolName, 'executing');
-                                bubbleEl.insertAdjacentHTML('beforeend', toolCallHtml);
-                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            }
-                        }
-                        // Handle AGUI format - TOOL_CALL_ARGS
-                        else if (data.type === 'TOOL_CALL_ARGS') {
-                            const toolCallId = data.toolCallId;
-                            const argsDelta = data.delta || '';
-                            
-                            if (toolCallId && streamingToolCalls.has(toolCallId)) {
-                                const tc = streamingToolCalls.get(toolCallId);
-                                tc.args += argsDelta;
-                                
-                                // Update the args display
-                                const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
-                                if (argsEl) {
-                                    argsEl.textContent = tc.args;
-                                }
-                            }
-                        }
-                        // Handle AGUI format - TOOL_CALL_END
-                        else if (data.type === 'TOOL_CALL_END') {
-                            const toolCallId = data.toolCallId;
-                            const result = data.result || '';
-                            const error = data.error;
-                            
-                            if (toolCallId && streamingToolCalls.has(toolCallId)) {
-                                const tc = streamingToolCalls.get(toolCallId);
-                                tc.status = error ? 'failed' : 'completed';
-                                tc.result = result;
-                                tc.error = error;
-                                
-                                // Update status icon
-                                const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-status-icon`);
-                                if (statusEl) {
-                                    statusEl.textContent = error ? '✗' : '✓';
-                                    statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
-                                }
-                                
-                                // Show result section
-                                const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
-                                const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
-                                if (resultSection && resultEl && result) {
-                                    resultSection.style.display = 'block';
-                                    resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-                                }
-                                
-                                // Show error if any
-                                if (error) {
-                                    const errorSection = document.getElementById(`streaming-tool-error-section-${toolCallId}`);
-                                    const errorEl = document.getElementById(`streaming-tool-error-${toolCallId}`);
-                                    if (errorSection && errorEl) {
-                                        errorSection.style.display = 'block';
-                                        errorEl.textContent = error;
-                                    }
-                                }
-                                
-                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            }
-                        }
-                        // Handle AGUI format - TOOL_CALL_RESULT (alternative format)
-                        else if (data.type === 'TOOL_CALL_RESULT') {
-                            const toolCallId = data.toolCallId;
-                            const result = data.result || '';
-                            
-                            if (toolCallId && streamingToolCalls.has(toolCallId)) {
-                                const tc = streamingToolCalls.get(toolCallId);
-                                tc.result = result;
-                                
-                                // Show result section
-                                const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
-                                const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
-                                if (resultSection && resultEl && result) {
-                                    resultSection.style.display = 'block';
-                                    resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-                                }
-                            }
-                        }
-                        // Handle generic delta
-                        else if (data.delta && !data.type) {
-                            currentTextContent += data.delta;
-                            const textEl = ensureTextElement();
-                            if (textEl) {
-                                textEl.innerHTML = this.formatMessageContent(currentTextContent);
-                                messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                            }
-                        }
-                        // Handle errors
-                        else if (data.type === 'RUN_ERROR' || data.error) {
-                            throw new Error(data.message || data.error || 'Stream error');
-                        }
-                    } catch (e) {
-                        if (e.message && (e.message.includes('Stream error') || e.message.includes('RUN_ERROR'))) {
-                            throw e;
-                        }
-                        // Skip invalid JSON
-                    }
+                    processSSEEvent(event);
                 }
+            }
+            if (buffer.trim()) {
+                processSSEEvent(buffer);
             }
         } finally {
             reader.releaseLock();
         }
-        
-        // Remove streaming class when done
+
         if (currentTextEl) {
             currentTextEl.classList.remove('streaming');
         }
-        
-        // Remove empty text segments
+
         if (bubbleEl) {
             bubbleEl.querySelectorAll('.message-text:empty').forEach(el => el.remove());
         }
-        
-        // Re-enable input
+
         const textarea = document.getElementById(`chatInput-${paneId}`);
         const sendBtn = document.querySelector(`.chat-send-btn[data-pane="${paneId}"]`);
         if (textarea) textarea.disabled = false;
@@ -1199,20 +1272,57 @@ class ChatView {
         const container = document.getElementById(`sessionItems-${paneId}`);
         if (!container) return;
 
-        const searchInput = document.querySelector(`.session-search-input[data-pane="${paneId}"]`);
-        const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"]`);
+        const isHistory = this.sessionSource[paneId] === 'history';
+        const isHistoryProjects = isHistory && this.historyViewMode[paneId] === 'projects';
+        const searchInput = document.querySelector(`.session-search-input:not(.history-path-input)[data-pane="${paneId}"]`);
         const globalUserFilter = document.getElementById('globalUserFilter');
 
         try {
-            const options = {
-                pageSize: 50,
-                search: searchInput?.value || '',
-                status: statusFilter?.value || '',
-                username: globalUserFilter?.value || ''
-            };
+            // History projects listing mode
+            if (isHistoryProjects) {
+                container.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div></div>';
+                const projects = await NexusAPI.getHistoryProjects({
+                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
+                });
+                this.historyProjects[paneId] = projects || [];
+                this.renderHistoryProjects(paneId);
+                return;
+            }
 
-            const data = await NexusAPI.getSessions(options);
+            let data;
+
+            if (isHistory) {
+                const projectPath = (this.historyProjectPath[paneId] || '').trim();
+                if (!projectPath) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <p class="empty-state-title">Enter a project path</p>
+                            <p class="empty-state-text">Type the workspace path above and press Enter to load history sessions</p>
+                        </div>
+                    `;
+                    return;
+                }
+                const providerFilter = document.querySelector(`.history-provider-filter[data-pane="${paneId}"]`);
+                data = await NexusAPI.getHistorySessions({
+                    projectPath: projectPath,
+                    pageSize: 50,
+                    search: searchInput?.value || '',
+                    provider: providerFilter?.value || '',
+                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
+                });
+            } else {
+                const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"][data-filter="status"]`);
+                data = await NexusAPI.getSessions({
+                    pageSize: 50,
+                    search: searchInput?.value || '',
+                    status: statusFilter?.value || '',
+                    username: globalUserFilter?.value || ''
+                });
+            }
+
             this.sessions[paneId] = data.sessions || [];
+            this.sessionTotals = this.sessionTotals || {};
+            this.sessionTotals[paneId] = data.total || this.sessions[paneId].length;
             this.renderSessionList(paneId);
         } catch (error) {
             console.error('Failed to load sessions:', error);
@@ -1274,7 +1384,76 @@ class ChatView {
         });
     }
 
+    renderHistoryProjects(paneId) {
+        const container = document.getElementById(`sessionItems-${paneId}`);
+        if (!container) return;
+
+        const projects = this.historyProjects[paneId] || [];
+
+        if (projects.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
+                    </svg>
+                    <p class="empty-state-title">No history projects found</p>
+                    <p class="empty-state-text">No CLI session history was found. Use Claude Code, CodeBuddy, Codex, or Gemini CLI in your projects first.</p>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = projects.map(project => {
+            const providerBadges = (project.providers || []).map(p =>
+                `<span style="display:inline-block;font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg-tertiary,#333);color:var(--text-secondary);margin-right:3px;">${this.escapeHtml(p.alias || p.provider)}</span>`
+            ).join('');
+
+            const timeStr = this.formatTime(project.last_active);
+            const sessionCount = project.total_sessions || 0;
+            const isGeminiOnly = project.path.startsWith('[gemini:');
+            const displayPath = isGeminiOnly ? project.path : project.path;
+            // Show just the last 2 segments for compact display
+            const parts = project.path.split('/');
+            const shortPath = parts.length > 2 ? '.../' + parts.slice(-2).join('/') : project.path;
+
+            return `
+                <div class="session-item history-project-item" data-project-path="${this.escapeHtml(project.path)}"
+                     ${project.gemini_hash ? `data-gemini-hash="${this.escapeHtml(project.gemini_hash)}"` : ''}
+                     style="cursor:pointer;">
+                    <div class="session-item-content">
+                        <div class="session-item-header">
+                            <span class="session-item-title" style="font-family:var(--font-mono,monospace);font-size:12px;" title="${this.escapeHtml(project.path)}">${this.escapeHtml(shortPath)}</span>
+                            <span class="session-item-time">${timeStr}</span>
+                        </div>
+                        <p class="session-item-preview" style="font-family:var(--font-mono,monospace);font-size:11px;opacity:0.7;">${this.escapeHtml(project.path)}</p>
+                        <div class="session-item-meta">
+                            ${providerBadges}
+                            <span style="font-size:11px;color:var(--text-tertiary);">${sessionCount} session${sessionCount !== 1 ? 's' : ''}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        // Bind click events to select a project
+        container.querySelectorAll('.history-project-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const projectPath = item.dataset.projectPath;
+                if (projectPath && !projectPath.startsWith('[gemini:')) {
+                    this.historyProjectPath[paneId] = projectPath;
+                    this.historyViewMode[paneId] = 'sessions';
+                    const tab = this.getActiveTab(paneId);
+                    const outerContainer = document.getElementById(`sessionList-${paneId}`)?.parentElement?.parentElement;
+                    if (outerContainer) {
+                        this.render(paneId, tab, outerContainer);
+                    }
+                }
+            });
+        });
+    }
+
     renderSessionItem(session, paneId) {
+        const isHistory = this.sessionSource[paneId] === 'history';
         const statusClass = session.status === 'running' ? 'running' :
                            session.status === 'error' ? 'error' : 'completed';
         const timeStr = this.formatTime(session.updated_at || session.created_at);
@@ -1283,8 +1462,19 @@ class ChatView {
         const isInSelectionMode = this.selectionMode[paneId];
         const isChecked = this.selectedSessionIds[paneId]?.has(session.id);
 
+        const providerBadge = isHistory && session.provider
+            ? `<span style="display:inline-block;font-size:10px;padding:1px 5px;border-radius:3px;background:var(--bg-tertiary,#333);color:var(--text-secondary);margin-right:4px;font-weight:500;">${this.escapeHtml(session.alias || session.provider)}</span>`
+            : '';
+        const sourceBadge = isHistory
+            ? `<span style="display:inline-block;font-size:9px;padding:1px 4px;border-radius:3px;background:var(--warning,#f0ad4e);color:#000;margin-right:4px;">history</span>`
+            : '';
+
         return `
-            <div class="session-item ${isActive ? 'active' : ''} ${isChecked ? 'checked' : ''}" data-session-id="${session.id}">
+            <div class="session-item ${isActive ? 'active' : ''} ${isChecked ? 'checked' : ''}"
+                 data-session-id="${session.id}"
+                 data-provider="${this.escapeHtml(session.provider || '')}"
+                 data-alias="${this.escapeHtml(session.alias || '')}"
+                 data-source="${isHistory ? 'history' : 'runtime'}">
                 ${isInSelectionMode ? `
                     <div class="session-item-checkbox" data-session-id="${session.id}">
                         <input type="checkbox" ${isChecked ? 'checked' : ''}>
@@ -1292,16 +1482,19 @@ class ChatView {
                 ` : ''}
                 <div class="session-item-content">
                     <div class="session-item-header">
-                        <span class="session-item-title">${this.escapeHtml(session.title || session.id)}</span>
+                        <span class="session-item-title">${providerBadge}${this.escapeHtml(session.title || session.id)}</span>
                         <span class="session-item-time">${timeStr}</span>
                     </div>
                     ${session.last_message ? `<p class="session-item-preview">${this.escapeHtml(session.last_message)}</p>` : ''}
                     <div class="session-item-meta">
-                        <span class="session-item-status ${statusClass}">
-                            <span class="status-dot"></span>
-                            ${session.status || 'idle'}
-                        </span>
+                        ${isHistory ? sourceBadge : `
+                            <span class="session-item-status ${statusClass}">
+                                <span class="status-dot"></span>
+                                ${session.status || 'idle'}
+                            </span>
+                        `}
                         ${session.username ? `<span>@${session.username}${session.provider ? ' / ' + session.provider : ''}</span>` : ''}
+                        ${isHistory && session.message_count ? `<span>${session.message_count} msgs</span>` : ''}
                     </div>
                 </div>
             </div>
@@ -1325,13 +1518,22 @@ class ChatView {
             item.classList.toggle('active', item.dataset.sessionId === sessionId);
         });
 
+        // Get provider info from the clicked item (for history sessions)
+        const sessionItem = container?.querySelector(`.session-item[data-session-id="${sessionId}"]`);
+        const provider = sessionItem?.dataset.provider || '';
+        const alias = sessionItem?.dataset.alias || '';
+        const source = sessionItem?.dataset.source || this.sessionSource[paneId] || 'runtime';
+
         // Load and display messages
-        await this.loadMessages(paneId, sessionId);
+        await this.loadMessages(paneId, sessionId, { provider, alias, source });
     }
 
-    async loadMessages(paneId, sessionId) {
+    async loadMessages(paneId, sessionId, options = {}) {
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
+
+        // Close previous task session stream (if any)
+        this._closeTaskSessionStream(paneId);
 
         detail.innerHTML = `
             <div class="empty-state">
@@ -1339,8 +1541,27 @@ class ChatView {
             </div>
         `;
 
+        const source = options.source || this.sessionSource[paneId] || 'runtime';
+
+        // Task sessions: always use AG-UI SSE replay/stream to preserve exact order
+        // (regardless of source — task_* sessions are always backed by agui event log)
+        if (/^task_[A-Za-z0-9_-]+$/.test(sessionId)) {
+            await this._streamTaskSessionMessages(paneId, sessionId);
+            return;
+        }
+
         try {
-            const data = await NexusAPI.getSessionMessages(sessionId);
+            let data;
+            if (source === 'history' && options.provider) {
+                // Use the alias (e.g. "claude-internal") or provider for the history API
+                const providerKey = options.alias || options.provider;
+                const globalUserFilter = document.getElementById('globalUserFilter');
+                data = await NexusAPI.getHistoryMessages(providerKey, sessionId, {
+                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
+                });
+            } else {
+                data = await NexusAPI.getSessionMessages(sessionId);
+            }
             this.renderMessages(paneId, sessionId, data);
         } catch (error) {
             console.error('Failed to load messages:', error);
@@ -1350,6 +1571,191 @@ class ChatView {
                 </div>
             `;
         }
+    }
+
+    _closeTaskSessionStream(paneId) {
+        const es = this.taskSessionStreams[paneId];
+        if (es) {
+            try { es.close(); } catch {}
+            delete this.taskSessionStreams[paneId];
+        }
+    }
+
+    async _streamTaskSessionMessages(paneId, sessionId) {
+        const taskId = sessionId.replace(/^task_/, '');
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+        // Render a basic chat shell first
+        this.renderMessages(paneId, sessionId, {
+            session: { title: sessionId },
+            messages: [],
+            tool_calls: [],
+        });
+
+        const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
+        if (!messagesContainer) return;
+        messagesContainer.innerHTML = `
+            <div class="empty-state" style="padding: 24px;">
+                <div class="loading-spinner"></div>
+                <p class="empty-state-text" style="margin-top:8px;">Loading task stream...</p>
+            </div>
+        `;
+
+        const es = NexusAPI.streamTaskMessages(taskId, { execUser, tail: 5000 });
+        this.taskSessionStreams[paneId] = es;
+
+        let bubbleEl = null;
+        let currentTextEl = null;
+        let currentTextContent = '';
+        let textSegmentIndex = 0;
+        const streamingToolCalls = new Map();
+        let initialized = false;
+        let done = false;
+
+        const ensureBubble = () => {
+            if (!bubbleEl) {
+                if (!initialized) {
+                    messagesContainer.innerHTML = '';
+                    initialized = true;
+                }
+                const msgId = `task-session-stream-${paneId}-${Date.now()}`;
+                messagesContainer.insertAdjacentHTML('beforeend', `
+                    <div class="message assistant" id="${msgId}">
+                        <div class="message-avatar assistant">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                            </svg>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-bubble streaming-bubble" id="task-session-bubble-${msgId}"></div>
+                        </div>
+                    </div>
+                `);
+                bubbleEl = document.getElementById(`task-session-bubble-${msgId}`);
+            }
+            return bubbleEl;
+        };
+
+        const ensureTextElement = () => {
+            if (!currentTextEl) {
+                const bubble = ensureBubble();
+                if (bubble) {
+                    const textId = `task-session-content-${paneId}-seg${textSegmentIndex}`;
+                    bubble.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
+                    currentTextEl = document.getElementById(textId);
+                }
+            }
+            return currentTextEl;
+        };
+
+        es.onmessage = (event) => {
+            if (done) return;
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch {
+                return;
+            }
+
+            if (data.type === 'TEXT_MESSAGE_START') {
+                ensureBubble();
+            } else if (data.type === 'TEXT_MESSAGE_CONTENT') {
+                const textDelta = data.delta ?? data.content ?? data.text ?? data.response;
+                if (textDelta !== undefined && textDelta !== null && textDelta !== '') {
+                    const textEl = ensureTextElement();
+                    currentTextContent += (typeof textDelta === 'string' ? textDelta : JSON.stringify(textDelta, null, 2));
+                    if (textEl) {
+                        textEl.innerHTML = this.formatMessageContent(currentTextContent);
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    }
+                }
+            } else if (data.type === 'TEXT_MESSAGE_END') {
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+                textSegmentIndex++;
+            } else if (data.type === 'TOOL_CALL_START') {
+                const toolCallId = data.toolCallId || `tool-${Date.now()}`;
+                const toolName = data.toolCallName || 'Tool';
+                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+                textSegmentIndex++;
+
+                const bubble = ensureBubble();
+                if (bubble) {
+                    bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_ARGS') {
+                const toolCallId = data.toolCallId;
+                const argsDelta = data.delta || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    tc.args += argsDelta;
+                    const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
+                    if (argsEl) argsEl.textContent = tc.args;
+                }
+            } else if (data.type === 'TOOL_CALL_END') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || '';
+                const error = data.error;
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-status-icon`);
+                    if (statusEl) {
+                        statusEl.textContent = error ? '✗' : '✓';
+                        statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
+                    }
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+                    if (error) {
+                        const errorSection = document.getElementById(`streaming-tool-error-section-${toolCallId}`);
+                        const errorEl = document.getElementById(`streaming-tool-error-${toolCallId}`);
+                        if (errorSection && errorEl) {
+                            errorSection.style.display = 'block';
+                            errorEl.textContent = error;
+                        }
+                    }
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_RESULT') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || data.content || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+                }
+            } else if (data.type === 'RUN_FINISHED' || data.type === 'RUN_ERROR') {
+                done = true;
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                this._closeTaskSessionStream(paneId);
+                // Reload with snapshot API for final clean rendering with all content
+                NexusAPI.getSessionMessages(sessionId).then(snapshotData => {
+                    this.renderMessages(paneId, sessionId, snapshotData);
+                }).catch(e => {
+                    console.warn('Failed to reload snapshot after task finish:', e);
+                });
+                this.loadSessions(paneId);
+            }
+        };
+
+        es.onerror = () => {
+            if (done) return;
+            if (es.readyState === EventSource.CLOSED) {
+                this._closeTaskSessionStream(paneId);
+            }
+        };
     }
 
     renderMessages(paneId, sessionId, data) {
@@ -1600,7 +2006,7 @@ class ChatView {
             
             for (const segment of sortedSegments) {
                 if (segment.type === 'text' && segment.content) {
-                    bubbleContent += this.formatMessageContent(segment.content);
+                    bubbleContent += `<div class="message-text">${this.formatMessageContent(segment.content)}</div>`;
                 } else if (segment.type === 'tool_call' && segment.tool_call_id) {
                     // Find the tool call by ID
                     const tc = messageToolCalls.find(t => t.id === segment.tool_call_id);
@@ -1612,7 +2018,7 @@ class ChatView {
         } else {
             // Fallback: render content + tool calls at the end (legacy behavior)
             if (hasContent) {
-                bubbleContent += this.formatMessageContent(msg.content);
+                bubbleContent += `<div class="message-text">${this.formatMessageContent(msg.content)}</div>`;
             }
             
             if (messageToolCalls.length > 0) {
@@ -2039,10 +2445,34 @@ class ChatView {
             return;
         }
 
+        const loadedCount = (this.sessions[paneId] || []).length;
+        const totalCount = (this.sessionTotals || {})[paneId] || loadedCount;
+        const allLoadedSelected = sessionIds.length >= loadedCount && totalCount > loadedCount;
+
+        // Gather current filter params for delete_all API
+        const searchInput = document.querySelector(`.session-search-input[data-pane="${paneId}"]`);
+        const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"]`);
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const filterParams = {
+            username: globalUserFilter?.value || '',
+            search: searchInput?.value || '',
+            status: statusFilter?.value || '',
+        };
+
+        const label = allLoadedSelected
+            ? `ALL ${totalCount} session(s) (including ${totalCount - loadedCount} not loaded)`
+            : `${sessionIds.length} session(s)`;
+
         // Show confirmation modal
-        this.app.showDeleteModal('sessions', `${sessionIds.length} session(s)`, async () => {
+        this.app.showDeleteModal('sessions', label, async () => {
             try {
-                const result = await NexusAPI.bulkDeleteSessions(sessionIds);
+                let result;
+                if (allLoadedSelected) {
+                    // Use delete_all API to cover sessions beyond loaded page
+                    result = await NexusAPI.deleteAllSessions(filterParams);
+                } else {
+                    result = await NexusAPI.bulkDeleteSessions(sessionIds);
+                }
 
                 const deletedCount = result.result?.count || sessionIds.length;
                 this.app.showToast(`Deleted ${deletedCount} session(s)`, 'success');
@@ -2209,6 +2639,11 @@ class TaskView {
         ];
         // For standalone task page
         this.fullPageRendered = false;
+        // Active SSE streams for task conversation (taskId -> EventSource)
+        this._activeStreams = new Map();
+        // Auto-poll timer for kanban refresh when tasks are running
+        this._pollTimer = null;
+        this._pollInterval = 5000; // 5s
     }
 
     // Render task view as a standalone full-page view (not in a pane/tab)
@@ -2624,6 +3059,14 @@ class TaskView {
                 }
             }
         });
+
+        // Auto-poll when there are running tasks
+        const hasRunning = (grouped['doing'] || []).length > 0;
+        if (hasRunning) {
+            this._startAutoPolling(paneId);
+        } else {
+            this._stopAutoPolling();
+        }
     }
 
     renderTaskCard(task, paneId) {
@@ -2720,7 +3163,12 @@ class TaskView {
         const detailPanel = document.getElementById(`taskDetail-${paneId}`);
         if (!detailPanel) return;
 
+        // Close any existing SSE stream for previous task
+        this._closeTaskStream(this.selectedTask[paneId]);
+
         const statusClass = task.status?.toLowerCase() || 'todo';
+        const isRunning = statusClass === 'doing';
+        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'failed';
 
         detailPanel.innerHTML = `
             <div class="task-detail-header">
@@ -2731,55 +3179,41 @@ class TaskView {
                     </svg>
                 </button>
             </div>
-            <div class="task-detail-content">
-                <div class="task-detail-section">
-                    <div class="task-detail-section-title">Status</div>
-                    <div class="task-detail-section-content">
+            <div class="task-detail-content" style="display: flex; flex-direction: column; overflow: hidden; flex: 1;">
+                <div class="task-detail-section" style="flex-shrink: 0;">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                         <span class="status-badge ${statusClass}">
                             <span class="status-dot"></span>
                             ${task.status || 'TODO'}
                         </span>
+                        ${task.provider ? `<span style="font-size: 11px; color: var(--text-muted); background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${this.escapeHtml(task.provider)}</span>` : ''}
+                        ${task.workspace ? `<span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);" title="${this.escapeHtml(task.workspace)}">${this.escapeHtml(task.workspace.split('/').pop() || task.workspace)}</span>` : ''}
                     </div>
+                    <p style="margin: 6px 0 0; font-size: 13px; color: var(--text-secondary);">${this.escapeHtml(task.description || 'No description')}</p>
+                    ${task.error_message ? `<p style="margin: 4px 0 0; font-size: 12px; color: var(--error);">${this.escapeHtml(task.error_message)}</p>` : ''}
                 </div>
 
-                <div class="task-detail-section">
-                    <div class="task-detail-section-title">Description</div>
-                    <div class="task-detail-section-content">${this.escapeHtml(task.description || 'No description')}</div>
-                </div>
-
-                ${task.workspace ? `
-                    <div class="task-detail-section">
-                        <div class="task-detail-section-title">Workspace</div>
-                        <div class="task-detail-section-content" style="font-family: var(--font-mono); font-size: 12px;">${this.escapeHtml(task.workspace)}</div>
-                    </div>
-                ` : ''}
-
-                ${task.provider ? `
-                    <div class="task-detail-section">
-                        <div class="task-detail-section-title">Provider</div>
-                        <div class="task-detail-section-content">${this.escapeHtml(task.provider)}</div>
-                    </div>
-                ` : ''}
-
-                ${task.depends_on && task.depends_on.length > 0 ? `
-                    <div class="task-detail-section">
-                        <div class="task-detail-section-title">Dependencies</div>
-                        <div class="task-detail-section-content">
-                            ${task.depends_on.map(dep => `<span class="task-card-dep" style="margin-right: 4px;">${dep}</span>`).join('')}
+                ${hasConversation ? `
+                    <div class="task-conversation" style="flex: 1; overflow-y: auto; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px;">
+                        <div class="chat-messages" id="taskConversation-${paneId}" style="padding: 0;">
+                            <div class="empty-state" style="padding: 24px;">
+                                <div class="loading-spinner"></div>
+                                <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p>
+                            </div>
                         </div>
                     </div>
                 ` : ''}
 
-                ${task.error_message ? `
-                    <div class="task-detail-section">
-                        <div class="task-detail-section-title">Error</div>
-                        <div class="task-detail-section-content" style="color: var(--error);">${this.escapeHtml(task.error_message)}</div>
-                    </div>
-                ` : ''}
-
-                <div class="task-detail-section">
-                    <div class="task-detail-section-title">Actions</div>
+                <div class="task-detail-section" style="flex-shrink: 0; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        ${hasConversation ? `
+                            <button class="action-btn" data-action="view-session" data-task-id="${task.id}" title="Open in Chat view">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                                </svg>
+                                Open Session
+                            </button>
+                        ` : ''}
                         <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color: var(--error);">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -2795,10 +3229,10 @@ class TaskView {
         const closeBtn = detailPanel.querySelector('[data-action="close-detail"]');
         if (closeBtn) {
             closeBtn.addEventListener('click', () => {
+                this._closeTaskStream(task.id);
                 detailPanel.classList.add('hidden');
                 this.selectedTask[paneId] = null;
                 
-                // Clear selection
                 const board = document.getElementById(`kanbanBoard-${paneId}`);
                 board?.querySelectorAll('.task-card').forEach(card => {
                     card.classList.remove('selected');
@@ -2813,6 +3247,283 @@ class TaskView {
                     await this.deleteTask(paneId, task.id);
                 });
             });
+        }
+
+        const viewSessionBtn = detailPanel.querySelector('[data-action="view-session"]');
+        if (viewSessionBtn) {
+            viewSessionBtn.addEventListener('click', () => {
+                const sessionId = task.session_id || `task_${task.id}`;
+                this.app.pageManager.setPage('chat');
+                setTimeout(() => {
+                    this.app.chatView.selectSession(0, sessionId);
+                }, 300);
+            });
+        }
+
+        // Load or stream conversation
+        if (hasConversation) {
+            if (isRunning) {
+                this._streamTaskConversation(paneId, task.id);
+            } else {
+                this._loadTaskConversation(paneId, task.id);
+            }
+        }
+    }
+
+    /**
+     * Connect to SSE stream and render AG-UI events in real-time for a running task.
+     * Also used for replaying completed tasks (isReplay=true skips kanban refresh on finish).
+     */
+    _streamTaskConversation(paneId, taskId, isReplay = false) {
+        this._closeTaskStream(taskId);
+
+        const container = document.getElementById(`taskConversation-${paneId}`);
+        if (!container) return;
+
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+        const es = NexusAPI.streamTaskMessages(taskId, { execUser, tail: 500 });
+        this._activeStreams.set(taskId, es);
+
+        // State for streaming rendering
+        let bubbleEl = null;
+        let currentTextEl = null;
+        let currentTextContent = '';
+        let textSegmentIndex = 0;
+        const streamingToolCalls = new Map();
+        let initialized = false;
+        let runFinished = false;
+
+        const chatView = this.app.chatView;
+
+        const ensureBubble = () => {
+            if (!bubbleEl) {
+                // Clear loading state
+                if (!initialized) {
+                    container.innerHTML = '';
+                    initialized = true;
+                }
+                const msgId = `task-stream-msg-${Date.now()}`;
+                container.insertAdjacentHTML('beforeend', `
+                    <div class="message assistant" id="${msgId}">
+                        <div class="message-avatar assistant">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                            </svg>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-bubble streaming-bubble" id="task-bubble-${msgId}"></div>
+                        </div>
+                    </div>
+                `);
+                bubbleEl = document.getElementById(`task-bubble-${msgId}`);
+            }
+            return bubbleEl;
+        };
+
+        const ensureTextElement = () => {
+            if (!currentTextEl) {
+                const bubble = ensureBubble();
+                if (bubble) {
+                    const textId = `task-stream-text-${taskId}-seg${textSegmentIndex}`;
+                    bubble.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
+                    currentTextEl = document.getElementById(textId);
+                }
+            }
+            return currentTextEl;
+        };
+
+        es.onmessage = (event) => {
+            if (runFinished) return;
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch { return; }
+
+            if (data.type === 'TEXT_MESSAGE_START') {
+                ensureBubble();
+            } else if (data.type === 'TEXT_MESSAGE_CONTENT') {
+                const textDelta = data.delta ?? data.content ?? data.text ?? data.response;
+                if (textDelta !== undefined && textDelta !== null && textDelta !== '') {
+                    const textEl = ensureTextElement();
+                    currentTextContent += (typeof textDelta === 'string' ? textDelta : JSON.stringify(textDelta, null, 2));
+                    if (textEl) {
+                        textEl.innerHTML = chatView.formatMessageContent(currentTextContent);
+                        container.scrollTop = container.scrollHeight;
+                    }
+                }
+            } else if (data.type === 'result') {
+                const resultText = data.content ?? data.result;
+                if (resultText !== undefined && resultText !== null && resultText !== '') {
+                    const textEl = ensureTextElement();
+                    currentTextContent += (typeof resultText === 'string' ? resultText : JSON.stringify(resultText, null, 2));
+                    if (textEl) {
+                        textEl.innerHTML = chatView.formatMessageContent(currentTextContent);
+                        container.scrollTop = container.scrollHeight;
+                    }
+                }
+            } else if (data.type === 'TEXT_MESSAGE_END') {
+                if (currentTextEl) {
+                    currentTextEl.classList.remove('streaming');
+                }
+                currentTextEl = null;
+                currentTextContent = '';
+                textSegmentIndex++;
+            } else if (data.type === 'TOOL_CALL_START') {
+                const toolCallId = data.toolCallId || `tool-${Date.now()}`;
+                const toolName = data.toolCallName || 'Tool';
+                
+                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+                
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+                textSegmentIndex++;
+                
+                const bubble = ensureBubble();
+                if (bubble) {
+                    bubble.insertAdjacentHTML('beforeend', chatView.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    container.scrollTop = container.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_ARGS') {
+                const toolCallId = data.toolCallId;
+                const argsDelta = data.delta || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    tc.args += argsDelta;
+                    const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
+                    if (argsEl) argsEl.textContent = tc.args;
+                }
+            } else if (data.type === 'TOOL_CALL_END') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || '';
+                const error = data.error;
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    tc.status = error ? 'failed' : 'completed';
+                    tc.result = result;
+                    
+                    const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-status-icon`);
+                    if (statusEl) {
+                        statusEl.textContent = error ? '✗' : '✓';
+                        statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
+                    }
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+                    if (error) {
+                        const errorSection = document.getElementById(`streaming-tool-error-section-${toolCallId}`);
+                        const errorEl = document.getElementById(`streaming-tool-error-${toolCallId}`);
+                        if (errorSection && errorEl) {
+                            errorSection.style.display = 'block';
+                            errorEl.textContent = error;
+                        }
+                    }
+                    container.scrollTop = container.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_RESULT') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || data.content || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    tc.result = result;
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+                }
+            } else if (data.type === 'RUN_FINISHED' || data.type === 'RUN_ERROR') {
+                runFinished = true;
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                
+                // Show completion indicator
+                if (data.type === 'RUN_ERROR') {
+                    container.insertAdjacentHTML('beforeend', `
+                        <div style="padding: 8px 12px; margin-top: 8px; background: rgba(239,68,68,0.1); border-radius: 6px; font-size: 12px; color: var(--error);">
+                            Task failed${data.message ? ': ' + chatView.escapeHtml(data.message) : ''}
+                        </div>
+                    `);
+                } else {
+                    container.insertAdjacentHTML('beforeend', `
+                        <div style="padding: 8px 12px; margin-top: 8px; background: rgba(16,185,129,0.1); border-radius: 6px; font-size: 12px; color: var(--success);">
+                            ✓ Task completed
+                        </div>
+                    `);
+                }
+                container.scrollTop = container.scrollHeight;
+                
+                // Close stream; refresh kanban and sessions only for live (not replay)
+                this._closeTaskStream(taskId);
+                if (!isReplay) {
+                    this.loadTasks(paneId);
+                    this.app.chatView.loadSessions(0);
+                }
+            }
+        };
+
+        es.onerror = () => {
+            if (runFinished) return;
+            // Don't show error for normal close
+            if (es.readyState === EventSource.CLOSED) return;
+            console.warn(`Task ${taskId} SSE error, will reconnect automatically`);
+        };
+    }
+
+    /**
+     * Load completed task conversation via SSE replay (preserves tool calls in correct order)
+     */
+    async _loadTaskConversation(paneId, taskId) {
+        const container = document.getElementById(`taskConversation-${paneId}`);
+        if (!container) return;
+
+        // Use SSE replay for completed tasks too — it preserves tool calls and ordering
+        // The stream will end naturally when it hits RUN_FINISHED/RUN_ERROR
+        this._streamTaskConversation(paneId, taskId, true);
+    }
+
+    /**
+     * Close an active SSE stream for a task
+     */
+    _closeTaskStream(taskId) {
+        if (!taskId) return;
+        const es = this._activeStreams.get(taskId);
+        if (es) {
+            es.close();
+            this._activeStreams.delete(taskId);
+        }
+    }
+
+    /**
+     * Start auto-polling kanban when there are running tasks
+     */
+    _startAutoPolling(paneId) {
+        if (this._pollTimer) return;
+        this._pollTimer = setInterval(async () => {
+            const tasks = this.tasks[paneId] || [];
+            const hasRunning = tasks.some(t => (t.status || '').toLowerCase() === 'doing');
+            if (hasRunning) {
+                await this.loadTasks(paneId);
+                // Also refresh sessions list so new task sessions appear
+                this.app.chatView.loadSessions(0);
+            } else {
+                this._stopAutoPolling();
+            }
+        }, this._pollInterval);
+    }
+
+    /**
+     * Stop auto-polling
+     */
+    _stopAutoPolling() {
+        if (this._pollTimer) {
+            clearInterval(this._pollTimer);
+            this._pollTimer = null;
         }
     }
 
@@ -4469,6 +5180,8 @@ class NexusApp {
 
             document.getElementById('createTaskModal')?.classList.remove('open');
             this.refresh();
+            // Start auto-polling so kanban updates as tasks transition to doing/done
+            this.taskView._startAutoPolling('global');
         } catch (error) {
             console.error('Failed to create task:', error);
             this.showToast(error.message || 'Failed to create task', 'error');
