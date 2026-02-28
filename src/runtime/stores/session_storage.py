@@ -4,6 +4,7 @@
 Provides CRUD operations for AGUI session data in Redis.
 """
 
+import hashlib
 import json
 import logging
 import time
@@ -85,6 +86,63 @@ class SessionStorage:
             return SessionMeta.from_redis_hash(data)
         except Exception as e:
             logger.error(f"Failed to get session meta: {e}")
+            return None
+
+    def _history_mapping_key(self, provider: str, history_session_id: str, project_path: str) -> str:
+        """Build Redis key for history->runtime mapping."""
+        project_hash = hashlib.sha1((project_path or "").encode("utf-8")).hexdigest()
+        return f"historymap:{provider}:{history_session_id}:{project_hash}"
+
+    def set_history_runtime_mapping(
+        self,
+        provider: str,
+        history_session_id: str,
+        project_path: str,
+        runtime_session_id: str,
+    ) -> bool:
+        """Persist mapping from history session to runtime session."""
+        try:
+            key = self._history_mapping_key(provider, history_session_id, project_path)
+            self._redis.set(key, runtime_session_id, ex=SESSION_TTL)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set history runtime mapping: {e}")
+            return False
+
+    def get_history_runtime_mapping(
+        self,
+        provider: str,
+        history_session_id: str,
+        project_path: str,
+    ) -> Optional[str]:
+        """Get mapped runtime session for a history session if exists."""
+        try:
+            key = self._history_mapping_key(provider, history_session_id, project_path)
+            return self._redis.get(key)
+        except Exception as e:
+            logger.error(f"Failed to get history runtime mapping: {e}")
+            return None
+
+    def set_history_bootstrap_context(self, session_id: str, context: str) -> bool:
+        """Set one-time bootstrap context used on next message only."""
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"history_bootstrap_context": context})
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set history bootstrap context: {e}")
+            return False
+
+    def consume_history_bootstrap_context(self, session_id: str) -> Optional[str]:
+        """Consume and clear one-time history bootstrap context."""
+        try:
+            key = f"session:{session_id}:meta"
+            context = self._redis.hget(key, "history_bootstrap_context")
+            if context:
+                self._redis.hdel(key, "history_bootstrap_context")
+            return context or None
+        except Exception as e:
+            logger.error(f"Failed to consume history bootstrap context: {e}")
             return None
 
     def set_inherited_session(self, session_id: str, inherited_from: str) -> bool:
@@ -448,31 +506,48 @@ class SessionStorage:
             logger.error(f"Failed to clear handoff context: {e}")
             return False
 
-    def set_handoff_pending_summary(self, session_id: str, target_provider_or_alias: str, model: Optional[str] = None) -> bool:
+    def set_handoff_pending_summary(
+        self,
+        session_id: str,
+        target_provider_or_alias: str,
+        model: Optional[str] = None,
+        context_mode: str = "full",
+    ) -> bool:
         """Store pending handoff summary request.
 
         When user requests /handoff -a, we set this flag. The next message
-        will trigger the current agent to generate a summary first.
+        will trigger the current agent to generate summary/full context first.
 
         Args:
             session_id: Current session ID
             target_provider_or_alias: The provider or alias to switch to after summary
             model: Optional LLM model name to use after switching
+            context_mode: Context injection mode, one of: full | windowed
 
         Returns:
             True if successful
         """
         try:
             key = f"session:{session_id}:meta"
+            normalized_mode = (context_mode or "full").strip().lower()
+            # Backward compat: treat legacy "summary" as "windowed"
+            if normalized_mode == "summary":
+                normalized_mode = "windowed"
+            if normalized_mode not in ("full", "windowed"):
+                normalized_mode = "full"
             fields = {
                 "handoff_pending_summary": target_provider_or_alias,
+                "handoff_pending_context_mode": normalized_mode,
             }
             if model:
                 fields["handoff_model"] = model
             self._redis.hset(key, fields)
             if not model:
                 self._redis.hdel(key, "handoff_model")
-            logger.info(f"Set handoff pending summary: {session_id} -> {target_provider_or_alias} (model={model})")
+            logger.info(
+                f"Set handoff pending summary: {session_id} -> {target_provider_or_alias} "
+                f"(model={model}, context_mode={normalized_mode})"
+            )
             return True
         except Exception as e:
             logger.error(f"Failed to set handoff pending summary: {e}")
@@ -495,6 +570,23 @@ class SessionStorage:
             logger.error(f"Failed to get handoff pending summary: {e}")
             return None
 
+    def get_handoff_pending_context_mode(self, session_id: str) -> str:
+        """Get pending handoff context mode.
+
+        Returns:
+            "full" or "windowed". Defaults to "full" when unset/invalid.
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            mode = (self._redis.hget(key, "handoff_pending_context_mode") or "full").strip().lower()
+            # Backward compat: treat legacy "summary" as "windowed"
+            if mode == "summary":
+                mode = "windowed"
+            return mode if mode in ("full", "windowed") else "full"
+        except Exception as e:
+            logger.error(f"Failed to get handoff pending context mode: {e}")
+            return "full"
+
     def clear_handoff_pending_summary(self, session_id: str) -> bool:
         """Clear pending handoff summary request.
 
@@ -506,7 +598,7 @@ class SessionStorage:
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hdel(key, "handoff_pending_summary", "handoff_model")
+            self._redis.hdel(key, "handoff_pending_summary", "handoff_model", "handoff_pending_context_mode")
             logger.info(f"Cleared handoff pending summary: {session_id}")
             return True
         except Exception as e:

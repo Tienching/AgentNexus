@@ -273,6 +273,112 @@ class ChannelService:
             return content[:max_len] + "\n\n... (响应被截断)"
         return content
 
+    @staticmethod
+    def _get_tool_display_name(tool_name: str, params: dict) -> str:
+        """Generate a semantic display title for a tool call, matching AGUI style.
+
+        Produces titles like ``Read: /home/ubuntu/app.py`` or ``Bash: 安装依赖包``
+        instead of the raw tool name.  Falls back to the original tool name when
+        no meaningful context can be extracted from *params*.
+        """
+        if not isinstance(params, dict):
+            return tool_name
+
+        if tool_name in ("Task", "task"):
+            subagent = params.get("subagent_type", params.get("subagent_name", ""))
+            desc = params.get("description", "")
+            if subagent and desc:
+                return f"Task: {subagent} - {desc}"
+            elif subagent:
+                return f"Task: {subagent}"
+            elif desc:
+                return f"Task: {desc}"
+
+        elif tool_name in ("Skill", "use_skill"):
+            skill = params.get("skill", params.get("command", ""))
+            if skill:
+                return f"Skill: {skill}"
+
+        elif tool_name in ("Read", "read_file"):
+            fp = params.get("file_path", params.get("filePath", ""))
+            if fp:
+                return f"Read: {fp}"
+
+        elif tool_name in ("Write", "write_to_file"):
+            fp = params.get("file_path", params.get("filePath", ""))
+            if fp:
+                return f"Write: {fp}"
+
+        elif tool_name in ("Edit", "replace_in_file"):
+            fp = params.get("file_path", params.get("filePath", ""))
+            if fp:
+                return f"Edit: {fp}"
+
+        elif tool_name in ("Grep", "search_content"):
+            path = params.get("path", params.get("directory", ""))
+            if path:
+                return f"Grep: {path}"
+
+        elif tool_name in ("Glob", "search_file"):
+            path = params.get("path", params.get("target_directory", ""))
+            pattern = params.get("pattern", "")
+            if path and pattern:
+                return f"Glob: {pattern} in {path}"
+            elif path:
+                return f"Glob: {path}"
+            elif pattern:
+                return f"Glob: {pattern}"
+
+        elif tool_name in ("Bash", "execute_command"):
+            explanation = params.get("explanation", params.get("description", ""))
+            if explanation:
+                return f"Bash: {explanation}"
+            command = params.get("command", "")
+            if command:
+                if len(command) > 60:
+                    command = command[:60] + "…"
+                return f"Bash: {command}"
+
+        elif tool_name in ("TodoWrite", "todo_write"):
+            todos_str = params.get("todos", "")
+            if todos_str:
+                try:
+                    todos = json.loads(todos_str) if isinstance(todos_str, str) else todos_str
+                    if isinstance(todos, list) and todos:
+                        total = len(todos)
+                        current_index = 0
+                        current_content = ""
+                        for i, todo in enumerate(todos):
+                            if isinstance(todo, dict) and todo.get("status") == "in_progress":
+                                current_index = i + 1
+                                current_content = todo.get("content", "")
+                                break
+                        if current_index > 0 and current_content:
+                            return f"Todos: {current_index}/{total} - {current_content}"
+                        elif current_index > 0:
+                            return f"Todos: {current_index}/{total}"
+                        else:
+                            return f"Todos: {total} items"
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        elif tool_name in ("WebSearch", "web_search"):
+            query = params.get("query", params.get("searchTerm", ""))
+            if query:
+                if len(query) > 60:
+                    query = query[:60] + "…"
+                return f"Search: {query}"
+
+        elif tool_name in ("WebFetch", "web_fetch"):
+            url = params.get("url", "")
+            if url:
+                if len(url) > 60:
+                    url = url[:60] + "…"
+                return f"Fetch: {url}"
+
+        # mcp__xxx and other tools — keep original name
+        return tool_name
+
     async def _process_with_ai(
         self,
         message: InboundMessage,
@@ -280,7 +386,15 @@ class ChannelService:
         target: NotificationTarget,
         handler: UnifiedNotificationHandler,
     ) -> Optional[str]:
-        """使用 AI 处理消息，带进度更新"""
+        """使用 AI 处理消息，带进度更新
+
+        Handles both text content and tool-call events so that Telegram
+        (and other channel) users can see which tools the AI invokes.
+
+        Supported event formats:
+        - AG-UI: TOOL_CALL_START / TOOL_CALL_ARGS / TOOL_CALL_END
+        - Legacy Claude: content_block_start(tool_use) / content_block_delta(input_json_delta) / content_block_stop
+        """
         from ..services import CLIExecutor
         from ..models import RequestModel
         
@@ -306,6 +420,13 @@ class ChannelService:
         last_progress_time = time.time()
         collected_chars = 0
 
+        # Tool-call tracking
+        tool_call_count = 0
+        # Legacy: block index → {name, json_buf}
+        tool_block_buffer: Dict[int, Dict[str, str]] = {}
+        # AG-UI: toolCallId → {name, args}
+        agui_tool_buffer: Dict[str, Dict[str, str]] = {}
+
         try:
             async with asyncio.timeout(timeout):
                 async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
@@ -317,43 +438,122 @@ class ChannelService:
                     try:
                         data = json.loads(output)
 
-                        # 提取文本内容
-                        if isinstance(data, dict):
-                            event_type = data.get("type", "")
+                        if not isinstance(data, dict):
+                            continue
 
-                            # stream_event 包含实际的文本
-                            if event_type == "stream_event":
-                                event = data.get("event", {})
-                                if event.get("type") == "content_block_delta":
-                                    delta = event.get("delta", {})
-                                    if delta.get("type") == "text_delta":
-                                        text = delta.get("text", "")
-                                        if text:
-                                            response_parts.append(text)
-                                            collected_chars += len(text)
+                        event_type = data.get("type", "")
 
-                                            # Periodic progress update
-                                            now = time.time()
-                                            if now - last_progress_time >= PROGRESS_UPDATE_INTERVAL:
-                                                last_progress_time = now
-                                                await handler.notify_progress(
-                                                    target,
-                                                    f"⏳ 正在处理… 已收集 {collected_chars} 字符"
-                                                )
+                        # --- stream_event: text deltas + tool calls ---
+                        if event_type == "stream_event":
+                            event = data.get("event", {})
+                            evt_type = event.get("type", "")
 
-                            # result 事件包含完整的回复
-                            elif event_type == "result":
-                                content = data.get("content", "") or data.get("result", "")
-                                if content:
-                                    content = self._truncate_response(content, message.channel)
-                                    return content
+                            # ---- Text content ----
+                            if evt_type == "content_block_delta":
+                                delta = event.get("delta", {})
+                                delta_type = delta.get("type", "")
+
+                                if delta_type == "text_delta":
+                                    text = delta.get("text", "")
+                                    if text:
+                                        response_parts.append(text)
+                                        collected_chars += len(text)
+
+                                        # Periodic progress update
+                                        now = time.time()
+                                        if now - last_progress_time >= PROGRESS_UPDATE_INTERVAL:
+                                            last_progress_time = now
+                                            await handler.notify_progress(
+                                                target,
+                                                f"⏳ 正在处理… 已收集 {collected_chars} 字符"
+                                            )
+
+                                # Legacy: accumulate tool input JSON
+                                elif delta_type == "input_json_delta":
+                                    index = event.get("index", 0)
+                                    partial = delta.get("partial_json", "")
+                                    if partial:
+                                        if index in tool_block_buffer:
+                                            tool_block_buffer[index]["json_buf"] += partial
+
+                            # ---- AG-UI: TOOL_CALL_START ----
+                            elif evt_type == "TOOL_CALL_START":
+                                tool_name = event.get("toolCallName", "unknown")
+                                tool_id = event.get("toolCallId", "")
+                                tool_call_count += 1
+                                if tool_id:
+                                    agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
+
+                            # ---- AG-UI: TOOL_CALL_ARGS ----
+                            elif evt_type == "TOOL_CALL_ARGS":
+                                tool_id = event.get("toolCallId", "")
+                                delta_str = event.get("delta", "")
+                                if tool_id and delta_str and tool_id in agui_tool_buffer:
+                                    agui_tool_buffer[tool_id]["args"] += delta_str
+
+                            # ---- AG-UI: TOOL_CALL_END / TOOL_CALL_RESULT ----
+                            elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
+                                tool_id = event.get("toolCallId", "")
+                                if tool_id and tool_id in agui_tool_buffer:
+                                    entry = agui_tool_buffer.pop(tool_id)
+                                    raw_name = entry["name"]
+                                    raw_args = entry["args"]
+                                    params_obj = {}
+                                    if raw_args:
+                                        try:
+                                            params_obj = json.loads(raw_args)
+                                        except (json.JSONDecodeError, TypeError):
+                                            pass
+                                    display = self._get_tool_display_name(raw_name, params_obj)
+                                    snippet = f"\n\n🔧 `{display}`"
+                                    response_parts.append(snippet)
+                                    collected_chars += len(snippet)
+
+                            # ---- Legacy: content_block_start (tool_use) ----
+                            elif evt_type == "content_block_start":
+                                content_block = event.get("content_block", {})
+                                if content_block.get("type") == "tool_use":
+                                    tool_name = content_block.get("name", "unknown")
+                                    index = event.get("index", 0)
+                                    tool_call_count += 1
+                                    tool_block_buffer[index] = {"name": tool_name, "json_buf": ""}
+
+                            # ---- Legacy: content_block_stop → flush tool call ----
+                            elif evt_type == "content_block_stop":
+                                index = event.get("index", 0)
+                                if index in tool_block_buffer:
+                                    entry = tool_block_buffer.pop(index)
+                                    raw_name = entry["name"]
+                                    raw_json = entry["json_buf"]
+                                    params_obj = {}
+                                    if raw_json:
+                                        try:
+                                            params_obj = json.loads(raw_json)
+                                        except (json.JSONDecodeError, TypeError):
+                                            pass
+                                    display = self._get_tool_display_name(raw_name, params_obj)
+                                    snippet = f"\n\n🔧 `{display}`"
+                                    response_parts.append(snippet)
+                                    collected_chars += len(snippet)
+
+                        # --- result event: complete reply ---
+                        elif event_type == "result":
+                            content = data.get("content", "") or data.get("result", "")
+                            if content:
+                                content = self._truncate_response(content, message.channel)
+                                # Prepend any accumulated tool-call info so users
+                                # see which tools were invoked before the final answer.
+                                if tool_call_count > 0 and response_parts:
+                                    tool_section = "".join(response_parts).strip()
+                                    if tool_section:
+                                        content = tool_section + "\n\n---\n\n" + content
+                                return content
 
                     except json.JSONDecodeError:
                         continue
 
         except TimeoutError:
             logger.error(f"AI execution timed out after {timeout}s")
-            # If we have partial content, return it
             if response_parts:
                 partial = "".join(response_parts).strip()
                 if partial:
