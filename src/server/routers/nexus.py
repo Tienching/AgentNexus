@@ -30,6 +30,7 @@ from ..models import (
     SessionStatus,
     SessionListResponse,
     SessionMessagesResponse,
+    MessageStatus,
 )
 from ..services.task_storage import TaskQueue
 from src.runtime.commands.slash.handler import slugify_project
@@ -235,6 +236,14 @@ async def get_session_messages(session_id: str):
     
     messages = storage.get_session_messages(session_id)
     tool_calls = storage.get_session_tool_calls(session_id)
+
+    # For streaming messages, merge in the live streaming content from Redis
+    # so that the snapshot API returns text even during task execution.
+    for msg in messages:
+        if msg.status == MessageStatus.STREAMING and not msg.content:
+            streaming_content = storage.get_streaming_content(session_id, msg.id)
+            if streaming_content:
+                msg.content = streaming_content
     
     return SessionMessagesResponse(
         session_id=session_id,
@@ -264,16 +273,16 @@ async def delete_session(
     meta = storage.get_session_meta(session_id)
     resolved_username = username or (meta.username if meta else None)
 
-    # Cascade hard-delete task when deleting a task session (session_id = task_<taskId>)
-    if session_id.startswith("task_"):
-        task_id = session_id[len("task_"):]
-        task_agent = (meta.exec_user if meta and meta.exec_user else "ubuntu")
-        try:
-            queue = _get_task_queue(task_agent)
-            queue.delete_task_hard(task_id)
-        except Exception:
-            # best-effort
-            pass
+    # Cascade hard-delete associated task (best-effort)
+    task_agent = (meta.exec_user if meta and meta.exec_user else "ubuntu")
+    try:
+        queue = _get_task_queue(task_agent)
+        linked_task = queue.find_task_by_session_id(session_id)
+        if linked_task:
+            queue.delete_task_hard(linked_task.id)
+    except Exception:
+        # best-effort
+        pass
 
     # Delete session (idempotent)
     storage.delete_session(session_id, resolved_username)
@@ -319,21 +328,79 @@ async def bulk_delete_sessions(
             # Get session meta for cleanup
             meta = storage.get_session_meta(session_id)
 
-            # Cascade hard-delete task when deleting a task session
-            if session_id.startswith("task_"):
-                task_id = session_id[len("task_"):]
-                task_agent = (meta.exec_user if meta and meta.exec_user else "ubuntu")
-                try:
-                    queue = _get_task_queue(task_agent)
-                    queue.delete_task_hard(task_id)
-                except Exception:
-                    pass
+            # Cascade hard-delete associated task (best-effort)
+            task_agent = (meta.exec_user if meta and meta.exec_user else "ubuntu")
+            try:
+                queue = _get_task_queue(task_agent)
+                linked_task = queue.find_task_by_session_id(session_id)
+                if linked_task:
+                    queue.delete_task_hard(linked_task.id)
+            except Exception:
+                pass
 
             # Delete session
             resolved_username = meta.username if meta else None
             storage.delete_session(session_id, resolved_username)
             deleted.append(session_id)
 
+        except Exception as e:
+            skipped[session_id] = f"error:{e}"
+
+    result = {"count": len(deleted), "deleted": deleted, "skipped": skipped}
+    return SessionBulkResponse(success=True, message=f"Deleted {len(deleted)} sessions", result=result)
+
+
+@router.post("/sessions/delete_all", response_model=SessionBulkResponse)
+async def delete_all_sessions(
+    username: Optional[str] = Query(None, description="Only delete sessions for this username"),
+    search: Optional[str] = Query(None, description="Only delete sessions matching this search term"),
+    status_param: Optional[str] = Query(None, alias="status", description="Only delete sessions with this status"),
+):
+    """Delete ALL sessions matching the given filters (no pagination limit).
+
+    This is useful when 'Select All' in the UI only covers the loaded page.
+    Cascade-deletes associated tasks.
+    """
+    storage = get_session_storage()
+
+    status_filter = None
+    if status_param:
+        try:
+            status_filter = SessionStatus(status_param)
+        except ValueError:
+            pass
+
+    # Fetch ALL matching sessions (no pagination)
+    if username:
+        sessions, _total = storage.get_user_sessions(
+            username=username, page=1, page_size=10000,
+            search=search, status_filter=status_filter,
+        )
+    else:
+        sessions, _total = storage.get_all_sessions(
+            page=1, page_size=10000,
+            search=search, status_filter=status_filter,
+        )
+
+    deleted: List[str] = []
+    skipped: Dict[str, str] = {}
+
+    for meta in sessions:
+        session_id = meta.id
+        try:
+            # Cascade hard-delete associated task (best-effort)
+            task_agent = (meta.exec_user if meta.exec_user else "ubuntu")
+            try:
+                queue = _get_task_queue(task_agent)
+                linked_task = queue.find_task_by_session_id(session_id)
+                if linked_task:
+                    queue.delete_task_hard(linked_task.id)
+            except Exception:
+                pass
+
+            resolved_username = meta.username or username
+            storage.delete_session(session_id, resolved_username)
+            deleted.append(session_id)
         except Exception as e:
             skipped[session_id] = f"error:{e}"
 
@@ -1249,6 +1316,8 @@ async def stream_task_agui_messages(
 
     async def generate():
         last_heartbeat = 0.0
+        idle_cycles = 0  # Track consecutive cycles with no new events
+        max_idle_cycles = 600  # Stop after ~3 minutes of idle (600 * 300ms)
 
         # cursor is the next event index to send
         last_id = _parse_last_event_id()
@@ -1259,6 +1328,9 @@ async def stream_task_agui_messages(
             cursor = max(0, total - int(tail or 0))
 
         while True:
+            if await request.is_disconnected():
+                break
+
             # heartbeat（避免代理缓冲/断链）
             now = time.time()
             if now - last_heartbeat >= 15:
@@ -1267,14 +1339,29 @@ async def stream_task_agui_messages(
 
             total = storage.get_agui_event_count(session_id)
             if total > cursor:
+                idle_cycles = 0
                 events = storage.get_agui_events(session_id, start=cursor, end=total - 1)
                 for idx, evt in enumerate(events, start=cursor):
                     try:
                         payload = json.dumps(evt, ensure_ascii=False)
                         yield f"id: {idx}\n" + f"data: {payload}\n\n"
+                        # Check if this is a terminal event
+                        if isinstance(evt, dict) and evt.get("type") in ("RUN_FINISHED", "RUN_ERROR"):
+                            return  # End the stream naturally
                     except Exception:
                         continue
                 cursor += len(events)
+            else:
+                idle_cycles += 1
+                # Check if task has completed (no more events expected)
+                if idle_cycles > max_idle_cycles:
+                    # Check task status
+                    try:
+                        task_obj = queue.get_task(task_id) if queue else None
+                        if task_obj and task_obj.status in ("done", "failed", "cancelled"):
+                            return  # Task done, close stream
+                    except Exception:
+                        pass
 
             await asyncio.sleep(poll_interval_ms / 1000.0)
 

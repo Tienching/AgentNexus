@@ -245,6 +245,7 @@ class SlashCommandHandler:
                     alias=parsed.options.get("alias"),
                     model=parsed.options.get("model"),
                     auto_summary=bool(parsed.options.get("auto", False)),
+                    context_mode=(parsed.options.get("context-mode") or "full"),
                     summary=parsed.free_text,
                     current_session_id=source_session_id,
                 )
@@ -1598,6 +1599,7 @@ class SlashCommandHandler:
         alias: Optional[str] = None,
         model: Optional[str] = None,
         auto_summary: bool = False,
+        context_mode: str = "full",
         summary: Optional[str] = None,
         current_session_id: Optional[str] = None,
     ) -> str:
@@ -1608,15 +1610,16 @@ class SlashCommandHandler:
             /handoff -r <provider>       # Direct switch (no context)
             /handoff -l <alias>          # Switch by alias (no context)
             /handoff -r <provider> -m <model>  # Switch with model override
-            /handoff -r <provider> -a    # Auto-generate summary and switch
-            /handoff -l <alias> -a       # Auto-generate summary and switch by alias
+            /handoff -r <provider> -a    # Auto-generate context and switch (default full)
+            /handoff -l <alias> -a -x windowed  # Auto-generate windowed context and switch by alias
             /handoff -r <provider> -- <summary>  # Manual summary and switch
 
         Args:
             provider: Target provider to switch to
             alias: Target alias to switch to (alternative to provider)
             model: LLM model name to use after switching
-            auto_summary: Whether to auto-generate summary from current Agent
+            auto_summary: Whether to auto-generate context from current Agent
+            context_mode: Context mode for auto handoff, "full" or "windowed"
             summary: Manual summary text (after --)
             current_session_id: Current session ID
 
@@ -1694,7 +1697,8 @@ class SlashCommandHandler:
             response += "\n**切换示例：**\n"
             response += "- `/handoff -r codex` — 直接切换 Provider\n"
             response += "- `/handoff -l gemini-internal` — 通过别名切换\n"
-            response += "- `/handoff -r codex -a` — 自动生成摘要后切换\n"
+            response += "- `/handoff -r codex -a` — 自动生成全量上下文后切换（默认）\n"
+            response += "- `/handoff -r codex -a -x windowed` — 使用窗口截断上下文后切换\n"
             response += "- `/handoff -r codex -- 手动摘要内容` — 手动摘要切换\n"
             return response
 
@@ -1717,6 +1721,12 @@ class SlashCommandHandler:
 
         # Resolve effective model
         effective_model = (model or "").strip() or None
+        normalized_context_mode = (context_mode or "full").strip().lower()
+        # Backward compat: treat legacy "summary" as "windowed"
+        if normalized_context_mode == "summary":
+            normalized_context_mode = "windowed"
+        if normalized_context_mode not in ("full", "windowed"):
+            return "## ❌ 参数错误\n\n`-x/--context-mode` 仅支持 `full` 或 `windowed`。"
 
         # Auto-summary mode: set pending state, next message will trigger summary generation
         if auto_summary:
@@ -1726,7 +1736,12 @@ class SlashCommandHandler:
             # Store pending switch target (empty context means summary pending)
             storage = get_session_storage()
             effective_alias = target_alias or target_provider.lower()
-            storage.set_handoff_pending_summary(current_session_id, effective_alias, model=effective_model)
+            storage.set_handoff_pending_summary(
+                current_session_id,
+                effective_alias,
+                model=effective_model,
+                context_mode=normalized_context_mode,
+            )
 
             # Return markdown message
             response = f"## 🔄 准备切换 Provider\n\n"
@@ -1735,8 +1750,12 @@ class SlashCommandHandler:
                 response += f"- **目标 Alias**: `{target_alias}`\n"
             if effective_model:
                 response += f"- **Model**: `{effective_model}`\n"
-            response += f"- **状态**: 等待生成摘要\n\n"
-            response += f"请发送任意消息，当前 Agent 会先生成对话摘要，然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
+            response += f"- **上下文模式**: `{normalized_context_mode}`\n"
+            response += f"- **状态**: 等待生成上下文\n\n"
+            if normalized_context_mode == "full":
+                response += f"请发送任意消息，当前 Agent 会先生成**全量上下文**，然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
+            else:
+                response += f"请发送任意消息，当前 Agent 会先生成**窗口截断上下文**（最近50条），然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
 
             return response
 
@@ -1843,7 +1862,8 @@ class SlashCommandHandler:
 /handoff -r <provider>   # 直接切换（无上下文）
 /handoff -l <alias>      # 通过别名切换
 /handoff -r <provider> -m <model>  # 切换并指定模型
-/handoff -r <provider> -a    # 自动生成摘要后切换
+/handoff -r <provider> -a    # 自动生成全量上下文后切换（默认）
+/handoff -r <provider> -a -x windowed  # 使用窗口截断上下文后切换
 /handoff -r <provider> -- <摘要>  # 手动摘要切换
 ```
 

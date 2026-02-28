@@ -160,6 +160,21 @@ class NexusAPI {
         return response.json();
     }
 
+    static async deleteAllSessions({ username, search, status } = {}) {
+        const params = new URLSearchParams();
+        if (username) params.set('username', username);
+        if (search) params.set('search', search);
+        if (status) params.set('status', status);
+        const qs = params.toString();
+        const url = `${API_BASE}/sessions/delete_all${qs ? '?' + qs : ''}`;
+        const response = await fetch(url, { method: 'POST' });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to delete all sessions: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     /**
      * Create new session
      * @param {Object} payload - Session data
@@ -554,6 +569,107 @@ class NexusAPI {
     }
 
     // ============ Session Files API ============
+
+    // ============ History API ============
+
+    /**
+     * Get available project paths from local CLI history files
+     * @param {Object} options - Query options
+     * @returns {Promise<Array>} List of project entries
+     */
+    static async getHistoryProjects(options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        if (options.provider) params.append('provider', options.provider);
+        if (options.customPaths) params.append('custom_paths', JSON.stringify(options.customPaths));
+
+        const response = await fetch(`${API_BASE}/history/projects?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch history projects: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Get history sessions from local CLI files
+     * @param {Object} options - Query options (projectPath required)
+     * @returns {Promise<Object>} Session list response
+     */
+    static async getHistorySessions(options = {}) {
+        const params = new URLSearchParams({
+            project_path: options.projectPath || '',
+            page: options.page || 1,
+            page_size: options.pageSize || 50,
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        if (options.provider) params.append('provider', options.provider);
+        if (options.search) params.append('search', options.search);
+        if (options.customPaths) params.append('custom_paths', JSON.stringify(options.customPaths));
+
+        const response = await fetch(`${API_BASE}/history/sessions?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch history sessions: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Get messages for a specific history session
+     * @param {string} provider - Provider name (claude/codex/codebuddy/gemini)
+     * @param {string} sessionId - Session ID
+     * @param {Object} options - { execUser?, configPath? }
+     * @returns {Promise<Object>} Messages response
+     */
+    static async getHistoryMessages(provider, sessionId, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        if (options.configPath) params.append('config_path', options.configPath);
+
+        const response = await fetch(
+            `${API_BASE}/history/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/messages?${params}`
+        );
+        if (!response.ok) {
+            if (response.status === 404) {
+                throw new Error('History session not found');
+            }
+            throw new Error(`Failed to fetch history messages: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Promote a history session into runtime session for continued chat
+     * @param {string} provider - Provider or alias name
+     * @param {string} sessionId - History session ID
+     * @param {Object} options - { projectPath, execUser?, mode? ('full'|'windowed') }
+     * @returns {Promise<Object>} { runtime_session_id, created }
+     */
+    static async promoteHistorySession(provider, sessionId, options = {}) {
+        const response = await fetch(
+            `${API_BASE}/history/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/promote`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    project_path: options.projectPath || '',
+                    exec_user: options.execUser || _defaultExecUser,
+                    mode: options.mode || 'full',
+                }),
+            }
+        );
+
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            const err = new Error(`Failed to promote history session: ${response.status} ${response.statusText}${text ? ` - ${text}` : ''}`);
+            err.status = response.status;
+            throw err;
+        }
+        return response.json();
+    }
+
+    // ============ Session Files API (continued) ============
 
     /**
      * List files in a session's folder

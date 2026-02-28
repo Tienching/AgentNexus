@@ -343,6 +343,8 @@ class ChatView {
         this.historyViewMode = {}; // paneId -> 'projects' | 'sessions'
         this.historyProjects = {}; // paneId -> array of project entries
         this.taskSessionStreams = {}; // paneId -> EventSource (for task_* sessions)
+        this.promotedRuntimeMeta = {}; // runtimeSessionId -> synthetic meta (fallback when backend promote API unavailable)
+        this.pendingBootstrapBySessionId = {}; // runtimeSessionId -> one-time bootstrap context text
     }
 
     async render(paneId, tab, container) {
@@ -599,7 +601,7 @@ class ChatView {
 
     getSessionMeta(paneId, sessionId) {
         const sessions = this.sessions[paneId] || [];
-        return sessions.find(session => session.id === sessionId) || null;
+        return sessions.find(session => session.id === sessionId) || this.promotedRuntimeMeta[sessionId] || null;
     }
 
     getAvailableAgents(selectedUser = '') {
@@ -998,11 +1000,7 @@ class ChatView {
 
         if (thinkingEl) {
             thinkingEl.innerHTML = `
-                <div class="message-avatar assistant">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                    </svg>
-                </div>
+                <div class="message-avatar">A</div>
                 <div class="message-content">
                     <div class="message-bubble streaming-bubble" id="streaming-bubble-${thinkingId}"></div>
                 </div>
@@ -1858,13 +1856,134 @@ class ChatView {
         }
     }
 
+    _buildBootstrapContextFromHistoryMessages(messages = [], mode = 'full') {
+        if (!Array.isArray(messages) || messages.length === 0) {
+            return '(历史会话没有可用消息)';
+        }
+        const effectiveMode = (mode || 'full').trim().toLowerCase();
+        const isWindowed = effectiveMode === 'windowed';
+        const selected = isWindowed ? messages.slice(-50) : messages;
+        const lines = [];
+        for (const msg of selected) {
+            const role = (msg?.role || '').toLowerCase() === 'user' ? '用户' : '助手';
+            let content = (msg?.content || '').trim();
+            if (!content) continue;
+            if (isWindowed && content.length > 800) {
+                content = content.slice(0, 800) + '…(截断)';
+            }
+            lines.push(`[${role}] ${content}`);
+        }
+        return lines.length ? lines.join('\n\n') : '(历史会话没有可用消息)';
+    }
+
+    async _promoteHistorySessionFallback(meta, sessionId, projectPath, execUser) {
+        const providerKey = (meta?.alias || meta?.provider || 'claude').trim() || 'claude';
+        const historyDetail = await NexusAPI.getHistoryMessages(providerKey, sessionId, { execUser });
+        const bootstrapContext = this._buildBootstrapContextFromHistoryMessages(historyDetail?.messages || []);
+        const runtimeSessionId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+        this.promotedRuntimeMeta[runtimeSessionId] = {
+            id: runtimeSessionId,
+            thread_id: runtimeSessionId,
+            title: (meta?.title || `History: ${sessionId}`),
+            username: execUser,
+            exec_user: execUser,
+            provider: (meta?.provider || providerKey || 'claude').toLowerCase(),
+            alias: providerKey,
+            source: 'runtime',
+        };
+        this.pendingBootstrapBySessionId[runtimeSessionId] = bootstrapContext;
+
+        return { runtimeSessionId, usedFallback: true };
+    }
+
+    async _promoteHistorySessionIfNeeded(paneId, sessionId) {
+        const meta = this.getSessionMeta(paneId, sessionId);
+        const source = (meta?.source || '').toLowerCase();
+        const isHistoryMode = this.sessionSource[paneId] === 'history';
+        const shouldPromote = source === 'history' || isHistoryMode;
+        if (!shouldPromote) {
+            return sessionId;
+        }
+
+        const providerKey = (meta?.alias || meta?.provider || '').trim();
+        const projectPath = (this.historyProjectPath[paneId] || '').trim();
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+        if (!providerKey) {
+            throw new Error('History session provider is missing');
+        }
+        if (!projectPath) {
+            throw new Error('History project path is required before continuing chat');
+        }
+
+        let runtimeSessionId = '';
+        let usedFallback = false;
+
+        try {
+            const promoted = await NexusAPI.promoteHistorySession(providerKey, sessionId, {
+                projectPath,
+                execUser,
+                mode: 'full',
+            });
+            runtimeSessionId = promoted?.runtime_session_id || '';
+        } catch (error) {
+            const status = Number(error?.status || 0);
+            if (status !== 404) {
+                throw error;
+            }
+            const fallback = await this._promoteHistorySessionFallback(meta, sessionId, projectPath, execUser);
+            runtimeSessionId = fallback.runtimeSessionId;
+            usedFallback = fallback.usedFallback;
+        }
+
+        if (!runtimeSessionId) {
+            throw new Error('Promote history session failed: missing runtime session id');
+        }
+
+        // Switch current pane to runtime source and bind active tab to new runtime session.
+        this.sessionSource[paneId] = 'runtime';
+        const activeTabId = this.getActiveTabId(paneId);
+        if (activeTabId) {
+            this.currentSessionByTab[activeTabId] = runtimeSessionId;
+            const tab = this.getActiveTab(paneId);
+            if (tab) {
+                tab.data = tab.data || {};
+                tab.data.sessionId = runtimeSessionId;
+            }
+        }
+
+        if (!usedFallback) {
+            await this.loadSessions(paneId);
+            await this.loadMessages(paneId, runtimeSessionId, { source: 'runtime' });
+        }
+
+        if (usedFallback) {
+            this.app.showToast('当前服务暂不支持 promote API，已自动使用兼容续聊模式', 'info');
+        }
+
+        return runtimeSessionId;
+    }
+
     async sendMessage(paneId, sessionId, message) {
         if (!message.trim()) return;
 
+        if (!document.getElementById(`chatMessages-${paneId}`)) return;
+
+        let effectiveSessionId = sessionId;
+        try {
+            effectiveSessionId = await this._promoteHistorySessionIfNeeded(paneId, sessionId);
+        } catch (promoteError) {
+            console.error('Failed to promote history session:', promoteError);
+            this.app.showToast(promoteError.message || 'Failed to continue history session', 'error');
+            return;
+        }
+
+        // Re-acquire DOM refs after promote (renderMessages may have rebuilt the DOM)
         const textarea = document.getElementById(`chatInput-${paneId}`);
         const sendBtn = document.querySelector(`.chat-send-btn[data-pane="${paneId}"]`);
         const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
-        
         if (!messagesContainer) return;
 
         // Clear input and disable
@@ -1872,19 +1991,21 @@ class ChatView {
             textarea.value = '';
             textarea.style.height = 'auto';
             textarea.disabled = true;
+            textarea.dataset.sessionId = effectiveSessionId;
         }
-        if (sendBtn) sendBtn.disabled = true;
+        if (sendBtn) {
+            sendBtn.disabled = true;
+            sendBtn.dataset.sessionId = effectiveSessionId;
+        }
 
-        // Add user message to UI immediately
+        // Add user message to UI immediately (must match renderMessage structure)
+        const userTimeStr = this.formatTime(Date.now());
         const userMsgHtml = `
             <div class="message user">
-                <div class="message-avatar user">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
-                    </svg>
-                </div>
+                <div class="message-avatar">U</div>
                 <div class="message-content">
-                    <div class="message-text">${this.escapeHtml(message)}</div>
+                    <div class="message-bubble"><div class="message-text">${this.formatMessageContent(message)}</div></div>
+                    <span class="message-time">${userTimeStr}</span>
                 </div>
             </div>
         `;
@@ -1895,15 +2016,11 @@ class ChatView {
         
         messagesContainer.insertAdjacentHTML('beforeend', userMsgHtml);
 
-        // Add thinking indicator
+        // Add thinking indicator (must match renderMessage structure)
         const thinkingId = `thinking-${Date.now()}`;
         const thinkingHtml = `
             <div class="message assistant" id="${thinkingId}">
-                <div class="message-avatar assistant">
-                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
-                    </svg>
-                </div>
+                <div class="message-avatar">A</div>
                 <div class="message-content">
                     <div class="thinking-indicator">
                         <span class="thinking-dot"></span>
@@ -1919,7 +2036,7 @@ class ChatView {
 
         try {
             // Send message via streaming API
-            await this.streamMessage(paneId, sessionId, message, thinkingId);
+            await this.streamMessage(paneId, effectiveSessionId, message, thinkingId);
             
             // Note: Don't reload messages immediately after streaming because
             // the backend may not have saved the final content yet.
@@ -1959,15 +2076,31 @@ class ChatView {
         const sessionMeta = this.getSessionMeta(paneId, sessionId);
         const globalUserFilter = document.getElementById('globalUserFilter');
         const execUser = sessionMeta?.username || globalUserFilter?.value || NexusAPI.getDefaultExecUser();
-        const provider = sessionMeta?.provider || '';
+        const provider = (sessionMeta?.provider || '').trim();
+        const alias = (sessionMeta?.alias || provider || '').trim();
+        const workspace = (this.historyProjectPath[paneId] || '').trim();
+
+        let outboundMessage = message;
+        const bootstrapContext = this.pendingBootstrapBySessionId[sessionId];
+        if (bootstrapContext && !String(message || '').trim().startsWith('/')) {
+            outboundMessage = `[History Full Context]\n\n以下是完整历史对话上下文（全量注入）：\n\n${bootstrapContext}\n\n---\n\n请严格基于以上完整历史上下文继续对话。\n\n用户的当前请求：\n${message}`;
+            delete this.pendingBootstrapBySessionId[sessionId];
+        }
         
         // Build legacy request payload with session_id to continue conversation
         const payload = {
-            content: message,
+            content: outboundMessage,
             user: execUser,
             session_id: sessionId,
             msg_type: 'text',
-            provider: provider || undefined
+            provider: provider || undefined,
+            alias: alias || undefined,
+            cwd: workspace || undefined,
+            cwd_mode: workspace ? 'inplace' : undefined,
+            run_kind: 'chat_continue',
+            forwardedProps: {
+                ...(alias ? { alias } : {}),
+            },
         };
         
         // Use the shared streaming method
