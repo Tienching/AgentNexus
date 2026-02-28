@@ -17,6 +17,7 @@ from .middleware import CorrelationMiddleware
 from .routers import chat_router, health_router, channels_router
 from .routers.nexus import router as nexus_router
 from .routers.nexus_auth import router as nexus_auth_router
+from .routers.nexus_history import router as nexus_history_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -56,8 +57,10 @@ async def task_handler(task: Task) -> Optional[str]:
     from .services.stream_archiver import create_archiver
     from src.providers.gemini import GeminiExecutor
     from src.providers.codex import CodexCLIExecutor
+    from src.providers.codebuddy import CodebuddyCLIExecutor
     from src.runtime.adapters.gemini import GeminiAGUIAdapter
     from src.runtime.adapters.codex import CodexCLIAGUIAdapter
+    from src.runtime.adapters.codebuddy import CodebuddyAGUIAdapter
 
     logger = get_logger(__name__)
 
@@ -140,6 +143,8 @@ async def task_handler(task: Task) -> Optional[str]:
         adapter = GeminiAGUIAdapter()
     elif provider == "codex":
         adapter = CodexCLIAGUIAdapter()
+    elif provider == "codebuddy":
+        adapter = CodebuddyAGUIAdapter()
     else:
         adapter = get_router().get_adapter(ProtocolType.AGUI)
 
@@ -398,8 +403,9 @@ app.include_router(chat_router)
 app.include_router(channels_router)
 app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
+app.include_router(nexus_history_router)
 
-# Mount static files for NexusHub Web UI
+# Mount static files for NexusHub Web UI (with cache-control middleware)
 static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
 if os.path.exists(static_dir):
     app.mount("/nexus", StaticFiles(directory=static_dir, html=True), name="nexus")
