@@ -238,14 +238,37 @@ class TestResultEvent:
         adapter.init_state(thread_id="test-thread", run_id="test-run")
         return adapter
 
-    def test_result_success_event_ignored(self, adapter):
-        """验证 result/success 事件被忽略（不需要额外处理）"""
+    def test_result_success_event_converted_to_text_when_no_streamed_text(self, adapter):
+        """验证 result/success 在无增量文本时会补发可见文本并结束消息"""
         event = load_fixture("result_success_event")
         result = adapter.convert(event)
-        
-        # result/success 目前在适配器中没有特殊处理，应该返回 None
-        # 如果需要处理，这个测试需要更新
-        assert result is None
+
+        assert result is not None
+        events = parse_sse_events(result)
+        assert len(events) == 3
+        assert events[0]["type"] == "TEXT_MESSAGE_START"
+        assert events[1]["type"] == "TEXT_MESSAGE_CONTENT"
+        assert "pyproject.toml" in events[1]["delta"]
+        assert events[2]["type"] == "TEXT_MESSAGE_END"
+
+
+    def test_result_success_not_duplicated_after_streamed_text(self, adapter):
+        """验证已有 TEXT_MESSAGE_CONTENT 时 result/success 不重复追加全文"""
+        text_event = {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "hello"}
+            }
+        }
+        _ = adapter.convert(text_event)
+
+        result_event = load_fixture("result_success_event")
+        result = adapter.convert(result_event)
+        events = parse_sse_events(result)
+        assert len(events) == 1
+        assert events[0]["type"] == "TEXT_MESSAGE_END"
 
 
 class TestMixedContentEvent:

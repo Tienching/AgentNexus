@@ -561,6 +561,20 @@ class MockTaskQueue:
     def get_task(self, task_id):
         return self._tasks.get(task_id)
 
+    def find_task_by_session_id(self, session_id):
+        """Find a task whose session_id matches the given value."""
+        # Fast path: task_ prefix
+        if session_id.startswith("task_"):
+            task_id = session_id[len("task_"):]
+            task = self._tasks.get(task_id)
+            if task:
+                return task
+        # Slow path: scan all tasks
+        for t in self._tasks.values():
+            if getattr(t, 'session_id', None) == session_id:
+                return t
+        return None
+
     def delete_task_hard(self, task_id: str) -> bool:
         task_id = str(task_id)
         if task_id in self._tasks:
@@ -720,6 +734,48 @@ class TestTaskAPI:
         assert data["type"] == "MESSAGES_SNAPSHOT"
         assert len(data["messages"]) == 1
         assert data["messages"][0]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_task_agui_stream_replays_in_order_and_ends(self, client, mock_storage):
+        task = Task(
+            description="Replay AGUI stream",
+            priority=TaskPriority.THOUGHT,
+            status=TaskStatus.DOING,
+            exec_user="ubuntu",
+        )
+        task.session_id = f"task_{task.id}"
+        queue = MockTaskQueue([task])
+
+        events = [
+            {"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant"},
+            {"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "先读文件"},
+            {"type": "TOOL_CALL_START", "toolCallId": "t1", "toolCallName": "Read", "parentMessageId": "m1"},
+            {"type": "TOOL_CALL_END", "toolCallId": "t1", "result": "ok"},
+            {"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "再总结"},
+            {"type": "RUN_FINISHED", "threadId": "th1", "runId": "r1"},
+        ]
+
+        mock_storage.get_agui_event_count = lambda session_id: len(events) if session_id == task.session_id else 0
+        mock_storage.get_agui_events = lambda session_id, start, end: (events[start:end + 1] if session_id == task.session_id else [])
+
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=queue):
+            response = await client.get(
+                f"/api/nexus/tasks/{task.id}/agui/stream",
+                params={"exec_user": "ubuntu", "tail": 500, "poll_interval_ms": 200},
+            )
+
+        assert response.status_code == 200
+        body = response.text
+        assert 'id: 0' in body
+        assert 'id: 5' in body
+
+        idx_text1 = body.find('"type": "TEXT_MESSAGE_CONTENT"')
+        idx_tool_start = body.find('"type": "TOOL_CALL_START"')
+        idx_tool_end = body.find('"type": "TOOL_CALL_END"')
+        idx_finished = body.find('"type": "RUN_FINISHED"')
+        assert -1 not in (idx_text1, idx_tool_start, idx_tool_end, idx_finished)
+        assert idx_text1 < idx_tool_start < idx_tool_end < idx_finished
 
 
 class TestTaskBulkAPI:
