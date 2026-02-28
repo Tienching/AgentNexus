@@ -33,6 +33,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
         """Reset tracking state (called before each request)"""
         self._in_thinking_block: bool = False
         self._thinking_buffer: str = ""
+        self._has_streamed_text_content: bool = False
 
     def init_state(self, thread_id: str, run_id: str) -> None:
         """Initialize adapter state (override parent method)"""
@@ -162,6 +163,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                         delta=text,
                     ).to_sse()
                 )
+                self._has_streamed_text_content = True
             
             # Process tool_use items - these are part of the same message
             for item in tool_use_items:
@@ -310,6 +312,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                     delta=content,
                 ).to_sse()
             )
+            self._has_streamed_text_content = True
             results.append(TextMessageEndEvent(messageId=self.state.current_message_id).to_sse())
             self.state.message_started = False
             return "".join(results)
@@ -317,18 +320,43 @@ class CodebuddyAGUIAdapter(BaseAdapter):
         # Handle result event (success/error) - this marks the end of a turn
         if event_type == "result":
             subtype = event.get("subtype")
+            result_text = event.get("content") or event.get("result") or ""
             results = []
-            
+
+            # Compatibility: when provider only returns final text in result/success,
+            # convert it into visible text content before run finishes.
+            if (
+                subtype == "success"
+                and result_text
+                and not self._has_streamed_text_content
+            ):
+                if not self.state.message_started:
+                    self.state.current_message_id = self._generate_message_id()
+                    self.state.message_started = True
+                    results.append(
+                        TextMessageStartEvent(
+                            messageId=self.state.current_message_id,
+                            role=MessageRole.ASSISTANT,
+                        ).to_sse()
+                    )
+                results.append(
+                    TextMessageContentEvent(
+                        messageId=self.state.current_message_id,
+                        delta=str(result_text),
+                    ).to_sse()
+                )
+                self._has_streamed_text_content = True
+
             # If there's an ongoing message, end it
             if self.state.message_started and self.state.current_message_id:
                 results.append(TextMessageEndEvent(messageId=self.state.current_message_id).to_sse())
                 self.state.message_started = False
-            
+
             # For error results, emit an error event
             if subtype == "error" or event.get("is_error"):
                 error_msg = event.get("result") or event.get("message") or "Unknown error"
                 results.append(self.create_error_event(str(error_msg)))
-            
+
             return "".join(results) if results else None
 
         return None
@@ -462,6 +490,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                     delta=text,
                 )
                 results.append(content_event.to_sse())
+                self._has_streamed_text_content = True
                 return "".join(results)
 
             content_event = TextMessageContentEvent(
