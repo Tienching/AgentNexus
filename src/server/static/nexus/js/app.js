@@ -1494,6 +1494,12 @@ class ChatView {
                         ${session.username ? `<span>@${session.username}${session.provider ? ' / ' + session.provider : ''}</span>` : ''}
                         ${isHistory && session.message_count ? `<span>${session.message_count} msgs</span>` : ''}
                     </div>
+                    ${!isHistory ? `
+                    <div class="session-item-details" style="font-size:10px;color:var(--text-tertiary,#666);margin-top:2px;line-height:1.4;word-break:break-all;">
+                        <span title="${session.id}" style="cursor:pointer;opacity:0.7;" onclick="event.stopPropagation();navigator.clipboard.writeText('${session.id}');this.textContent='copied!';setTimeout(()=>this.textContent='${session.id.substring(0,8)}…',1000);">${session.id.substring(0,8)}…</span>
+                        ${session.exec_dir ? `<span style="margin-left:6px;opacity:0.7;" title="${this.escapeHtml(session.exec_dir)}">📂 ${this.escapeHtml(session.exec_dir.split('/').slice(-2).join('/'))}</span>` : ''}
+                    </div>
+                    ` : ''}
                 </div>
             </div>
         `;

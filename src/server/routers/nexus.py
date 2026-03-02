@@ -188,6 +188,13 @@ async def list_sessions(
             status_filter=status_filter,
         )
     
+    # Enrich sessions with exec_dir from Redis (stored separately from meta)
+    for s in sessions:
+        if not s.exec_dir:
+            ed = storage.get_exec_dir_override(s.id)
+            if ed:
+                s.exec_dir = ed
+
     return SessionListResponse(
         total=total,
         page=page,
@@ -994,6 +1001,56 @@ async def update_task_status(
         raise HTTPException(status_code=500, detail="Failed to update task status")
     
     return _task_to_item(updated_task)
+
+
+class ChatContinueRequest(BaseModel):
+    message: str = Field(..., description="Follow-up message to send to the task")
+    model: Optional[str] = Field(None, description="Override model for this run (optional)")
+
+
+@router.post("/tasks/{task_id}/continue", response_model=TaskItem)
+async def chat_continue_task(
+    task_id: str,
+    request: ChatContinueRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Continue chatting on an existing task (like /chat -c).
+
+    Re-enqueues the task with a new user message so the agent picks up
+    the conversation where it left off.
+    """
+    queue = _get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    status_val = task.status if isinstance(task.status, str) else task.status.value
+    if status_val == TaskStatus.DOING.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task {task_id} is currently running. Wait for it to finish before continuing.",
+        )
+    if status_val == TaskStatus.CANCELLED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task {task_id} is cancelled and cannot be continued.",
+        )
+
+    msg = (request.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="message is required")
+
+    try:
+        updated = queue.enqueue_chat_continue(task_id, msg, model=request.model)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to enqueue: {e}")
+
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to enqueue chat continue")
+
+    return _task_to_item(updated)
 
 
 @router.post("/tasks/bulk_archive", response_model=TaskBulkResponse)

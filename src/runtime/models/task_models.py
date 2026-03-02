@@ -120,7 +120,11 @@ class Task(BaseModel):
     # Task dependencies - list of task IDs that must complete before this task runs
     depends_on: List[str] = Field(default_factory=list)
 
-    # Claude CLI session UUID for context resumption
+    # CLI session UUID for context resumption (provider-agnostic).
+    # Used with: claude --resume ID, gemini --resume ID, codex resume ID
+    cli_session_id: Optional[str] = None
+
+    # Legacy alias kept for backward-compat Redis data (mapped in from_redis_hash)
     claude_session_id: Optional[str] = None
 
     # Callback notification configuration for async task completion
@@ -182,6 +186,10 @@ class Task(BaseModel):
                     parsed[key] = TaskStatus.from_legacy(value)
             else:
                 parsed[key] = value
+
+        # Migrate legacy claude_session_id → cli_session_id
+        if "claude_session_id" in parsed and not parsed.get("cli_session_id"):
+            parsed["cli_session_id"] = parsed["claude_session_id"]
         
         return cls(**parsed)
     

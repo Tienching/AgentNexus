@@ -9,6 +9,7 @@ Subcommands:
     get       Get task detail
     log       Get task conversation log (with tail/limit to control context)
     result    Get task result (final assistant message only — minimal context)
+    continue  Follow up on an existing task (re-enqueue with new message)
     cancel    Cancel a task
     delete    Hard-delete a task
     status    Update task status
@@ -315,6 +316,21 @@ def cmd_result(args):
         print(f"Task {args.task_id} [{status_val}] — no result yet")
 
 
+def cmd_continue(args):
+    """Continue chatting on an existing task (follow-up question)."""
+    payload = {"message": args.message}
+    if args.model:
+        payload["model"] = args.model
+
+    result = _post(
+        f"/tasks/{args.task_id}/continue",
+        data=payload,
+        params={"exec_user": args.exec_user},
+    )
+    print(f"[OK] Enqueued follow-up for task {result.get('id')}")
+    print(_format_task_detail(result))
+
+
 def cmd_cancel(args):
     """Cancel a task (shortcut for `status TASK_ID cancelled`)."""
     args.new_status = "cancelled"
@@ -430,6 +446,13 @@ def main():
     p_result.add_argument("task_id", help="Task ID")
     p_result.add_argument("--max-chars", type=int, default=None, help=f"Max output chars (default {MAX_OUTPUT_CHARS})")
     p_result.set_defaults(func=cmd_result)
+
+    # ─ continue ─
+    p_continue = sub.add_parser("continue", help="Continue chatting on an existing task")
+    p_continue.add_argument("task_id", help="Task ID")
+    p_continue.add_argument("message", help="Follow-up message to send")
+    p_continue.add_argument("--model", default=None, help="Override model for this run")
+    p_continue.set_defaults(func=cmd_continue)
 
     # ─ cancel ─
     p_cancel = sub.add_parser("cancel", help="Cancel a task")

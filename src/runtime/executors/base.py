@@ -45,6 +45,7 @@ class RequestContext:
     cwd_mode: str = ""
     run_kind: str = ""
     model: Optional[str] = None  # LLM model name override
+    cli_session_id: Optional[str] = None  # CLI session UUID for precise resume
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
@@ -59,6 +60,7 @@ class RequestContext:
             cwd_mode=getattr(model_obj, "cwd_mode", "") or "",
             run_kind=getattr(model_obj, "run_kind", "") or "",
             model=getattr(model_obj, "model", None) or None,
+            cli_session_id=getattr(model_obj, "cli_session_id", None) or None,
         )
 
 
