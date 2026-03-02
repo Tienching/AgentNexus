@@ -35,6 +35,7 @@ class SessionMeta(BaseModel):
     message_count: int = Field(0, description="Total message count")
     status: SessionStatus = Field(SessionStatus.IDLE, description="Session status")
     source: Optional[str] = Field(None, description="Session source ('history' for parsed local files, None for runtime)")
+    exec_dir: Optional[str] = Field(None, description="Working directory (cwd) for this session")
 
     def to_redis_hash(self) -> Dict[str, str]:
         """Convert to Redis hash mapping (all values as strings)"""
@@ -51,6 +52,7 @@ class SessionMeta(BaseModel):
             "updated_at": str(self.updated_at),
             "message_count": str(self.message_count),
             "status": self.status.value,
+            "exec_dir": self.exec_dir or "",
         }
 
     @classmethod
@@ -71,6 +73,7 @@ class SessionMeta(BaseModel):
             updated_at=int(data.get("updated_at", 0)),
             message_count=int(data.get("message_count", 0)),
             status=SessionStatus(data.get("status", "idle")),
+            exec_dir=data.get("exec_dir") or data.get("exec_dir_override") or None,
         )
 
 

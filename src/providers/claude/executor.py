@@ -192,6 +192,7 @@ class CLIExecutor(BaseExecutor):
     def _build_command(self, context: RequestContext, use_continue: bool = True) -> List[str]:
         """Build CLI command."""
         cleaned_content, model_param = self._parse_model_param(context.content)
+        cli_session_id = getattr(context, "cli_session_id", None) or None
         
         # Determine CLI command name: alias overrides the command map
         cli_alias = (getattr(context, "alias", None) or "").strip().lower()
@@ -213,7 +214,10 @@ class CLIExecutor(BaseExecutor):
             message = "你好"
         else:
             if use_continue:
-                cmd.extend(["-c", "-p"])
+                if cli_session_id:
+                    cmd.extend(["--resume", cli_session_id, "-p"])
+                else:
+                    cmd.extend(["-c", "-p"])
             else:
                 cmd.extend(["-p"])
             message = cleaned_content

@@ -359,6 +359,10 @@ async def promote_history_session(
     storage = get_session_storage()
     mapped = storage.get_history_runtime_mapping(provider, session_id, project_path)
     if mapped and storage.get_session_meta(mapped):
+        # Back-fill cli_session_id if missing (e.g. promoted by older server version)
+        if not storage.get_cli_session_id(mapped):
+            storage.set_cli_session_id(mapped, session_id)
+            logger.info(f"Back-filled cli_session_id for existing mapping {mapped} -> {session_id}")
         return PromoteHistoryResponse(runtime_session_id=mapped, created=False)
 
     runtime_session_id = f"chat_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
@@ -379,6 +383,7 @@ async def promote_history_session(
         updated_at=now_ms,
         message_count=0,
         status=SessionStatus.IDLE,
+        exec_dir=project_path,
     )
     storage.save_session_meta(meta)
 
@@ -409,5 +414,10 @@ async def promote_history_session(
     storage.set_workspace_alias(runtime_session_id, provider)
     storage.set_inherited_session(runtime_session_id, f"history:{provider}:{session_id}")
     storage.set_history_runtime_mapping(provider, session_id, project_path, runtime_session_id)
+
+    # Store the original CLI session ID so that follow-up messages use
+    # --resume <UUID> to precisely restore the CLI session instead of
+    # starting a brand-new session or falling back to -c / --resume latest.
+    storage.set_cli_session_id(runtime_session_id, session_id)
 
     return PromoteHistoryResponse(runtime_session_id=runtime_session_id, created=True)

@@ -212,7 +212,7 @@ class SessionStorage:
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hset(key, {"exec_dir_override": exec_dir})
+            self._redis.hset(key, {"exec_dir_override": exec_dir, "exec_dir": exec_dir})
             logger.info(f"Set exec_dir override: {session_id} -> {exec_dir}")
             return True
         except Exception as e:
@@ -713,6 +713,45 @@ class SessionStorage:
         except Exception as e:
             logger.error(f"Failed to clear Claude session ID: {e}")
             return False
+
+    # ── Provider-agnostic CLI session ID (generalized from claude_session_id) ──
+
+    def set_cli_session_id(self, session_id: str, cli_session_id: str) -> bool:
+        """Store CLI session UUID for resumption (provider-agnostic).
+
+        Also sets the legacy claude_session_id field for backward compatibility.
+
+        Args:
+            session_id: Our session ID
+            cli_session_id: CLI-internal session UUID (works for any provider)
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {
+                "cli_session_id": cli_session_id,
+                "claude_session_id": cli_session_id,  # backward compat
+            })
+            logger.info(f"Set CLI session ID: {session_id} -> {cli_session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set CLI session ID: {e}")
+            return False
+
+    def get_cli_session_id(self, session_id: str) -> Optional[str]:
+        """Get stored CLI session UUID (provider-agnostic).
+
+        Falls back to claude_session_id for backward compatibility.
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            result = self._redis.hget(key, "cli_session_id")
+            if not result:
+                # Fallback to legacy field
+                result = self._redis.hget(key, "claude_session_id")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to get CLI session ID: {e}")
+            return None
 
     def get_user_sessions(
         self,
