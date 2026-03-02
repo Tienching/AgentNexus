@@ -103,6 +103,14 @@ async def task_handler(task: Task) -> Optional[str]:
     # Resolve model: task.model if set
     model_value = (getattr(task, "model", None) or "").strip() or None
 
+    # Resolve cli_session_id for session resumption (provider-agnostic).
+    # Priority: cli_session_id > legacy claude_session_id
+    cli_session_id = (
+        getattr(task, "cli_session_id", None)
+        or getattr(task, "claude_session_id", None)
+        or None
+    )
+
     # 构建请求模型
     request = RequestModel(
         content=user_prompt,
@@ -123,6 +131,9 @@ async def task_handler(task: Task) -> Optional[str]:
         alias=alias_value,
         # Pass model so _build_command() uses the correct LLM model
         model=model_value,
+        # Pass CLI session ID for precise session resumption
+        # (claude --resume ID, gemini --resume ID, codex resume ID)
+        cli_session_id=cli_session_id,
     )
 
     # 归档器（落 Redis，供 Nexus UI 查询）
@@ -193,6 +204,9 @@ async def task_handler(task: Task) -> Optional[str]:
             except Exception:
                 continue
 
+    # Track CLI session ID captured from stream output
+    _captured_cli_session_id = None
+
     try:
         await archiver.on_run_started(initial_messages)
 
@@ -216,6 +230,16 @@ async def task_handler(task: Task) -> Optional[str]:
                     except Exception:
                         pass
                     return err_msg
+
+                # Capture CLI session ID from init/system events (provider-agnostic).
+                # Claude: {"type": "system", "subtype": "init", "session_id": "UUID"}
+                # Gemini: {"type": "init", "session_id": "UUID"} (if present)
+                # Codex: {"type": "thread.started", "thread_id": "..."} (thread_id as fallback)
+                if _captured_cli_session_id is None and isinstance(data, dict):
+                    _sid = data.get("session_id") or data.get("thread_id")
+                    if _sid and isinstance(_sid, str):
+                        _captured_cli_session_id = _sid
+                        logger.info(f"Captured CLI session ID for task {task.id}: {_sid}")
 
                 # 转换为 AG-UI 事件并归档
                 converted = adapter.convert(data) if isinstance(data, dict) else None
@@ -261,6 +285,19 @@ async def task_handler(task: Task) -> Optional[str]:
             await archiver.on_run_finished()
         except Exception:
             pass
+
+        # Persist captured CLI session ID to the task for future resume.
+        if _captured_cli_session_id:
+            try:
+                task.cli_session_id = _captured_cli_session_id
+                # Also set legacy field for backward compat
+                task.claude_session_id = _captured_cli_session_id
+                queue = _task_queue
+                if queue:
+                    queue.update_task(task)
+                    logger.info(f"Saved cli_session_id={_captured_cli_session_id} for task {task.id}")
+            except Exception as e:
+                logger.warning(f"Failed to save cli_session_id for task {task.id}: {e}")
 
         # Send task completion notification if response_url or notification target is set
         _has_notification = getattr(task, "response_url", None) or getattr(task, "notification_sink_type", None)

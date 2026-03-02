@@ -13,8 +13,9 @@ from .base_parser import BaseHistoryParser, HistorySessionDetail
 
 logger = logging.getLogger(__name__)
 
-# In-memory TTL cache (5 minutes)
-_CACHE_TTL_SECONDS = 300
+# In-memory TTL caches
+_CACHE_TTL_SECONDS = 300          # sessions / detail: 5 minutes
+_PROJECTS_CACHE_TTL_SECONDS = 30  # project list: 30 seconds (frequent refreshes during active chats)
 
 
 class _CacheEntry:
@@ -54,8 +55,22 @@ class HistoryService:
             return None
         return entry.value
 
-    def _set_cached(self, key: str, value: Any) -> None:
-        self._cache[key] = _CacheEntry(value)
+    def _set_cached(self, key: str, value: Any, ttl: float = _CACHE_TTL_SECONDS) -> None:
+        self._cache[key] = _CacheEntry(value, ttl=ttl)
+
+    def invalidate_project_caches(self) -> int:
+        """Invalidate all project-list and session-list caches.
+
+        Called after a CLI execution completes so that the History UI
+        immediately reflects updated file timestamps.
+
+        Returns:
+            Number of cache entries removed.
+        """
+        keys_to_remove = [k for k in self._cache if k.startswith("projects:") or k.startswith("sessions:")]
+        for k in keys_to_remove:
+            self._cache.pop(k, None)
+        return len(keys_to_remove)
 
     def _resolve_parser_for_alias(self, alias: str) -> Optional[BaseHistoryParser]:
         """Resolve the parser for an alias by checking known base provider prefixes."""
@@ -111,7 +126,7 @@ class HistoryService:
                     for s in sessions:
                         if not s.alias:
                             s.alias = alias
-                    self._set_cached(cache_key, sessions)
+                    self._set_cached(cache_key, sessions, ttl=_PROJECTS_CACHE_TTL_SECONDS)
                 except Exception as e:
                     logger.warning(
                         "Failed to list sessions for alias=%s config_path=%s: %s",
@@ -222,7 +237,7 @@ class HistoryService:
             else:
                 try:
                     entries = await asyncio.to_thread(parser.list_projects, config_path)
-                    self._set_cached(cache_key, entries)
+                    self._set_cached(cache_key, entries, ttl=_PROJECTS_CACHE_TTL_SECONDS)
                 except Exception as e:
                     logger.warning(
                         "Failed to list projects for alias=%s config_path=%s: %s",

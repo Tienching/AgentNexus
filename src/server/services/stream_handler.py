@@ -366,13 +366,26 @@ class StreamHandler:
 
         # Check one-time bootstrap context for history->runtime promoted sessions.
         # It is injected into the first follow-up message, then cleared.
+        # However, if the session has a stored cli_session_id, the CLI will
+        # use --resume <UUID> to restore the original conversation natively,
+        # so injecting bootstrap context would be redundant and waste tokens.
         if session_id and not content_stripped.startswith("/"):
             try:
                 storage = get_session_storage()
-                bootstrap_context = storage.consume_history_bootstrap_context(session_id)
-                if bootstrap_context:
-                    original_content = request_model.content
-                    request_model.content = f"""[History Bootstrap Context]
+                cli_session_id = storage.get_cli_session_id(session_id)
+                if cli_session_id:
+                    # CLI will --resume into the original session; consume and
+                    # discard bootstrap context so it's not injected later.
+                    storage.consume_history_bootstrap_context(session_id)
+                    logger.info(
+                        "Skipped history bootstrap context injection: CLI session will be resumed via --resume %s",
+                        cli_session_id,
+                    )
+                else:
+                    bootstrap_context = storage.consume_history_bootstrap_context(session_id)
+                    if bootstrap_context:
+                        original_content = request_model.content
+                        request_model.content = f"""[History Bootstrap Context]
 
 以下是该会话从本地历史迁移到 Runtime 时注入的上下文摘要：
 
@@ -384,10 +397,10 @@ class StreamHandler:
 
 用户的当前请求：
 {original_content}"""
-                    logger.info(
-                        "Injected one-time history bootstrap context",
-                        extra={"session_id": session_id, "context_length": len(bootstrap_context)},
-                    )
+                        logger.info(
+                            "Injected one-time history bootstrap context",
+                            extra={"session_id": session_id, "context_length": len(bootstrap_context)},
+                        )
             except Exception as e:
                 logger.warning(f"Failed to inject history bootstrap context: {e}")
 

@@ -46,6 +46,7 @@ class RequestContext:
     run_kind: str = ""
     alias: Optional[str] = None  # CLI command name override
     model: Optional[str] = None  # LLM model name override
+    cli_session_id: Optional[str] = None  # CLI session UUID for precise resume
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
@@ -61,6 +62,7 @@ class RequestContext:
             run_kind=getattr(model_obj, "run_kind", "") or "",
             alias=getattr(model_obj, "alias", None) or None,
             model=getattr(model_obj, "model", None) or None,
+            cli_session_id=getattr(model_obj, "cli_session_id", None) or None,
         )
 
 

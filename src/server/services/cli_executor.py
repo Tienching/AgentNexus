@@ -177,6 +177,7 @@ class CLIExecutor:
 
         # Check for exec_dir override (set by /workspace -t)
         exec_dir_override = None
+        storage = None
         try:
             from ...runtime.stores.session_storage import get_session_storage
             storage = get_session_storage()
@@ -259,8 +260,21 @@ class CLIExecutor:
 
         request_alias = getattr(request, "alias", None) or workspace_alias
         request_model_name = getattr(request, "model", None) or None
-        logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}, model={request_model_name}")
-        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name)
+        request_cli_session_id = getattr(request, "cli_session_id", None) or None
+        # Fallback: read cli_session_id from session storage (e.g. history-promoted sessions)
+        if not request_cli_session_id and session_id:
+            try:
+                if not storage:
+                    from ...runtime.stores.session_storage import get_session_storage
+                    storage = get_session_storage()
+                stored_cli_sid = storage.get_cli_session_id(session_id)
+                if stored_cli_sid:
+                    request_cli_session_id = stored_cli_sid
+                    logger.info(f"Loaded cli_session_id from session storage: {stored_cli_sid}")
+            except Exception as e:
+                logger.warning(f"Failed to load cli_session_id from storage: {e}")
+        logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}, model={request_model_name}, cli_session_id={request_cli_session_id}")
+        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name, cli_session_id=request_cli_session_id)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
@@ -293,6 +307,19 @@ class CLIExecutor:
             "run_kind": run_kind,
             "use_continue": use_continue,
         })
+
+        # Persist exec_dir into session meta so it's visible in the Runtime list
+        if session_id:
+            try:
+                if not storage:
+                    from ...runtime.stores.session_storage import get_session_storage
+                    storage = get_session_storage()
+                meta = storage.get_session_meta(session_id)
+                if meta and not meta.exec_dir:
+                    meta.exec_dir = str(exec_dir)
+                    storage.save_session_meta(meta)
+            except Exception:
+                pass  # best-effort
 
         try:
             # 创建子进程
@@ -467,6 +494,18 @@ class CLIExecutor:
 
             logger.info(f"Stream processing completed, total lines: {line_count}")
 
+            # Invalidate history caches so the History UI immediately reflects
+            # updated file timestamps from this CLI execution.
+            try:
+                from ...runtime.history import HistoryService
+                from ...server.routers.nexus_history import _get_history_service
+                svc = _get_history_service()
+                removed = svc.invalidate_project_caches()
+                if removed:
+                    logger.info(f"Invalidated {removed} history cache entries after CLI execution")
+            except Exception:
+                pass  # best-effort
+
             if process.stderr:
                 try:
                     stderr_data = await process.stderr.read()
@@ -626,6 +665,7 @@ class CLIExecutor:
         agent_type: Optional[str] = None,
         alias: Optional[str] = None,
         model: Optional[str] = None,
+        cli_session_id: Optional[str] = None,
     ) -> List[str]:
         """构建 CLI 命令
 
@@ -636,6 +676,8 @@ class CLIExecutor:
             agent_type: Agent类型（如 claude / codex）决定参数格式
             alias: CLI 命令名覆盖（如 claude-internal），不影响参数格式
             model: Explicit LLM model name override. Inline --model in content takes priority.
+            cli_session_id: Specific CLI session UUID for precise resume.
+                When provided, uses --resume SESSION_ID instead of -c/--resume latest.
         """
         cleaned_content, inline_model = self._parse_model_param(content)
         model_param = inline_model or model or None
@@ -670,17 +712,25 @@ class CLIExecutor:
             message = cleaned_content
 
         # Provider-aware continue/resume logic:
-        # - codex: -c is --config (not continue), skip it here;
-        #   codex uses "resume --last" appended after prompt instead
-        # - gemini: use --resume latest (not -c)
-        # - codebuddy / claude: use -c (continue)
+        # When cli_session_id is available, use precise session resume:
+        #   - claude/codebuddy: --resume SESSION_ID (instead of -c which is "latest")
+        #   - gemini: --resume SESSION_ID (instead of --resume latest)
+        #   - codex: resume SESSION_ID (instead of resume --last)
+        # Fallback to generic "latest" resume when no specific session ID.
         if use_continue and cleaned_content.lower() != "/clear":
             if is_codex:
-                pass  # codex uses "resume --last" appended after prompt
+                pass  # codex uses "resume ..." appended after prompt
             elif is_gemini:
-                cmd.extend(["--resume", "latest"])
+                if cli_session_id:
+                    cmd.extend(["--resume", cli_session_id])
+                else:
+                    cmd.extend(["--resume", "latest"])
             else:
-                cmd.extend(["-c"])
+                # claude / codebuddy
+                if cli_session_id:
+                    cmd.extend(["--resume", cli_session_id])
+                else:
+                    cmd.extend(["-c"])
 
         # Provider-specific command assembly.
         #
@@ -707,9 +757,12 @@ class CLIExecutor:
             if model_param:
                 cmd.extend(["--model", model_param])
             cmd.extend([message, "--dangerously-bypass-approvals-and-sandbox"])
-            # For codex in continue mode, append "resume --last" after the prompt
+            # For codex in continue mode, append "resume SESSION_ID" or "resume --last"
             if use_continue and cleaned_content.lower() != "/clear":
-                cmd.extend(["resume", "--last"])
+                if cli_session_id:
+                    cmd.extend(["resume", cli_session_id])
+                else:
+                    cmd.extend(["resume", "--last"])
         elif is_gemini:
             # Gemini: -p <prompt>, --output-format stream-json only
             cmd.extend(["--output-format", "stream-json"])
