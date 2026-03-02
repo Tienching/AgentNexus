@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: "Task lifecycle manager for Nexus. Create, monitor, and manage background AI tasks. Use when: (1) breaking complex work into parallel/sequential subtasks, (2) checking task progress or results, (3) cancelling or cleaning up tasks. Designed for external agents (OpenClaw, Claude, etc.) to delegate and track work without context blowup."
+description: "Task lifecycle manager for Nexus. Create, monitor, continue, and manage background AI tasks. Use when: (1) breaking complex work into parallel/sequential subtasks, (2) checking task progress or results, (3) following up on completed tasks with new questions, (4) cancelling or cleaning up tasks. Designed for external agents (OpenClaw, Claude, etc.) to delegate and track work without context blowup."
 ---
 
 # Task Orchestrator (任务编排 + 管理)
@@ -125,6 +125,23 @@ python3 prompts/skills/orchestrator/scripts/orchestrator.py result TASK_ID --max
 
 Returns **only the final assistant message** — typically 1-2KB instead of 50KB+ full conversation.
 
+### `continue` — Follow Up on a Task
+
+Send a follow-up message to an existing task (like `/chat -c`). The task re-enters the queue and the agent continues the conversation where it left off.
+
+```bash
+python3 prompts/skills/orchestrator/scripts/orchestrator.py continue TASK_ID "Please also add error handling"
+
+# Optionally switch model for this follow-up
+python3 prompts/skills/orchestrator/scripts/orchestrator.py continue TASK_ID "Refactor using async/await" --model claude-sonnet-4-20250514
+```
+
+**Rules:**
+- Task must **not** be currently running (DOING) — wait for it to finish first
+- Task must **not** be cancelled
+- The message is required and cannot be empty
+- The task keeps its original session/context — the agent sees all prior conversation
+
 ### `log` — Task Conversation Log (Controlled)
 
 For debugging or reviewing the full conversation:
@@ -224,6 +241,25 @@ python3 .../orchestrator.py cancel TASK_ID
 
 # Delete completed tasks
 python3 .../orchestrator.py delete TASK_ID
+```
+
+### Pattern 5: Create → Review → Iterate (Follow Up)
+
+```bash
+# 1. Create a task
+python3 .../orchestrator.py create "Implement user authentication" --provider claude
+
+# 2. Wait for completion, then review the result
+python3 .../orchestrator.py result TASK_ID
+
+# 3. Not satisfied? Follow up on the same task (agent keeps full context)
+python3 .../orchestrator.py continue TASK_ID "Also add rate limiting and input validation"
+
+# 4. Check updated result
+python3 .../orchestrator.py result TASK_ID
+
+# 5. Keep iterating as needed
+python3 .../orchestrator.py continue TASK_ID "Now add unit tests for the auth module"
 ```
 
 ---

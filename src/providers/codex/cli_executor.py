@@ -197,11 +197,15 @@ class CodexCLIExecutor(BaseExecutor):
         # Add the prompt
         cmd.append(cleaned_content)
         
-        # When continuing a chat session, append "resume --last" after the prompt
-        # Format: codex-internal exec [options] "prompt" resume --last
+        # When continuing a chat session, append "resume SESSION_ID" or "resume --last"
+        # Format: codex-internal exec [options] "prompt" resume SESSION_ID
         is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
         if is_chat_continue:
-            cmd.extend(["resume", "--last"])
+            cli_session_id = getattr(context, "cli_session_id", None) or None
+            if cli_session_id:
+                cmd.extend(["resume", cli_session_id])
+            else:
+                cmd.extend(["resume", "--last"])
         
         return cmd
     

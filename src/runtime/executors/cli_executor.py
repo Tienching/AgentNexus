@@ -219,6 +219,7 @@ class CLIExecutor(BaseExecutor):
         """Build CLI command."""
         cleaned_content, inline_model = self._parse_model_param(context.content)
         model_param = inline_model or getattr(context, "model", None) or None
+        cli_session_id = getattr(context, "cli_session_id", None) or None
         
         # Determine CLI command name: alias overrides the command map
         cli_alias = (getattr(context, "alias", None) or "").strip().lower()
@@ -244,17 +245,25 @@ class CLIExecutor(BaseExecutor):
             message = "你好"
         else:
             # Provider-aware continue/resume logic:
-            # - codex: -c is --config (not continue), skip it here
-            # - gemini: use --resume latest (not -c)
-            # - codebuddy / claude: use -c (continue)
+            # When cli_session_id is available, use precise session resume:
+            #   - claude/codebuddy: --resume SESSION_ID (instead of -c)
+            #   - gemini: --resume SESSION_ID (instead of --resume latest)
+            #   - codex: resume SESSION_ID (instead of resume --last)
 
             if use_continue:
                 if is_codex:
-                    pass  # codex uses "resume --last" appended after prompt
+                    pass  # codex uses "resume ..." appended after prompt
                 elif is_gemini:
-                    cmd.extend(["--resume", "latest"])
+                    if cli_session_id:
+                        cmd.extend(["--resume", cli_session_id])
+                    else:
+                        cmd.extend(["--resume", "latest"])
                 else:
-                    cmd.extend(["-c"])
+                    # claude / codebuddy
+                    if cli_session_id:
+                        cmd.extend(["--resume", cli_session_id])
+                    else:
+                        cmd.extend(["-c"])
             message = cleaned_content
         
         # Provider-specific command assembly (same logic as server CLIExecutor)
@@ -266,7 +275,10 @@ class CLIExecutor(BaseExecutor):
                 cmd.extend(["--model", model_param])
             cmd.extend([message, "--dangerously-bypass-approvals-and-sandbox"])
             if use_continue and cleaned_content.lower() != "/clear":
-                cmd.extend(["resume", "--last"])
+                if cli_session_id:
+                    cmd.extend(["resume", cli_session_id])
+                else:
+                    cmd.extend(["resume", "--last"])
         elif is_gemini:
             # Gemini: -p <prompt>, --output-format stream-json only
             cmd.extend(["--output-format", "stream-json"])
