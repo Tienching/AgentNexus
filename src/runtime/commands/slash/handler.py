@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/handoff", "/history", "/exit"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/exit"]
 
 
 def slugify_project(name: str) -> str:
@@ -239,8 +239,8 @@ class SlashCommandHandler:
             if parsed.cmd == "exit":
                 return self._handle_exit_impl(current_session_id=source_session_id)
 
-            if parsed.cmd == "handoff":
-                return self._handle_handoff(
+            if parsed.cmd == "switch":
+                return self._handle_switch(
                     provider=parsed.options.get("provider"),
                     alias=parsed.options.get("alias"),
                     model=parsed.options.get("model"),
@@ -1615,7 +1615,7 @@ class SlashCommandHandler:
         except Exception as e:
             return f"## ❌ Error\n\nFailed to restore directory: {e}"
 
-    def _handle_handoff(
+    def _handle_switch(
         self,
         provider: Optional[str] = None,
         alias: Optional[str] = None,
@@ -1625,23 +1625,24 @@ class SlashCommandHandler:
         summary: Optional[str] = None,
         current_session_id: Optional[str] = None,
     ) -> str:
-        """Handle /handoff command - switch provider with optional context handoff.
+        """Handle /switch command - switch provider/model with optional context.
 
         Usage:
-            /handoff                     # Show current provider
-            /handoff -r <provider>       # Direct switch (no context)
-            /handoff -l <alias>          # Switch by alias (no context)
-            /handoff -r <provider> -m <model>  # Switch with model override
-            /handoff -r <provider> -a    # Auto-generate context and switch (default full)
-            /handoff -l <alias> -a -x windowed  # Auto-generate windowed context and switch by alias
-            /handoff -r <provider> -- <summary>  # Manual summary and switch
+            /switch                      # Show current provider & model
+            /switch -m <model>           # Switch model only (keep current provider)
+            /switch -r <provider>        # Direct switch provider (no context)
+            /switch -l <alias>           # Switch by alias (no context)
+            /switch -r <provider> -m <model>  # Switch provider with model override
+            /switch -r <provider> -a     # Auto-generate context and switch (default full)
+            /switch -l <alias> -a -x windowed  # Auto-generate windowed context and switch by alias
+            /switch -r <provider> -- <summary>  # Manual summary and switch
 
         Args:
             provider: Target provider to switch to
             alias: Target alias to switch to (alternative to provider)
             model: LLM model name to use after switching
             auto_summary: Whether to auto-generate context from current Agent
-            context_mode: Context mode for auto handoff, "full" or "windowed"
+            context_mode: Context mode for auto switch, "full" or "windowed"
             summary: Manual summary text (after --)
             current_session_id: Current session ID
 
@@ -1649,6 +1650,32 @@ class SlashCommandHandler:
             Markdown response, or special JSON for auto-summary trigger
         """
         import json
+
+        effective_model = (model or "").strip() or None
+
+        # Model-only switch: -m <model> without -r or -l
+        if effective_model and not provider and not alias:
+            if not current_session_id:
+                return "## ❌ 无法切换\n\n需要 session_id 才能切换模型。"
+
+            storage = get_session_storage()
+            # Persist model override so ALL subsequent requests use the new model
+            storage.set_model_override(current_session_id, effective_model)
+
+            user_cfg = self._user_config_store.get_all(current_session_id) if current_session_id else {}
+            default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+            current_provider = (user_cfg.get("provider") or "").strip() or default_provider or "codebuddy"
+
+            # Check if there's an active handoff/switch provider override
+            switch_prov = storage.get_handoff_provider(current_session_id)
+            if switch_prov:
+                current_provider, _ = switch_prov
+
+            response = "## ✅ 切换模型\n\n"
+            response += f"- **当前 Provider**: `{current_provider}`\n"
+            response += f"- **新 Model**: `{effective_model}`\n\n"
+            response += f"后续对话将使用模型 `{effective_model}`。"
+            return response
 
         # Resolve provider from alias if specified
         target_alias = None
@@ -1670,7 +1697,7 @@ class SlashCommandHandler:
                     f"**可用别名**: {alias_list}"
                 )
 
-        # No provider/alias specified - show current provider and handoff status
+        # No provider/alias/model specified - show current provider and switch status
         if not target_provider:
             user_cfg = self._user_config_store.get_all(current_session_id) if current_session_id else {}
             default_provider = (getattr(self.config, "default_provider", None) or "").strip()
@@ -1683,25 +1710,24 @@ class SlashCommandHandler:
             response += f"| Provider | `{current_provider}` |\n"
             response += f"| Alias | `{current_alias}` |\n"
 
-            # Check handoff status
+            # Check switch status
             if current_session_id:
                 storage = get_session_storage()
                 
                 # Check pending summary
                 pending_target = storage.get_handoff_pending_summary(current_session_id)
                 if pending_target:
-                    response += f"\n### ⏳ 交接状态：等待生成摘要\n\n"
+                    response += f"\n### ⏳ 切换状态：等待生成摘要\n\n"
                     response += f"- **目标**: `{pending_target}`\n"
                     response += f"- **状态**: 待生成摘要\n"
                     response += f"- **下一步**: 发送任意消息触发摘要生成\n"
                 else:
-                    # Check handoff context
-                    handoff_result = storage.get_handoff_context(current_session_id)
-                    if handoff_result:
-                        ctx, target = handoff_result
+                    # Check switch context
+                    switch_result = storage.get_handoff_context(current_session_id)
+                    if switch_result:
+                        ctx, target = switch_result
                         if ctx:
-                            # 有摘要内容，等待切换
-                            response += f"\n### ✅ 交接状态：已就绪\n\n"
+                            response += f"\n### ✅ 切换状态：已就绪\n\n"
                             response += f"- **目标**: `{target}`\n"
                             response += f"- **状态**: 摘要已生成，等待切换\n"
                             response += f"- **下一步**: 发送任意消息将切换到 `{target}`\n"
@@ -1710,18 +1736,19 @@ class SlashCommandHandler:
                             else:
                                 response += f"- **摘要内容**: {ctx}\n"
                         else:
-                            # 空摘要，可能是直接切换
-                            response += f"\n### 🔄 交接状态：待切换\n\n"
+                            response += f"\n### 🔄 切换状态：待切换\n\n"
                             response += f"- **目标**: `{target}`\n"
                             response += f"- **状态**: 无摘要，直接切换\n"
                             response += f"- **下一步**: 发送任意消息将切换到 `{target}`\n"
 
             response += "\n**切换示例：**\n"
-            response += "- `/handoff -r codex` — 直接切换 Provider\n"
-            response += "- `/handoff -l gemini-internal` — 通过别名切换\n"
-            response += "- `/handoff -r codex -a` — 自动生成全量上下文后切换（默认）\n"
-            response += "- `/handoff -r codex -a -x windowed` — 使用窗口截断上下文后切换\n"
-            response += "- `/handoff -r codex -- 手动摘要内容` — 手动摘要切换\n"
+            response += "- `/switch -m claude-opus-4.6` — 仅切换模型\n"
+            response += "- `/switch -r codex` — 直接切换 Provider\n"
+            response += "- `/switch -l gemini-internal` — 通过别名切换\n"
+            response += "- `/switch -r codex -m gemini-2.5-pro` — 切换 Provider 并指定模型\n"
+            response += "- `/switch -r codex -a` — 自动生成全量上下文后切换（默认）\n"
+            response += "- `/switch -r codex -a -x windowed` — 使用窗口截断上下文后切换\n"
+            response += "- `/switch -r codex -- 手动摘要内容` — 手动摘要切换\n"
             return response
 
         # Validate provider
@@ -1741,8 +1768,6 @@ class SlashCommandHandler:
                     f"**内置 Provider**: {', '.join(f'`{p}`' for p in valid_providers)}"
                 )
 
-        # Resolve effective model
-        effective_model = (model or "").strip() or None
         normalized_context_mode = (context_mode or "full").strip().lower()
         # Backward compat: treat legacy "summary" as "windowed"
         if normalized_context_mode == "summary":
@@ -1758,6 +1783,8 @@ class SlashCommandHandler:
             # Store pending switch target (empty context means summary pending)
             storage = get_session_storage()
             effective_alias = target_alias or target_provider.lower()
+            # Switching provider resets model_override (model is bound to provider)
+            storage.clear_model_override(current_session_id)
             storage.set_handoff_pending_summary(
                 current_session_id,
                 effective_alias,
@@ -1785,6 +1812,8 @@ class SlashCommandHandler:
         if current_session_id:
             storage = get_session_storage()
             effective_alias = target_alias or target_provider.lower()
+            # Switching provider resets model_override (model is bound to provider)
+            storage.clear_model_override(current_session_id)
 
             if summary:
                 # Manual summary provided
@@ -2385,15 +2414,16 @@ class SlashCommandHandler:
 /exit                   # 回退到初始目录
 ```
 
-**`/handoff`** - 切换 Provider（带上下文传递）
+**`/switch`** - 切换 Provider / Model（带上下文传递）
 ```
-/handoff                 # 显示当前 Provider
-/handoff -r <provider>   # 直接切换（无上下文）
-/handoff -l <alias>      # 通过别名切换
-/handoff -r <provider> -m <model>  # 切换并指定模型
-/handoff -r <provider> -a    # 自动生成全量上下文后切换（默认）
-/handoff -r <provider> -a -x windowed  # 使用窗口截断上下文后切换
-/handoff -r <provider> -- <摘要>  # 手动摘要切换
+/switch                  # 显示当前 Provider
+/switch -m <model>       # 仅切换模型
+/switch -r <provider>    # 直接切换 Provider（无上下文）
+/switch -l <alias>       # 通过别名切换
+/switch -r <provider> -m <model>  # 切换并指定模型
+/switch -r <provider> -a     # 自动生成全量上下文后切换（默认）
+/switch -r <provider> -a -x windowed  # 使用窗口截断上下文后切换
+/switch -r <provider> -- <摘要>  # 手动摘要切换
 ```
 
 **`/history`** - CLI 历史会话管理

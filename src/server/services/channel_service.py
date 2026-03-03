@@ -33,6 +33,7 @@ from .notification import (
     UnifiedNotificationHandler,
     get_notification_handler,
 )
+from src.runtime.stores.session_storage import get_session_storage
 
 logger = get_logger(__name__)
 
@@ -283,6 +284,42 @@ class ChannelService:
             session_id=session_id,
             msg_id=f"msg-{uuid.uuid4().hex[:8]}",
         )
+
+        # Apply persistent model override from /switch -m
+        # and provider override from /switch -r/-l
+        try:
+            storage = get_session_storage()
+            model_override = storage.get_model_override(session_id)
+            if model_override:
+                request.model = model_override
+                # Detect model change: when the override differs from the
+                # model used in the previous CLI invocation, the CLI must
+                # start a new session (skip -c) because tools like codebuddy
+                # lock the model for continued sessions.
+                active_model = storage.get_active_model(session_id)
+                if active_model != model_override:
+                    request.model_changed = True
+                    logger.info(
+                        f"[wecom] Model changed: {active_model} -> {model_override}, will start new CLI session",
+                        extra={"session_id": session_id},
+                    )
+                else:
+                    logger.info(
+                        f"[wecom] Model override applied: {model_override}",
+                        extra={"session_id": session_id},
+                    )
+            # Provider override: /switch may have persisted a different provider
+            handoff_prov = storage.get_handoff_provider(session_id)
+            if handoff_prov:
+                hp_provider, hp_alias = handoff_prov
+                request.provider = hp_provider
+                request.alias = hp_alias
+                logger.info(
+                    f"[wecom] Provider override applied: provider={hp_provider}, alias={hp_alias}",
+                    extra={"session_id": session_id},
+                )
+        except Exception as e:
+            logger.warning(f"[wecom] Failed to read session overrides: {e}")
 
         executor = CLIExecutor(config=settings)
         exec_user = settings.exec_user or "ubuntu"
