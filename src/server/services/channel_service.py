@@ -26,6 +26,7 @@ from src.channels import (
     WhatsAppConfig,
     SignalConfig,
     FeishuConfig,
+    WeComConfig,
 )
 from .notification import (
     NotificationTarget,
@@ -40,6 +41,7 @@ CHANNEL_MAX_LENGTH = {
     "discord": 1900,
     "slack": 3800,
     "feishu": 3800,
+    "wecom": 20480,
     "whatsapp": 65000,
     "signal": 65000,
 }
@@ -155,6 +157,19 @@ class ChannelService:
                 logger.info("Signal channel configured")
             except Exception as e:
                 logger.error(f"Failed to configure Signal: {e}")
+
+        # 企业微信智能机器人配置
+        if settings.wecom_token and settings.wecom_encoding_aes_key:
+            try:
+                configs["wecom"] = WeComConfig(
+                    name="wecom",
+                    token=settings.wecom_token,
+                    encoding_aes_key=settings.wecom_encoding_aes_key,
+                    aibot_id=settings.wecom_aibot_id,
+                )
+                logger.info("WeCom AI Bot channel configured")
+            except Exception as e:
+                logger.error(f"Failed to configure WeCom: {e}")
         
         if not configs:
             logger.info("No channel configured, channel service disabled")
@@ -194,38 +209,196 @@ class ChannelService:
     async def _handle_message(self, message: InboundMessage) -> None:
         """处理收到的消息（非阻塞模式）
 
-        1. 立即发送 "⏳ 正在处理…" 占位消息
+        1. 立即发送 "⏳ 正在处理…" 占位消息（非企微通道）
         2. 后台异步执行 AI 处理
         3. 定期更新占位消息显示进度
         4. 完成后编辑占位消息（短回复）或发送新消息（长回复）
+
+        企微通道使用流式被动回复，AI 增量内容写入 StreamBuffer，
+        由企微流式刷新回调取走。
         """
         logger.info(f"[{message.channel}] Message from {message.sender_id}: {message.content[:100]}")
 
         session_id = f"channel_{message.channel}_{message.chat_id}"
 
-        # 1. Send an immediate "processing" placeholder
         handler = get_notification_handler()
         target = handler.build_target_from_channel(
             channel_name=message.channel,
             chat_id=message.chat_id,
         )
-        progress_result = await handler.notify_progress(
-            target, "⏳ 正在处理，请稍候…"
-        )
-        if progress_result.success and progress_result.message_id:
-            target.message_id = progress_result.message_id
 
-        # 2. Launch background processing task
-        task = asyncio.create_task(
-            self._process_and_notify(message, session_id, target, handler)
-        )
+        # 企微通道：使用流式被动回复，不发进度消息
+        if message.channel == "wecom":
+            stream_id = message.metadata.get("stream_id", "")
+            task = asyncio.create_task(
+                self._process_wecom_stream(message, session_id, stream_id)
+            )
+        else:
+            # 其他通道：发进度占位消息
+            progress_result = await handler.notify_progress(
+                target, "⏳ 正在处理，请稍候…"
+            )
+            if progress_result.success and progress_result.message_id:
+                target.message_id = progress_result.message_id
+
+            task = asyncio.create_task(
+                self._process_and_notify(message, session_id, target, handler)
+            )
+
         task_key = f"{message.channel}_{message.chat_id}_{message.internal_id}"
         self._background_tasks[task_key] = task
 
-        # Cleanup on completion
         def _cleanup(t: asyncio.Task, key: str = task_key):
             self._background_tasks.pop(key, None)
         task.add_done_callback(_cleanup)
+
+    async def _process_wecom_stream(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        stream_id: str,
+    ) -> None:
+        """企微专用：流式处理 AI 事件，text_delta 实时写入 StreamBuffer。
+
+        复用与 _process_with_ai 相同的 executor 和事件解析逻辑，
+        但将 text_delta 实时 append 到 StreamBuffer（让用户看到流式进度），
+        收到 result 事件时用 set_final 替换为完整最终回复。
+        """
+        from ..services import CLIExecutor
+        from ..models import RequestModel
+
+        channel = self.manager.get_channel("wecom") if self.manager else None
+        if not channel:
+            logger.error("[wecom] Channel not found for stream processing")
+            return
+
+        buf = channel.get_stream_buffer_by_id(stream_id)
+        if not buf:
+            logger.error(f"[wecom] StreamBuffer not found: {stream_id}")
+            return
+
+        request = RequestModel(
+            content=message.content,
+            user=f"{message.channel}_{message.sender_id}",
+            session_id=session_id,
+            msg_id=f"msg-{uuid.uuid4().hex[:8]}",
+        )
+
+        executor = CLIExecutor(config=settings)
+        exec_user = settings.exec_user or "ubuntu"
+        timeout = settings.cli_timeout or 120
+
+        # Tool-call tracking (same as _process_with_ai)
+        tool_call_count = 0
+        tool_block_buffer: Dict[int, Dict[str, str]] = {}
+        agui_tool_buffer: Dict[str, Dict[str, str]] = {}
+        tool_summaries: list[str] = []
+
+        try:
+            async with asyncio.timeout(timeout):
+                async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
+                    if not output:
+                        continue
+                    try:
+                        data = json.loads(output)
+                        if not isinstance(data, dict):
+                            continue
+
+                        event_type = data.get("type", "")
+
+                        if event_type == "stream_event":
+                            event = data.get("event", {})
+                            evt_type = event.get("type", "")
+
+                            # Text delta → 实时追加到 buffer
+                            if evt_type == "content_block_delta":
+                                delta = event.get("delta", {})
+                                delta_type = delta.get("type", "")
+                                if delta_type == "text_delta":
+                                    text = delta.get("text", "")
+                                    if text:
+                                        buf.append(text)
+                                elif delta_type == "input_json_delta":
+                                    index = event.get("index", 0)
+                                    partial = delta.get("partial_json", "")
+                                    if partial and index in tool_block_buffer:
+                                        tool_block_buffer[index]["json_buf"] += partial
+
+                            # AG-UI tool tracking
+                            elif evt_type == "TOOL_CALL_START":
+                                tool_name = event.get("toolCallName", "unknown")
+                                tool_id = event.get("toolCallId", "")
+                                tool_call_count += 1
+                                if tool_id:
+                                    agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
+
+                            elif evt_type == "TOOL_CALL_ARGS":
+                                tool_id = event.get("toolCallId", "")
+                                delta_str = event.get("delta", "")
+                                if tool_id and delta_str and tool_id in agui_tool_buffer:
+                                    agui_tool_buffer[tool_id]["args"] += delta_str
+
+                            elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
+                                tool_id = event.get("toolCallId", "")
+                                if tool_id and tool_id in agui_tool_buffer:
+                                    entry = agui_tool_buffer.pop(tool_id)
+                                    params_obj = {}
+                                    if entry["args"]:
+                                        try:
+                                            params_obj = json.loads(entry["args"])
+                                        except (json.JSONDecodeError, TypeError):
+                                            pass
+                                    display = self._get_tool_display_name(entry["name"], params_obj)
+                                    summary = f"🔧 `{display}`"
+                                    tool_summaries.append(summary)
+                                    buf.append(f"\n\n{summary}")
+
+                            # Legacy tool blocks
+                            elif evt_type == "content_block_start":
+                                content_block = event.get("content_block", {})
+                                if content_block.get("type") == "tool_use":
+                                    tool_name = content_block.get("name", "unknown")
+                                    index = event.get("index", 0)
+                                    tool_call_count += 1
+                                    tool_block_buffer[index] = {"name": tool_name, "json_buf": ""}
+
+                            elif evt_type == "content_block_stop":
+                                index = event.get("index", 0)
+                                if index in tool_block_buffer:
+                                    entry = tool_block_buffer.pop(index)
+                                    params_obj = {}
+                                    if entry["json_buf"]:
+                                        try:
+                                            params_obj = json.loads(entry["json_buf"])
+                                        except (json.JSONDecodeError, TypeError):
+                                            pass
+                                    display = self._get_tool_display_name(entry["name"], params_obj)
+                                    summary = f"🔧 `{display}`"
+                                    tool_summaries.append(summary)
+                                    buf.append(f"\n\n{summary}")
+
+                        # result 事件：完整最终回复，替换之前的流式内容
+                        elif event_type == "result":
+                            content = data.get("content", "") or data.get("result", "")
+                            if content:
+                                content = self._truncate_response(content, "wecom")
+                                if tool_call_count > 0 and tool_summaries:
+                                    tool_section = "\n".join(tool_summaries)
+                                    content = tool_section + "\n\n---\n\n" + content
+                                buf.set_final(content)
+                            return
+
+                    except json.JSONDecodeError:
+                        continue
+
+        except TimeoutError:
+            logger.error(f"[wecom] AI execution timed out after {timeout}s")
+            buf.append("\n\n⏰ 处理超时，请稍后重试。")
+        except Exception as e:
+            logger.error(f"[wecom] AI processing error: {e}", exc_info=True)
+            buf.set_final(f"❌ 处理出错：{str(e)[:200]}")
+        finally:
+            buf.mark_finished()
 
     async def _process_and_notify(
         self,

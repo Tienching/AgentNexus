@@ -96,6 +96,9 @@ class ChannelRegistry:
             elif type_ == "feishu":
                 from .feishu import FeishuChannel
                 return FeishuChannel
+            elif type_ == "wecom":
+                from .wecom import WeComChannel
+                return WeComChannel
         except ImportError as e:
             logger.warning(f"Failed to import {type_} channel: {e}")
         return None
@@ -125,7 +128,7 @@ class ChannelRegistry:
     def list_available(self) -> list:
         """列出所有可用通道类型"""
         available = []
-        for type_ in ["telegram", "slack", "discord", "whatsapp", "signal", "feishu"]:
+        for type_ in ["telegram", "slack", "discord", "whatsapp", "signal", "feishu", "wecom"]:
             if self._import_builtin(type_):
                 available.append(type_)
         return available
