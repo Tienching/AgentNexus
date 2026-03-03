@@ -13,6 +13,7 @@ class ChannelType(str, Enum):
     WHATSAPP = "whatsapp"
     SIGNAL = "signal"
     FEISHU = "feishu"
+    WECOM = "wecom"
 
 
 @dataclass
@@ -154,6 +155,25 @@ class FeishuConfig(ChannelConfig):
             raise ValueError("Feishu app_secret is required")
 
 
+@dataclass
+class WeComConfig(ChannelConfig):
+    """企业微信智能机器人 (WeCom AI Bot) 配置
+
+    参考文档: https://developer.work.weixin.qq.com/document/path/101039
+    """
+    type: ChannelType = ChannelType.WECOM
+    token: str = ""  # 回调配置的 Token
+    encoding_aes_key: str = ""  # 回调配置的 EncodingAESKey（43 字符）
+    aibot_id: Optional[str] = None  # 智能机器人 ID（可选，用于过滤）
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not self.token:
+            raise ValueError("WeCom token is required")
+        if not self.encoding_aes_key:
+            raise ValueError("WeCom encoding_aes_key is required")
+
+
 # 配置类型映射
 CONFIG_MAP = {
     ChannelType.TELEGRAM: TelegramConfig,
@@ -162,6 +182,7 @@ CONFIG_MAP = {
     ChannelType.WHATSAPP: WhatsAppConfig,
     ChannelType.SIGNAL: SignalConfig,
     ChannelType.FEISHU: FeishuConfig,
+    ChannelType.WECOM: WeComConfig,
 }
 
 
