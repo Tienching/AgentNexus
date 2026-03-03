@@ -272,7 +272,7 @@ class TaskQueue:
             logger.info(f"Enqueued chat_continue for task {task.id}", extra={
                 "task_id": task.id,
                 "workspace": task.workspace,
-                "message": message[:50] if message else "",
+                "user_message": message[:50] if message else "",
             })
         except Exception as e:
             logger.error(f"Failed to enqueue chat_continue for task {task.id}: {e}")

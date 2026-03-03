@@ -77,6 +77,9 @@ class MockSessionStorage:
     
     def get_session_tool_calls(self, session_id: str):
         return list(self.tool_calls.get(session_id, {}).values())
+
+    def get_streaming_content(self, session_id: str, message_id: str):
+        return None
     
     def delete_session(self, session_id: str, username: str = None):
         if session_id in self.sessions:
@@ -140,6 +143,43 @@ class MockSessionStorage:
 
     def set_inherited_session(self, session_id: str, inherited_from: str):
         return True
+
+    def get_cli_session_id(self, session_id: str):
+        return getattr(self, '_cli_session_ids', {}).get(session_id)
+
+    def set_cli_session_id(self, session_id: str, cli_session_id: str):
+        if not hasattr(self, '_cli_session_ids'):
+            self._cli_session_ids = {}
+        self._cli_session_ids[session_id] = cli_session_id
+        return True
+
+    def get_exec_dir_override(self, session_id: str):
+        return getattr(self, '_exec_dir_overrides', {}).get(session_id)
+
+    def clear_session_messages(self, session_id: str):
+        self.messages[session_id] = []
+        return True
+
+    def clear_session_tool_calls(self, session_id: str):
+        self.tool_calls[session_id] = {}
+        return True
+
+    def hide_history_session(self, session_id: str):
+        if not hasattr(self, '_hidden_history'):
+            self._hidden_history = set()
+        self._hidden_history.add(session_id)
+        return True
+
+    def unhide_history_session(self, session_id: str):
+        if hasattr(self, '_hidden_history'):
+            self._hidden_history.discard(session_id)
+        return True
+
+    def is_history_session_hidden(self, session_id: str):
+        return session_id in getattr(self, '_hidden_history', set())
+
+    def get_hidden_history_sessions(self):
+        return getattr(self, '_hidden_history', set())
 
 
 @pytest.fixture
