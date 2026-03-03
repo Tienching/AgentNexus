@@ -85,6 +85,7 @@ KNOWN_SLASH_COMMANDS = [
     "/workspace",
     "/config",
     "/handoff",
+    "/history",
     "/exit",
 ]
 
@@ -102,6 +103,7 @@ DEFAULT_SUBCMD: Dict[str, Optional[str]] = {
     "workspace": "switch",
     "config": "show",
     "handoff": "now",
+    "history": "list",
     "exit": "now",
 }
 
@@ -112,6 +114,7 @@ INFER_SUBCMD_FROM_OPTIONS: Dict[str, Dict[str, str]] = {
     "trash": {"p": "restore", "e": "empty"},
     "chat": {"c": "continue"},
     "config": {"s": "set", "r": "reset", "c": "concurrency"},
+    "history": {"j": "jsonl", "f": "fetch", "c": "continue"},
 }
 
 
@@ -262,6 +265,40 @@ SPECS: List[CommandSpec] = [
         allow_free_text=True,
         free_text_required=False,
     ),
+    # history
+    CommandSpec(
+        cmd="history",
+        subcmd="list",
+        options=(
+            OptionDef(short="n", long="num", type="number", required=False, default=10),
+            OptionDef(short="r", long="provider", type="string", required=False),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="history",
+        subcmd="jsonl",
+        options=(
+            OptionDef(short="j", long="jsonl", type="string", required=True),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="history",
+        subcmd="fetch",
+        options=(
+            OptionDef(short="f", long="fetch", type="string", required=True),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="history",
+        subcmd="continue",
+        options=(
+            OptionDef(short="c", long="continue", type="string", required=True),
+        ),
+        allow_free_text=False,
+    ),
     # exit
     CommandSpec(cmd="exit", subcmd="now"),
 ]
@@ -345,6 +382,7 @@ def _infer_subcmd_from_tokens(cmd: str, tokens: List[str]) -> Optional[str]:
                 "task": "t", "project": "p", "list": "l",
                 "continue": "c", "empty": "e",
                 "set": "s", "reset": "r",
+                "jsonl": "j", "fetch": "f",
             }
             short = long_to_short.get(long_name)
             if short and short in infer_map:

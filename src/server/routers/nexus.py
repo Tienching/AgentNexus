@@ -252,11 +252,15 @@ async def get_session_messages(session_id: str):
             if streaming_content:
                 msg.content = streaming_content
     
+    # Include cli_session_id if this session was promoted from CLI history
+    cli_session_id = storage.get_cli_session_id(session_id)
+
     return SessionMessagesResponse(
         session_id=session_id,
         messages=messages,
         tool_calls=tool_calls,
         session=session,
+        cli_session_id=cli_session_id or None,
     )
 
 

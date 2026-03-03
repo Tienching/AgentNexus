@@ -214,6 +214,20 @@ async def list_history_sessions(
         page=page,
         page_size=page_size,
     )
+
+    # Filter out hidden history sessions (deleted promoted sessions)
+    try:
+        storage = get_session_storage()
+        hidden_ids = storage.get_hidden_history_sessions()
+        if hidden_ids and result.sessions:
+            before_count = len(result.sessions)
+            result.sessions = [s for s in result.sessions if s.id not in hidden_ids]
+            filtered_count = before_count - len(result.sessions)
+            if filtered_count > 0:
+                result.total = max(0, result.total - filtered_count)
+    except Exception as e:
+        logger.debug(f"Failed to filter hidden history sessions: {e}")
+
     return result
 
 
@@ -421,3 +435,143 @@ async def promote_history_session(
     storage.set_cli_session_id(runtime_session_id, session_id)
 
     return PromoteHistoryResponse(runtime_session_id=runtime_session_id, created=True)
+
+
+class FetchFromCliRequest(BaseModel):
+    exec_user: str = Field(default="", description="Exec user for home directory resolution")
+
+
+class FetchFromCliResponse(BaseModel):
+    session_id: str
+    cli_session_id: str
+    provider: str
+    messages_imported: int = 0
+    tool_calls_imported: int = 0
+
+
+@router.post("/sessions/{session_id}/fetch-from-cli", response_model=FetchFromCliResponse)
+async def fetch_from_cli(
+    session_id: str,
+    req: FetchFromCliRequest,
+):
+    """Fetch/refresh CLI file data into an existing Runtime session.
+
+    Reads the CLI JSONL file associated with the Runtime session's cli_session_id
+    and overwrites the Redis messages and tool calls.
+    """
+    storage = get_session_storage()
+    meta = storage.get_session_meta(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Runtime session '{session_id}' not found")
+
+    # Task sessions (task_*) are created by the task executor, not from CLI.
+    # Fetching from CLI would overwrite runtime messages with unrelated data.
+    if session_id.startswith("task_"):
+        raise HTTPException(
+            status_code=400,
+            detail="Task sessions cannot be refreshed from CLI — their data comes from the task executor, not CLI history files.",
+        )
+
+    cli_session_id = storage.get_cli_session_id(session_id)
+
+    # Determine provider
+    provider = meta.provider or "claude"
+
+    user = req.exec_user or settings.exec_user or "ubuntu"
+    home_base = settings.user_home_base or "/home"
+    user_home = Path(home_base) / user
+
+    if provider in _PROVIDER_CONFIG_DIRS:
+        resolved_config = user_home / _PROVIDER_CONFIG_DIRS[provider]
+    else:
+        resolved_config = user_home / f".{provider}"
+
+    service = _get_history_service()
+
+    # Auto-discover cli_session_id if not set:
+    # Use exec_dir (project_path) + provider to find the latest CLI session
+    if not cli_session_id:
+        # Resolve project_path: exec_dir_override > meta.exec_dir > session directory
+        project_path = (
+            storage.get_exec_dir_override(session_id)
+            or (meta.exec_dir if meta.exec_dir else None)
+        )
+        if not project_path:
+            # Fallback: use the session's default directory {user_home}/sessions/{session_id}
+            project_path = str(user_home / "sessions" / session_id)
+        if not project_path:
+            raise HTTPException(
+                status_code=400,
+                detail="This session has no CLI session ID and no project path. Cannot auto-discover.",
+            )
+        parser = service._resolve_parser_for_alias(provider)
+        if parser is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No history parser available for provider '{provider}'.",
+            )
+        sessions = parser.list_sessions(resolved_config, project_path)
+        if not sessions:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No CLI sessions found for provider '{provider}' in project '{project_path}'.",
+            )
+        # Pick the most recent session
+        sessions.sort(key=lambda s: s.updated_at or s.created_at or 0, reverse=True)
+        cli_session_id = sessions[0].id
+        # Persist for future use
+        storage.set_cli_session_id(session_id, cli_session_id)
+        logger.info(f"Auto-discovered cli_session_id={cli_session_id} for session {session_id}")
+
+    detail = await service.get_session_detail(
+        provider=provider,
+        config_path=resolved_config,
+        session_id=cli_session_id,
+    )
+
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"CLI session '{cli_session_id}' not found in {provider} history files",
+        )
+
+    # Clear existing messages and tool calls
+    storage.clear_session_messages(session_id)
+    storage.clear_session_tool_calls(session_id)
+
+    # Re-import
+    msg_count = 0
+    for msg in detail.messages or []:
+        role = msg.role if msg.role in ("user", "assistant", "system") else "assistant"
+        imported = StoredMessage(
+            id=f"hist-{msg.id}",
+            role=role,
+            content=msg.content or "",
+            status=MessageStatus.COMPLETE,
+            tool_call_ids=msg.tool_call_ids,
+            content_segments=msg.content_segments,
+        )
+        storage.add_session_message(session_id, imported)
+        msg_count += 1
+
+    tc_count = 0
+    for tc in detail.tool_calls or []:
+        tc_copy = tc.model_copy(deep=True)
+        tc_copy.id = f"hist-{tc.id}"
+        if tc_copy.parent_message_id:
+            tc_copy.parent_message_id = f"hist-{tc_copy.parent_message_id}"
+        storage.save_tool_call(session_id, tc_copy)
+        tc_count += 1
+
+    logger.info(
+        "Fetched CLI data for session %s: %d messages, %d tool calls from %s:%s",
+        session_id, msg_count, tc_count, provider, cli_session_id,
+    )
+
+    return FetchFromCliResponse(
+        session_id=session_id,
+        cli_session_id=cli_session_id,
+        provider=provider,
+        messages_imported=msg_count,
+        tool_calls_imported=tc_count,
+    )

@@ -345,6 +345,86 @@ class ChatView {
         this.taskSessionStreams = {}; // paneId -> EventSource (for task_* sessions)
         this.promotedRuntimeMeta = {}; // runtimeSessionId -> synthetic meta (fallback when backend promote API unavailable)
         this.pendingBootstrapBySessionId = {}; // runtimeSessionId -> one-time bootstrap context text
+
+        // Auto-refresh state
+        this._autoRefreshTimer = null;
+        this._autoRefreshInterval = 5000; // 5s for session list
+        this._lastSessionsHash = {}; // paneId -> hash of session list (for change detection)
+        this._lastMessageCount = {}; // paneId -> last known message count
+    }
+
+    // ============ Auto-refresh (live polling) ============
+
+    startAutoRefresh() {
+        if (this._autoRefreshTimer) return;
+        this._autoRefreshTimer = setInterval(() => this._autoRefreshTick(), this._autoRefreshInterval);
+    }
+
+    stopAutoRefresh() {
+        if (this._autoRefreshTimer) {
+            clearInterval(this._autoRefreshTimer);
+            this._autoRefreshTimer = null;
+        }
+    }
+
+    async _autoRefreshTick() {
+        // Only refresh when chat page is active
+        if (this.app.pageManager.currentPage !== 'chat') return;
+
+        const panesCount = this.app.layoutManager.getPanesCount();
+        for (let i = 0; i < panesCount; i++) {
+            await this._autoRefreshPane(i);
+        }
+    }
+
+    async _autoRefreshPane(paneId) {
+        try {
+            const isHistory = this.sessionSource[paneId] === 'history';
+
+            // 1. Refresh session list (Runtime only — history is file-based, less dynamic)
+            if (!isHistory) {
+                const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"][data-filter="status"]`);
+                const searchInput = document.querySelector(`.session-search-input:not(.history-path-input)[data-pane="${paneId}"]`);
+                const globalUserFilter = document.getElementById('globalUserFilter');
+                const data = await NexusAPI.getSessions({
+                    pageSize: 50,
+                    search: searchInput?.value || '',
+                    status: statusFilter?.value || '',
+                    username: globalUserFilter?.value || '',
+                });
+
+                // Only re-render if data changed (compare by hash of ids + updated_at)
+                const newHash = (data.sessions || []).map(s => `${s.id}:${s.updated_at}:${s.status}:${s.message_count}`).join('|');
+                if (newHash !== this._lastSessionsHash[paneId]) {
+                    this._lastSessionsHash[paneId] = newHash;
+                    this.sessions[paneId] = data.sessions || [];
+                    this.sessionTotals = this.sessionTotals || {};
+                    this.sessionTotals[paneId] = data.total || this.sessions[paneId].length;
+                    this.renderSessionList(paneId);
+                }
+            }
+
+            // 2. Refresh active session messages if session is running
+            const activeTabId = this.getActiveTabId(paneId);
+            const activeSessionId = activeTabId ? this.currentSessionByTab[activeTabId] : null;
+            if (activeSessionId && !isHistory && !/^task_/.test(activeSessionId)) {
+                const activeMeta = this.getSessionMeta(paneId, activeSessionId);
+                if (activeMeta && activeMeta.status === 'running') {
+                    const source = activeMeta.source || 'runtime';
+                    if (source !== 'history') {
+                        const data = await NexusAPI.getSessionMessages(activeSessionId);
+                        const msgCount = (data.messages || []).length;
+                        const prevCount = this._lastMessageCount[paneId] || 0;
+                        if (msgCount !== prevCount) {
+                            this._lastMessageCount[paneId] = msgCount;
+                            this.renderMessages(paneId, activeSessionId, data);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Silently ignore auto-refresh errors
+        }
     }
 
     async render(paneId, tab, container) {
@@ -477,8 +557,11 @@ class ChatView {
         await this.loadSessions(paneId);
 
         const activeSessionId = tab?.data?.sessionId || (tab?.id ? this.currentSessionByTab[tab.id] : null);
-        if (activeSessionId) {
-            await this.selectSession(paneId, activeSessionId, { silent: true });
+        // Restore session from URL hash (e.g. #task_56c45bfc) if no tab-level selection
+        const hashSessionId = !activeSessionId && location.hash ? location.hash.slice(1) : null;
+        const targetSessionId = activeSessionId || hashSessionId;
+        if (targetSessionId) {
+            await this.selectSession(paneId, targetSessionId, { silent: true });
         }
     }
 
@@ -1472,7 +1555,8 @@ class ChatView {
                  data-session-id="${session.id}"
                  data-provider="${this.escapeHtml(session.provider || '')}"
                  data-alias="${this.escapeHtml(session.alias || '')}"
-                 data-source="${isHistory ? 'history' : 'runtime'}">
+                 data-source="${isHistory ? 'history' : 'runtime'}"
+                 data-status="${session.status || 'idle'}">
                 ${isInSelectionMode ? `
                     <div class="session-item-checkbox" data-session-id="${session.id}">
                         <input type="checkbox" ${isChecked ? 'checked' : ''}>
@@ -1494,10 +1578,9 @@ class ChatView {
                         ${session.username ? `<span>@${session.username}${session.provider ? ' / ' + session.provider : ''}</span>` : ''}
                         ${isHistory && session.message_count ? `<span>${session.message_count} msgs</span>` : ''}
                     </div>
-                    ${!isHistory ? `
+                    ${!isHistory && session.exec_dir ? `
                     <div class="session-item-details" style="font-size:10px;color:var(--text-tertiary,#666);margin-top:2px;line-height:1.4;word-break:break-all;">
-                        <span title="${session.id}" style="cursor:pointer;opacity:0.7;" onclick="event.stopPropagation();navigator.clipboard.writeText('${session.id}');this.textContent='copied!';setTimeout(()=>this.textContent='${session.id.substring(0,8)}…',1000);">${session.id.substring(0,8)}…</span>
-                        ${session.exec_dir ? `<span style="margin-left:6px;opacity:0.7;" title="${this.escapeHtml(session.exec_dir)}">📂 ${this.escapeHtml(session.exec_dir.split('/').slice(-2).join('/'))}</span>` : ''}
+                        <span style="opacity:0.7;" title="${this.escapeHtml(session.exec_dir)}">📂 ${this.escapeHtml(session.exec_dir.split('/').slice(-2).join('/'))}</span>
                     </div>
                     ` : ''}
                 </div>
@@ -1528,6 +1611,9 @@ class ChatView {
         const alias = sessionItem?.dataset.alias || '';
         const source = sessionItem?.dataset.source || this.sessionSource[paneId] || 'runtime';
 
+        // Update URL hash so session ID is visible in address bar & bookmarkable
+        history.replaceState(null, '', `#${sessionId}`);
+
         // Load and display messages
         await this.loadMessages(paneId, sessionId, { provider, alias, source });
     }
@@ -1547,11 +1633,18 @@ class ChatView {
 
         const source = options.source || this.sessionSource[paneId] || 'runtime';
 
-        // Task sessions: always use AG-UI SSE replay/stream to preserve exact order
-        // (regardless of source — task_* sessions are always backed by agui event log)
+        // Task sessions: use SSE stream only when task is still running/pending;
+        // completed/failed tasks load from Redis snapshot directly (faster, no 404 risk)
         if (/^task_[A-Za-z0-9_-]+$/.test(sessionId)) {
-            await this._streamTaskSessionMessages(paneId, sessionId);
-            return;
+            const container = document.getElementById(`sessionItems-${paneId}`);
+            const sessionItem = container?.querySelector(`.session-item[data-session-id="${sessionId}"]`);
+            const sessionStatus = sessionItem?.dataset.status || '';
+            const isActive = ['running', 'pending', 'queued'].includes(sessionStatus);
+            if (isActive) {
+                await this._streamTaskSessionMessages(paneId, sessionId);
+                return;
+            }
+            // Completed/failed tasks: fall through to normal snapshot loading below
         }
 
         try {
@@ -1756,8 +1849,22 @@ class ChatView {
 
         es.onerror = () => {
             if (done) return;
-            if (es.readyState === EventSource.CLOSED) {
-                this._closeTaskSessionStream(paneId);
+            this._closeTaskSessionStream(paneId);
+            // If stream failed before any data arrived, fallback to normal message loading
+            if (!initialized) {
+                done = true;
+                NexusAPI.getSessionMessages(sessionId).then(snapshotData => {
+                    this.renderMessages(paneId, sessionId, snapshotData);
+                }).catch(e => {
+                    console.warn('Fallback message load also failed:', e);
+                    if (messagesContainer) {
+                        messagesContainer.innerHTML = `
+                            <div class="empty-state" style="padding: 24px;">
+                                <p class="empty-state-text" style="color: var(--error)">Failed to load task messages</p>
+                            </div>
+                        `;
+                    }
+                });
             }
         };
     }
@@ -1769,6 +1876,9 @@ class ChatView {
         const messages = data.messages || [];
         const toolCalls = data.tool_calls || [];
 
+        // Track message count for auto-refresh change detection
+        this._lastMessageCount[paneId] = messages.length;
+
         detail.innerHTML = `
             <div class="chat-header">
                 <div class="chat-header-info">
@@ -1776,6 +1886,11 @@ class ChatView {
                     <span class="chat-header-meta">${messages.length} messages</span>
                 </div>
                 <div class="chat-header-actions">
+                    ${!sessionId.startsWith('task_') ? `<button class="action-btn" data-action="fetch-from-cli" data-session-id="${sessionId}" title="Fetch from CLI file">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                        </svg>
+                    </button>` : ''}
                     <button class="action-btn" data-action="show-files" data-session-id="${sessionId}" title="Files">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
@@ -1810,6 +1925,14 @@ class ChatView {
                 </div>
             </div>
         `;
+
+        // Bind fetch-from-cli (refresh) action
+        const fetchBtn = detail.querySelector('[data-action="fetch-from-cli"]');
+        if (fetchBtn) {
+            fetchBtn.addEventListener('click', () => {
+                this.fetchFromCli(paneId, sessionId);
+            });
+        }
 
         // Bind delete action
         const deleteBtn = detail.querySelector('[data-action="delete-session"]');
@@ -2427,6 +2550,49 @@ class ChatView {
         } catch (error) {
             console.error('Failed to delete session:', error);
             this.app.showToast('Failed to delete session', 'error');
+        }
+    }
+
+    async fetchFromCli(paneId, sessionId) {
+        try {
+            const fetchBtn = document.querySelector(`[data-action="fetch-from-cli"][data-session-id="${sessionId}"]`);
+            if (fetchBtn) {
+                fetchBtn.disabled = true;
+                fetchBtn.style.opacity = '0.5';
+            }
+
+            const globalUserFilter = document.getElementById('globalUserFilter');
+            const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+            const result = await NexusAPI.fetchFromCli(sessionId, { execUser });
+            this.app.showToast(
+                `Refreshed: ${result.messages_imported} messages, ${result.tool_calls_imported} tool calls`,
+                'success'
+            );
+
+            // Reload messages to reflect the updated data
+            await this.loadMessages(paneId, sessionId, { source: 'runtime' });
+        } catch (error) {
+            console.error('Failed to fetch from CLI:', error);
+            // Extract detail from backend error response
+            let errorMsg = 'Failed to refresh from CLI file';
+            const errorText = error.message || '';
+            // Try to extract JSON detail from error body
+            const detailMatch = errorText.match(/"detail"\s*:\s*"([^"]+)"/);
+            if (detailMatch) {
+                errorMsg = detailMatch[1];
+            } else if (errorText.includes(' - ')) {
+                errorMsg = errorText.split(' - ').slice(1).join(' - ');
+            }
+            // "Not found" / "No CLI sessions found" are informational, not hard errors
+            const isNotFound = /not found|no cli session/i.test(errorMsg);
+            this.app.showToast(errorMsg, isNotFound ? 'warning' : 'error');
+        } finally {
+            const fetchBtn = document.querySelector(`[data-action="fetch-from-cli"][data-session-id="${sessionId}"]`);
+            if (fetchBtn) {
+                fetchBtn.disabled = false;
+                fetchBtn.style.opacity = '1';
+            }
         }
     }
 
@@ -4940,6 +5106,9 @@ class NexusApp {
         } else if (currentPage === 'config' && this.configView) {
             this.configView.refresh();
         }
+
+        // Start auto-refresh for session list and active messages
+        this.chatView.startAutoRefresh();
     }
 
     /**
@@ -4997,12 +5166,6 @@ class NexusApp {
         const themeToggle = document.getElementById('themeToggle');
         if (themeToggle) {
             themeToggle.addEventListener('click', () => this.themeManager.toggle());
-        }
-
-        // Refresh button
-        const refreshBtn = document.getElementById('refreshBtn');
-        if (refreshBtn) {
-            refreshBtn.addEventListener('click', () => this.refresh());
         }
 
         // Global user filter
@@ -5092,6 +5255,10 @@ class NexusApp {
 
     refresh() {
         const currentPage = this.pageManager.currentPage;
+
+        // Clear auto-refresh cache so next poll forces a full re-render
+        this.chatView._lastSessionsHash = {};
+        this.chatView._lastMessageCount = {};
 
         if (currentPage === 'chat') {
             // Refresh chat sessions in all visible panes

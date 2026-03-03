@@ -123,6 +123,44 @@ class SessionStorage:
             logger.error(f"Failed to get history runtime mapping: {e}")
             return None
 
+    # ============ History Session Hidden (lazy registration) ============
+
+    def hide_history_session(self, session_id: str) -> bool:
+        """Mark a history session as hidden (user deleted the promoted runtime session).
+
+        Uses a Redis SET `history:hidden` to track hidden history session IDs.
+        """
+        try:
+            self._redis.sadd("history:hidden", session_id)
+            logger.debug(f"Marked history session as hidden: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to hide history session: {e}")
+            return False
+
+    def unhide_history_session(self, session_id: str) -> bool:
+        """Remove hidden mark from a history session."""
+        try:
+            self._redis.srem("history:hidden", session_id)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unhide history session: {e}")
+            return False
+
+    def is_history_session_hidden(self, session_id: str) -> bool:
+        """Check if a history session is hidden."""
+        try:
+            return bool(self._redis.sismember("history:hidden", session_id))
+        except Exception:
+            return False
+
+    def get_hidden_history_sessions(self) -> set:
+        """Get all hidden history session IDs."""
+        try:
+            return self._redis.smembers("history:hidden") or set()
+        except Exception:
+            return set()
+
     def set_history_bootstrap_context(self, session_id: str, context: str) -> bool:
         """Set one-time bootstrap context used on next message only."""
         try:
@@ -944,9 +982,13 @@ class SessionStorage:
             - If username is not provided, we will best-effort resolve it from session meta
               so user index doesn't accumulate stale ids.
             - Also clears AGUI event log and temporary streaming content keys.
+            - If the session was promoted from CLI history (has cli_session_id),
+              the history session will be marked as hidden so it doesn't reappear
+              in the history list.
         """
         try:
-            # Resolve username from meta if not provided
+            # Resolve username and cli_session_id from meta before deletion
+            meta = None
             if not username:
                 try:
                     meta = self.get_session_meta(session_id)
@@ -954,6 +996,15 @@ class SessionStorage:
                         username = meta.username
                 except Exception:
                     pass
+
+            # Mark associated history session as hidden (best-effort)
+            try:
+                cli_sid = self.get_cli_session_id(session_id)
+                if cli_sid:
+                    self.hide_history_session(cli_sid)
+                    logger.info(f"Marked history session {cli_sid} as hidden (runtime session {session_id} deleted)")
+            except Exception:
+                pass
 
             # Delete all fixed session keys
             keys_to_delete = [
@@ -1096,6 +1147,45 @@ class SessionStorage:
             if msg.id == message_id:
                 return msg
         return None
+
+    def clear_session_messages(self, session_id: str) -> bool:
+        """Clear all messages for a session.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:messages"
+            self._redis.delete(key)
+            # Reset message_count in meta
+            meta_key = f"session:{session_id}:meta"
+            self._redis.hset(meta_key, {"message_count": "0"})
+            logger.debug(f"Cleared messages for session: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear session messages: {e}")
+            return False
+
+    def clear_session_tool_calls(self, session_id: str) -> bool:
+        """Clear all tool calls for a session.
+
+        Args:
+            session_id: Session ID
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:toolcalls"
+            self._redis.delete(key)
+            logger.debug(f"Cleared tool calls for session: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear session tool calls: {e}")
+            return False
 
     # ============ Tool Call Operations ============
 
