@@ -113,3 +113,80 @@ async def feishu_webhook(request: Request):
         )
 
     return JSONResponse({"ok": True})
+
+
+@router.get("/wecom/webhook")
+async def wecom_webhook_verify(request: Request):
+    """企业微信智能机器人 URL 验证入口 (GET)
+
+    配置回调 URL 时，企微会发送 GET 请求验证 URL 有效性。
+    需要验证签名并解密 echostr，将解密后的明文直接返回。
+    """
+    from fastapi.responses import PlainTextResponse
+
+    service = get_channel_service()
+    if not service or not service.manager:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Channel service not initialized",
+        )
+
+    channel = service.manager.get_channel("wecom")
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="WeCom channel not configured",
+        )
+
+    msg_signature = request.query_params.get("msg_signature", "")
+    timestamp = request.query_params.get("timestamp", "")
+    nonce = request.query_params.get("nonce", "")
+    echostr = request.query_params.get("echostr", "")
+
+    result = channel.verify_url(msg_signature, timestamp, nonce, echostr)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="URL verification failed",
+        )
+
+    # 企微要求直接返回解密后的明文（不能加引号、BOM头、换行符）
+    return PlainTextResponse(result)
+
+
+@router.post("/wecom/webhook")
+async def wecom_webhook(request: Request):
+    """企业微信智能机器人消息回调入口 (POST)
+
+    接收加密的消息回调，解密后处理消息。
+    如果需要被动回复，返回加密的响应 JSON。
+    """
+    service = get_channel_service()
+    if not service or not service.manager:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Channel service not initialized",
+        )
+
+    channel = service.manager.get_channel("wecom")
+    if not channel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="WeCom channel not configured",
+        )
+
+    body = await request.body()
+    query_params = {
+        "msg_signature": request.query_params.get("msg_signature", ""),
+        "timestamp": request.query_params.get("timestamp", ""),
+        "nonce": request.query_params.get("nonce", ""),
+    }
+
+    result = await channel.handle_webhook(body, dict(request.headers), query_params)
+
+    if result is not None:
+        # 有被动回复（加密的 JSON 响应）
+        return JSONResponse(result)
+
+    # 无被动回复，返回空成功响应
+    return JSONResponse({"ok": True})
