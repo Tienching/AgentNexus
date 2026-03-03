@@ -230,11 +230,36 @@ class CLIExecutor:
         # - inplace 模式的首次执行：不使用 -c，避免恢复到其他目录的会话
         # - inplace 模式的续聊（chat_continue）：使用 -c，继续当前目录的会话
         # - 非 inplace 模式：总是使用 -c
+        # - model_changed：模型发生切换时，不使用 -c，因为 CLI 工具在
+        #   continue 模式下会锁定原会话的模型，忽略 --model 参数
         run_kind = getattr(request, "run_kind", "") or ""
         is_chat_continue = run_kind == "chat_continue"
+        model_changed = getattr(request, "model_changed", False)
 
         # 简化逻辑：exec_dir_override 模式下总是使用 -c 来恢复上下文
-        if exec_dir_override:
+        if model_changed:
+            use_continue = False
+            logger.info("Skipping -c (continue) due to model change, will start new CLI session")
+            # Inject conversation history so the new session has context
+            # (without -c, the CLI starts fresh and loses all prior context).
+            if session_id:
+                try:
+                    if not storage:
+                        from ...runtime.stores.session_storage import get_session_storage
+                        storage = get_session_storage()
+                    history_text = self._build_model_switch_context(storage, session_id)
+                    if history_text:
+                        cleaned_content = (
+                            f"[模型切换 - 以下是之前对话的上下文]\n\n"
+                            f"{history_text}\n\n"
+                            f"---\n\n"
+                            f"请基于以上上下文继续对话。用户的当前请求：\n"
+                            f"{cleaned_content}"
+                        )
+                        logger.info(f"Injected conversation context for model switch ({len(history_text)} chars)")
+                except Exception as e:
+                    logger.warning(f"Failed to inject model switch context: {e}")
+        elif exec_dir_override:
             use_continue = True  # 切换到任务目录后，使用 -c 恢复该目录的上下文
         else:
             use_continue = (not is_inplace) or is_chat_continue
@@ -318,6 +343,9 @@ class CLIExecutor:
                 if meta and not meta.exec_dir:
                     meta.exec_dir = str(exec_dir)
                     storage.save_session_meta(meta)
+                # Record the model being used so we can detect changes next time
+                if request_model_name:
+                    storage.set_active_model(session_id, request_model_name)
             except Exception:
                 pass  # best-effort
 
@@ -623,6 +651,41 @@ class CLIExecutor:
                     results.append(f"✅ **结果**: {result_content}\n")
         
         return "".join(results)
+
+    @staticmethod
+    def _build_model_switch_context(
+        storage,
+        session_id: str,
+        max_messages: int = 50,
+        truncate_each: int = 800,
+    ) -> str:
+        """Build a condensed conversation history for model-switch context injection.
+
+        When a model switch forces a new CLI session (no ``-c``), we prepend
+        recent conversation history so the new session is not completely blank.
+        Uses the same Redis messages that ``/switch -r -a`` would use.
+        """
+        try:
+            messages = storage.get_session_messages(session_id)
+            if not messages:
+                return ""
+
+            selected = messages[-max_messages:] if max_messages and max_messages > 0 else messages
+
+            parts: list[str] = []
+            for msg in selected:
+                role_label = {"user": "用户", "assistant": "助手"}.get(msg.role, msg.role)
+                content = (msg.content or "").strip()
+                if not content:
+                    continue
+                if truncate_each and truncate_each > 0 and len(content) > truncate_each:
+                    content = content[:truncate_each] + "…(截断)"
+                parts.append(f"[{role_label}] {content}")
+
+            return "\n\n".join(parts) if parts else ""
+        except Exception as e:
+            logger.warning(f"Failed to build model switch context: {e}")
+            return ""
 
     def _clean_content(self, content: str) -> str:
         """清理输入内容"""
