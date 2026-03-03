@@ -78,7 +78,7 @@ class StreamOrchestrator:
                 if converted:
                     # Archive converted AG-UI events asynchronously (non-blocking)
                     self._schedule_archive_converted(converted, archiver)
-                    # Collect text from AG-UI events for handoff summary
+                    # Collect text from AG-UI events for switch summary
                     if summary_text_parts is not None:
                         for payload in self._iter_agui_payloads(converted):
                             if payload.get("type") == "TEXT_MESSAGE_CONTENT":
@@ -100,7 +100,7 @@ class StreamOrchestrator:
                             model=handoff_pending_model,
                         )
                         logger.info(
-                            f"Stored handoff summary ({len(summary_text)} chars) for next switch",
+                            f"Stored switch summary ({len(summary_text)} chars) for next switch",
                             extra={"session_id": session_id, "target": handoff_pending_target},
                         )
                         # Append a notification message in the SSE stream
@@ -117,7 +117,7 @@ class StreamOrchestrator:
                         if notify_sse:
                             yield notify_sse
                     except Exception as e:
-                        logger.error(f"Failed to store handoff summary: {e}")
+                        logger.error(f"Failed to store switch summary: {e}")
 
             end_event = adapter.create_end_event()
             if end_event:
