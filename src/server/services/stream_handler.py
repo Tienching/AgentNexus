@@ -119,7 +119,7 @@ class StreamHandler:
             return ""
 
     def _prepare_handoff_prompt(self, session_id: str, target: str, context_mode: str = "full") -> str:
-        """Build handoff prompt by fetching conversation history from Redis.
+        """Build switch prompt by fetching conversation history from Redis.
 
         Args:
             session_id: Current session ID.
@@ -182,9 +182,9 @@ class StreamHandler:
         content: str,
         request_model: RequestModel,
     ) -> tuple[str, str | None, str] | None:
-        """Try to handle ``/handoff ... -a`` inline in the current request.
+        """Try to handle ``/switch ... -a`` inline in the current request.
 
-        If the slash command is a valid ``/handoff -a`` (auto-summary), this
+        If the slash command is a valid ``/switch -a`` (auto-summary), this
         method resolves the target, builds the summary prompt and rewrites
         ``request_model.content`` so the request goes through the LLM path
         (not the CLIExecutor path) to generate the summary immediately.
@@ -200,7 +200,7 @@ class StreamHandler:
         except SlashCommandParseError:
             return None  # let CLIExecutor handle and show error
 
-        if parsed.cmd != "handoff":
+        if parsed.cmd != "switch":
             return None
         if not parsed.options.get("auto"):
             return None
@@ -233,7 +233,7 @@ class StreamHandler:
         effective_alias = target_alias or target_provider.lower()
 
         logger.info(
-            f"Inline /handoff -a detected, generating summary immediately",
+            f"Inline /switch -a detected, generating summary immediately",
             extra={
                 "session_id": session_id,
                 "target": effective_alias,
@@ -284,13 +284,13 @@ class StreamHandler:
                     )
                     provider = workspace_provider
                 else:
-                    # No workspace provider — check for handoff provider
-                    handoff_prov = storage.get_handoff_provider(session_id)
-                    if handoff_prov:
-                        hp, ha = handoff_prov
+                    # No workspace provider — check for switch provider
+                    switch_prov = storage.get_handoff_provider(session_id)
+                    if switch_prov:
+                        hp, ha = switch_prov
                         logger.info(
-                            f"Handoff provider override: {provider} -> {hp}",
-                            extra={"session_id": session_id, "handoff_provider": hp, "handoff_alias": ha}
+                            f"Switch provider override: {provider} -> {hp}",
+                            extra={"session_id": session_id, "switch_provider": hp, "switch_alias": ha}
                         )
                         provider = hp
                         workspace_alias = ha  # reuse variable for alias propagation below
@@ -307,7 +307,7 @@ class StreamHandler:
                     request_model.cwd_mode = "inplace"
                     logger.info(f"Workspace exec_dir override: {exec_dir_override}")
             except Exception as e:
-                logger.warning(f"Failed to check workspace/handoff provider/alias: {e}")
+                logger.warning(f"Failed to check workspace/switch provider/alias: {e}")
 
         request_model.provider = provider
         request_model.agent_type = provider
@@ -322,19 +322,41 @@ class StreamHandler:
         if model_name:
             request_model.model = model_name
 
+        # Apply persistent model override from /switch -m (if no explicit model in request)
+        if session_id and not model_name:
+            try:
+                storage = get_session_storage()
+                model_override = storage.get_model_override(session_id)
+                if model_override:
+                    request_model.model = model_override
+                    active_model = storage.get_active_model(session_id)
+                    if active_model != model_override:
+                        request_model.model_changed = True
+                        logger.info(
+                            f"Model changed: {active_model} -> {model_override}, will start new CLI session",
+                            extra={"session_id": session_id},
+                        )
+                    else:
+                        logger.info(
+                            f"Model override applied: {model_override}",
+                            extra={"session_id": session_id},
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to read model override: {e}")
+
         # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
         if workspace_provider:
             request_model.run_kind = "chat_continue"
 
-        # ---- /handoff -a inline handling ----
-        # When the user sends `/handoff ... -a`, we want to generate the summary
+        # ---- /switch -a inline handling ----
+        # When the user sends `/switch ... -a`, we want to generate the summary
         # *in this very request* instead of deferring to the next message.
         # Parse the slash command, detect auto-summary, replace content with
         # summary prompt and let the request proceed through the LLM path.
         handoff_pending_target = None
         handoff_pending_model = None
         content_stripped = (request_model.content or "").strip()
-        if session_id and content_stripped.startswith("/handoff") and " -a" in content_stripped:
+        if session_id and content_stripped.startswith("/switch") and " -a" in content_stripped:
             try:
                 result = self._try_inline_handoff_auto(
                     session_id, content_stripped, request_model
@@ -342,9 +364,9 @@ class StreamHandler:
                 if result:
                     handoff_pending_target, handoff_pending_model, _handoff_context_mode = result
             except Exception as e:
-                logger.warning(f"Failed to process inline handoff auto-summary: {e}")
+                logger.warning(f"Failed to process inline switch auto-summary: {e}")
 
-        # Check for pending handoff summary set by a *previous* request's /handoff -a
+        # Check for pending switch summary set by a *previous* request's /switch -a
         # (backward compat: if something else set pending_summary, pick it up here)
         if not handoff_pending_target and session_id and not content_stripped.startswith("/"):
             try:
@@ -353,7 +375,7 @@ class StreamHandler:
                 if handoff_pending_target:
                     # Also retrieve model stored with pending summary
                     handoff_pending_model = storage.get_handoff_model(session_id)
-                    logger.info(f"Found pending handoff summary: target={handoff_pending_target}, model={handoff_pending_model}", extra={
+                    logger.info(f"Found pending switch summary: target={handoff_pending_target}, model={handoff_pending_model}", extra={
                         "session_id": session_id,
                     })
                     pending_context_mode = storage.get_handoff_pending_context_mode(session_id)
@@ -404,7 +426,7 @@ class StreamHandler:
             except Exception as e:
                 logger.warning(f"Failed to inject history bootstrap context: {e}")
 
-        # Check for handoff context (agent switching via /handoff command)
+        # Check for switch context (agent switching via /switch command)
         # This overrides provider/alias for this request and injects context
         handoff_context = None
         handoff_target = None
@@ -415,11 +437,11 @@ class StreamHandler:
                 if handoff_result:
                     handoff_context, handoff_target = handoff_result
                     if handoff_target:
-                        # Read handoff model before clearing
+                        # Read switch model before clearing
                         handoff_model = storage.get_handoff_model(session_id)
 
                         logger.info(
-                            f"Handoff context found, switching provider",
+                            f"Switch context found, switching provider",
                             extra={
                                 "session_id": session_id,
                                 "target": handoff_target,
@@ -444,7 +466,7 @@ class StreamHandler:
                         request_model.agent_type = provider
                         request_model.alias = handoff_target
 
-                        # Apply handoff model if specified
+                        # Apply switch model if specified
                         if handoff_model:
                             request_model.model = handoff_model
 
@@ -455,8 +477,10 @@ class StreamHandler:
                         # not overwrite workspace_provider set by /workspace -t.
                         try:
                             storage.set_handoff_provider(session_id, provider, handoff_target)
+                            # Provider switch resets model_override (model is bound to provider)
+                            storage.clear_model_override(session_id)
                         except Exception as persist_err:
-                            logger.warning(f"Failed to persist handoff provider: {persist_err}")
+                            logger.warning(f"Failed to persist switch provider: {persist_err}")
 
                         # Inject handoff context into user message (only if non-empty)
                         if handoff_context:
@@ -474,7 +498,7 @@ class StreamHandler:
 用户的当前请求：
 {original_content}"""
             except Exception as e:
-                logger.warning(f"Failed to check handoff context: {e}")
+                logger.warning(f"Failed to check switch context: {e}")
         
         adapter = self._get_agui_adapter(provider)
         executor = self._get_executor(provider, request_model=request_model)
@@ -636,7 +660,7 @@ class StreamHandler:
                                 if _evt.startswith('data:'):
                                     try:
                                         payload = _evt.replace('data:', '', 1).strip()
-                                        # Collect text from AG-UI TEXT_MESSAGE_CONTENT events for handoff summary
+                        # Collect text from AG-UI TEXT_MESSAGE_CONTENT events for switch summary
                                         if summary_text_parts is not None:
                                             try:
                                                 payload_data = json.loads(payload)
@@ -681,7 +705,7 @@ class StreamHandler:
                                 handoff_pending_target,
                                 model=handoff_pending_model,
                             )
-                            logger.info(f"Stored handoff summary ({len(summary_text)} chars) for next switch", extra={
+                            logger.info(f"Stored switch summary ({len(summary_text)} chars) for next switch", extra={
                                 "session_id": _session_id,
                                 "target": handoff_pending_target,
                             })
@@ -725,7 +749,7 @@ class StreamHandler:
                                         },
                                     )
                                     logger.info(
-                                        "Handoff notification sent via response_url callback",
+                                        "Switch notification sent via response_url callback",
                                         extra={
                                             "session_id": _session_id,
                                             "target": handoff_pending_target,
@@ -740,7 +764,7 @@ class StreamHandler:
                                         },
                                     )
                         except Exception as e:
-                            logger.error(f"Failed to store handoff summary: {e}")
+                            logger.error(f"Failed to store switch summary: {e}")
 
                 stream_state["producer_done"] = True
                 await message_queue.put(("done", None))
@@ -759,7 +783,7 @@ class StreamHandler:
                         label = "remaining"
                     elif handoff_pending_target:
                         callback_events = stream_state["all_events"]
-                        label = "all (handoff)"
+                        label = "all (switch)"
                     else:
                         callback_events = None
                         label = None

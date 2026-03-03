@@ -461,10 +461,10 @@ class SessionStorage:
             logger.error(f"Failed to clear workspace alias: {e}")
             return False
 
-    # ============ Handoff Context (Agent Switching) ============
+    # ============ Switch Context (Agent/Model Switching) ============
 
     def set_handoff_context(self, session_id: str, context: str, target_provider_or_alias: str, model: Optional[str] = None) -> bool:
-        """Store handoff context for agent switching.
+        """Store switch context for agent/model switching.
 
         When switching agents, the current agent generates a summary which is
         stored here. The new agent will receive this as initial context.
@@ -490,14 +490,14 @@ class SessionStorage:
             self._redis.hset(key, fields)
             if not model:
                 self._redis.hdel(key, "handoff_model")
-            logger.info(f"Set handoff context: {session_id} -> {target_provider_or_alias} (model={model})")
+            logger.info(f"Set switch context: {session_id} -> {target_provider_or_alias} (model={model})")
             return True
         except Exception as e:
-            logger.error(f"Failed to set handoff context: {e}")
+            logger.error(f"Failed to set switch context: {e}")
             return False
 
     def get_handoff_context(self, session_id: str) -> Optional[Tuple[str, str]]:
-        """Get handoff context if set.
+        """Get switch context if set.
 
         Args:
             session_id: Session ID to check
@@ -515,11 +515,11 @@ class SessionStorage:
                 return (context or "", target_provider)
             return None
         except Exception as e:
-            logger.error(f"Failed to get handoff context: {e}")
+            logger.error(f"Failed to get switch context: {e}")
             return None
 
     def get_handoff_model(self, session_id: str) -> Optional[str]:
-        """Get handoff model if set."""
+        """Get switch model if set."""
         try:
             key = f"session:{session_id}:meta"
             return self._redis.hget(key, "handoff_model") or None
@@ -538,10 +538,10 @@ class SessionStorage:
         try:
             key = f"session:{session_id}:meta"
             self._redis.hdel(key, "handoff_context", "handoff_target_provider", "handoff_model")
-            logger.info(f"Cleared handoff context: {session_id}")
+            logger.info(f"Cleared switch context: {session_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to clear handoff context: {e}")
+            logger.error(f"Failed to clear switch context: {e}")
             return False
 
     def set_handoff_pending_summary(
@@ -551,9 +551,9 @@ class SessionStorage:
         model: Optional[str] = None,
         context_mode: str = "full",
     ) -> bool:
-        """Store pending handoff summary request.
+        """Store pending switch summary request.
 
-        When user requests /handoff -a, we set this flag. The next message
+        When user requests /switch -a, we set this flag. The next message
         will trigger the current agent to generate summary/full context first.
 
         Args:
@@ -583,16 +583,16 @@ class SessionStorage:
             if not model:
                 self._redis.hdel(key, "handoff_model")
             logger.info(
-                f"Set handoff pending summary: {session_id} -> {target_provider_or_alias} "
+                f"Set switch pending summary: {session_id} -> {target_provider_or_alias} "
                 f"(model={model}, context_mode={normalized_mode})"
             )
             return True
         except Exception as e:
-            logger.error(f"Failed to set handoff pending summary: {e}")
+            logger.error(f"Failed to set switch pending summary: {e}")
             return False
 
     def get_handoff_pending_summary(self, session_id: str) -> Optional[str]:
-        """Get pending handoff summary target provider.
+        """Get pending switch summary target provider.
 
         Args:
             session_id: Session ID to check
@@ -609,7 +609,7 @@ class SessionStorage:
             return None
 
     def get_handoff_pending_context_mode(self, session_id: str) -> str:
-        """Get pending handoff context mode.
+        """Get pending switch context mode.
 
         Returns:
             "full" or "windowed". Defaults to "full" when unset/invalid.
@@ -626,7 +626,7 @@ class SessionStorage:
             return "full"
 
     def clear_handoff_pending_summary(self, session_id: str) -> bool:
-        """Clear pending handoff summary request.
+        """Clear pending switch summary request.
 
         Args:
             session_id: Session ID to clear
@@ -637,19 +637,83 @@ class SessionStorage:
         try:
             key = f"session:{session_id}:meta"
             self._redis.hdel(key, "handoff_pending_summary", "handoff_model", "handoff_pending_context_mode")
-            logger.info(f"Cleared handoff pending summary: {session_id}")
+            logger.info(f"Cleared switch pending summary: {session_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to clear handoff pending summary: {e}")
+            logger.error(f"Failed to clear switch pending summary: {e}")
             return False
 
-    # ============ Handoff Provider Persistence ============
+    # ============ Model Override Persistence ============
+
+    def set_model_override(self, session_id: str, model: str) -> bool:
+        """Persist a model override for the session.
+
+        Set by ``/switch -m <model>`` (model-only switch).  Unlike
+        ``handoff_model`` which is consumed once, this field persists across
+        requests until explicitly cleared.
+
+        Args:
+            session_id: Session ID
+            model: LLM model name (e.g. ``"claude-opus-4.6"``)
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"model_override": model})
+            logger.info(f"Set model override: {session_id} -> {model}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set model override: {e}")
+            return False
+
+    def get_model_override(self, session_id: str) -> Optional[str]:
+        """Get the persisted model override if set."""
+        try:
+            key = f"session:{session_id}:meta"
+            return self._redis.hget(key, "model_override") or None
+        except Exception:
+            return None
+
+    def clear_model_override(self, session_id: str) -> bool:
+        """Clear the persisted model override."""
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "model_override")
+            logger.info(f"Cleared model override: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear model override: {e}")
+            return False
+
+    def set_active_model(self, session_id: str, model: str) -> bool:
+        """Record the model actually used in the last CLI invocation.
+
+        Used to detect model changes between requests — when the model
+        changes, the CLI must start a new session instead of continuing
+        the old one (``-c``), because CLI tools like codebuddy lock the
+        model for the lifetime of a continued session.
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"active_model": model})
+            return True
+        except Exception:
+            return False
+
+    def get_active_model(self, session_id: str) -> Optional[str]:
+        """Get the model used in the last CLI invocation."""
+        try:
+            key = f"session:{session_id}:meta"
+            return self._redis.hget(key, "active_model") or None
+        except Exception:
+            return None
+
+    # ============ Switch Provider Persistence ============
 
     def set_handoff_provider(self, session_id: str, provider: str, alias: str) -> bool:
-        """Persist the provider/alias chosen by a handoff switch.
+        """Persist the provider/alias chosen by a switch command.
 
         Unlike ``workspace_provider`` (set by ``/workspace -t``), this field is
-        set exclusively when a handoff context is consumed.  It ensures that
+        set exclusively when a switch context is consumed.  It ensures that
         *subsequent* requests in the same session keep using the new provider
         without overwriting any workspace-level setting.
 
@@ -664,10 +728,10 @@ class SessionStorage:
                 "handoff_provider": provider,
                 "handoff_alias": alias,
             })
-            logger.info(f"Set handoff provider: {session_id} -> {provider} (alias={alias})")
+            logger.info(f"Set switch provider: {session_id} -> {provider} (alias={alias})")
             return True
         except Exception as e:
-            logger.error(f"Failed to set handoff provider: {e}")
+            logger.error(f"Failed to set switch provider: {e}")
             return False
 
     def get_handoff_provider(self, session_id: str) -> Optional[Tuple[str, str]]:
@@ -684,7 +748,7 @@ class SessionStorage:
                 return (provider, alias or provider)
             return None
         except Exception as e:
-            logger.error(f"Failed to get handoff provider: {e}")
+            logger.error(f"Failed to get switch provider: {e}")
             return None
 
     def clear_handoff_provider(self, session_id: str) -> bool:
@@ -692,10 +756,10 @@ class SessionStorage:
         try:
             key = f"session:{session_id}:meta"
             self._redis.hdel(key, "handoff_provider", "handoff_alias")
-            logger.info(f"Cleared handoff provider: {session_id}")
+            logger.info(f"Cleared switch provider: {session_id}")
             return True
         except Exception as e:
-            logger.error(f"Failed to clear handoff provider: {e}")
+            logger.error(f"Failed to clear switch provider: {e}")
             return False
 
     def set_claude_session_id(self, session_id: str, claude_session_id: str) -> bool:
