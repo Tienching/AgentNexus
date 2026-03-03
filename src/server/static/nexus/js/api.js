@@ -669,6 +669,31 @@ class NexusAPI {
         return response.json();
     }
 
+    /**
+     * Fetch/refresh CLI file data into an existing Runtime session
+     * @param {string} sessionId - Runtime session ID
+     * @param {Object} options - { execUser? }
+     * @returns {Promise<Object>} { session_id, cli_session_id, provider, messages_imported, tool_calls_imported }
+     */
+    static async fetchFromCli(sessionId, options = {}) {
+        const response = await fetch(
+            `${API_BASE}/history/sessions/${encodeURIComponent(sessionId)}/fetch-from-cli`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    exec_user: options.execUser || _defaultExecUser,
+                }),
+            }
+        );
+
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to fetch from CLI: ${response.status} ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     // ============ Session Files API (continued) ============
 
     /**

@@ -162,3 +162,4 @@ class SessionMessagesResponse(BaseModel):
     messages: List[StoredMessage] = Field(default_factory=list, description="Message list")
     tool_calls: List[StoredToolCall] = Field(default_factory=list, description="Tool call list")
     session: Optional[SessionMeta] = Field(None, description="Session metadata")
+    cli_session_id: Optional[str] = Field(None, description="Associated CLI session ID (if promoted from history)")
