@@ -81,6 +81,11 @@ class ServerSettings(BaseSettings):
     signal_api_url: str = "http://localhost:8081"
     signal_phone_number: str | None = None
 
+    # 企业微信智能机器人 (WeCom AI Bot) 配置
+    wecom_token: str | None = None  # 回调配置的 Token
+    wecom_encoding_aes_key: str | None = None  # 回调配置的 EncodingAESKey
+    wecom_aibot_id: str | None = None  # 智能机器人 ID（可选）
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
