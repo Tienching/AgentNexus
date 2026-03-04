@@ -125,11 +125,9 @@ class TaskQueue:
         effective_exec_user = exec_user or self.exec_user
         
         # Generate session_id based on source_session_id
+        from src.server.utils.ids import gen_session_id
         logger.info(f"add_task called with source_session_id={source_session_id!r}, task_id={actual_task_id}, exec_user={effective_exec_user}")
-        if source_session_id:
-            session_id = f"{source_session_id}_{actual_task_id}"
-        else:
-            session_id = f"task_{actual_task_id}"
+        session_id = gen_session_id()
         logger.info(f"Generated session_id={session_id}")
         
         normalized_provider = (provider or "").strip().lower() or "claude"
@@ -295,24 +293,20 @@ class TaskQueue:
     def find_task_by_session_id(self, session_id: str) -> Optional[Task]:
         """Find a task whose session_id matches the given value.
 
-        Task session_id formats:
-          - ``task_{task_id}``  (standalone task)
-          - ``{source_session_id}_{task_id}``  (task derived from a chat session)
-
-        For ``task_`` prefixed session IDs we can look up the task directly.
-        Otherwise we scan all tasks for a matching ``session_id`` field.
+        Searches all tasks for a matching ``session_id`` field.
+        Also supports legacy ``task_`` prefix for backward compatibility.
 
         Returns:
             The matching Task, or None.
         """
-        # Fast path: task_ prefix → direct lookup
+        # Legacy fast path: task_ prefix → direct lookup
         if session_id.startswith("task_"):
             task_id = session_id[len("task_"):]
             task = self.get_task(task_id)
             if task:
                 return task
 
-        # Slow path: scan all tasks and match session_id field
+        # Scan all tasks and match session_id field
         all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
         for task_id in all_task_ids:
             try:
