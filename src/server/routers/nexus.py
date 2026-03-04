@@ -485,16 +485,6 @@ def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     except Exception:
         pass
 
-    # Legacy: also check task_ prefix for backward compatibility
-    if session_id.startswith("task_"):
-        task_id = session_id[len("task_"):]
-        queue = _get_task_queue(exec_user)
-        task = queue.get_task(task_id)
-        if task and task.workspace:
-            workspace_path = Path(task.workspace)
-            if workspace_path.exists():
-                return workspace_path
-
     # Default session folder path
     if current_user != exec_user and os.geteuid() != 0:
         base_dir = Path.home() / exec_user / ".nexus" / "sessions" / session_id
