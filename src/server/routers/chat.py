@@ -2,13 +2,13 @@
 """Chat streaming endpoint router"""
 
 import json
-import uuid
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from ..services.stream_handler import StreamHandler
 from ..logger import get_logger
 from ..config import settings
+from ..utils.ids import resolve_session_id, resolve_run_id, gen_run_id, gen_session_id
 
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
@@ -68,8 +68,8 @@ async def chat_stream(request: Request, exec_user: str):
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Missing required field: content"
             )
-        thread_id = body_dict.get("session_id") or f"thread-{uuid.uuid4()}"
-        run_id = body_dict.get("msg_id") or f"run-{uuid.uuid4()}"
+        thread_id = resolve_session_id(body_dict.get("session_id"))
+        run_id = resolve_run_id(body_dict.get("msg_id"))
         user = body_dict.get("user")
         provider = (body_dict.get("provider") or "").strip()
         alias = (body_dict.get("alias") or "").strip()
@@ -138,9 +138,9 @@ async def _handle_test_request() -> StreamingResponse:
 @router.get("/agui/test")
 async def agui_test():
     """AG-UI SSE 格式测试端点 - 返回标准的 AG-UI 事件序列"""
-    test_thread_id = f"test-{uuid.uuid4()}"
-    test_run_id = f"test-run-{uuid.uuid4()}"
-    test_msg_id = f"test-msg-{uuid.uuid4()}"
+    test_thread_id = gen_session_id()
+    test_run_id = gen_run_id()
+    test_msg_id = f"test-msg-{gen_run_id()}"
     
     async def generate_test_events():
         # RUN_STARTED

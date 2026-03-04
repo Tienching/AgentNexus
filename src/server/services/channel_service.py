@@ -523,7 +523,8 @@ class ChannelService:
         """
         logger.info(f"[{message.channel}] Message from {message.sender_id}: {message.content[:100]}")
 
-        session_id = f"channel_{message.channel}_{message.chat_id}"
+        from ..utils.ids import gen_channel_session_id
+        session_id = gen_channel_session_id(message.channel, message.chat_id)
 
         handler = get_notification_handler()
         target = handler.build_target_from_channel(
