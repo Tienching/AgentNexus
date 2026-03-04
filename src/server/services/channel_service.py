@@ -36,7 +36,7 @@ from .notification import (
     get_notification_handler,
 )
 from src.runtime.stores.session_storage import get_session_storage
-from src.runtime.models.session import StoredMessage, MessageStatus
+from src.runtime.models.session import SessionMeta, SessionStatus, StoredMessage, MessageStatus
 from .media_downloader import download_images, download_files
 
 logger = get_logger(__name__)
@@ -525,6 +525,31 @@ class ChannelService:
 
         from ..utils.ids import gen_channel_session_id
         session_id = gen_channel_session_id(message.channel, message.chat_id)
+
+        # Ensure session meta exists in Redis (so it shows up in Runtime list)
+        exec_user = settings.exec_user or "ubuntu"
+        try:
+            storage = get_session_storage()
+            existing_meta = storage.get_session_meta(session_id)
+            if not existing_meta or not existing_meta.id:
+                title = (message.content or "")[:50]
+                if len(message.content or "") > 50:
+                    title += "..."
+                title = title or f"Channel: {message.channel}"
+                session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
+                meta = SessionMeta(
+                    id=session_id,
+                    thread_id=session_id,
+                    title=title,
+                    username=exec_user,
+                    exec_user=exec_user,
+                    status=SessionStatus.RUNNING,
+                    exec_dir=str(session_dir),
+                )
+                storage.save_session_meta(meta)
+                logger.info(f"[{message.channel}] Created session meta: {session_id}")
+        except Exception as e:
+            logger.warning(f"[{message.channel}] Failed to init session meta: {e}")
 
         handler = get_notification_handler()
         target = handler.build_target_from_channel(
