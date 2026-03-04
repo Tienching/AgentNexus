@@ -249,8 +249,9 @@ class CLIExecutor(BaseExecutor):
             #   - claude/codebuddy: --resume SESSION_ID (instead of -c)
             #   - gemini: --resume SESSION_ID (instead of --resume latest)
             #   - codex: resume SESSION_ID (instead of resume --last)
+            session_cleared = getattr(context, "session_cleared", False)
 
-            if use_continue:
+            if use_continue and not session_cleared:
                 if is_codex:
                     pass  # codex uses "resume ..." appended after prompt
                 elif is_gemini:
@@ -274,7 +275,7 @@ class CLIExecutor(BaseExecutor):
             if model_param:
                 cmd.extend(["--model", model_param])
             cmd.extend([message, "--dangerously-bypass-approvals-and-sandbox"])
-            if use_continue and cleaned_content.lower() != "/clear":
+            if use_continue and not session_cleared and cleaned_content.lower() != "/clear":
                 if cli_session_id:
                     cmd.extend(["resume", cli_session_id])
                 else:

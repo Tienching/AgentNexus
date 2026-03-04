@@ -135,6 +135,20 @@ class CLIExecutor:
                 user_dir = await self.user_dir_manager.ensure_directory(exec_user, request.user, session_id)
                 await self.user_dir_manager.clear_directory(exec_user, request.user, user_dir, session_id)
                 await self.user_dir_manager.ensure_directory(exec_user, request.user, session_id)
+
+                # Clear Redis resume state so the next CLI invocation starts
+                # a fresh session instead of resuming the old one.
+                try:
+                    from ...runtime.stores.session_storage import get_session_storage
+                    _clear_storage = get_session_storage()
+                    _clear_storage.clear_cli_session_id(session_id)
+                    _clear_storage.set_session_cleared(session_id)
+                    # Clear active_model to avoid false model_changed detection
+                    _clear_storage._redis.hdel(f"session:{session_id}:meta", "active_model")
+                    logger.info(f"/clear: cleared Redis resume state for session {session_id}")
+                except Exception as e:
+                    logger.warning(f"/clear: failed to clear Redis resume state: {e}")
+
                 yield _format_slash_result(
                     "## 🔄 Session Cleared\n\nYour session has been cleared. A fresh workspace has been created.",
                     is_error=False,
@@ -226,6 +240,7 @@ class CLIExecutor:
         )
 
         # 构建命令 - 决定是否使用 -c (continue) 选项
+        # - session_cleared：/clear 后的第一次执行，不恢复旧会话
         # - exec_dir_override 模式（/workspace -t）：总是使用 -c，恢复该目录的上下文
         # - inplace 模式的首次执行：不使用 -c，避免恢复到其他目录的会话
         # - inplace 模式的续聊（chat_continue）：使用 -c，继续当前目录的会话
@@ -236,8 +251,21 @@ class CLIExecutor:
         is_chat_continue = run_kind == "chat_continue"
         model_changed = getattr(request, "model_changed", False)
 
+        # Check if /clear was executed — consume the one-shot flag
+        session_cleared = False
+        try:
+            if storage and session_id:
+                session_cleared = storage.consume_session_cleared(session_id)
+                if session_cleared:
+                    logger.info(f"Session was recently cleared, will skip resume/continue for session {session_id}")
+        except Exception as e:
+            logger.warning(f"Failed to check session_cleared flag: {e}")
+
         # 简化逻辑：exec_dir_override 模式下总是使用 -c 来恢复上下文
-        if model_changed:
+        if session_cleared:
+            use_continue = False
+            logger.info("Skipping -c (continue) due to /clear, will start new CLI session")
+        elif model_changed:
             use_continue = False
             logger.info("Skipping -c (continue) due to model change, will start new CLI session")
             # Inject conversation history so the new session has context
@@ -299,7 +327,9 @@ class CLIExecutor:
             except Exception as e:
                 logger.warning(f"Failed to load cli_session_id from storage: {e}")
         logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}, model={request_model_name}, cli_session_id={request_cli_session_id}")
-        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name, cli_session_id=request_cli_session_id)
+        request_image_paths = getattr(request, "image_paths", None) or []
+        request_file_paths = getattr(request, "file_paths", None) or []
+        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name, cli_session_id=request_cli_session_id, image_paths=request_image_paths or None, file_paths=request_file_paths or None)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
@@ -729,6 +759,8 @@ class CLIExecutor:
         alias: Optional[str] = None,
         model: Optional[str] = None,
         cli_session_id: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
+        file_paths: Optional[List[str]] = None,
     ) -> List[str]:
         """构建 CLI 命令
 
@@ -741,6 +773,8 @@ class CLIExecutor:
             model: Explicit LLM model name override. Inline --model in content takes priority.
             cli_session_id: Specific CLI session UUID for precise resume.
                 When provided, uses --resume SESSION_ID instead of -c/--resume latest.
+            image_paths: Local image file paths to inject into the prompt.
+            file_paths: Local file paths (non-image) to inject into the prompt.
         """
         cleaned_content, inline_model = self._parse_model_param(content)
         model_param = inline_model or model or None
@@ -773,6 +807,23 @@ class CLIExecutor:
             message = "你好"
         else:
             message = cleaned_content
+
+        # Inject image file paths into the prompt so the CLI can read them.
+        # Images are downloaded into the session cwd so relative paths work.
+        if image_paths:
+            tags = " ".join(f"{{image: {p}}}" for p in image_paths)
+            if message.strip():
+                message = f"{tags}\n\n{message}"
+            else:
+                message = tags
+
+        # Inject non-image file paths into the prompt.
+        if file_paths:
+            tags = " ".join(f"{{file: {p}}}" for p in file_paths)
+            if message.strip():
+                message = f"{tags}\n\n{message}"
+            else:
+                message = tags
 
         # Provider-aware continue/resume logic:
         # When cli_session_id is available, use precise session resume:
