@@ -467,17 +467,11 @@ async def fetch_from_cli(
 
     # Task sessions are created by the task executor, not from CLI.
     # Fetching from CLI would overwrite runtime messages with unrelated data.
-    # Check via task_id meta field (new) or legacy task_ prefix.
-    is_task_session = False
     try:
         _task_id = storage._redis.hget(f"session:{session_id}:meta", "task_id")
-        if _task_id:
-            is_task_session = True
     except Exception:
-        pass
-    if not is_task_session and session_id.startswith("task_"):
-        is_task_session = True
-    if is_task_session:
+        _task_id = None
+    if _task_id:
         raise HTTPException(
             status_code=400,
             detail="Task sessions cannot be refreshed from CLI — their data comes from the task executor, not CLI history files.",
