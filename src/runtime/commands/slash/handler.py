@@ -2287,8 +2287,8 @@ class SlashCommandHandler:
             )
 
         # Create new runtime session
-        now_ms = int(time_mod.time() * 1000)
-        runtime_session_id = f"chat_{now_ms}_{uuid.uuid4().hex[:8]}"
+        from src.server.utils.ids import gen_session_id
+        runtime_session_id = gen_session_id()
 
         title = (detail.session.title if detail.session else None) or f"History: {cli_session_id}"
         from ...models.session import SessionMeta as SessionMetaModel

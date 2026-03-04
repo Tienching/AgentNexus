@@ -466,18 +466,30 @@ def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     """Resolve the folder path for a session.
 
     - Regular session: /home/{exec_user}/.nexus/sessions/{session_id}/
-    - Task session: /home/{exec_user}/.nexus/sessions/task_{task_id}/
-    - Inplace task: workspace directory from task
+    - Task session with inplace workspace: workspace directory from task
     """
     current_user = pwd.getpwuid(os.getuid()).pw_name
 
-    # Check if it's a task session and get task info
+    # Check if this is a task session (has task_id in meta) and has an inplace workspace
+    try:
+        from ..services.session_storage import get_session_storage
+        storage = get_session_storage()
+        task_id = storage._redis.hget(f"session:{session_id}:meta", "task_id")
+        if task_id:
+            queue = _get_task_queue(exec_user)
+            task = queue.get_task(task_id)
+            if task and task.workspace:
+                workspace_path = Path(task.workspace)
+                if workspace_path.exists():
+                    return workspace_path
+    except Exception:
+        pass
+
+    # Legacy: also check task_ prefix for backward compatibility
     if session_id.startswith("task_"):
         task_id = session_id[len("task_"):]
         queue = _get_task_queue(exec_user)
         task = queue.get_task(task_id)
-
-        # If task has workspace and it's not the default sessions folder, it's inplace
         if task and task.workspace:
             workspace_path = Path(task.workspace)
             if workspace_path.exists():
