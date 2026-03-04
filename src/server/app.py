@@ -62,6 +62,8 @@ async def task_handler(task: Task) -> Optional[str]:
     from src.runtime.adapters.codex import CodexCLIAGUIAdapter
     from src.runtime.adapters.codebuddy import CodebuddyAGUIAdapter
 
+    from src.server.utils.ids import gen_run_id
+
     logger = get_logger(__name__)
 
     # 使用任务中存储的 exec_user
@@ -69,7 +71,7 @@ async def task_handler(task: Task) -> Optional[str]:
     logger.info(f"task_handler: task.session_id={task.session_id!r}, task.id={task.id}")
     session_id = task.session_id or f"task_{task.id}"  # Use stored session_id, fallback for legacy tasks
     logger.info(f"task_handler: using session_id={session_id}")
-    run_id = f"task-run-{uuid.uuid4().hex}"
+    run_id = gen_run_id()
 
     logger.info(f"Executing task {task.id} for exec_user {exec_user}: {task.description[:50]}...")
 
@@ -146,8 +148,15 @@ async def task_handler(task: Task) -> Optional[str]:
         alias=alias_value,
     )
 
-    # 同时写入“原始 AG-UI 事件序列”，供 Task 详情页像 Chat 一样实时播放
+    # 同时写入"原始 AG-UI 事件序列"，供 Task 详情页像 Chat 一样实时播放
     storage = get_session_storage()
+
+    # Store task_id in session meta so we can identify task sessions without prefix
+    try:
+        key = f"session:{session_id}:meta"
+        storage._redis.hset(key, "task_id", task.id)
+    except Exception as e:
+        logger.warning(f"Failed to set task_id in session meta: {e}")
 
     # Adapter: provider-specific stream-json -> AG-UI SSE
     if provider == "gemini":

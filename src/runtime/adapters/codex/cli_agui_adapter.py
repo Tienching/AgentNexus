@@ -487,8 +487,9 @@ class CodexCLIAGUIAdapter(BaseAdapter):
     def create_error_event(self, error_msg: str) -> str:
         """Create error event."""
         if not self._state:
-            thread_id = f"error-{uuid.uuid4()}"
-            run_id = f"error-run-{uuid.uuid4()}"
+            from src.server.utils.ids import gen_session_id, gen_run_id
+            thread_id = gen_session_id()
+            run_id = gen_run_id()
         else:
             thread_id = self._state.thread_id
             run_id = self._state.run_id

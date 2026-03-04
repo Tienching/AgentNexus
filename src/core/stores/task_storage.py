@@ -111,12 +111,10 @@ class TaskQueue:
         # Use provided exec_user or fallback to queue's default
         effective_exec_user = exec_user or self.exec_user
 
-        # Generate session_id based on source_session_id
+        # Generate session_id
+        from src.server.utils.ids import gen_session_id
         logger.info(f"add_task called with source_session_id={source_session_id!r}, task_id={actual_task_id}, exec_user={effective_exec_user!r}")
-        if source_session_id:
-            session_id = f"{source_session_id}_{actual_task_id}"
-        else:
-            session_id = f"task_{actual_task_id}"
+        session_id = gen_session_id()
         logger.info(f"Generated session_id={session_id}")
         
         normalized_provider = (provider or "").strip().lower() or "claude"

@@ -379,7 +379,8 @@ async def promote_history_session(
             logger.info(f"Back-filled cli_session_id for existing mapping {mapped} -> {session_id}")
         return PromoteHistoryResponse(runtime_session_id=mapped, created=False)
 
-    runtime_session_id = f"chat_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+    from ..utils.ids import gen_session_id
+    runtime_session_id = gen_session_id()
     base_provider = _resolve_base_provider(provider)
 
     title = (detail.session.title if detail.session else None) or f"History: {session_id}"
@@ -464,9 +465,19 @@ async def fetch_from_cli(
     if not meta:
         raise HTTPException(status_code=404, detail=f"Runtime session '{session_id}' not found")
 
-    # Task sessions (task_*) are created by the task executor, not from CLI.
+    # Task sessions are created by the task executor, not from CLI.
     # Fetching from CLI would overwrite runtime messages with unrelated data.
-    if session_id.startswith("task_"):
+    # Check via task_id meta field (new) or legacy task_ prefix.
+    is_task_session = False
+    try:
+        _task_id = storage._redis.hget(f"session:{session_id}:meta", "task_id")
+        if _task_id:
+            is_task_session = True
+    except Exception:
+        pass
+    if not is_task_session and session_id.startswith("task_"):
+        is_task_session = True
+    if is_task_session:
         raise HTTPException(
             status_code=400,
             detail="Task sessions cannot be refreshed from CLI — their data comes from the task executor, not CLI history files.",
