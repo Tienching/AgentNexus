@@ -1662,6 +1662,13 @@ class ChatView {
             this.renderMessages(paneId, sessionId, data);
         } catch (error) {
             console.error('Failed to load messages:', error);
+            const isNotFound = /not found|404/i.test(error.message || '');
+            if (isNotFound) {
+                // Session was deleted or expired — reset to initial view
+                if (location.hash) history.replaceState(null, '', location.pathname);
+                this.showNewSessionView(paneId);
+                return;
+            }
             detail.innerHTML = `
                 <div class="empty-state">
                     <p class="empty-state-text" style="color: var(--error)">Failed to load messages</p>
