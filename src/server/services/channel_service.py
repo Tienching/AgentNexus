@@ -36,7 +36,10 @@ from .notification import (
     get_notification_handler,
 )
 from src.runtime.stores.session_storage import get_session_storage
-from src.runtime.models.session import SessionMeta, SessionStatus, StoredMessage, MessageStatus
+from src.runtime.models.session import (
+    SessionMeta, SessionStatus, StoredMessage, MessageStatus,
+    StoredToolCall, ToolCallStatus, ContentSegment,
+)
 from .media_downloader import download_images, download_files
 
 logger = get_logger(__name__)
@@ -357,6 +360,14 @@ class ChannelService:
         agui_tool_buffer: Dict[str, Dict[str, str]] = {}
         has_streamed_text = False
 
+        # AGUI archival state — tracks content_segments and tool_calls for
+        # faithful reproduction of the assistant response in the Nexus UI.
+        _content_segments: List[ContentSegment] = []
+        _tool_calls: List[StoredToolCall] = []
+        _tool_call_ids: List[str] = []
+        _segment_seq = 0
+        _last_text_snapshot = ""  # text length at which we last emitted a text segment
+
         try:
             async with asyncio.timeout(timeout):
                 async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
@@ -399,6 +410,17 @@ class ChannelService:
                             result.tool_call_count += 1
                             if tool_id:
                                 agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
+                                # Flush preceding text as a segment
+                                current_text = "".join(result.collected_text_parts)
+                                new_text = current_text[len(_last_text_snapshot):]
+                                if new_text.strip():
+                                    _content_segments.append(ContentSegment(type="text", content=new_text, sequence=_segment_seq))
+                                    _segment_seq += 1
+                                _last_text_snapshot = current_text
+                                # Add tool_call segment
+                                _content_segments.append(ContentSegment(type="tool_call", tool_call_id=tool_id, sequence=_segment_seq))
+                                _segment_seq += 1
+                                _tool_call_ids.append(tool_id)
 
                         elif evt_type == "TOOL_CALL_ARGS":
                             tool_id = event.get("toolCallId", "")
@@ -421,15 +443,38 @@ class ChannelService:
                                 result.tool_summaries.append(summary)
                                 if on_tool_summary:
                                     await on_tool_summary(summary)
+                                # Build StoredToolCall for AGUI archival
+                                tc_result = event.get("result") if evt_type == "TOOL_CALL_END" else event.get("content")
+                                _tool_calls.append(StoredToolCall(
+                                    id=tool_id,
+                                    tool_name=entry["name"],
+                                    args=params_obj,
+                                    args_string=entry["args"],
+                                    status=ToolCallStatus.COMPLETED,
+                                    result=tc_result,
+                                    end_time=int(time.time() * 1000),
+                                ))
 
                         # Legacy tool blocks
                         elif evt_type == "content_block_start":
                             content_block = event.get("content_block", {})
                             if content_block.get("type") == "tool_use":
                                 tool_name = content_block.get("name", "unknown")
+                                tool_id = content_block.get("id", f"tool-{uuid.uuid4().hex[:8]}")
                                 index = event.get("index", 0)
                                 result.tool_call_count += 1
-                                tool_block_buffer[index] = {"name": tool_name, "json_buf": ""}
+                                tool_block_buffer[index] = {"name": tool_name, "json_buf": "", "id": tool_id}
+                                # Flush preceding text as a segment
+                                current_text = "".join(result.collected_text_parts)
+                                new_text = current_text[len(_last_text_snapshot):]
+                                if new_text.strip():
+                                    _content_segments.append(ContentSegment(type="text", content=new_text, sequence=_segment_seq))
+                                    _segment_seq += 1
+                                _last_text_snapshot = current_text
+                                # Add tool_call segment
+                                _content_segments.append(ContentSegment(type="tool_call", tool_call_id=tool_id, sequence=_segment_seq))
+                                _segment_seq += 1
+                                _tool_call_ids.append(tool_id)
 
                         elif evt_type == "content_block_stop":
                             index = event.get("index", 0)
@@ -446,6 +491,15 @@ class ChannelService:
                                 result.tool_summaries.append(summary)
                                 if on_tool_summary:
                                     await on_tool_summary(summary)
+                                # Build StoredToolCall for AGUI archival
+                                _tool_calls.append(StoredToolCall(
+                                    id=entry["id"],
+                                    tool_name=entry["name"],
+                                    args=params_obj,
+                                    args_string=entry["json_buf"],
+                                    status=ToolCallStatus.COMPLETED,
+                                    end_time=int(time.time() * 1000),
+                                ))
 
                     # --- assistant event (skip if already streamed) ---
                     elif event_type == "assistant":
@@ -482,29 +536,66 @@ class ChannelService:
             result.is_error = True
             result.final_content = f"❌ 处理出错：{str(e)[:200]}"
 
-        # --- Unified archival: store user + assistant messages to Redis ---
+        # --- Unified archival: store user + assistant messages to Redis (AGUI format) ---
         final = result.final_content or "".join(result.collected_text_parts).strip()
         if final:
             try:
                 storage = get_session_storage()
+
+                # Build user message content with embedded image/file paths
+                user_content = message.content or ""
+                image_paths = getattr(request, "image_paths", None) or []
+                file_paths = getattr(request, "file_paths", None) or []
+                if image_paths or file_paths:
+                    parts: list[str] = []
+                    for p in image_paths:
+                        parts.append(f"{{image: {p}}}")
+                    for p in file_paths:
+                        parts.append(f"{{file: {p}}}")
+                    media_tags = " ".join(parts)
+                    if user_content.strip():
+                        user_content = f"{media_tags}\n\n{user_content}"
+                    else:
+                        user_content = media_tags
+
                 storage.add_session_message(
                     session_id,
                     StoredMessage(
                         id=f"ch-u-{uuid.uuid4().hex[:8]}",
                         role="user",
-                        content=message.content or "",
+                        content=user_content,
                         status=MessageStatus.COMPLETE,
                     ),
                 )
+
+                # Build assistant message with content_segments and tool_call_ids
+                # Flush any remaining text after the last tool call as a final segment
+                current_text = "".join(result.collected_text_parts)
+                remaining = current_text[len(_last_text_snapshot):]
+                if remaining.strip():
+                    _content_segments.append(ContentSegment(type="text", content=remaining, sequence=_segment_seq))
+                # If no segments were built but we have content, create a single text segment
+                if not _content_segments and final:
+                    _content_segments.append(ContentSegment(type="text", content=final, sequence=0))
+
+                assistant_msg_id = f"ch-a-{uuid.uuid4().hex[:8]}"
                 storage.add_session_message(
                     session_id,
                     StoredMessage(
-                        id=f"ch-a-{uuid.uuid4().hex[:8]}",
+                        id=assistant_msg_id,
                         role="assistant",
                         content=final,
                         status=MessageStatus.COMPLETE,
+                        tool_call_ids=_tool_call_ids if _tool_call_ids else None,
+                        content_segments=_content_segments if _content_segments else None,
                     ),
                 )
+
+                # Persist tool calls to Redis
+                for tc in _tool_calls:
+                    tc.parent_message_id = assistant_msg_id
+                    storage.save_tool_call(session_id, tc)
+
             except Exception as e:
                 logger.warning(f"[{message.channel}] Failed to archive messages: {e}")
 
