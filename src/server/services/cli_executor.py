@@ -329,7 +329,8 @@ class CLIExecutor:
         logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}, model={request_model_name}, cli_session_id={request_cli_session_id}")
         request_image_paths = getattr(request, "image_paths", None) or []
         request_file_paths = getattr(request, "file_paths", None) or []
-        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name, cli_session_id=request_cli_session_id, image_paths=request_image_paths or None, file_paths=request_file_paths or None)
+        request_content_parts = getattr(request, "content_parts", None) or []
+        cmd = self._build_command(exec_user, cleaned_content, use_continue=use_continue, agent_type=agent_type, alias=request_alias, model=request_model_name, cli_session_id=request_cli_session_id, image_paths=request_image_paths or None, file_paths=request_file_paths or None, content_parts=request_content_parts or None)
 
         # 检查当前用户
         current_user = pwd.getpwuid(os.getuid()).pw_name
@@ -761,6 +762,7 @@ class CLIExecutor:
         cli_session_id: Optional[str] = None,
         image_paths: Optional[List[str]] = None,
         file_paths: Optional[List[str]] = None,
+        content_parts: Optional[list] = None,
     ) -> List[str]:
         """构建 CLI 命令
 
@@ -775,6 +777,7 @@ class CLIExecutor:
                 When provided, uses --resume SESSION_ID instead of -c/--resume latest.
             image_paths: Local image file paths to inject into the prompt.
             file_paths: Local file paths (non-image) to inject into the prompt.
+            content_parts: Ordered list of content parts preserving text/image interleaving.
         """
         cleaned_content, inline_model = self._parse_model_param(content)
         model_param = inline_model or model or None
@@ -808,22 +811,35 @@ class CLIExecutor:
         else:
             message = cleaned_content
 
-        # Inject image file paths into the prompt so the CLI can read them.
-        # Images are downloaded into the session cwd so relative paths work.
-        if image_paths:
-            tags = " ".join(f"{{image: {p}}}" for p in image_paths)
-            if message.strip():
-                message = f"{tags}\n\n{message}"
-            else:
-                message = tags
+        # Inject image/file paths into the prompt.
+        # Prefer content_parts (preserves original interleaving order).
+        if content_parts:
+            assembled: list[str] = []
+            for part in content_parts:
+                if part.get("type") == "image":
+                    p = part.get("path") or part.get("url", "")
+                    assembled.append(f"{{image: {p}}}")
+                elif part.get("type") == "text":
+                    assembled.append(part.get("content", ""))
+                elif part.get("type") == "file":
+                    p = part.get("path") or part.get("url", "")
+                    assembled.append(f"{{file: {p}}}")
+            message = "\n".join(assembled)
+        else:
+            # Fallback: flat image_paths/file_paths (all images before text)
+            if image_paths:
+                tags = " ".join(f"{{image: {p}}}" for p in image_paths)
+                if message.strip():
+                    message = f"{tags}\n\n{message}"
+                else:
+                    message = tags
 
-        # Inject non-image file paths into the prompt.
-        if file_paths:
-            tags = " ".join(f"{{file: {p}}}" for p in file_paths)
-            if message.strip():
-                message = f"{tags}\n\n{message}"
-            else:
-                message = tags
+            if file_paths:
+                tags = " ".join(f"{{file: {p}}}" for p in file_paths)
+                if message.strip():
+                    message = f"{tags}\n\n{message}"
+                else:
+                    message = tags
 
         # Provider-aware continue/resume logic:
         # When cli_session_id is available, use precise session resume:

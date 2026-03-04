@@ -81,6 +81,10 @@ class InboundMessage:
     content: str = ""
     message_type: MessageType = MessageType.TEXT
     media: List[MediaAttachment] = field(default_factory=list)
+    content_parts: List[Dict[str, Any]] = field(default_factory=list)
+    """Ordered list of content parts preserving interleaving of text and media.
+    Each part is {"type": "text", "content": "..."} or {"type": "image", "url": "..."}.
+    When empty, fall back to content + media fields."""
     reply_to: Optional[str] = None
     mentions: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)

@@ -596,6 +596,7 @@ class WeComChannel(BaseChannel):
         # 解析消息内容
         text_content = ""
         media_list: List[MediaAttachment] = []
+        _content_parts: list[dict] = []  # 保留图文交错顺序
         inbound_msg_type = MessageType.TEXT
 
         if msgtype == "text":
@@ -626,19 +627,23 @@ class WeComChannel(BaseChannel):
                     mime_type="application/octet-stream",
                 ))
         elif msgtype == "mixed":
-            # 图文混排消息
+            # 图文混排消息 — 保留 msg_items 的原始顺序
             mixed_obj = payload.get("mixed", {})
             msg_items = mixed_obj.get("msg_item", [])
             for item in msg_items:
                 item_type = item.get("msgtype", "")
                 if item_type == "text":
-                    text_content += item.get("text", {}).get("content", "")
+                    t = item.get("text", {}).get("content", "")
+                    if t:
+                        text_content += t
+                        _content_parts.append({"type": "text", "content": t})
                 elif item_type == "image":
                     img_url = item.get("image", {}).get("url", "")
                     if img_url:
                         media_list.append(
                             MediaAttachment(url=img_url, mime_type=None)
                         )
+                        _content_parts.append({"type": "image", "url": img_url})
             if media_list:
                 inbound_msg_type = MessageType.IMAGE
         else:
@@ -667,6 +672,7 @@ class WeComChannel(BaseChannel):
             content=text_content.strip(),
             message_type=inbound_msg_type,
             media=media_list,
+            content_parts=_content_parts,
             metadata={
                 "chattype": chattype,
                 "aibotid": aibot_id,

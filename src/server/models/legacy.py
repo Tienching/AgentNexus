@@ -18,6 +18,7 @@ class RequestModel(BaseModel):
     response_url: Optional[str] = Field(default="", description="流式连接断开后的回调URL，用于发送剩余消息")
     image_paths: Optional[List[str]] = Field(default_factory=list, description="本地图片文件路径列表（由 media_downloader 下载后填充）")
     file_paths: Optional[List[str]] = Field(default_factory=list, description="本地文件路径列表（由 media_downloader 下载后填充）")
+    content_parts: Optional[list] = Field(default_factory=list, description="有序内容部件列表，保留图文交错顺序。每项为 {'type':'text','content':'...'} 或 {'type':'image','path':'...'}")
 
     # 允许额外字段
     class Config:

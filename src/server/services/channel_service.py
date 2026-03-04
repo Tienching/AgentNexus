@@ -282,6 +282,22 @@ class ChannelService:
                 except Exception as e:
                     logger.warning(f"[{message.channel}] Failed to download files: {e}")
 
+        # Build content_parts with local paths replacing URLs
+        content_parts: list[dict] = []
+        if getattr(message, "content_parts", None):
+            # Build URL -> local path mapping
+            _url_to_path: dict[str, str] = {}
+            img_urls = [m.url for m in message.media if m.url and (not m.mime_type or "image" in (m.mime_type or ""))]
+            for url, path in zip(img_urls, image_paths):
+                _url_to_path[url] = path
+            for part in message.content_parts:
+                if part.get("type") == "image" and part.get("url") in _url_to_path:
+                    content_parts.append({"type": "image", "path": _url_to_path[part["url"]]})
+                elif part.get("type") == "text":
+                    content_parts.append({"type": "text", "content": part.get("content", "")})
+                else:
+                    content_parts.append(part)
+
         content = message.content
         if not content.strip() and image_paths:
             content = ""
@@ -293,6 +309,7 @@ class ChannelService:
             msg_id=f"msg-{uuid.uuid4().hex[:8]}",
             image_paths=image_paths,
             file_paths=file_paths,
+            content_parts=content_parts if content_parts else None,
         )
 
         # Apply model / provider overrides (from /switch)
@@ -543,20 +560,37 @@ class ChannelService:
                 storage = get_session_storage()
 
                 # Build user message content with embedded image/file paths
-                user_content = message.content or ""
-                image_paths = getattr(request, "image_paths", None) or []
-                file_paths = getattr(request, "file_paths", None) or []
-                if image_paths or file_paths:
-                    parts: list[str] = []
-                    for p in image_paths:
-                        parts.append(f"{{image: {p}}}")
-                    for p in file_paths:
-                        parts.append(f"{{file: {p}}}")
-                    media_tags = " ".join(parts)
-                    if user_content.strip():
-                        user_content = f"{media_tags}\n\n{user_content}"
-                    else:
-                        user_content = media_tags
+                # Prefer content_parts (preserves interleaving order) over flat lists
+                req_content_parts = getattr(request, "content_parts", None) or []
+                if req_content_parts:
+                    # Reconstruct content with {image: path} tags in original order
+                    assembled: list[str] = []
+                    for part in req_content_parts:
+                        if part.get("type") == "image":
+                            p = part.get("path") or part.get("url", "")
+                            assembled.append(f"{{image: {p}}}")
+                        elif part.get("type") == "text":
+                            assembled.append(part.get("content", ""))
+                        elif part.get("type") == "file":
+                            p = part.get("path") or part.get("url", "")
+                            assembled.append(f"{{file: {p}}}")
+                    user_content = "\n".join(assembled)
+                else:
+                    # Fallback: flat image_paths + file_paths (old behavior)
+                    user_content = message.content or ""
+                    image_paths = getattr(request, "image_paths", None) or []
+                    file_paths = getattr(request, "file_paths", None) or []
+                    if image_paths or file_paths:
+                        parts: list[str] = []
+                        for p in image_paths:
+                            parts.append(f"{{image: {p}}}")
+                        for p in file_paths:
+                            parts.append(f"{{file: {p}}}")
+                        media_tags = " ".join(parts)
+                        if user_content.strip():
+                            user_content = f"{media_tags}\n\n{user_content}"
+                        else:
+                            user_content = media_tags
 
                 storage.add_session_message(
                     session_id,
