@@ -213,7 +213,8 @@ class CLIExecutor(BaseExecutor):
             cmd.extend(["-p"])
             message = "你好"
         else:
-            if use_continue:
+            session_cleared = getattr(context, "session_cleared", False)
+            if use_continue and not session_cleared:
                 if cli_session_id:
                     cmd.extend(["--resume", cli_session_id, "-p"])
                 else:

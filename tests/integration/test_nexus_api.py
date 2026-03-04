@@ -882,7 +882,7 @@ class TestTaskAPI:
     @pytest.mark.asyncio
     async def test_task_agui_messages_success(self, client, mock_storage, mock_task_queue, tmp_path):
         task_id = "abc123"
-        log_path = tmp_path / "ubuntu" / "sessions" / f"task_{task_id}" / ".claude" / "conversation.json"
+        log_path = tmp_path / "ubuntu" / ".nexus" / "sessions" / f"task_{task_id}" / ".claude" / "conversation.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
             '[{"role":"user","content":"hi","timestamp":"2026-01-01T00:00:00Z"},{"role":"assistant","content":"hello"}]',

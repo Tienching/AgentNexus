@@ -834,7 +834,7 @@ class SlashCommandHandler:
             logger.debug(f"Could not read archived session messages: {e}")
 
         # Fallback to conversation.json (legacy path)
-        log_path = Path(self.config.user_home_base) / self.exec_user / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path = Path(self.config.user_home_base) / self.exec_user / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
 
         if log_path.exists():
             try:
@@ -1366,7 +1366,7 @@ class SlashCommandHandler:
             Claude CLI session UUID if found, None otherwise
         """
         try:
-            # Transform path: /home/ubuntu/sessions/xxx_taskid → -home-ubuntu-sessions-xxx-taskid
+            # Transform path: /home/ubuntu/.nexus/sessions/xxx_taskid → -home-ubuntu-.nexus-sessions-xxx-taskid
             path_str = str(task_dir.resolve())
             projects_dir_name = path_str.replace("/", "-").replace("_", "-")
 
@@ -1428,7 +1428,7 @@ class SlashCommandHandler:
                 if str(base).strip() == "/home":
                     base = Path.home()
                 if current_session_id:
-                    session_dir = base / "sessions" / current_session_id
+                    session_dir = base / ".nexus" / "sessions" / current_session_id
                     # Always show the session directory path, regardless of existence
                     # The directory will be created when Claude CLI executes
                     return f"## 📂 Current Workspace\n\n`{session_dir}`"
@@ -1454,7 +1454,7 @@ class SlashCommandHandler:
                 if str(base).strip() == "/home":
                     base = Path.home()  # e.g. /home/ubuntu
 
-                sessions_dir = base / "sessions"
+                sessions_dir = base / ".nexus" / "sessions"
                 found = None
 
                 # 2. Try task.session_id (best match)
@@ -1555,10 +1555,10 @@ class SlashCommandHandler:
         # IF self.startup_cwd is set to /home/ubuntu, that's "too far back".
 
         # Refined Logic:
-        # If we are inside a task directory (sessions/UUID_taskID), we want to go up to sessions/UUID?
+        # If we are inside a task directory (.nexus/sessions/UUID_taskID), we want to go up to .nexus/sessions/UUID?
         # No, "session directory" usually IS the task directory in this flat structure.
         # The user wants to go back to "this session's default address".
-        # If the session started in /home/ubuntu/sessions/main_session, we should go there.
+        # If the session started in /home/ubuntu/.nexus/sessions/main_session, we should go there.
 
         # Since we can't easily know the "original session ID" without passing it,
         # let's assume the user wants to go to self.startup_cwd (which we previously forced to /home/ubuntu).
@@ -1587,7 +1587,7 @@ class SlashCommandHandler:
 
             # Return to session directory (the correct "home" for this session)
             base = self.startup_cwd
-            session_dir = base / "sessions" / current_session_id
+            session_dir = base / ".nexus" / "sessions" / current_session_id
             # Always use session directory - create it if it doesn't exist
             if not session_dir.exists():
                 try:
@@ -2587,7 +2587,7 @@ class SlashCommandHandler:
             logger.debug(f"Could not read archived session messages: {e}")
 
         # 回退：尝试读取任务执行日志（旧链路）
-        log_path = Path(self.config.user_home_base) / self.exec_user / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path = Path(self.config.user_home_base) / self.exec_user / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
         
         if log_path.exists():
             try:

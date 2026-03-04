@@ -855,6 +855,74 @@ class SessionStorage:
             logger.error(f"Failed to get CLI session ID: {e}")
             return None
 
+    def clear_cli_session_id(self, session_id: str) -> bool:
+        """Clear CLI session ID and legacy claude_session_id.
+
+        Used by /clear to ensure the next CLI invocation starts a fresh
+        session instead of resuming the old one.
+
+        Args:
+            session_id: Session ID to clear
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "cli_session_id", "claude_session_id")
+            logger.info(f"Cleared CLI session ID: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear CLI session ID: {e}")
+            return False
+
+    def set_session_cleared(self, session_id: str) -> bool:
+        """Mark session as just cleared by /clear.
+
+        The next CLI invocation should consume this flag via
+        ``consume_session_cleared()`` and skip all resume/continue
+        parameters so the CLI starts a brand-new conversation.
+
+        Args:
+            session_id: Session ID to mark
+
+        Returns:
+            True if successful
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, "session_cleared", "1")
+            logger.info(f"Set session_cleared flag: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set session_cleared flag: {e}")
+            return False
+
+    def consume_session_cleared(self, session_id: str) -> bool:
+        """Check and atomically consume the session_cleared flag.
+
+        Returns True if the flag was set (meaning /clear was executed),
+        and removes the flag so subsequent calls return False.
+
+        Args:
+            session_id: Session ID to check
+
+        Returns:
+            True if the session was recently cleared
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            # Atomically get and delete
+            val = self._redis.hget(key, "session_cleared")
+            if val:
+                self._redis.hdel(key, "session_cleared")
+                logger.info(f"Consumed session_cleared flag: {session_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to consume session_cleared flag: {e}")
+            return False
+
     def get_user_sessions(
         self,
         username: str,

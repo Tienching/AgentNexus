@@ -497,8 +497,8 @@ async def fetch_from_cli(
             or (meta.exec_dir if meta.exec_dir else None)
         )
         if not project_path:
-            # Fallback: use the session's default directory {user_home}/sessions/{session_id}
-            project_path = str(user_home / "sessions" / session_id)
+            # Fallback: use the session's default directory {user_home}/.nexus/sessions/{session_id}
+            project_path = str(user_home / ".nexus" / "sessions" / session_id)
         if not project_path:
             raise HTTPException(
                 status_code=400,

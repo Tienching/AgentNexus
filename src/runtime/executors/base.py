@@ -46,6 +46,7 @@ class RequestContext:
     run_kind: str = ""
     model: Optional[str] = None  # LLM model name override
     cli_session_id: Optional[str] = None  # CLI session UUID for precise resume
+    session_cleared: bool = False  # True if /clear was just executed; skip resume
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
@@ -110,12 +111,12 @@ class BaseExecutor(ABC):
             return Path(str(context.cwd))
         
         base = self.config.user_home_base
-        preferred_dir = Path(base) / context.exec_user / "sessions" / context.session_id
+        preferred_dir = Path(base) / context.exec_user / ".nexus" / "sessions" / context.session_id
         
         current_user = pwd.getpwuid(os.getuid()).pw_name
         if current_user != context.exec_user and os.geteuid() != 0:
             # Non-root fallback
-            exec_dir = Path.home() / context.exec_user / "sessions" / context.session_id
+            exec_dir = Path.home() / context.exec_user / ".nexus" / "sessions" / context.session_id
         else:
             exec_dir = preferred_dir
         

@@ -11,7 +11,9 @@ import asyncio
 import json
 import time
 import uuid
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 
 from ..config import settings
 from ..logger import get_logger
@@ -34,6 +36,8 @@ from .notification import (
     get_notification_handler,
 )
 from src.runtime.stores.session_storage import get_session_storage
+from src.runtime.models.session import StoredMessage, MessageStatus
+from .media_downloader import download_images, download_files
 
 logger = get_logger(__name__)
 
@@ -49,6 +53,20 @@ CHANNEL_MAX_LENGTH = {
 
 # Progress update interval (seconds) — how often to edit the placeholder message
 PROGRESS_UPDATE_INTERVAL = 8
+
+# Type alias for the optional on_text_delta callback
+OnTextDelta = Callable[[str], Coroutine[Any, Any, None]]
+
+
+@dataclass
+class ExecutorResult:
+    """Unified result from _consume_executor_events()."""
+    final_content: str = ""
+    is_error: bool = False
+    tool_summaries: List[str] = field(default_factory=list)
+    tool_call_count: int = 0
+    collected_text_parts: List[str] = field(default_factory=list)
+
 
 # 全局 channel 服务实例
 _channel_service: Optional["ChannelService"] = None
@@ -206,7 +224,292 @@ class ChannelService:
         if self.manager:
             await self.manager.stop()
             logger.info("Channel service stopped")
-    
+
+    # ------------------------------------------------------------------
+    # Shared helpers — build request & consume executor events
+    # ------------------------------------------------------------------
+
+    async def _build_request(
+        self,
+        message: InboundMessage,
+        session_id: str,
+    ):
+        """Build a RequestModel from an InboundMessage (shared across all channels).
+
+        Handles: image/file download, model/provider overrides, model_changed detection.
+        """
+        from ..services import CLIExecutor  # noqa: F811
+        from ..models import RequestModel
+
+        exec_user = settings.exec_user or "ubuntu"
+        session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        # Download media
+        image_paths: list[str] = []
+        file_paths: list[str] = []
+        _decrypt_fn = None
+        if message.channel == "wecom" and self.manager:
+            _ch = self.manager.get_channel("wecom")
+            _crypto = getattr(_ch, "_crypto", None) if _ch else None
+            _decrypt_fn = _crypto.decrypt_file if _crypto else None
+        if message.media:
+            image_items = [
+                {"url": m.url, "mime_type": m.mime_type}
+                for m in message.media
+                if m.url and (not m.mime_type or "image" in (m.mime_type or ""))
+            ]
+            file_items = [
+                {"url": m.url, "file_name": m.file_name}
+                for m in message.media
+                if m.url and m.mime_type and "image" not in (m.mime_type or "")
+            ]
+            if image_items:
+                try:
+                    image_paths = await download_images(image_items, dest_dir=str(session_dir), session_id=session_id, decrypt_fn=_decrypt_fn)
+                    if image_paths:
+                        logger.info(f"[{message.channel}] Downloaded {len(image_paths)} image(s)", extra={"session_id": session_id})
+                except Exception as e:
+                    logger.warning(f"[{message.channel}] Failed to download images: {e}")
+            if file_items:
+                try:
+                    file_paths = await download_files(file_items, dest_dir=str(session_dir), session_id=session_id, decrypt_fn=_decrypt_fn)
+                    if file_paths:
+                        logger.info(f"[{message.channel}] Downloaded {len(file_paths)} file(s)", extra={"session_id": session_id})
+                except Exception as e:
+                    logger.warning(f"[{message.channel}] Failed to download files: {e}")
+
+        content = message.content
+        if not content.strip() and image_paths:
+            content = ""
+
+        request = RequestModel(
+            content=content,
+            user=f"{message.channel}_{message.sender_id}",
+            session_id=session_id,
+            msg_id=f"msg-{uuid.uuid4().hex[:8]}",
+            image_paths=image_paths,
+            file_paths=file_paths,
+        )
+
+        # Apply model / provider overrides (from /switch)
+        try:
+            storage = get_session_storage()
+            model_override = storage.get_model_override(session_id)
+            if model_override:
+                request.model = model_override
+                active_model = storage.get_active_model(session_id)
+                if active_model != model_override:
+                    request.model_changed = True
+                    logger.info(
+                        f"[{message.channel}] Model changed: {active_model} -> {model_override}",
+                        extra={"session_id": session_id},
+                    )
+                else:
+                    logger.info(
+                        f"[{message.channel}] Model override applied: {model_override}",
+                        extra={"session_id": session_id},
+                    )
+            handoff_prov = storage.get_handoff_provider(session_id)
+            if handoff_prov:
+                hp_provider, hp_alias = handoff_prov
+                request.provider = hp_provider
+                request.alias = hp_alias
+                logger.info(
+                    f"[{message.channel}] Provider override: provider={hp_provider}, alias={hp_alias}",
+                    extra={"session_id": session_id},
+                )
+        except Exception as e:
+            logger.warning(f"[{message.channel}] Failed to read session overrides: {e}")
+
+        return request
+
+    async def _consume_executor_events(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        request,
+        *,
+        on_text_delta: Optional[OnTextDelta] = None,
+        on_tool_summary: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None,
+    ) -> ExecutorResult:
+        """Consume raw executor events — **single source of truth** for all channels.
+
+        Responsibilities:
+        1. Drive ``executor.execute()`` iteration
+        2. Parse stream_event / assistant / result event types
+        3. Track tool calls (AG-UI + legacy)
+        4. Deduplicate text (has_streamed_text flag)
+        5. Archive user + assistant messages to Redis on ``result``
+
+        Channel-specific behaviour is injected via callbacks:
+        - *on_text_delta(text)*: called for each incremental text chunk (wecom writes to StreamBuffer)
+        - *on_tool_summary(summary)*: called when a tool call is finalised (wecom appends to StreamBuffer)
+        """
+        from ..services import CLIExecutor
+
+        executor = CLIExecutor(config=settings)
+        exec_user = settings.exec_user or "ubuntu"
+        timeout = settings.cli_timeout or 120
+
+        result = ExecutorResult()
+        tool_block_buffer: Dict[int, Dict[str, str]] = {}
+        agui_tool_buffer: Dict[str, Dict[str, str]] = {}
+        has_streamed_text = False
+
+        try:
+            async with asyncio.timeout(timeout):
+                async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
+                    if not output:
+                        continue
+                    try:
+                        data = json.loads(output)
+                        if not isinstance(data, dict):
+                            continue
+                    except json.JSONDecodeError:
+                        continue
+
+                    event_type = data.get("type", "")
+
+                    # --- stream_event ---
+                    if event_type == "stream_event":
+                        event = data.get("event", {})
+                        evt_type = event.get("type", "")
+
+                        if evt_type == "content_block_delta":
+                            delta = event.get("delta", {})
+                            delta_type = delta.get("type", "")
+                            if delta_type == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    result.collected_text_parts.append(text)
+                                    has_streamed_text = True
+                                    if on_text_delta:
+                                        await on_text_delta(text)
+                            elif delta_type == "input_json_delta":
+                                index = event.get("index", 0)
+                                partial = delta.get("partial_json", "")
+                                if partial and index in tool_block_buffer:
+                                    tool_block_buffer[index]["json_buf"] += partial
+
+                        # AG-UI tool tracking
+                        elif evt_type == "TOOL_CALL_START":
+                            tool_name = event.get("toolCallName", "unknown")
+                            tool_id = event.get("toolCallId", "")
+                            result.tool_call_count += 1
+                            if tool_id:
+                                agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
+
+                        elif evt_type == "TOOL_CALL_ARGS":
+                            tool_id = event.get("toolCallId", "")
+                            delta_str = event.get("delta", "")
+                            if tool_id and delta_str and tool_id in agui_tool_buffer:
+                                agui_tool_buffer[tool_id]["args"] += delta_str
+
+                        elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
+                            tool_id = event.get("toolCallId", "")
+                            if tool_id and tool_id in agui_tool_buffer:
+                                entry = agui_tool_buffer.pop(tool_id)
+                                params_obj = {}
+                                if entry["args"]:
+                                    try:
+                                        params_obj = json.loads(entry["args"])
+                                    except (json.JSONDecodeError, TypeError):
+                                        pass
+                                display = self._get_tool_display_name(entry["name"], params_obj)
+                                summary = f"🔧 `{display}`"
+                                result.tool_summaries.append(summary)
+                                if on_tool_summary:
+                                    await on_tool_summary(summary)
+
+                        # Legacy tool blocks
+                        elif evt_type == "content_block_start":
+                            content_block = event.get("content_block", {})
+                            if content_block.get("type") == "tool_use":
+                                tool_name = content_block.get("name", "unknown")
+                                index = event.get("index", 0)
+                                result.tool_call_count += 1
+                                tool_block_buffer[index] = {"name": tool_name, "json_buf": ""}
+
+                        elif evt_type == "content_block_stop":
+                            index = event.get("index", 0)
+                            if index in tool_block_buffer:
+                                entry = tool_block_buffer.pop(index)
+                                params_obj = {}
+                                if entry["json_buf"]:
+                                    try:
+                                        params_obj = json.loads(entry["json_buf"])
+                                    except (json.JSONDecodeError, TypeError):
+                                        pass
+                                display = self._get_tool_display_name(entry["name"], params_obj)
+                                summary = f"🔧 `{display}`"
+                                result.tool_summaries.append(summary)
+                                if on_tool_summary:
+                                    await on_tool_summary(summary)
+
+                    # --- assistant event (skip if already streamed) ---
+                    elif event_type == "assistant":
+                        if not has_streamed_text:
+                            msg = data.get("message", {})
+                            msg_content = msg.get("content", [])
+                            if isinstance(msg_content, list):
+                                for item in msg_content:
+                                    if isinstance(item, dict) and item.get("type") == "text":
+                                        text = item.get("text", "")
+                                        if text:
+                                            result.collected_text_parts.append(text)
+                                            if on_text_delta:
+                                                await on_text_delta(text)
+
+                    # --- result event ---
+                    elif event_type == "result":
+                        is_error = data.get("is_error", False)
+                        content = data.get("content", "") or data.get("result", "")
+                        if not content and is_error:
+                            errors = data.get("errors", [])
+                            if errors:
+                                content = "❌ " + "; ".join(str(e) for e in errors[:3])
+                        result.final_content = content or ""
+                        result.is_error = is_error
+                        break  # result is terminal
+
+        except TimeoutError:
+            logger.error(f"[{message.channel}] AI execution timed out after {timeout}s")
+            result.is_error = True
+            result.final_content = ""
+        except Exception as e:
+            logger.error(f"[{message.channel}] AI processing error: {e}", exc_info=True)
+            result.is_error = True
+            result.final_content = f"❌ 处理出错：{str(e)[:200]}"
+
+        # --- Unified archival: store user + assistant messages to Redis ---
+        final = result.final_content or "".join(result.collected_text_parts).strip()
+        if final:
+            try:
+                storage = get_session_storage()
+                storage.add_session_message(
+                    session_id,
+                    StoredMessage(
+                        id=f"ch-u-{uuid.uuid4().hex[:8]}",
+                        role="user",
+                        content=message.content or "",
+                        status=MessageStatus.COMPLETE,
+                    ),
+                )
+                storage.add_session_message(
+                    session_id,
+                    StoredMessage(
+                        id=f"ch-a-{uuid.uuid4().hex[:8]}",
+                        role="assistant",
+                        content=final,
+                        status=MessageStatus.COMPLETE,
+                    ),
+                )
+            except Exception as e:
+                logger.warning(f"[{message.channel}] Failed to archive messages: {e}")
+
+        return result
+
     async def _handle_message(self, message: InboundMessage) -> None:
         """处理收到的消息（非阻塞模式）
 
@@ -261,13 +564,9 @@ class ChannelService:
     ) -> None:
         """企微专用：流式处理 AI 事件，text_delta 实时写入 StreamBuffer。
 
-        复用与 _process_with_ai 相同的 executor 和事件解析逻辑，
-        但将 text_delta 实时 append 到 StreamBuffer（让用户看到流式进度），
-        收到 result 事件时用 set_final 替换为完整最终回复。
+        Uses the shared ``_consume_executor_events()`` loop; channel-specific
+        behaviour is injected via callbacks.
         """
-        from ..services import CLIExecutor
-        from ..models import RequestModel
-
         channel = self.manager.get_channel("wecom") if self.manager else None
         if not channel:
             logger.error("[wecom] Channel not found for stream processing")
@@ -278,159 +577,31 @@ class ChannelService:
             logger.error(f"[wecom] StreamBuffer not found: {stream_id}")
             return
 
-        request = RequestModel(
-            content=message.content,
-            user=f"{message.channel}_{message.sender_id}",
-            session_id=session_id,
-            msg_id=f"msg-{uuid.uuid4().hex[:8]}",
-        )
+        request = await self._build_request(message, session_id)
 
-        # Apply persistent model override from /switch -m
-        # and provider override from /switch -r/-l
-        try:
-            storage = get_session_storage()
-            model_override = storage.get_model_override(session_id)
-            if model_override:
-                request.model = model_override
-                # Detect model change: when the override differs from the
-                # model used in the previous CLI invocation, the CLI must
-                # start a new session (skip -c) because tools like codebuddy
-                # lock the model for continued sessions.
-                active_model = storage.get_active_model(session_id)
-                if active_model != model_override:
-                    request.model_changed = True
-                    logger.info(
-                        f"[wecom] Model changed: {active_model} -> {model_override}, will start new CLI session",
-                        extra={"session_id": session_id},
-                    )
-                else:
-                    logger.info(
-                        f"[wecom] Model override applied: {model_override}",
-                        extra={"session_id": session_id},
-                    )
-            # Provider override: /switch may have persisted a different provider
-            handoff_prov = storage.get_handoff_provider(session_id)
-            if handoff_prov:
-                hp_provider, hp_alias = handoff_prov
-                request.provider = hp_provider
-                request.alias = hp_alias
-                logger.info(
-                    f"[wecom] Provider override applied: provider={hp_provider}, alias={hp_alias}",
-                    extra={"session_id": session_id},
-                )
-        except Exception as e:
-            logger.warning(f"[wecom] Failed to read session overrides: {e}")
+        # Callbacks: write text deltas and tool summaries to StreamBuffer in real time
+        async def _on_text(text: str) -> None:
+            buf.append(text)
 
-        executor = CLIExecutor(config=settings)
-        exec_user = settings.exec_user or "ubuntu"
-        timeout = settings.cli_timeout or 120
-
-        # Tool-call tracking (same as _process_with_ai)
-        tool_call_count = 0
-        tool_block_buffer: Dict[int, Dict[str, str]] = {}
-        agui_tool_buffer: Dict[str, Dict[str, str]] = {}
-        tool_summaries: list[str] = []
+        async def _on_tool(summary: str) -> None:
+            buf.append(f"\n\n{summary}")
 
         try:
-            async with asyncio.timeout(timeout):
-                async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
-                    if not output:
-                        continue
-                    try:
-                        data = json.loads(output)
-                        if not isinstance(data, dict):
-                            continue
+            result = await self._consume_executor_events(
+                message, session_id, request,
+                on_text_delta=_on_text,
+                on_tool_summary=_on_tool,
+            )
 
-                        event_type = data.get("type", "")
-
-                        if event_type == "stream_event":
-                            event = data.get("event", {})
-                            evt_type = event.get("type", "")
-
-                            # Text delta → 实时追加到 buffer
-                            if evt_type == "content_block_delta":
-                                delta = event.get("delta", {})
-                                delta_type = delta.get("type", "")
-                                if delta_type == "text_delta":
-                                    text = delta.get("text", "")
-                                    if text:
-                                        buf.append(text)
-                                elif delta_type == "input_json_delta":
-                                    index = event.get("index", 0)
-                                    partial = delta.get("partial_json", "")
-                                    if partial and index in tool_block_buffer:
-                                        tool_block_buffer[index]["json_buf"] += partial
-
-                            # AG-UI tool tracking
-                            elif evt_type == "TOOL_CALL_START":
-                                tool_name = event.get("toolCallName", "unknown")
-                                tool_id = event.get("toolCallId", "")
-                                tool_call_count += 1
-                                if tool_id:
-                                    agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
-
-                            elif evt_type == "TOOL_CALL_ARGS":
-                                tool_id = event.get("toolCallId", "")
-                                delta_str = event.get("delta", "")
-                                if tool_id and delta_str and tool_id in agui_tool_buffer:
-                                    agui_tool_buffer[tool_id]["args"] += delta_str
-
-                            elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
-                                tool_id = event.get("toolCallId", "")
-                                if tool_id and tool_id in agui_tool_buffer:
-                                    entry = agui_tool_buffer.pop(tool_id)
-                                    params_obj = {}
-                                    if entry["args"]:
-                                        try:
-                                            params_obj = json.loads(entry["args"])
-                                        except (json.JSONDecodeError, TypeError):
-                                            pass
-                                    display = self._get_tool_display_name(entry["name"], params_obj)
-                                    summary = f"🔧 `{display}`"
-                                    tool_summaries.append(summary)
-                                    buf.append(f"\n\n{summary}")
-
-                            # Legacy tool blocks
-                            elif evt_type == "content_block_start":
-                                content_block = event.get("content_block", {})
-                                if content_block.get("type") == "tool_use":
-                                    tool_name = content_block.get("name", "unknown")
-                                    index = event.get("index", 0)
-                                    tool_call_count += 1
-                                    tool_block_buffer[index] = {"name": tool_name, "json_buf": ""}
-
-                            elif evt_type == "content_block_stop":
-                                index = event.get("index", 0)
-                                if index in tool_block_buffer:
-                                    entry = tool_block_buffer.pop(index)
-                                    params_obj = {}
-                                    if entry["json_buf"]:
-                                        try:
-                                            params_obj = json.loads(entry["json_buf"])
-                                        except (json.JSONDecodeError, TypeError):
-                                            pass
-                                    display = self._get_tool_display_name(entry["name"], params_obj)
-                                    summary = f"🔧 `{display}`"
-                                    tool_summaries.append(summary)
-                                    buf.append(f"\n\n{summary}")
-
-                        # result 事件：完整最终回复，替换之前的流式内容
-                        elif event_type == "result":
-                            content = data.get("content", "") or data.get("result", "")
-                            if content:
-                                content = self._truncate_response(content, "wecom")
-                                if tool_call_count > 0 and tool_summaries:
-                                    tool_section = "\n".join(tool_summaries)
-                                    content = tool_section + "\n\n---\n\n" + content
-                                buf.set_final(content)
-                            return
-
-                    except json.JSONDecodeError:
-                        continue
-
-        except TimeoutError:
-            logger.error(f"[wecom] AI execution timed out after {timeout}s")
-            buf.append("\n\n⏰ 处理超时，请稍后重试。")
+            content = result.final_content
+            if content:
+                content = self._truncate_response(content, "wecom")
+                if result.tool_call_count > 0 and result.tool_summaries:
+                    tool_section = "\n".join(result.tool_summaries)
+                    content = tool_section + "\n\n---\n\n" + content
+                buf.set_final(content)
+            elif result.is_error and not result.final_content:
+                buf.append("\n\n⏰ 处理超时，请稍后重试。")
         except Exception as e:
             logger.error(f"[wecom] AI processing error: {e}", exc_info=True)
             buf.set_final(f"❌ 处理出错：{str(e)[:200]}")
@@ -596,189 +767,48 @@ class ChannelService:
         target: NotificationTarget,
         handler: UnifiedNotificationHandler,
     ) -> Optional[str]:
-        """使用 AI 处理消息，带进度更新
+        """Process message with AI for non-streaming channels (Telegram, Slack, etc.).
 
-        Handles both text content and tool-call events so that Telegram
-        (and other channel) users can see which tools the AI invokes.
-
-        Supported event formats:
-        - AG-UI: TOOL_CALL_START / TOOL_CALL_ARGS / TOOL_CALL_END
-        - Legacy Claude: content_block_start(tool_use) / content_block_delta(input_json_delta) / content_block_stop
+        Uses the shared ``_consume_executor_events()`` loop; injects a progress
+        callback so the user sees periodic "⏳ processing…" updates.
         """
-        from ..services import CLIExecutor
-        from ..models import RequestModel
-        
-        # 构建请求
-        request = RequestModel(
-            content=message.content,
-            user=f"{message.channel}_{message.sender_id}",
-            session_id=session_id,
-            msg_id=f"msg-{uuid.uuid4().hex[:8]}",
-        )
-        
-        # 创建执行器
-        executor = CLIExecutor(config=settings)
-        
-        # 使用配置的 exec_user 名称（默认是 "ubuntu"）
-        exec_user = settings.exec_user or "ubuntu"
-        
-        # 收集响应
-        response_parts = []
-        
-        timeout = settings.cli_timeout or 120
+        request = await self._build_request(message, session_id)
 
         last_progress_time = time.time()
         collected_chars = 0
 
-        # Tool-call tracking
-        tool_call_count = 0
-        # Legacy: block index → {name, json_buf}
-        tool_block_buffer: Dict[int, Dict[str, str]] = {}
-        # AG-UI: toolCallId → {name, args}
-        agui_tool_buffer: Dict[str, Dict[str, str]] = {}
+        async def _on_text(text: str) -> None:
+            nonlocal last_progress_time, collected_chars
+            collected_chars += len(text)
+            now = time.time()
+            if now - last_progress_time >= PROGRESS_UPDATE_INTERVAL:
+                last_progress_time = now
+                await handler.notify_progress(
+                    target,
+                    f"⏳ 正在处理… 已收集 {collected_chars} 字符"
+                )
 
-        try:
-            async with asyncio.timeout(timeout):
-                async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
-                    if not output:
-                        continue
+        result = await self._consume_executor_events(
+            message, session_id, request,
+            on_text_delta=_on_text,
+        )
 
-                    logger.debug(f"CLI output: {output[:200] if len(output) > 200 else output}")
+        content = result.final_content
+        if not content:
+            # No result event — fall back to collected text parts
+            content = "".join(result.collected_text_parts).strip()
 
-                    try:
-                        data = json.loads(output)
-
-                        if not isinstance(data, dict):
-                            continue
-
-                        event_type = data.get("type", "")
-
-                        # --- stream_event: text deltas + tool calls ---
-                        if event_type == "stream_event":
-                            event = data.get("event", {})
-                            evt_type = event.get("type", "")
-
-                            # ---- Text content ----
-                            if evt_type == "content_block_delta":
-                                delta = event.get("delta", {})
-                                delta_type = delta.get("type", "")
-
-                                if delta_type == "text_delta":
-                                    text = delta.get("text", "")
-                                    if text:
-                                        response_parts.append(text)
-                                        collected_chars += len(text)
-
-                                        # Periodic progress update
-                                        now = time.time()
-                                        if now - last_progress_time >= PROGRESS_UPDATE_INTERVAL:
-                                            last_progress_time = now
-                                            await handler.notify_progress(
-                                                target,
-                                                f"⏳ 正在处理… 已收集 {collected_chars} 字符"
-                                            )
-
-                                # Legacy: accumulate tool input JSON
-                                elif delta_type == "input_json_delta":
-                                    index = event.get("index", 0)
-                                    partial = delta.get("partial_json", "")
-                                    if partial:
-                                        if index in tool_block_buffer:
-                                            tool_block_buffer[index]["json_buf"] += partial
-
-                            # ---- AG-UI: TOOL_CALL_START ----
-                            elif evt_type == "TOOL_CALL_START":
-                                tool_name = event.get("toolCallName", "unknown")
-                                tool_id = event.get("toolCallId", "")
-                                tool_call_count += 1
-                                if tool_id:
-                                    agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
-
-                            # ---- AG-UI: TOOL_CALL_ARGS ----
-                            elif evt_type == "TOOL_CALL_ARGS":
-                                tool_id = event.get("toolCallId", "")
-                                delta_str = event.get("delta", "")
-                                if tool_id and delta_str and tool_id in agui_tool_buffer:
-                                    agui_tool_buffer[tool_id]["args"] += delta_str
-
-                            # ---- AG-UI: TOOL_CALL_END / TOOL_CALL_RESULT ----
-                            elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
-                                tool_id = event.get("toolCallId", "")
-                                if tool_id and tool_id in agui_tool_buffer:
-                                    entry = agui_tool_buffer.pop(tool_id)
-                                    raw_name = entry["name"]
-                                    raw_args = entry["args"]
-                                    params_obj = {}
-                                    if raw_args:
-                                        try:
-                                            params_obj = json.loads(raw_args)
-                                        except (json.JSONDecodeError, TypeError):
-                                            pass
-                                    display = self._get_tool_display_name(raw_name, params_obj)
-                                    snippet = f"\n\n🔧 `{display}`"
-                                    response_parts.append(snippet)
-                                    collected_chars += len(snippet)
-
-                            # ---- Legacy: content_block_start (tool_use) ----
-                            elif evt_type == "content_block_start":
-                                content_block = event.get("content_block", {})
-                                if content_block.get("type") == "tool_use":
-                                    tool_name = content_block.get("name", "unknown")
-                                    index = event.get("index", 0)
-                                    tool_call_count += 1
-                                    tool_block_buffer[index] = {"name": tool_name, "json_buf": ""}
-
-                            # ---- Legacy: content_block_stop → flush tool call ----
-                            elif evt_type == "content_block_stop":
-                                index = event.get("index", 0)
-                                if index in tool_block_buffer:
-                                    entry = tool_block_buffer.pop(index)
-                                    raw_name = entry["name"]
-                                    raw_json = entry["json_buf"]
-                                    params_obj = {}
-                                    if raw_json:
-                                        try:
-                                            params_obj = json.loads(raw_json)
-                                        except (json.JSONDecodeError, TypeError):
-                                            pass
-                                    display = self._get_tool_display_name(raw_name, params_obj)
-                                    snippet = f"\n\n🔧 `{display}`"
-                                    response_parts.append(snippet)
-                                    collected_chars += len(snippet)
-
-                        # --- result event: complete reply ---
-                        elif event_type == "result":
-                            content = data.get("content", "") or data.get("result", "")
-                            if content:
-                                content = self._truncate_response(content, message.channel)
-                                # Prepend any accumulated tool-call info so users
-                                # see which tools were invoked before the final answer.
-                                if tool_call_count > 0 and response_parts:
-                                    tool_section = "".join(response_parts).strip()
-                                    if tool_section:
-                                        content = tool_section + "\n\n---\n\n" + content
-                                return content
-
-                    except json.JSONDecodeError:
-                        continue
-
-        except TimeoutError:
-            logger.error(f"AI execution timed out after {timeout}s")
-            if response_parts:
-                partial = "".join(response_parts).strip()
-                if partial:
-                    return f"⏰ **处理超时** (已收集部分结果)\n\n{self._truncate_response(partial, message.channel)}"
-            return "抱歉，处理超时，请稍后重试。"
-        except Exception as e:
-            logger.error(f"AI execution error: {e}")
+        if not content:
+            if result.is_error:
+                return "抱歉，处理超时，请稍后重试。"
             return None
-        
-        # 合并响应
-        full_response = "".join(response_parts).strip()
-        
-        full_response = self._truncate_response(full_response, message.channel)
-        
-        return full_response if full_response else None
+
+        content = self._truncate_response(content, message.channel)
+        if result.tool_call_count > 0 and result.tool_summaries:
+            tool_section = "\n".join(result.tool_summaries)
+            content = tool_section + "\n\n---\n\n" + content
+
+        return content
     
     async def _send_typing_indicator(self, message: InboundMessage) -> None:
         """发送输入中指示"""
