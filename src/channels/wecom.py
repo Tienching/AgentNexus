@@ -198,6 +198,35 @@ class WeComCrypto:
         msg = decrypted[20 : 20 + msg_len]
         return msg.decode("utf-8")
 
+    def decrypt_file(self, encrypted_data: bytes) -> bytes:
+        """解密企微回调推送的文件附件（AES-256-CBC + PKCS#7/32）。
+
+        与 :meth:`decrypt` 不同，文件加密**没有** ``random(16B)+msg_len(4B)+msg+receiveid``
+        的包装格式，直接就是 AES-CBC 加密的二进制内容。
+
+        Args:
+            encrypted_data: 原始加密字节（从 URL 下载得到）。
+
+        Returns:
+            解密后的文件字节。
+        """
+        if not CRYPTO_AVAILABLE:
+            raise ImportError(
+                "WeCom encryption requires 'cryptography'. "
+                "Install with: pip install cryptography"
+            )
+        cipher = Cipher(algorithms.AES(self.aes_key), modes.CBC(self.iv))
+        decryptor = cipher.decryptor()
+        decrypted = decryptor.update(encrypted_data) + decryptor.finalize()
+
+        # Remove PKCS#7 padding (block_size=32)
+        pad_len = decrypted[-1]
+        if isinstance(pad_len, int):
+            decrypted = decrypted[:-pad_len]
+        else:
+            decrypted = decrypted[: -ord(pad_len)]
+        return decrypted
+
     def encrypt(self, reply_msg: str) -> str:
         """加密回复消息
 
@@ -578,7 +607,7 @@ class WeComChannel(BaseChannel):
             image_url = image_obj.get("url", "")
             if image_url:
                 media_list.append(
-                    MediaAttachment(url=image_url, mime_type="image/png")
+                    MediaAttachment(url=image_url, mime_type=None)
                 )
         elif msgtype == "voice":
             inbound_msg_type = MessageType.VOICE
@@ -589,8 +618,13 @@ class WeComChannel(BaseChannel):
             inbound_msg_type = MessageType.DOCUMENT
             file_obj = payload.get("file", {})
             file_url = file_obj.get("url", "")
+            file_name = file_obj.get("file_name", "") or file_obj.get("filename", "")
             if file_url:
-                media_list.append(MediaAttachment(url=file_url))
+                media_list.append(MediaAttachment(
+                    url=file_url,
+                    file_name=file_name or None,
+                    mime_type="application/octet-stream",
+                ))
         elif msgtype == "mixed":
             # 图文混排消息
             mixed_obj = payload.get("mixed", {})
@@ -603,7 +637,7 @@ class WeComChannel(BaseChannel):
                     img_url = item.get("image", {}).get("url", "")
                     if img_url:
                         media_list.append(
-                            MediaAttachment(url=img_url, mime_type="image/png")
+                            MediaAttachment(url=img_url, mime_type=None)
                         )
             if media_list:
                 inbound_msg_type = MessageType.IMAGE

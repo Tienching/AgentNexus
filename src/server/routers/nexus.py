@@ -465,8 +465,8 @@ class SessionFilesResponse(BaseModel):
 def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     """Resolve the folder path for a session.
 
-    - Regular session: /home/{exec_user}/sessions/{session_id}/
-    - Task session: /home/{exec_user}/sessions/task_{task_id}/
+    - Regular session: /home/{exec_user}/.nexus/sessions/{session_id}/
+    - Task session: /home/{exec_user}/.nexus/sessions/task_{task_id}/
     - Inplace task: workspace directory from task
     """
     current_user = pwd.getpwuid(os.getuid()).pw_name
@@ -485,9 +485,9 @@ def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
 
     # Default session folder path
     if current_user != exec_user and os.geteuid() != 0:
-        base_dir = Path.home() / exec_user / "sessions" / session_id
+        base_dir = Path.home() / exec_user / ".nexus" / "sessions" / session_id
     else:
-        base_dir = Path(settings.user_home_base) / exec_user / "sessions" / session_id
+        base_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
 
     return base_dir if base_dir.exists() else None
 
@@ -1182,11 +1182,11 @@ def _resolve_task_conversation_log_path(exec_user: str, task_id: str) -> Path:
     这里必须复用相同规则，否则 UI 会一直拿不到对话记录。
     """
     session_id = f"task_{task_id}"
-    preferred_dir = Path(settings.user_home_base) / exec_user / "sessions" / session_id
+    preferred_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
 
     current_user = pwd.getpwuid(os.getuid()).pw_name
     if current_user != exec_user and os.geteuid() != 0:
-        base_dir = Path.home() / exec_user / "sessions" / session_id
+        base_dir = Path.home() / exec_user / ".nexus" / "sessions" / session_id
     else:
         base_dir = preferred_dir
 

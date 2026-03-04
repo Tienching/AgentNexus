@@ -200,7 +200,8 @@ class CodexCLIExecutor(BaseExecutor):
         # When continuing a chat session, append "resume SESSION_ID" or "resume --last"
         # Format: codex-internal exec [options] "prompt" resume SESSION_ID
         is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
-        if is_chat_continue:
+        session_cleared = getattr(context, "session_cleared", False)
+        if is_chat_continue and not session_cleared:
             cli_session_id = getattr(context, "cli_session_id", None) or None
             if cli_session_id:
                 cmd.extend(["resume", cli_session_id])

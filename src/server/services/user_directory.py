@@ -32,13 +32,13 @@ class UserDirectoryManager:
             用户目录路径（包含session_id子目录）
         """
         # 使用配置中的 user_home_base 路径，默认为 /home
-        preferred_dir = Path(self.config.user_home_base) / exec_user / "sessions" / session_id
+        preferred_dir = Path(self.config.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
 
         # 非 root 情况下，通常没有权限创建 /home/<other-user>；降级到当前用户的 HOME 下。
         # 这样也避免在测试里对 asyncio.create_subprocess_exec 的 patch 被误伤（mkdir/su 不再走子进程）。
         current_user = pwd.getpwuid(os.getuid()).pw_name
         if current_user != exec_user and os.geteuid() != 0:
-            user_dir = Path.home() / exec_user / "sessions" / session_id
+            user_dir = Path.home() / exec_user / ".nexus" / "sessions" / session_id
         else:
             user_dir = preferred_dir
 

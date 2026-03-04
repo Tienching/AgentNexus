@@ -481,7 +481,7 @@ class SlashCommandHandler:
             logger.debug(f"Could not read archived session messages: {e}")
 
         # Fallback to conversation.json (legacy path)
-        log_path = Path(self.config.user_home_base) / self.exec_user / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path = Path(self.config.user_home_base) / self.exec_user / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
 
         if log_path.exists():
             try:
@@ -1187,7 +1187,7 @@ class SlashCommandHandler:
             logger.debug(f"Could not read archived session messages: {e}")
 
         # 回退：尝试读取任务执行日志（旧链路）
-        log_path = Path(self.config.user_home_base) / self.exec_user / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path = Path(self.config.user_home_base) / self.exec_user / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
         
         if log_path.exists():
             try:
