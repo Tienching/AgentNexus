@@ -16,6 +16,8 @@ class RequestModel(BaseModel):
     session_id: Optional[str] = Field(default="", description="助手号场景的会话id，其他场景忽略")
     business_keys: Optional[List[str]] = Field(default_factory=list, description="服务标识")
     response_url: Optional[str] = Field(default="", description="流式连接断开后的回调URL，用于发送剩余消息")
+    image_paths: Optional[List[str]] = Field(default_factory=list, description="本地图片文件路径列表（由 media_downloader 下载后填充）")
+    file_paths: Optional[List[str]] = Field(default_factory=list, description="本地文件路径列表（由 media_downloader 下载后填充）")
 
     # 允许额外字段
     class Config:

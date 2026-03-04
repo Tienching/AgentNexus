@@ -116,9 +116,10 @@ class GeminiExecutor(BaseExecutor):
         
         is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
         cli_session_id = getattr(context, "cli_session_id", None) or None
+        session_cleared = getattr(context, "session_cleared", False)
         
         cmd = [self.gemini_config.gemini_command]
-        if is_chat_continue:
+        if is_chat_continue and not session_cleared:
             if cli_session_id:
                 cmd.extend(["--resume", cli_session_id])
             else:
