@@ -1641,8 +1641,10 @@ class ChatView {
             // History projects listing mode
             if (isHistoryProjects) {
                 container.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div></div>';
+                const customPaths = this.app.getAliasHistoryConfigPaths();
                 const projects = await NexusAPI.getHistoryProjects({
-                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
+                    execUser: globalUserFilter?.value ?? '',
+                    customPaths: Object.keys(customPaths).length ? customPaths : undefined,
                 });
                 this.historyProjects[paneId] = projects || [];
                 this.renderHistoryProjects(paneId);
@@ -1663,12 +1665,14 @@ class ChatView {
                     return;
                 }
                 const providerFilter = document.querySelector(`.history-provider-filter[data-pane="${paneId}"]`);
+                const customPaths = this.app.getAliasHistoryConfigPaths();
                 data = await NexusAPI.getHistorySessions({
                     projectPath: projectPath,
                     pageSize: 50,
                     search: searchInput?.value || '',
                     provider: providerFilter?.value || '',
-                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
+                    execUser: globalUserFilter?.value ?? '',
+                    customPaths: Object.keys(customPaths).length ? customPaths : undefined,
                 });
             } else {
                 const statusFilter = document.querySelector(`.session-filter-select[data-pane="${paneId}"][data-filter="status"]`);
@@ -1958,8 +1962,10 @@ class ChatView {
                 // Use the alias (e.g. "claude-internal") or provider for the history API
                 const providerKey = options.alias || options.provider;
                 const globalUserFilter = document.getElementById('globalUserFilter');
+                const cfg = this.app.getAliasConfigPath(providerKey);
                 data = await NexusAPI.getHistoryMessages(providerKey, sessionId, {
-                    execUser: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
+                    execUser: globalUserFilter?.value ?? '',
+                    configPath: cfg || undefined,
                 });
             } else {
                 data = await NexusAPI.getSessionMessages(sessionId);
@@ -2517,7 +2523,11 @@ class ChatView {
 
     async _promoteHistorySessionFallback(meta, sessionId, projectPath, execUser) {
         const providerKey = (meta?.alias || meta?.provider || 'claude').trim() || 'claude';
-        const historyDetail = await NexusAPI.getHistoryMessages(providerKey, sessionId, { execUser });
+        const cfg = this.app.getAliasConfigPath(providerKey);
+        const historyDetail = await NexusAPI.getHistoryMessages(providerKey, sessionId, {
+            execUser,
+            configPath: cfg || undefined,
+        });
         const bootstrapContext = this._buildBootstrapContextFromHistoryMessages(historyDetail?.messages || []);
         const runtimeSessionId = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
@@ -5613,11 +5623,20 @@ class NexusApp {
         return true;
     }
 
+    // Build custom_paths map for History API: alias -> config_dir
+    getAliasHistoryConfigPaths() {
+        const paths = {};
+        for (const alias of this.customProviders) {
+            if (alias.configPath) {
+                const cp = (alias.configPath || '').trim();
+                if (cp) paths[alias.name] = cp;
+            }
+        }
+        return paths;
+    }
+
     // Build custom_paths map for Skills API: alias -> skills_dir
     getAliasSkillsPaths() {
-        const _PROVIDER_CONFIG_DIRS = {
-            claude: '.claude', codebuddy: '.codebuddy', codex: '.codex', gemini: '.gemini'
-        };
         const paths = {};
         for (const alias of this.customProviders) {
             if (alias.configPath) {

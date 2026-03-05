@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -84,6 +84,74 @@ def _resolve_tilde(path_str: str, user_home: Path) -> Path:
     return Path(path_str)
 
 
+def _infer_base_provider(alias_name: str) -> Optional[str]:
+    alias = (alias_name or "").strip().lower()
+    if not alias:
+        return None
+    if alias in _PROVIDER_PARSER_MAP:
+        return alias
+    for provider_name in _PROVIDER_PARSER_MAP:
+        if alias.startswith(provider_name):
+            return provider_name
+    return None
+
+
+def _custom_path_belongs_to_user_home(path_obj: Path, user_home: Path) -> bool:
+    """Whether a custom config path should apply to the current user home.
+
+    - Paths under /home/<same-user>/... are allowed.
+    - Paths under /home/<other-user>/... are ignored to avoid cross-user pollution.
+    - Non-/home absolute paths are kept as global/shared paths.
+    """
+    try:
+        resolved = path_obj.resolve()
+    except Exception:
+        resolved = path_obj
+
+    parts = resolved.parts
+    if len(parts) >= 3 and parts[0] == "/" and parts[1] == "home":
+        return parts[2] == user_home.name
+    return True
+
+
+def _resolve_history_user_homes(exec_user: str) -> List[Path]:
+    """Resolve target user home directories.
+
+    - When ``exec_user`` is specified, only that user's home is returned.
+    - When empty (All Users), returns all directories under ``/home`` plus the
+      configured default user home as fallback.
+    """
+    home_base = settings.user_home_base or "/home"
+    base_home = Path(home_base)
+    chosen_user = (exec_user or "").strip()
+    if chosen_user:
+        return [base_home / chosen_user]
+
+    homes: List[Path] = []
+    if base_home.is_dir():
+        try:
+            for entry in sorted(base_home.iterdir()):
+                if entry.is_dir():
+                    homes.append(entry)
+        except Exception:
+            pass
+
+    fallback_user = (settings.exec_user or "ubuntu").strip() or "ubuntu"
+    fallback_home = base_home / fallback_user
+    if fallback_home not in homes:
+        homes.append(fallback_home)
+
+    seen = set()
+    ordered: List[Path] = []
+    for home in homes:
+        key = str(home)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(home)
+    return ordered
+
+
 def _build_alias_config_map(
     user_home: Path,
     custom_paths_str: str,
@@ -91,39 +159,88 @@ def _build_alias_config_map(
 ) -> Dict[str, Path]:
     """Build alias -> config_path mapping from defaults + custom_paths.
 
-    Returns a dict mapping alias/provider names to their resolved config directory paths.
+    Also auto-discovers alias directories (e.g. ``~/.claude-internal``) using
+    alias registry and home-directory scanning, so history API can work even
+    when frontend localStorage has no alias config.
     """
+    normalized_filter = (provider_filter or "").strip().lower() or None
     alias_map: Dict[str, Path] = {}
 
     # Add default providers
     for provider, config_dir in _PROVIDER_CONFIG_DIRS.items():
-        if provider_filter and provider != provider_filter:
+        if normalized_filter and provider != normalized_filter:
             continue
         alias_map[provider] = user_home / config_dir
 
-    # Parse and add custom alias paths
+    # Add aliases from alias registry when corresponding config dir exists
+    try:
+        from src.runtime.stores.alias_registry import get_alias_registry
+
+        registry_map = get_alias_registry().list_all() or {}
+    except Exception:
+        registry_map = {}
+
+    for alias_name_raw, provider_raw in registry_map.items():
+        alias_name = (alias_name_raw or "").strip().lower()
+        provider_name = (provider_raw or "").strip().lower()
+        if not alias_name:
+            continue
+        if normalized_filter and alias_name != normalized_filter and provider_name != normalized_filter:
+            continue
+
+        config_dir = user_home / f".{alias_name}"
+        try:
+            if config_dir.exists():
+                alias_map[alias_name] = config_dir
+        except OSError:
+            continue
+
+    # Parse and add custom alias paths (higher priority)
     if custom_paths_str:
         try:
             custom_paths: Dict[str, str] = json.loads(custom_paths_str)
         except (json.JSONDecodeError, TypeError):
             custom_paths = {}
 
-        for alias_name, path_str in custom_paths.items():
-            if provider_filter and alias_name != provider_filter:
-                # Check if this alias maps to the filtered provider
-                base_provider = None
-                for pname in _PROVIDER_PARSER_MAP:
-                    if alias_name.startswith(pname):
-                        base_provider = pname
-                        break
-                if base_provider != provider_filter:
-                    continue
+        for alias_name_raw, path_str in custom_paths.items():
+            alias_name = (alias_name_raw or "").strip().lower()
+            if not alias_name:
+                continue
+
+            base_provider = _infer_base_provider(alias_name)
+            if normalized_filter and alias_name != normalized_filter and base_provider != normalized_filter:
+                continue
 
             resolved = _resolve_tilde(path_str, user_home)
             if resolved.is_absolute():
-                alias_map[alias_name] = resolved
+                if _custom_path_belongs_to_user_home(resolved, user_home):
+                    alias_map[alias_name] = resolved
+                else:
+                    logger.debug(
+                        "Skipping cross-user custom path for alias '%s': %s (current home: %s)",
+                        alias_name,
+                        resolved,
+                        user_home,
+                    )
             else:
                 logger.warning("Skipping non-absolute path for alias '%s': %s", alias_name, path_str)
+
+    # Fallback scan: auto-detect hidden provider-family alias dirs in user home
+    try:
+        for entry in user_home.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("."):
+                continue
+            alias_name = entry.name[1:].strip().lower()
+            if not alias_name or alias_name in alias_map:
+                continue
+            base_provider = _infer_base_provider(alias_name)
+            if not base_provider:
+                continue
+            if normalized_filter and alias_name != normalized_filter and base_provider != normalized_filter:
+                continue
+            alias_map[alias_name] = entry
+    except Exception:
+        pass
 
     return alias_map
 
@@ -145,17 +262,52 @@ async def list_history_projects(
     - total_sessions: Total session count across all providers
     - last_active: Most recent session timestamp (ms)
     """
-    user = exec_user or settings.exec_user or "ubuntu"
-    home_base = settings.user_home_base or "/home"
-    user_home = Path(home_base) / user
-
-    alias_map = _build_alias_config_map(user_home, custom_paths, provider)
-
     service = _get_history_service()
-    result = await service.list_projects(
-        alias_config_map=alias_map,
-        provider_filter=provider,
-    )
+    user_homes = _resolve_history_user_homes(exec_user)
+
+    merged_by_path: Dict[str, Dict[str, Any]] = {}
+    for user_home in user_homes:
+        alias_map = _build_alias_config_map(user_home, custom_paths, provider)
+        if not alias_map:
+            continue
+
+        entries = await service.list_projects(
+            alias_config_map=alias_map,
+            provider_filter=provider,
+        )
+        for entry in entries or []:
+            path = entry.get("path")
+            if not path:
+                continue
+            bucket = merged_by_path.setdefault(path, {
+                "path": path,
+                "providers": [],
+                "total_sessions": 0,
+                "last_active": 0,
+            })
+
+            # Merge providers by (provider, alias)
+            provider_counter: Dict[tuple, int] = {
+                (p.get("provider"), p.get("alias")): int(p.get("session_count", 0) or 0)
+                for p in bucket.get("providers", [])
+            }
+            for p in entry.get("providers", []) or []:
+                key = (p.get("provider"), p.get("alias"))
+                provider_counter[key] = provider_counter.get(key, 0) + int(p.get("session_count", 0) or 0)
+            bucket["providers"] = [
+                {"provider": k[0], "alias": k[1], "session_count": v}
+                for k, v in provider_counter.items()
+            ]
+
+            bucket["total_sessions"] = sum(p["session_count"] for p in bucket["providers"])
+            bucket["last_active"] = max(
+                int(bucket.get("last_active", 0) or 0),
+                int(entry.get("last_active", 0) or 0),
+            )
+            if entry.get("gemini_hash"):
+                bucket["gemini_hash"] = entry.get("gemini_hash")
+
+    result = sorted(merged_by_path.values(), key=lambda x: int(x.get("last_active", 0) or 0), reverse=True)
     return result
 
 
@@ -185,34 +337,61 @@ async def list_history_sessions(
         raise HTTPException(status_code=400, detail="project_path is required")
 
     project_path = project_path.strip()
-    user = exec_user or settings.exec_user or "ubuntu"
-    home_base = settings.user_home_base or "/home"
-    user_home = Path(home_base) / user
+    user_homes = _resolve_history_user_homes(exec_user)
 
-    # Security: verify project_path is under user_home
+    # If project_path is a /home/<user>/... path, prefer that user first in All Users mode.
+    project_owner_home: Optional[Path] = None
     try:
         resolved_project = Path(project_path).resolve()
-        if not str(resolved_project).startswith(str(user_home.resolve())):
-            # Allow project paths outside user_home for flexibility
-            # but log a warning
-            logger.debug(
-                "project_path %s is outside user_home %s",
-                project_path, user_home,
-            )
+        if str(resolved_project).startswith("/home/"):
+            parts = resolved_project.parts
+            if len(parts) >= 3:
+                project_owner_home = Path("/home") / parts[2]
     except (ValueError, OSError):
-        pass
+        resolved_project = Path(project_path)
 
-    alias_map = _build_alias_config_map(user_home, custom_paths, provider)
+    if project_owner_home and project_owner_home in user_homes:
+        user_homes = [project_owner_home] + [h for h in user_homes if h != project_owner_home]
 
     service = _get_history_service()
-    result = await service.list_all_sessions(
-        user_home=user_home,
-        project_path=project_path,
-        alias_config_map=alias_map,
-        provider_filter=provider,
-        search=search,
+
+    # Aggregate sessions across resolved user homes, then paginate globally.
+    merged: Dict[str, SessionMeta] = {}
+    for user_home in user_homes:
+        alias_map = _build_alias_config_map(user_home, custom_paths, provider)
+        if not alias_map:
+            continue
+
+        try:
+            part = await service.list_all_sessions(
+                user_home=user_home,
+                project_path=project_path,
+                alias_config_map=alias_map,
+                provider_filter=provider,
+                search=search,
+                page=1,
+                page_size=10000,
+            )
+        except Exception:
+            continue
+
+        for s in part.sessions or []:
+            exec_user_name = (getattr(s, "exec_user", "") or "").strip() or user_home.name
+            s.exec_user = exec_user_name
+            key = f"{exec_user_name}:{getattr(s, 'provider', '')}:{s.id}"
+            prev = merged.get(key)
+            if prev is None or int(getattr(s, "updated_at", 0) or 0) > int(getattr(prev, "updated_at", 0) or 0):
+                merged[key] = s
+
+    all_sessions = sorted(merged.values(), key=lambda s: int(getattr(s, "updated_at", 0) or 0), reverse=True)
+    total = len(all_sessions)
+    start = (page - 1) * page_size
+    end = start + page_size
+    result = SessionListResponse(
+        total=total,
         page=page,
         page_size=page_size,
+        sessions=all_sessions[start:end],
     )
 
     # Filter out hidden history sessions (deleted promoted sessions)
@@ -244,45 +423,56 @@ async def get_history_session_messages(
     - provider: Provider or alias name (e.g. claude, codex, codebuddy, gemini, claude-internal)
     - session_id: Session ID
     """
-    user = exec_user or settings.exec_user or "ubuntu"
-    home_base = settings.user_home_base or "/home"
-    user_home = Path(home_base) / user
+    user_homes = _resolve_history_user_homes(exec_user)
 
-    # Resolve config path
+    candidate_configs: List[Path] = []
+
+    # Resolve config paths for explicit or inferred providers/aliases.
     if config_path:
-        resolved_config = _resolve_tilde(config_path, user_home)
+        for user_home in user_homes:
+            resolved = _resolve_tilde(config_path, user_home)
+            if resolved.is_absolute():
+                candidate_configs.append(resolved)
     else:
-        # Try to determine config path from provider name
         if provider in _PROVIDER_CONFIG_DIRS:
-            resolved_config = user_home / _PROVIDER_CONFIG_DIRS[provider]
+            for user_home in user_homes:
+                candidate_configs.append(user_home / _PROVIDER_CONFIG_DIRS[provider])
         else:
-            # Try as alias prefix (e.g. claude-internal -> check if starts with known provider)
-            resolved_config = None
-            for pname, config_dir in _PROVIDER_CONFIG_DIRS.items():
-                if provider.startswith(pname):
-                    # Alias — use provider name as config dir (e.g. .claude-internal)
-                    resolved_config = user_home / f".{provider}"
-                    break
-            if resolved_config is None:
+            is_alias = any(provider.startswith(pname) for pname in _PROVIDER_CONFIG_DIRS)
+            if not is_alias:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown provider '{provider}'. Provide config_path for custom aliases.",
                 )
+            for user_home in user_homes:
+                candidate_configs.append(user_home / f".{provider}")
 
-    if not resolved_config.is_absolute():
-        raise HTTPException(status_code=400, detail="config_path must resolve to an absolute path")
+    # De-duplicate while preserving order
+    unique_candidates: List[Path] = []
+    seen = set()
+    for cp in candidate_configs:
+        key = str(cp)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(cp)
 
-    service = _get_history_service()
-    result = await service.get_session_detail(
-        provider=provider,
-        config_path=resolved_config,
-        session_id=session_id,
-    )
-
-    if result is None:
+    if not unique_candidates:
         raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
-    return result
+    service = _get_history_service()
+    for resolved_config in unique_candidates:
+        if not resolved_config.is_absolute():
+            continue
+        result = await service.get_session_detail(
+            provider=provider,
+            config_path=resolved_config,
+            session_id=session_id,
+        )
+        if result is not None:
+            return result
+
+    raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
 
 
 class PromoteHistoryRequest(BaseModel):

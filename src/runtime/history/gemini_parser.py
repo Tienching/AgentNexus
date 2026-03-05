@@ -81,6 +81,99 @@ class GeminiHistoryParser(BaseHistoryParser):
 
         return results
 
+    def list_all_sessions(self, config_path: Path, linux_user: Optional[str] = None) -> List[SessionMeta]:
+        """List ALL Gemini sessions across all project hashes (no project filter).
+
+        Scans every {config_path}/tmp/*/chats/session-*.json and attaches
+        the hash directory name as exec_dir (since Gemini hashes are
+        not reversible; the service layer can match them later).
+
+        Args:
+            config_path: Provider config directory (e.g. ~/.gemini)
+            linux_user: Optional Linux username to tag on each session
+        """
+        tmp_dir = config_path / "tmp"
+        if not tmp_dir.is_dir():
+            return []
+
+        all_sessions: List[SessionMeta] = []
+        now_ms = int(time.time() * 1000)
+
+        for hash_dir in tmp_dir.iterdir():
+            if not hash_dir.is_dir():
+                continue
+            chats_dir = hash_dir / "chats"
+            if not chats_dir.is_dir():
+                continue
+
+            session_files = sorted(
+                chats_dir.glob("session-*.json"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+
+            for session_file in session_files:
+                data = self._safe_read_json(session_file)
+                if not data:
+                    continue
+
+                session_id = data.get("sessionId", "")
+                if not session_id:
+                    session_id = self._session_id_from_filename(session_file.name)
+
+                messages = data.get("messages", [])
+                if not isinstance(messages, list):
+                    continue
+
+                message_count = 0
+                last_user_message = ""
+                last_assistant_message = ""
+
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    msg_type = msg.get("type", "")
+                    content = msg.get("content", "")
+
+                    if msg_type in _SKIP_MSG_TYPES:
+                        continue
+
+                    if msg_type == "user" and content:
+                        if isinstance(content, str):
+                            message_count += 1
+                            last_user_message = content[:100]
+                    elif msg_type == "gemini":
+                        text = content if isinstance(content, str) else ""
+                        if text:
+                            message_count += 1
+                            last_assistant_message = text[:100]
+
+                title = last_user_message or last_assistant_message or "New Session"
+                title = " ".join(title.split())
+
+                start_time = self._parse_iso_timestamp_ms(data.get("startTime", ""))
+                last_updated = self._parse_iso_timestamp_ms(data.get("lastUpdated", ""))
+                created_at = start_time or now_ms
+                updated_at = last_updated or start_time or now_ms
+
+                all_sessions.append(SessionMeta(
+                    id=session_id,
+                    thread_id=session_id,
+                    title=title[:100],
+                    username="",
+                    provider="gemini",
+                    status=SessionStatus.COMPLETED,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    message_count=message_count,
+                    source="history",
+                    exec_dir=f"[gemini:{hash_dir.name[:12]}...]",
+                    exec_user=linux_user,
+                ))
+
+        all_sessions.sort(key=lambda s: s.updated_at, reverse=True)
+        return all_sessions
+
     def list_sessions(self, config_path: Path, project_path: str) -> List[SessionMeta]:
         """List Gemini sessions for a specific project.
 
