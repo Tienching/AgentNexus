@@ -454,7 +454,41 @@ app.include_router(nexus_history_router)
 # Mount static files for NexusHub Web UI (with cache-control middleware)
 static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
 if os.path.exists(static_dir):
+    class NexusNoCacheMiddleware:
+        """Pure ASGI middleware to disable browser caching for Nexus HTML/JS/CSS files."""
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                return await self.app(scope, receive, send)
+
+            path = scope.get("path", "")
+            should_add_no_cache = (
+                path.startswith("/nexus")
+                and (path.endswith((".html", ".js", ".css"))
+                     or path in ("/nexus", "/nexus/"))
+            )
+
+            if not should_add_no_cache:
+                return await self.app(scope, receive, send)
+
+            async def send_with_no_cache(message):
+                if message["type"] == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    headers.extend([
+                        (b"cache-control", b"no-cache, no-store, must-revalidate"),
+                        (b"pragma", b"no-cache"),
+                        (b"expires", b"0"),
+                    ])
+                    message["headers"] = headers
+                await send(message)
+
+            return await self.app(scope, receive, send_with_no_cache)
+
+    app.add_middleware(NexusNoCacheMiddleware)
     app.mount("/nexus", StaticFiles(directory=static_dir, html=True), name="nexus")
+
 
 # 获取日志器
 logger = get_logger(__name__)

@@ -128,6 +128,20 @@ class StreamArchiver:
                 self._storage.save_session_meta(meta)
                 self._initialized = True
 
+            # IMPORTANT: Write RUN_STARTED event IMMEDIATELY after setting
+            # status to RUNNING, BEFORE storing initial messages. This prevents
+            # the self-heal logic from seeing a stale RUN_FINISHED (from the
+            # previous run) without a corresponding RUN_STARTED and incorrectly
+            # resetting the status back to completed.
+            try:
+                self._storage.append_agui_event(self.session_id, {
+                    "type": "RUN_STARTED",
+                    "threadId": self.thread_id,
+                    "runId": self.run_id,
+                })
+            except Exception:
+                pass
+
             # Store initial messages (for new sessions and follow-ups)
             if initial_messages:
                 existing_ids = set()
@@ -152,7 +166,7 @@ class StreamArchiver:
                         status=MessageStatus.COMPLETE,
                     )
                     self._storage.add_session_message(self.session_id, stored_msg)
-            
+
             logger.debug(f"Run started for session: {self.session_id}")
             
         except Exception as e:
@@ -166,6 +180,12 @@ class StreamArchiver:
             
             # Update session status
             self._storage.update_session_status(self.session_id, SessionStatus.COMPLETED)
+            
+            # Write terminal event to event log so SSE stream knows to close
+            try:
+                self._storage.append_agui_event(self.session_id, {"type": "RUN_FINISHED"})
+            except Exception:
+                pass
             
             logger.debug(f"Run finished for session: {self.session_id}")
             
@@ -193,6 +213,12 @@ class StreamArchiver:
             # Update session status
             self._storage.update_session_status(self.session_id, SessionStatus.ERROR)
             
+            # Write terminal event to event log so SSE stream knows to close
+            try:
+                self._storage.append_agui_event(self.session_id, {"type": "RUN_ERROR", "message": error})
+            except Exception:
+                pass
+            
             logger.debug(f"Run error for session: {self.session_id}: {error}")
             
         except Exception as e:
@@ -202,12 +228,24 @@ class StreamArchiver:
         """Archive a single event (non-blocking)
         
         This method dispatches to specific handlers based on event type.
+        Also appends the event to the session event log for live streaming.
         
         Args:
             event_data: Raw event data from CLI
         """
         try:
             event_type = event_data.get("type", "")
+            
+            # Append to event log for live streaming (channel sessions, etc.)
+            if event_type in (
+                "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END",
+                "TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END", "TOOL_CALL_RESULT",
+                "RUN_STARTED", "RUN_FINISHED", "RUN_ERROR", "STATE_SNAPSHOT",
+            ):
+                try:
+                    self._storage.append_agui_event(self.session_id, event_data)
+                except Exception:
+                    pass
             
             # Log all events for debugging
             if event_type in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"):

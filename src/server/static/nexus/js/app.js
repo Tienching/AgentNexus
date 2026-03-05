@@ -58,9 +58,15 @@ class PageManager {
     }
 
     setPage(page) {
+        const prevPage = this.currentPage;
         this.currentPage = page;
         localStorage.setItem('nexus-page', page);
         this.apply();
+
+        // Stop task polling/streams when leaving task page
+        if (prevPage === 'task' && page !== 'task' && this.app.taskView) {
+            this.app.taskView._stopAutoPolling();
+        }
 
         // Refresh config view when switching to config page
         if (page === 'config' && this.app.configView) {
@@ -70,6 +76,7 @@ class PageManager {
         // Refresh task view when switching to task page
         if (page === 'task' && this.app.taskView) {
             this.app.taskView.renderFullPage();
+            this.app.taskView._startAutoPolling('global');
         }
 
         // Refresh chat providers when switching back to chat page
@@ -345,12 +352,37 @@ class ChatView {
         this.taskSessionStreams = {}; // paneId -> EventSource (for task_* sessions)
         this.promotedRuntimeMeta = {}; // runtimeSessionId -> synthetic meta (fallback when backend promote API unavailable)
         this.pendingBootstrapBySessionId = {}; // runtimeSessionId -> one-time bootstrap context text
+        this._chatStreaming = {}; // paneId -> boolean, true when fetch streaming is active (prevents auto-refresh from overwriting DOM)
+        this._pendingNewSession = {}; // paneId -> { id: string, createdAt: number }
 
         // Auto-refresh state
         this._autoRefreshTimer = null;
         this._autoRefreshInterval = 5000; // 5s for session list
         this._lastSessionsHash = {}; // paneId -> hash of session list (for change detection)
-        this._lastMessageCount = {}; // paneId -> last known message count
+        this._lastMessageCountBySession = {}; // sessionId -> last known message count
+    }
+
+    _markPendingNewSession(paneId, sessionId) {
+        this._pendingNewSession[paneId] = { id: sessionId, createdAt: Date.now() };
+    }
+
+    _clearPendingNewSession(paneId, sessionId = null) {
+        const pending = this._pendingNewSession[paneId];
+        if (!pending) return;
+        if (!sessionId || pending.id === sessionId) {
+            delete this._pendingNewSession[paneId];
+        }
+    }
+
+    _isPendingNewSession(paneId, sessionId) {
+        const pending = this._pendingNewSession[paneId];
+        if (!pending || pending.id !== sessionId) return false;
+        // Keep a short grace window for backend persistence latency.
+        if ((Date.now() - pending.createdAt) > 60000) {
+            delete this._pendingNewSession[paneId];
+            return false;
+        }
+        return true;
     }
 
     // ============ Auto-refresh (live polling) ============
@@ -405,19 +437,56 @@ class ChatView {
             }
 
             // 2. Refresh active session messages if session is running
+            //    Skip if an SSE stream is already active for this pane (channel/task streaming)
+            //    Skip if fetch streaming (chat response) is in progress for this pane
             const activeTabId = this.getActiveTabId(paneId);
             const activeSessionId = activeTabId ? this.currentSessionByTab[activeTabId] : null;
-            if (activeSessionId && !isHistory && !/^task_/.test(activeSessionId)) {
+            if (activeSessionId && !isHistory && !/^task_/.test(activeSessionId) && !this.taskSessionStreams[paneId] && !this._chatStreaming[paneId] && !this._isPendingNewSession(paneId, activeSessionId)) {
                 const activeMeta = this.getSessionMeta(paneId, activeSessionId);
-                if (activeMeta && activeMeta.status === 'running') {
+
+                // Check if post-stream sync is needed (stream just finished, status may already be completed)
+                const postSync = this._needsPostStreamSync && this._needsPostStreamSync[paneId];
+                if (postSync && postSync.sessionId === activeSessionId) {
+                    try {
+                        const data = await NexusAPI.getSessionMessages(activeSessionId);
+                        this.renderMessages(paneId, activeSessionId, data);
+                    } catch (e) {
+                        console.warn('[autoRefresh] post-stream sync failed:', e);
+                    }
+                    delete this._needsPostStreamSync[paneId];
+                } else if (activeMeta && ['running', 'pending', 'queued'].includes(activeMeta.status)) {
                     const source = activeMeta.source || 'runtime';
                     if (source !== 'history') {
-                        const data = await NexusAPI.getSessionMessages(activeSessionId);
-                        const msgCount = (data.messages || []).length;
-                        const prevCount = this._lastMessageCount[paneId] || 0;
-                        if (msgCount !== prevCount) {
-                            this._lastMessageCount[paneId] = msgCount;
+                        // Check if we should switch to SSE streaming
+                        const container = document.getElementById(`sessionItems-${paneId}`);
+                        const sessionItem = container?.querySelector(`.session-item[data-session-id="${activeSessionId}"]`);
+                        const sessionStatus = sessionItem?.dataset.status || '';
+                        if (!sessionStatus || ['running', 'pending', 'queued'].includes(sessionStatus)) {
+                            await this._streamChannelSessionMessages(paneId, activeSessionId);
+                        } else {
+                            const data = await NexusAPI.getSessionMessages(activeSessionId);
+                            const msgCount = (data.messages || []).length;
+                            const prevCount = this._lastMessageCountBySession[activeSessionId] || 0;
+                            if (msgCount !== prevCount) {
+                                this._lastMessageCountBySession[activeSessionId] = msgCount;
+                                this.renderMessages(paneId, activeSessionId, data);
+                            }
+                        }
+                    }
+                } else if (activeMeta && activeMeta.status === 'completed') {
+                    // Auto-reload messages when message_count changes for the
+                    // active completed session. This handles the case where the
+                    // session went running→completed between two poll ticks
+                    // (e.g. channel message processed faster than the 5s poll).
+                    const serverMsgCount = activeMeta.message_count || 0;
+                    const prevCount = this._lastMessageCountBySession[activeSessionId] || 0;
+                    if (serverMsgCount > 0 && serverMsgCount !== prevCount) {
+                        this._lastMessageCountBySession[activeSessionId] = serverMsgCount;
+                        try {
+                            const data = await NexusAPI.getSessionMessages(activeSessionId);
                             this.renderMessages(paneId, activeSessionId, data);
+                        } catch (e) {
+                            console.warn('[autoRefresh] message count sync failed:', e);
                         }
                     }
                 }
@@ -561,6 +630,11 @@ class ChatView {
         const hashSessionId = !activeSessionId && location.hash ? location.hash.slice(1) : null;
         const targetSessionId = activeSessionId || hashSessionId;
         if (targetSessionId) {
+            const inList = (this.sessions[paneId] || []).some(s => s.id === targetSessionId);
+            const isPending = this._isPendingNewSession(paneId, targetSessionId);
+            if (!inList && isPending) {
+                return;
+            }
             await this.selectSession(paneId, targetSessionId, { silent: true });
         }
     }
@@ -942,8 +1016,10 @@ class ChatView {
     }
 
     async createNewSession(paneId, message, execUser = null, agentType = 'claude', alias = null) {
+        console.log('[createNewSession] START', { paneId, message: message?.substring(0, 50), execUser, agentType, alias });
         execUser = execUser || NexusAPI.getDefaultExecUser();
         if (!message.trim()) {
+            console.log('[createNewSession] empty message, returning');
             this.app.showToast('Please enter a message', 'warning');
             return;
         }
@@ -951,10 +1027,12 @@ class ChatView {
         const agentLabel = `${execUser} / ${agentType}`;
 
         const detail = document.getElementById(`chatDetail-${paneId}`);
+        console.log('[createNewSession] detail element:', !!detail);
         if (!detail) return;
         
         // Generate a unique session ID
         const sessionId = `chat_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+        this._markPendingNewSession(paneId, sessionId);
         const sessionTitle = message.substring(0, 50) + (message.length > 50 ? '...' : '');
 
         // Immediately show the chat view with user message and thinking indicator
@@ -1031,7 +1109,7 @@ class ChatView {
             };
 
             // Call streaming API
-            await this.streamChatResponse(paneId, execUser, payload, `thinking-${paneId}`);
+            const hadContent = await this.streamChatResponse(paneId, execUser, payload, `thinking-${paneId}`);
             
             // After successful response, set current session and reload everything
             const activeTabId = this.getActiveTabId(paneId);
@@ -1044,13 +1122,16 @@ class ChatView {
                 }
             }
             
-            // Reload sessions list first, then load messages after a delay to ensure backend has saved them
+            // Reload sessions list (sidebar only, does NOT touch the chat detail area)
             await this.loadSessions(paneId);
-            setTimeout(() => {
-                this.loadMessages(paneId, sessionId);
-            }, 500);
+
+            // Do NOT call loadMessages here.
+            // The streaming response has already rendered content (or error) in the DOM.
+            // Calling loadMessages after a new session risks a 404 (session not yet
+            // persisted) which triggers showNewSessionView and wipes the streamed content.
             
         } catch (error) {
+            this._clearPendingNewSession(paneId, sessionId);
             console.error('Failed to create session:', error);
             this.app.showToast(error.message || 'Failed to create session', 'error');
             
@@ -1078,29 +1159,43 @@ class ChatView {
     }
 
     async streamChatResponse(paneId, execUser, payload, thinkingId) {
+        // Mark this pane as actively streaming via fetch (prevent auto-refresh from overwriting DOM)
+        this._chatStreaming[paneId] = true;
+
         const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
         const thinkingEl = document.getElementById(thinkingId);
 
-        if (thinkingEl) {
-            thinkingEl.innerHTML = `
-                <div class="message-avatar">A</div>
-                <div class="message-content">
-                    <div class="message-bubble streaming-bubble" id="streaming-bubble-${thinkingId}"></div>
-                </div>
-            `;
-        }
-
-        const bubbleEl = document.getElementById(`streaming-bubble-${thinkingId}`);
+        // Keep the thinking indicator visible until the first real content arrives.
+        // We lazily swap it for the streaming bubble on first content event.
+        let bubbleEl = null;
+        let bubbleInitialized = false;
         let currentTextEl = null;
         let currentTextContent = '';
         let textSegmentIndex = 0;
         const streamingToolCalls = new Map();
 
+        const initBubble = () => {
+            if (bubbleInitialized) return;
+            bubbleInitialized = true;
+            if (thinkingEl) {
+                thinkingEl.innerHTML = `
+                    <div class="message-avatar">A</div>
+                    <div class="message-content">
+                        <div class="message-bubble streaming-bubble" id="streaming-bubble-${thinkingId}"></div>
+                    </div>
+                `;
+            }
+            bubbleEl = document.getElementById(`streaming-bubble-${thinkingId}`);
+        };
+
         const ensureTextElement = () => {
-            if (!currentTextEl && bubbleEl) {
-                const textId = `streaming-content-${thinkingId}-seg${textSegmentIndex}`;
-                bubbleEl.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
-                currentTextEl = document.getElementById(textId);
+            if (!currentTextEl) {
+                initBubble();
+                if (bubbleEl) {
+                    const textId = `streaming-content-${thinkingId}-seg${textSegmentIndex}`;
+                    bubbleEl.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
+                    currentTextEl = document.getElementById(textId);
+                }
             }
             return currentTextEl;
         };
@@ -1127,6 +1222,7 @@ class ChatView {
         };
 
         const processDataEvent = (data, eventType) => {
+            console.log('[processDataEvent]', data.type || eventType, data);
             const sseDelta = data.response ?? data.delta;
             const aguiText = data.delta ?? data.content ?? data.text ?? data.response;
 
@@ -1136,11 +1232,21 @@ class ChatView {
                 return;
             }
 
+            if (data.type === 'RUN_STARTED') {
+                // Session is now running — refresh the session list so status badge updates
+                console.log('[processDataEvent] RUN_STARTED - refreshing sessions');
+                this.loadSessions(paneId);
+                return;
+            }
+
             if (data.type === 'TEXT_MESSAGE_START') {
+                console.log('[processDataEvent] TEXT_MESSAGE_START - initBubble');
+                initBubble();
                 return;
             }
 
             if (data.type === 'TEXT_MESSAGE_CONTENT') {
+                console.log('[processDataEvent] TEXT_MESSAGE_CONTENT:', aguiText?.substring(0, 50));
                 appendText(aguiText);
                 return;
             }
@@ -1160,6 +1266,7 @@ class ChatView {
                 const toolName = data.toolCallName || 'Tool';
                 streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
                 endCurrentTextSegment();
+                initBubble();
                 if (bubbleEl) {
                     bubbleEl.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -1224,11 +1331,28 @@ class ChatView {
 
             if (data.type === 'RUN_FINISHED') {
                 endCurrentTextSegment();
+                // Refresh session list so status updates to completed
+                this.loadSessions(paneId);
                 return;
             }
 
             if (data.type === 'RUN_ERROR' || data.error) {
-                throw new Error(data.message || data.error || 'Stream error');
+                const errorMsg = data.message || data.error || 'Stream error';
+                // Display error in UI instead of throwing (which can be swallowed)
+                endCurrentTextSegment();
+                initBubble();
+                if (bubbleEl) {
+                    bubbleEl.insertAdjacentHTML('beforeend', `
+                        <div class="message-error" style="margin-top: 8px;">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span>${this.escapeHtml(errorMsg)}</span>
+                        </div>
+                    `);
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+                return;
             }
         };
 
@@ -1237,51 +1361,66 @@ class ChatView {
             const lines = rawEvent.split('\n');
             let eventType = '';
             const dataLines = [];
-            for (const line of lines) {
+            for (let line of lines) {
+                // Strip trailing \r (from \r\n line endings)
+                if (line.endsWith('\r')) line = line.slice(0, -1);
                 if (line.startsWith('event:')) {
                     eventType = line.slice(6).trim();
                 } else if (line.startsWith('data:')) {
-                    dataLines.push(line.slice(5).trim());
+                    // Keep original payload as much as possible (only strip one optional leading space)
+                    let payloadLine = line.slice(5);
+                    if (payloadLine.startsWith(' ')) payloadLine = payloadLine.slice(1);
+                    dataLines.push(payloadLine);
                 }
             }
             const eventData = dataLines.join('\n').trim();
             if (!eventData || eventData === '[DONE]') return;
+            let data;
             try {
-                const data = JSON.parse(eventData);
-                processDataEvent(data, eventType);
-            } catch (e) {
-                if (e.message && (e.message.includes('Stream error') || e.message.includes('RUN_ERROR'))) {
-                    throw e;
-                }
+                data = JSON.parse(eventData);
+            } catch (parseErr) {
+                // Fallback: treat plain-text SSE payload as stream error content.
+                processDataEvent({ type: 'RUN_ERROR', message: eventData }, eventType);
+                return;
             }
+            processDataEvent(data, eventType);
         };
 
-        const response = await NexusAPI.chatStream(execUser, payload);
-        const reader = response.body?.getReader();
         const decoder = new TextDecoder();
-
-        if (!reader) {
-            throw new Error('No response body');
-        }
-
+        let reader = null;
         let buffer = '';
 
         try {
+            console.log('[streamChatResponse] fetching chat stream...', { paneId, execUser, thinkingId });
+            const response = await NexusAPI.chatStream(execUser, payload);
+            console.log('[streamChatResponse] got response, getting reader...');
+            reader = response.body?.getReader() || null;
+
+            if (!reader) {
+                throw new Error('No response body');
+            }
+
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const events = buffer.split('\n\n');
+                const chunk = decoder.decode(value, { stream: true });
+                console.log('[streamChatResponse] chunk received:', chunk.length, 'bytes');
+                buffer += chunk;
+                const events = buffer.split(/\r?\n\r?\n/);
                 buffer = events.pop() || '';
                 for (const event of events) {
+                    console.log('[streamChatResponse] processing SSE event:', event.substring(0, 100));
                     processSSEEvent(event);
                 }
             }
             if (buffer.trim()) {
+                console.log('[streamChatResponse] processing final buffer');
                 processSSEEvent(buffer);
             }
         } finally {
-            reader.releaseLock();
+            if (reader) reader.releaseLock();
+            // Clear streaming flag so auto-refresh can work again
+            this._chatStreaming[paneId] = false;
         }
 
         if (currentTextEl) {
@@ -1292,10 +1431,36 @@ class ChatView {
             bubbleEl.querySelectorAll('.message-text:empty').forEach(el => el.remove());
         }
 
+        // If streaming produced no visible content, auto-reload messages from backend
+        // This handles cases where backend events were persisted but not rendered by parser
+        const hasContent = bubbleEl && bubbleEl.textContent && bubbleEl.textContent.trim().length > 0;
+        if (!hasContent && payload.session_id) {
+            console.log('[streamChatResponse] No content rendered during stream, fallback to snapshot reload');
+            const sessionId = payload.session_id;
+            // Retry a few times for short persistence lag
+            for (let i = 0; i < 4; i++) {
+                try {
+                    const data = await NexusAPI.getSessionMessages(sessionId);
+                    const msgCount = (data.messages || []).length;
+                    if (msgCount > 0 || i === 3) {
+                        this.renderMessages(paneId, sessionId, data);
+                        break;
+                    }
+                } catch (e) {
+                    if (i === 3) {
+                        console.warn('[streamChatResponse] fallback snapshot reload failed:', e);
+                    }
+                }
+                await new Promise(r => setTimeout(r, 300));
+            }
+        }
+
         const textarea = document.getElementById(`chatInput-${paneId}`);
         const sendBtn = document.querySelector(`.chat-send-btn[data-pane="${paneId}"]`);
         if (textarea) textarea.disabled = false;
         if (sendBtn) sendBtn.disabled = false;
+
+        return hasContent;
     }
     
     /**
@@ -1402,6 +1567,10 @@ class ChatView {
             }
 
             this.sessions[paneId] = data.sessions || [];
+            const pending = this._pendingNewSession[paneId];
+            if (pending && this.sessions[paneId].some(s => s.id === pending.id)) {
+                this._clearPendingNewSession(paneId, pending.id);
+            }
             this.sessionTotals = this.sessionTotals || {};
             this.sessionTotals[paneId] = data.total || this.sessions[paneId].length;
             this.renderSessionList(paneId);
@@ -1535,7 +1704,7 @@ class ChatView {
 
     renderSessionItem(session, paneId) {
         const isHistory = this.sessionSource[paneId] === 'history';
-        const statusClass = session.status === 'running' ? 'running' :
+        const statusClass = ['running', 'pending', 'queued'].includes(session.status) ? 'running' :
                            session.status === 'error' ? 'error' : 'completed';
         const timeStr = this.formatTime(session.updated_at || session.created_at);
         const activeTabId = this.getActiveTabId(paneId);
@@ -1614,6 +1783,12 @@ class ChatView {
         // Update URL hash so session ID is visible in address bar & bookmarkable
         history.replaceState(null, '', `#${sessionId}`);
 
+        // A just-created runtime session may not be queryable immediately.
+        // Avoid forcing loadMessages(404) that would wipe current streamed DOM.
+        if (!sessionItem && source === 'runtime' && this._isPendingNewSession(paneId, sessionId)) {
+            return;
+        }
+
         // Load and display messages
         await this.loadMessages(paneId, sessionId, { provider, alias, source });
     }
@@ -1621,6 +1796,12 @@ class ChatView {
     async loadMessages(paneId, sessionId, options = {}) {
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
+
+        const source = options.source || this.sessionSource[paneId] || 'runtime';
+        if (source === 'runtime' && this._isPendingNewSession(paneId, sessionId)) {
+            // Keep currently streamed DOM untouched during short persistence window.
+            return;
+        }
 
         // Close previous task session stream (if any)
         this._closeTaskSessionStream(paneId);
@@ -1630,8 +1811,6 @@ class ChatView {
                 <div class="loading-spinner"></div>
             </div>
         `;
-
-        const source = options.source || this.sessionSource[paneId] || 'runtime';
 
         // Task sessions: use SSE stream only when task is still running/pending;
         // completed/failed tasks load from Redis snapshot directly (faster, no 404 risk)
@@ -1645,6 +1824,18 @@ class ChatView {
                 return;
             }
             // Completed/failed tasks: fall through to normal snapshot loading below
+        }
+
+        // Channel sessions (e.g. channel_wecom_*): use SSE stream when running
+        if (source === 'runtime' && !/^task_/.test(sessionId)) {
+            const container = document.getElementById(`sessionItems-${paneId}`);
+            const sessionItem = container?.querySelector(`.session-item[data-session-id="${sessionId}"]`);
+            const sessionMeta = this.getSessionMeta(paneId, sessionId);
+            const sessionStatus = sessionItem?.dataset.status || sessionMeta?.status || '';
+            if (['running', 'pending', 'queued'].includes(sessionStatus)) {
+                await this._streamChannelSessionMessages(paneId, sessionId);
+                return;
+            }
         }
 
         try {
@@ -1662,6 +1853,17 @@ class ChatView {
             this.renderMessages(paneId, sessionId, data);
         } catch (error) {
             console.error('Failed to load messages:', error);
+            const isNotFound = /not found|404/i.test(error.message || '');
+            if (isNotFound) {
+                if (source === 'runtime' && this._isPendingNewSession(paneId, sessionId)) {
+                    // Backend has not persisted the new session yet; avoid wiping streamed content.
+                    return;
+                }
+                // Session was deleted or expired — reset to initial view
+                if (location.hash) history.replaceState(null, '', location.pathname);
+                this.showNewSessionView(paneId);
+                return;
+            }
             detail.innerHTML = `
                 <div class="empty-state">
                     <p class="empty-state-text" style="color: var(--error)">Failed to load messages</p>
@@ -1869,6 +2071,188 @@ class ChatView {
         };
     }
 
+    async _streamChannelSessionMessages(paneId, sessionId) {
+        // Don't create duplicate SSE connections
+        if (this.taskSessionStreams[paneId]) return;
+
+        // Prevent reconnection flicker: if we already rendered this session's
+        // messages recently (within the current auto-refresh cycle), skip
+        // the full snapshot reload.
+        const alreadyRendered = this._lastChannelStreamSession &&
+            this._lastChannelStreamSession[paneId] === sessionId;
+
+        // First load existing messages as snapshot (only if not already rendered)
+        let snapshotData;
+        if (!alreadyRendered) {
+            try {
+                snapshotData = await NexusAPI.getSessionMessages(sessionId);
+                this.renderMessages(paneId, sessionId, snapshotData);
+            } catch (e) {
+                console.warn('Failed to load snapshot for channel session:', e);
+            }
+        }
+
+        // Track which session we're streaming for this pane
+        if (!this._lastChannelStreamSession) this._lastChannelStreamSession = {};
+        this._lastChannelStreamSession[paneId] = sessionId;
+
+        const messagesContainer = document.getElementById(`chatMessages-${paneId}`);
+        if (!messagesContainer) return;
+
+        // Connect SSE stream for live updates
+        const es = NexusAPI.streamSessionMessages(sessionId, { tail: 5000 });
+        this.taskSessionStreams[paneId] = es;
+
+        let bubbleEl = null;
+        let currentTextEl = null;
+        let currentTextContent = '';
+        let textSegmentIndex = 0;
+        const streamingToolCalls = new Map();
+        let done = false;
+
+        const ensureBubble = () => {
+            if (!bubbleEl) {
+                const msgId = `channel-stream-${paneId}-${Date.now()}`;
+                messagesContainer.insertAdjacentHTML('beforeend', `
+                    <div class="message assistant" id="${msgId}">
+                        <div class="message-avatar assistant">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                            </svg>
+                        </div>
+                        <div class="message-content">
+                            <div class="message-bubble streaming-bubble" id="channel-stream-bubble-${msgId}"></div>
+                        </div>
+                    </div>
+                `);
+                bubbleEl = document.getElementById(`channel-stream-bubble-${msgId}`);
+            }
+            return bubbleEl;
+        };
+
+        const ensureTextElement = () => {
+            if (!currentTextEl) {
+                const bubble = ensureBubble();
+                if (bubble) {
+                    const textId = `channel-stream-content-${paneId}-seg${textSegmentIndex}`;
+                    bubble.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
+                    currentTextEl = document.getElementById(textId);
+                }
+            }
+            return currentTextEl;
+        };
+
+        es.onmessage = (event) => {
+            if (done) return;
+            let data;
+            try {
+                data = JSON.parse(event.data);
+            } catch {
+                return;
+            }
+
+            if (data.type === 'TEXT_MESSAGE_START') {
+                ensureBubble();
+            } else if (data.type === 'TEXT_MESSAGE_CONTENT') {
+                const textDelta = data.delta ?? data.content ?? data.text ?? data.response;
+                if (textDelta !== undefined && textDelta !== null && textDelta !== '') {
+                    const textEl = ensureTextElement();
+                    currentTextContent += (typeof textDelta === 'string' ? textDelta : JSON.stringify(textDelta, null, 2));
+                    if (textEl) {
+                        textEl.innerHTML = this.formatMessageContent(currentTextContent);
+                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    }
+                }
+            } else if (data.type === 'TEXT_MESSAGE_END') {
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+                textSegmentIndex++;
+            } else if (data.type === 'TOOL_CALL_START') {
+                const toolCallId = data.toolCallId || `tool-${Date.now()}`;
+                const toolName = data.toolCallName || 'Tool';
+                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+                textSegmentIndex++;
+
+                const bubble = ensureBubble();
+                if (bubble) {
+                    bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_ARGS') {
+                const toolCallId = data.toolCallId;
+                const argsDelta = data.delta || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const tc = streamingToolCalls.get(toolCallId);
+                    tc.args += argsDelta;
+                    const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
+                    if (argsEl) argsEl.textContent = tc.args;
+                }
+            } else if (data.type === 'TOOL_CALL_END') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || '';
+                const error = data.error;
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-status-icon`);
+                    if (statusEl) {
+                        statusEl.textContent = error ? '✗' : '✓';
+                        statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
+                    }
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+                    if (error) {
+                        const errorSection = document.getElementById(`streaming-tool-error-section-${toolCallId}`);
+                        const errorEl = document.getElementById(`streaming-tool-error-${toolCallId}`);
+                        if (errorSection && errorEl) {
+                            errorSection.style.display = 'block';
+                            errorEl.textContent = error;
+                        }
+                    }
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_RESULT') {
+                const toolCallId = data.toolCallId;
+                const result = data.result || data.content || '';
+                if (toolCallId && streamingToolCalls.has(toolCallId)) {
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCallId}`);
+                    if (resultSection && resultEl && result) {
+                        resultSection.style.display = 'block';
+                        resultEl.textContent = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+                    }
+                }
+            } else if (data.type === 'RUN_FINISHED' || data.type === 'RUN_ERROR') {
+                done = true;
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                this._closeTaskSessionStream(paneId);
+                // Clear channel stream tracking so next session load does full snapshot
+                if (this._lastChannelStreamSession) delete this._lastChannelStreamSession[paneId];
+                // Reload with snapshot for clean final rendering
+                NexusAPI.getSessionMessages(sessionId).then(finalData => {
+                    this.renderMessages(paneId, sessionId, finalData);
+                }).catch(e => {
+                    console.warn('Failed to reload snapshot after channel session finish:', e);
+                });
+                this.loadSessions(paneId);
+            }
+        };
+
+        es.onerror = () => {
+            if (done) return;
+            this._closeTaskSessionStream(paneId);
+            // Clear channel stream tracking on error
+            if (this._lastChannelStreamSession) delete this._lastChannelStreamSession[paneId];
+        };
+    }
+
     renderMessages(paneId, sessionId, data) {
         const detail = document.getElementById(`chatDetail-${paneId}`);
         if (!detail) return;
@@ -1877,7 +2261,7 @@ class ChatView {
         const toolCalls = data.tool_calls || [];
 
         // Track message count for auto-refresh change detection
-        this._lastMessageCount[paneId] = messages.length;
+        this._lastMessageCountBySession[sessionId] = messages.length;
 
         detail.innerHTML = `
             <div class="chat-header">
@@ -2097,14 +2481,19 @@ class ChatView {
 
     async sendMessage(paneId, sessionId, message) {
         if (!message.trim()) return;
+        console.log('[sendMessage] START', { paneId, sessionId, message: message.substring(0, 50) });
 
-        if (!document.getElementById(`chatMessages-${paneId}`)) return;
+        if (!document.getElementById(`chatMessages-${paneId}`)) {
+            console.error('[sendMessage] chatMessages container not found for pane', paneId);
+            return;
+        }
 
         let effectiveSessionId = sessionId;
         try {
             effectiveSessionId = await this._promoteHistorySessionIfNeeded(paneId, sessionId);
+            console.log('[sendMessage] effectiveSessionId:', effectiveSessionId);
         } catch (promoteError) {
-            console.error('Failed to promote history session:', promoteError);
+            console.error('[sendMessage] promote failed:', promoteError);
             this.app.showToast(promoteError.message || 'Failed to continue history session', 'error');
             return;
         }
@@ -2233,10 +2622,51 @@ class ChatView {
         };
         
         // Use the shared streaming method
-        await this.streamChatResponse(paneId, execUser, payload, thinkingId);
-        
+        // IMPORTANT: baseline must be tracked by session (not pane), otherwise switching tabs/sessions can delay sync.
+        const baselineCount = this._lastMessageCountBySession[sessionId] || 0;
+        const hadContent = await this.streamChatResponse(paneId, execUser, payload, thinkingId);
+
         // Refresh session list to update last_message
         this.loadSessions(paneId);
+
+        // Mark that this pane needs a post-stream sync check from auto-refresh
+        this._needsPostStreamSync = this._needsPostStreamSync || {};
+        this._needsPostStreamSync[paneId] = { sessionId, ts: Date.now() };
+
+        // Always auto-sync final snapshot after stream ends so UI never depends on manual refresh
+        // forceOnLastRetry is always true to guarantee at least one full render
+        await this._syncSessionMessagesAfterStream(paneId, sessionId, baselineCount, { forceOnLastRetry: true });
+    }
+
+    async _syncSessionMessagesAfterStream(paneId, sessionId, baselineCount = 0, options = {}) {
+        const forceOnLastRetry = !!options.forceOnLastRetry;
+        const maxRetries = 20;
+
+        for (let i = 0; i < maxRetries; i++) {
+            try {
+                const data = await NexusAPI.getSessionMessages(sessionId);
+                const msgCount = (data.messages || []).length;
+                const reachedNewState = msgCount > baselineCount;
+                const isLast = i === maxRetries - 1;
+
+                if (reachedNewState || (forceOnLastRetry && isLast)) {
+                    if (isLast && !reachedNewState) {
+                        console.log('[syncSessionMessagesAfterStream] force-rendering final snapshot (baseline not exceeded)');
+                    }
+                    this.renderMessages(paneId, sessionId, data);
+                    // Clear post-stream sync flag once we successfully render
+                    if (this._needsPostStreamSync) delete this._needsPostStreamSync[paneId];
+                    return;
+                }
+            } catch (e) {
+                if (i === maxRetries - 1) {
+                    console.warn('[syncSessionMessagesAfterStream] final snapshot sync failed:', e);
+                }
+            }
+            // Incremental delay: 300ms for first 5 retries, then gradually increase
+            const delayMs = i < 5 ? 300 : i < 10 ? 500 : i < 15 ? 800 : 1200;
+            await new Promise(r => setTimeout(r, delayMs));
+        }
     }
 
     renderMessage(msg, toolCalls) {
@@ -2951,6 +3381,14 @@ class TaskView {
         this._pollInterval = 5000; // 5s
     }
 
+    _normalizeTaskStatus(status) {
+        const s = String(status || '').trim().toLowerCase();
+        if (s === 'pending') return 'todo';
+        if (s === 'in_progress' || s === 'running') return 'doing';
+        if (s === 'completed') return 'done';
+        return s || 'todo';
+    }
+
     // Render task view as a standalone full-page view (not in a pane/tab)
     async renderFullPage() {
         const container = document.getElementById('taskPageContainer');
@@ -3038,6 +3476,9 @@ class TaskView {
 
         // Load tasks
         await this.loadTasks(paneId);
+
+        // Keep task board fresh even when no task is running yet
+        this._startAutoPolling(paneId);
 
         this.fullPageRendered = true;
     }
@@ -3289,8 +3730,42 @@ class TaskView {
             };
 
             const data = await NexusAPI.getTasks(options);
-            this.tasks[paneId] = data.tasks || [];
+            this.tasks[paneId] = (data.tasks || []).map(task => ({
+                ...task,
+                status: this._normalizeTaskStatus(task.status),
+            }));
             this.renderKanban(paneId);
+
+            // Keep selected task detail synchronized with latest status/conversation availability
+            const selectedId = this.selectedTask[paneId];
+            if (selectedId) {
+                const latestTask = this.tasks[paneId].find(t => t.id === selectedId);
+                const detailPanel = document.getElementById(`taskDetail-${paneId}`);
+
+                if (!latestTask) {
+                    this._closeTaskStream(selectedId);
+                    this.selectedTask[paneId] = null;
+                    if (detailPanel) {
+                        detailPanel.classList.add('hidden');
+                    }
+                } else if (detailPanel) {
+                    const latestStatus = this._normalizeTaskStatus(latestTask.status);
+                    const renderedTaskId = detailPanel.dataset.taskId || '';
+                    const renderedStatus = detailPanel.dataset.taskStatus || '';
+                    const hasConversationDom = !!detailPanel.querySelector(`#taskConversation-${paneId}`);
+                    const shouldHaveConversation = ['doing', 'done', 'completed', 'failed'].includes(latestStatus);
+                    const isStreaming = this._activeStreams.has(selectedId);
+
+                    const needsRerender =
+                        renderedTaskId !== selectedId ||
+                        renderedStatus !== latestStatus ||
+                        (shouldHaveConversation && !hasConversationDom);
+
+                    if (needsRerender && !isStreaming) {
+                        this.renderTaskDetail(paneId, latestTask);
+                    }
+                }
+            }
         } catch (error) {
             console.error('Failed to load tasks:', error);
             this.statusColumns.forEach(col => {
@@ -3365,13 +3840,8 @@ class TaskView {
             }
         });
 
-        // Auto-poll when there are running tasks
-        const hasRunning = (grouped['doing'] || []).length > 0;
-        if (hasRunning) {
-            this._startAutoPolling(paneId);
-        } else {
-            this._stopAutoPolling();
-        }
+        // Ensure polling is active on task page so status transitions are picked up without manual refresh
+        this._startAutoPolling(paneId);
     }
 
     renderTaskCard(task, paneId) {
@@ -3471,9 +3941,12 @@ class TaskView {
         // Close any existing SSE stream for previous task
         this._closeTaskStream(this.selectedTask[paneId]);
 
-        const statusClass = task.status?.toLowerCase() || 'todo';
+        const statusClass = this._normalizeTaskStatus(task.status);
         const isRunning = statusClass === 'doing';
-        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'failed';
+        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'completed' || statusClass === 'failed';
+
+        detailPanel.dataset.taskId = task.id;
+        detailPanel.dataset.taskStatus = statusClass;
 
         detailPanel.innerHTML = `
             <div class="task-detail-header">
@@ -3805,19 +4278,20 @@ class TaskView {
     }
 
     /**
-     * Start auto-polling kanban when there are running tasks
+     * Start auto-polling task board
      */
     _startAutoPolling(paneId) {
         if (this._pollTimer) return;
         this._pollTimer = setInterval(async () => {
+            if (this.app.pageManager?.currentPage !== 'task') return;
+
+            await this.loadTasks(paneId);
+
+            // Refresh sessions list only when there are running tasks
             const tasks = this.tasks[paneId] || [];
-            const hasRunning = tasks.some(t => (t.status || '').toLowerCase() === 'doing');
+            const hasRunning = tasks.some(t => this._normalizeTaskStatus(t.status) === 'doing');
             if (hasRunning) {
-                await this.loadTasks(paneId);
-                // Also refresh sessions list so new task sessions appear
                 this.app.chatView.loadSessions(0);
-            } else {
-                this._stopAutoPolling();
             }
         }, this._pollInterval);
     }
@@ -5258,7 +5732,7 @@ class NexusApp {
 
         // Clear auto-refresh cache so next poll forces a full re-render
         this.chatView._lastSessionsHash = {};
-        this.chatView._lastMessageCount = {};
+        this.chatView._lastMessageCountBySession = {};
 
         if (currentPage === 'chat') {
             // Refresh chat sessions in all visible panes

@@ -21,10 +21,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, AsyncGenerator, Iterable, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class StreamOrchestrator:
+    def __init__(self) -> None:
+        self._pending_archive_tasks: list[asyncio.Task] = []
+
+    async def _flush_pending_archives(self) -> None:
+        """Wait for all pending archive tasks to complete before finalizing."""
+        if not self._pending_archive_tasks:
+            return
+        tasks = self._pending_archive_tasks
+        self._pending_archive_tasks = []
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        failed = sum(1 for r in results if isinstance(r, Exception))
+        if failed:
+            logger.warning(f"[StreamOrchestrator] {failed}/{len(results)} archive tasks failed")
+
     async def stream_agui(
         self,
         *,
@@ -79,7 +96,19 @@ class StreamOrchestrator:
                 event_count += self._count_sse_events(end_event)
                 yield end_event
 
+            # Wait for all pending archive tasks before finalizing session status
+            await self._flush_pending_archives()
             await archiver.on_run_finished()
+
+        except (asyncio.CancelledError, GeneratorExit):
+            # Client disconnected or generator closed — finalize session status
+            logger.info("Stream cancelled/closed by client, finalizing session")
+            try:
+                await self._flush_pending_archives()
+                await archiver.on_run_finished()
+            except Exception:
+                pass
+            return
 
         except Exception as e:
             try:
@@ -146,7 +175,17 @@ class StreamOrchestrator:
                 if converted_legacy:
                     yield converted_legacy
 
+            await self._flush_pending_archives()
             await archiver.on_run_finished()
+
+        except (asyncio.CancelledError, GeneratorExit):
+            logger.info("Legacy stream cancelled/closed by client, finalizing session")
+            try:
+                await self._flush_pending_archives()
+                await archiver.on_run_finished()
+            except Exception:
+                pass
+            return
 
         except Exception as e:
             try:
@@ -158,7 +197,8 @@ class StreamOrchestrator:
     def _schedule_archive_converted(self, converted_sse: str, archiver: Any) -> None:
         for payload in self._iter_agui_payloads(converted_sse):
             try:
-                asyncio.create_task(archiver.archive_event(payload))
+                task = asyncio.create_task(archiver.archive_event(payload))
+                self._pending_archive_tasks.append(task)
             except Exception:
                 pass
 
