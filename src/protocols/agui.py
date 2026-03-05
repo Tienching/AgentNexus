@@ -482,27 +482,21 @@ class AGUIAdapter(BaseAdapter):
                 
                 # 检查是否需要发送延迟的 ToolCallStart
                 if tool_id not in self._tool_start_sent and index in self._pending_tool_starts:
-                    # 对于 Task 和 TodoWrite 工具，等待参数可解析后再发送
-                    # 对于其他工具，立即发送
-                    should_send = True
+                    # 所有工具都等待参数可解析后再发送，以确保显示名称包含完整上下文
+                    should_send = False
                     display_name = tool_name
                     
-                    if tool_name in ("Task", "task", "TodoWrite", "todo_write"):
-                        # 这些工具需要等待参数可解析
-                        try:
-                            params = json.loads(new_params)
-                            # 参数可解析，生成显示名称
-                            display_name = self._get_tool_display_name(tool_name, new_params)
-                        except json.JSONDecodeError:
-                            # 参数还不完整，缓存 partial_json
-                            should_send = False
-                            if partial_json:
-                                if tool_id not in self._pending_tool_args:
-                                    self._pending_tool_args[tool_id] = []
-                                self._pending_tool_args[tool_id].append(partial_json)
-                    else:
-                        # 其他工具尝试解析，解析失败也发送
+                    try:
+                        params = json.loads(new_params)
+                        # 参数可解析，生成带上下文的显示名称
                         display_name = self._get_tool_display_name(tool_name, new_params)
+                        should_send = True
+                    except json.JSONDecodeError:
+                        # 参数还不完整，缓存 partial_json
+                        if partial_json:
+                            if tool_id not in self._pending_tool_args:
+                                self._pending_tool_args[tool_id] = []
+                            self._pending_tool_args[tool_id].append(partial_json)
                     
                     if should_send:
                         tool_start = ToolCallStartEvent(
