@@ -20,6 +20,7 @@ from ..adapters import ProtocolType, get_router
 from ..config import settings
 from ..logger import get_logger
 from ..providers import get_provider_registry
+from ..utils.ids import resolve_session_id
 from .cli_executor import CLIExecutor
 from .callback_handler import CallbackHandler
 from .stream_archiver import create_archiver
@@ -264,13 +265,20 @@ class StreamHandler:
         # Username is optional for AG-UI callers; use an internal default.
         if not legacy_data.get("user"):
             legacy_data["user"] = "anonymous"
+
+        # Normalize session_id: AG-UI 可能传入空 threadId，需统一补齐，避免写入空会话
+        resolved_session_id = resolve_session_id(legacy_data.get("session_id") or agui_request.threadId)
+        legacy_data["session_id"] = resolved_session_id
+
         request_model = RequestModel.model_validate(legacy_data)
+        request_model.session_id = resolved_session_id
+        agui_request.threadId = resolved_session_id
 
         # In /workspace -t mode, the workspace provider (stored in Redis session)
         # should override the request-level provider for executor and adapter selection.
         # Without this, a workspace using gemini would get a Claude executor/adapter.
         # Priority: workspace_provider (from /workspace -t) > handoff_provider > request default
-        session_id = request_model.session_id or agui_request.threadId
+        session_id = resolved_session_id
         workspace_provider = None
         workspace_alias = None
         if session_id:

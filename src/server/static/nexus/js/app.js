@@ -1062,10 +1062,15 @@ class ChatView {
                     </div>
                     <div class="message-content">
                         <div class="thinking-indicator">
+                            <span class="thinking-status-icon" aria-hidden="true">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v2m0 12v2m8-8h-2M6 12H4m13.657 5.657l-1.414-1.414M7.757 7.757 6.343 6.343m11.314 0-1.414 1.414M7.757 16.243l-1.414 1.414"/>
+                                </svg>
+                            </span>
                             <span class="thinking-dot"></span>
                             <span class="thinking-dot"></span>
                             <span class="thinking-dot"></span>
-                            <span class="thinking-text">Thinking...</span>
+                            <span class="thinking-text">运行中...</span>
                         </div>
                     </div>
                 </div>
@@ -1264,11 +1269,12 @@ class ChatView {
             if (data.type === 'TOOL_CALL_START') {
                 const toolCallId = data.toolCallId || `tool-${Date.now()}`;
                 const toolName = data.toolCallName || 'Tool';
+                const toolTitle = this.formatToolCallTitle(toolName, {}, '');
                 streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
                 endCurrentTextSegment();
                 initBubble();
                 if (bubbleEl) {
-                    bubbleEl.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    bubbleEl.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolTitle, 'executing'));
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }
                 return;
@@ -1282,6 +1288,11 @@ class ChatView {
                     tc.args += argsDelta;
                     const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
                     if (argsEl) argsEl.textContent = tc.args;
+
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-name`);
+                    if (titleEl) {
+                        titleEl.textContent = this.formatToolCallTitle(tc.name, {}, tc.args);
+                    }
                 }
                 return;
             }
@@ -1301,6 +1312,11 @@ class ChatView {
                     if (statusEl && data.type === 'TOOL_CALL_END') {
                         statusEl.textContent = error ? '✗' : '✓';
                         statusEl.parentElement.style.color = error ? 'var(--error)' : 'var(--success)';
+                    }
+
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-name`);
+                    if (titleEl) {
+                        titleEl.textContent = data.toolCallDisplayName || this.formatToolCallTitle(tc.name, {}, tc.args);
                     }
 
                     const resultSection = document.getElementById(`streaming-tool-result-section-${toolCallId}`);
@@ -1461,6 +1477,104 @@ class ChatView {
         if (sendBtn) sendBtn.disabled = false;
 
         return hasContent;
+    }
+
+    buildToolDisplayName(toolName, params = {}) {
+        const name = toolName || 'Tool Call';
+        if (!params || typeof params !== 'object') return name;
+
+        if (name === 'Task' || name === 'task') {
+            const subagent = params.subagent_type || params.subagent_name || '';
+            const desc = params.description || '';
+            if (subagent && desc) return `Task: ${subagent} - ${desc}`;
+            if (subagent) return `Task: ${subagent}`;
+            if (desc) return `Task: ${desc}`;
+        }
+
+        if (name === 'Skill' || name === 'use_skill') {
+            const skill = params.skill || params.command || '';
+            if (skill) return `Skill: ${skill}`;
+        }
+
+        if (name === 'Read' || name === 'read_file') {
+            const fp = params.file_path || params.filePath || '';
+            if (fp) return `Read: ${fp}`;
+        }
+
+        if (name === 'Write' || name === 'write_to_file') {
+            const fp = params.file_path || params.filePath || '';
+            if (fp) return `Write: ${fp}`;
+        }
+
+        if (name === 'Edit' || name === 'replace_in_file') {
+            const fp = params.file_path || params.filePath || '';
+            if (fp) return `Edit: ${fp}`;
+        }
+
+        if (name === 'Grep' || name === 'search_content') {
+            const path = params.path || params.directory || '';
+            if (path) return `Grep: ${path}`;
+        }
+
+        if (name === 'Glob' || name === 'search_file') {
+            const path = params.path || params.target_directory || '';
+            const pattern = params.pattern || '';
+            if (path && pattern) return `Glob: ${pattern} in ${path}`;
+            if (path) return `Glob: ${path}`;
+            if (pattern) return `Glob: ${pattern}`;
+        }
+
+        if (name === 'Bash' || name === 'execute_command') {
+            const explanation = params.explanation || params.description || '';
+            if (explanation) return `Bash: ${explanation}`;
+            const command = params.command || '';
+            if (command) return `Bash: ${command.length > 60 ? `${command.slice(0, 60)}…` : command}`;
+        }
+
+        if (name === 'WebSearch' || name === 'web_search') {
+            const query = params.query || params.searchTerm || '';
+            if (query) return `Search: ${query.length > 60 ? `${query.slice(0, 60)}…` : query}`;
+        }
+
+        if (name === 'WebFetch' || name === 'web_fetch') {
+            const url = params.url || '';
+            if (url) return `Fetch: ${url.length > 60 ? `${url.slice(0, 60)}…` : url}`;
+        }
+
+        return name;
+    }
+
+    extractPartialToolParams(argsString) {
+        if (typeof argsString !== 'string' || !argsString.trim()) return {};
+        const extracted = {};
+        const keys = ['explanation', 'description', 'command', 'searchTerm', 'query'];
+        for (const key of keys) {
+            const m = argsString.match(new RegExp(`"${key}"\\s*:\\s*"([^\\"]*)`));
+            if (m && m[1]) {
+                extracted[key] = m[1].replace(/\\n/g, ' ').replace(/\\t/g, ' ').trim();
+            }
+        }
+        return extracted;
+    }
+
+    parseToolCallParams(args, argsString) {
+        if (args && typeof args === 'object' && Object.keys(args).length > 0) {
+            return args;
+        }
+        if (typeof argsString === 'string' && argsString.trim()) {
+            try {
+                const parsed = JSON.parse(argsString);
+                if (parsed && typeof parsed === 'object') return parsed;
+            } catch (_) {
+                return this.extractPartialToolParams(argsString);
+            }
+        }
+        return {};
+    }
+
+    formatToolCallTitle(toolName, args, argsString = '') {
+        const params = this.parseToolCallParams(args, argsString);
+        return this.buildToolDisplayName(toolName || 'Tool Call', params);
     }
     
     /**
@@ -1977,6 +2091,7 @@ class ChatView {
             } else if (data.type === 'TOOL_CALL_START') {
                 const toolCallId = data.toolCallId || `tool-${Date.now()}`;
                 const toolName = data.toolCallName || 'Tool';
+                const toolTitle = this.formatToolCallTitle(toolName, {}, '');
                 streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
 
                 if (currentTextEl) currentTextEl.classList.remove('streaming');
@@ -1986,7 +2101,7 @@ class ChatView {
 
                 const bubble = ensureBubble();
                 if (bubble) {
-                    bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolTitle, 'executing'));
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }
             } else if (data.type === 'TOOL_CALL_ARGS') {
@@ -1997,6 +2112,11 @@ class ChatView {
                     tc.args += argsDelta;
                     const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
                     if (argsEl) argsEl.textContent = tc.args;
+
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-name`);
+                    if (titleEl) {
+                        titleEl.textContent = this.formatToolCallTitle(tc.name, {}, tc.args);
+                    }
                 }
             } else if (data.type === 'TOOL_CALL_END') {
                 const toolCallId = data.toolCallId;
@@ -2171,6 +2291,7 @@ class ChatView {
             } else if (data.type === 'TOOL_CALL_START') {
                 const toolCallId = data.toolCallId || `tool-${Date.now()}`;
                 const toolName = data.toolCallName || 'Tool';
+                const toolTitle = this.formatToolCallTitle(toolName, {}, '');
                 streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
 
                 if (currentTextEl) currentTextEl.classList.remove('streaming');
@@ -2180,7 +2301,7 @@ class ChatView {
 
                 const bubble = ensureBubble();
                 if (bubble) {
-                    bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCallId, toolTitle, 'executing'));
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 }
             } else if (data.type === 'TOOL_CALL_ARGS') {
@@ -2191,6 +2312,11 @@ class ChatView {
                     tc.args += argsDelta;
                     const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
                     if (argsEl) argsEl.textContent = tc.args;
+
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-name`);
+                    if (titleEl) {
+                        titleEl.textContent = this.formatToolCallTitle(tc.name, {}, tc.args);
+                    }
                 }
             } else if (data.type === 'TOOL_CALL_END') {
                 const toolCallId = data.toolCallId;
@@ -2541,10 +2667,15 @@ class ChatView {
                 <div class="message-avatar">A</div>
                 <div class="message-content">
                     <div class="thinking-indicator">
+                        <span class="thinking-status-icon" aria-hidden="true">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v2m0 12v2m8-8h-2M6 12H4m13.657 5.657l-1.414-1.414M7.757 7.757 6.343 6.343m11.314 0-1.414 1.414M7.757 16.243l-1.414 1.414"/>
+                            </svg>
+                        </span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
-                        <span class="thinking-text">Thinking...</span>
+                        <span class="thinking-text">运行中...</span>
                     </div>
                 </div>
             </div>
@@ -2736,6 +2867,7 @@ class ChatView {
     
     renderToolCallStandalone(tc, isFromUser = false) {
         const status = tc.status || 'pending';
+        const toolTitle = this.formatToolCallTitle(tc.tool_name || tc.name || 'Tool Call', tc.args, tc.args_string || '');
         const statusConfig = {
             pending: { icon: '⏳', color: 'var(--text-muted)', bgColor: 'rgba(148, 163, 184, 0.1)', label: 'Pending' },
             executing: { icon: '▶️', color: 'var(--primary-500)', bgColor: 'rgba(59, 130, 246, 0.1)', label: 'Executing' },
@@ -2773,7 +2905,7 @@ class ChatView {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                         </svg>
-                        <span class="tool-call-standalone-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                        <span class="tool-call-standalone-name">${this.escapeHtml(toolTitle)}</span>
                         ${execTime ? `<span class="tool-call-standalone-time">⏱ ${execTime}</span>` : ''}
                         ${tc.error ? `<span class="tool-call-standalone-error-badge">⚠ Error</span>` : ''}
                         <svg class="tool-call-standalone-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2846,6 +2978,7 @@ class ChatView {
 
     renderToolCall(tc) {
         const status = tc.status || 'pending';
+        const toolTitle = this.formatToolCallTitle(tc.tool_name || tc.name || 'Tool Call', tc.args, tc.args_string || '');
         const statusConfig = {
             pending: { icon: '⏳', color: 'var(--text-muted)', label: 'Pending' },
             executing: { icon: '▶️', color: 'var(--primary-500)', label: 'Executing' },
@@ -2881,7 +3014,7 @@ class ChatView {
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                     </svg>
-                    <span class="tool-call-name">${this.escapeHtml(tc.tool_name || tc.name || 'Tool Call')}</span>
+                    <span class="tool-call-name">${this.escapeHtml(toolTitle)}</span>
                     ${execTime ? `<span class="tool-call-time">${execTime}</span>` : ''}
                     ${tc.error ? `<span class="tool-call-error-badge">Error</span>` : ''}
                     <svg class="tool-call-toggle" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -4151,6 +4284,7 @@ class TaskView {
             } else if (data.type === 'TOOL_CALL_START') {
                 const toolCallId = data.toolCallId || `tool-${Date.now()}`;
                 const toolName = data.toolCallName || 'Tool';
+                const toolTitle = chatView.formatToolCallTitle(toolName, {}, '');
                 
                 streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
                 
@@ -4161,7 +4295,7 @@ class TaskView {
                 
                 const bubble = ensureBubble();
                 if (bubble) {
-                    bubble.insertAdjacentHTML('beforeend', chatView.renderStreamingToolCall(toolCallId, toolName, 'executing'));
+                    bubble.insertAdjacentHTML('beforeend', chatView.renderStreamingToolCall(toolCallId, toolTitle, 'executing'));
                     container.scrollTop = container.scrollHeight;
                 }
             } else if (data.type === 'TOOL_CALL_ARGS') {
@@ -4172,6 +4306,11 @@ class TaskView {
                     tc.args += argsDelta;
                     const argsEl = document.getElementById(`streaming-tool-args-${toolCallId}`);
                     if (argsEl) argsEl.textContent = tc.args;
+
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCallId}"] .tool-call-name`);
+                    if (titleEl) {
+                        titleEl.textContent = chatView.formatToolCallTitle(tc.name, {}, tc.args);
+                    }
                 }
             } else if (data.type === 'TOOL_CALL_END') {
                 const toolCallId = data.toolCallId;

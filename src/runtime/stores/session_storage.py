@@ -48,7 +48,16 @@ class SessionStorage:
             True if successful
         """
         try:
-            key = f"session:{meta.id}:meta"
+            session_id = (meta.id or "").strip()
+            if not session_id:
+                logger.warning("Skip saving session meta with empty id")
+                return False
+
+            meta.id = session_id
+            if not (meta.thread_id or "").strip():
+                meta.thread_id = session_id
+
+            key = f"session:{session_id}:meta"
             self._redis.hset(key, meta.to_redis_hash())
             
             # Set TTL
@@ -83,6 +92,18 @@ class SessionStorage:
             data = self._redis.hgetall(key)
             if not data:
                 return None
+
+            sid = (session_id or "").strip()
+            if sid:
+                patch = {}
+                if not (data.get("id") or "").strip():
+                    patch["id"] = sid
+                if not (data.get("thread_id") or "").strip():
+                    patch["thread_id"] = sid
+                if patch:
+                    self._redis.hset(key, patch)
+                    data.update(patch)
+
             return SessionMeta.from_redis_hash(data)
         except Exception as e:
             logger.error(f"Failed to get session meta: {e}")
@@ -958,7 +979,15 @@ class SessionStorage:
             # Fetch all session metadata for filtering
             sessions = []
             for session_id in all_session_ids:
-                meta = self.get_session_meta(session_id)
+                sid = session_id.decode('utf-8') if isinstance(session_id, bytes) else str(session_id)
+                sid = sid.strip()
+                if not sid:
+                    # 自愈脏索引：清理空 session_id，避免 UI 出现不可删除会话
+                    self._redis.zrem(user_key, session_id)
+                    self.delete_session("")
+                    continue
+
+                meta = self.get_session_meta(sid)
                 if meta:
                     # Apply filters
                     if search and search.lower() not in meta.title.lower():
@@ -1012,7 +1041,15 @@ class SessionStorage:
             # Fetch all session metadata for filtering
             sessions = []
             for session_id in all_session_ids:
-                meta = self.get_session_meta(session_id)
+                sid = session_id.decode('utf-8') if isinstance(session_id, bytes) else str(session_id)
+                sid = sid.strip()
+                if not sid:
+                    # 自愈脏索引：清理空 session_id，避免 UI 出现不可删除会话
+                    self._redis.zrem(global_key, session_id)
+                    self.delete_session("")
+                    continue
+
+                meta = self.get_session_meta(sid)
                 if meta:
                     # Apply filters
                     if search and search.lower() not in meta.title.lower():

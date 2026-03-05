@@ -106,7 +106,8 @@ class NexusAPI {
      * @returns {Promise<Object>} Session detail
      */
     static async getSession(sessionId) {
-        const response = await fetch(`${API_BASE}/sessions/${sessionId}`);
+        const sid = encodeURIComponent(sessionId || '');
+        const response = await fetch(`${API_BASE}/sessions/${sid}`);
         if (!response.ok) {
             if (response.status === 404) {
                 throw new Error('Session not found');
@@ -122,7 +123,8 @@ class NexusAPI {
      * @returns {Promise<Object>} Messages response
      */
     static async getSessionMessages(sessionId) {
-        const response = await fetch(`${API_BASE}/sessions/${sessionId}/messages`);
+        const sid = encodeURIComponent(sessionId || '');
+        const response = await fetch(`${API_BASE}/sessions/${sid}/messages`);
         if (!response.ok) {
             if (response.status === 404) {
                 throw new Error('Session not found');
@@ -138,7 +140,13 @@ class NexusAPI {
      * @returns {Promise<Object>} Delete response
      */
     static async deleteSession(sessionId) {
-        const response = await fetch(`${API_BASE}/sessions/${sessionId}`, {
+        const raw = sessionId == null ? '' : String(sessionId);
+        if (raw.trim() === '') {
+            return NexusAPI.bulkDeleteSessions(['']);
+        }
+
+        const sid = encodeURIComponent(raw);
+        const response = await fetch(`${API_BASE}/sessions/${sid}`, {
             method: 'DELETE',
         });
         if (!response.ok) {
@@ -199,7 +207,8 @@ class NexusAPI {
      * @returns {Promise<Object>} Cancel response
      */
     static async cancelSession(sessionId) {
-        const response = await fetch(`${API_BASE}/sessions/${sessionId}/cancel`, {
+        const sid = encodeURIComponent(sessionId || '');
+        const response = await fetch(`${API_BASE}/sessions/${sid}/cancel`, {
             method: 'POST',
         });
         if (!response.ok) {
