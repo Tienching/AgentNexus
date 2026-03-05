@@ -294,18 +294,10 @@ class TaskQueue:
         """Find a task whose session_id matches the given value.
 
         Searches all tasks for a matching ``session_id`` field.
-        Also supports legacy ``task_`` prefix for backward compatibility.
 
         Returns:
             The matching Task, or None.
         """
-        # Legacy fast path: task_ prefix → direct lookup
-        if session_id.startswith("task_"):
-            task_id = session_id[len("task_"):]
-            task = self.get_task(task_id)
-            if task:
-                return task
-
         # Scan all tasks and match session_id field
         all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
         for task_id in all_task_ids:

@@ -542,6 +542,16 @@ class NexusAPI {
         return new EventSource(url);
     }
 
+    static streamSessionMessages(sessionId, options = {}) {
+        const params = new URLSearchParams({
+            tail: options.tail || 200,
+        });
+        if (options.pollIntervalMs) params.append('poll_interval_ms', options.pollIntervalMs);
+
+        const url = `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/agui/stream?${params}`;
+        return new EventSource(url);
+    }
+
     // ============ AGUI Chat Streaming API ============
 
     /**
