@@ -20,8 +20,6 @@ from ..logger import get_logger
 from src.channels import (
     ChannelManager,
     InboundMessage,
-    OutboundMessage,
-    ChannelConfig,
     TelegramConfig,
     SlackConfig,
     DiscordConfig,
@@ -344,6 +342,61 @@ class ChannelService:
 
         return request
 
+    def _archive_user_message(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        request,
+    ) -> None:
+        """Immediately persist the user message to Redis so it shows up in the
+        Nexus UI as soon as the session enters RUNNING state — before the AI
+        starts responding.
+        """
+        try:
+            storage = get_session_storage()
+
+            # Build user message content with embedded image/file paths
+            req_content_parts = getattr(request, "content_parts", None) or []
+            if req_content_parts:
+                assembled: list[str] = []
+                for part in req_content_parts:
+                    if part.get("type") == "image":
+                        p = part.get("path") or part.get("url", "")
+                        assembled.append(f"{{image: {p}}}")
+                    elif part.get("type") == "text":
+                        assembled.append(part.get("content", ""))
+                    elif part.get("type") == "file":
+                        p = part.get("path") or part.get("url", "")
+                        assembled.append(f"{{file: {p}}}")
+                user_content = "\n".join(assembled)
+            else:
+                user_content = message.content or ""
+                image_paths = getattr(request, "image_paths", None) or []
+                file_paths = getattr(request, "file_paths", None) or []
+                if image_paths or file_paths:
+                    parts: list[str] = []
+                    for p in image_paths:
+                        parts.append(f"{{image: {p}}}")
+                    for p in file_paths:
+                        parts.append(f"{{file: {p}}}")
+                    media_tags = " ".join(parts)
+                    if user_content.strip():
+                        user_content = f"{media_tags}\n\n{user_content}"
+                    else:
+                        user_content = media_tags
+
+            storage.add_session_message(
+                session_id,
+                StoredMessage(
+                    id=f"ch-u-{uuid.uuid4().hex[:8]}",
+                    role="user",
+                    content=user_content,
+                    status=MessageStatus.COMPLETE,
+                ),
+            )
+        except Exception as e:
+            logger.warning(f"[{message.channel}] Failed to archive user message: {e}")
+
     async def _consume_executor_events(
         self,
         message: InboundMessage,
@@ -360,7 +413,10 @@ class ChannelService:
         2. Parse stream_event / assistant / result event types
         3. Track tool calls (AG-UI + legacy)
         4. Deduplicate text (has_streamed_text flag)
-        5. Archive user + assistant messages to Redis on ``result``
+        5. Archive assistant message to Redis on ``result``
+           (user message is persisted earlier by ``_archive_user_message``)
+        6. Emit real-time AGUI events to Redis so the SSE endpoint can
+           stream them to the Nexus frontend (TEXT_MESSAGE_*, TOOL_CALL_*, etc.)
 
         Channel-specific behaviour is injected via callbacks:
         - *on_text_delta(text)*: called for each incremental text chunk (wecom writes to StreamBuffer)
@@ -384,6 +440,85 @@ class ChannelService:
         _tool_call_ids: List[str] = []
         _segment_seq = 0
         _last_text_snapshot = ""  # text length at which we last emitted a text segment
+
+        # --- Real-time AGUI event emitting for SSE streaming ---
+        _agui_storage = get_session_storage()
+        _agui_msg_id = f"ch-stream-{uuid.uuid4().hex[:8]}"
+        _agui_text_started = False  # Whether we've emitted TEXT_MESSAGE_START
+
+        def _emit_agui(evt: dict) -> None:
+            """Append an AGUI event to Redis for the SSE endpoint to pick up."""
+            try:
+                _agui_storage.append_agui_event(session_id, evt)
+            except Exception:
+                pass
+
+        def _handle_tool_start(tool_id: str, tool_name: str) -> None:
+            """Shared logic when a tool call begins (AG-UI or legacy).
+
+            Closes any open text segment, emits TOOL_CALL_START, flushes
+            preceding text as a content segment, and records the tool_call
+            segment for archival.
+            """
+            nonlocal _agui_text_started, _segment_seq, _last_text_snapshot
+
+            result.tool_call_count += 1
+
+            # End any open text segment before tool call
+            if _agui_text_started:
+                _emit_agui({"type": "TEXT_MESSAGE_END", "messageId": _agui_msg_id})
+                _agui_text_started = False
+
+            _emit_agui({"type": "TOOL_CALL_START", "toolCallId": tool_id, "toolCallName": tool_name})
+
+            # Flush preceding text as a content segment
+            current_text = "".join(result.collected_text_parts)
+            new_text = current_text[len(_last_text_snapshot):]
+            if new_text.strip():
+                _content_segments.append(ContentSegment(type="text", content=new_text, sequence=_segment_seq))
+                _segment_seq += 1
+            _last_text_snapshot = current_text
+
+            # Add tool_call segment
+            _content_segments.append(ContentSegment(type="tool_call", tool_call_id=tool_id, sequence=_segment_seq))
+            _segment_seq += 1
+            _tool_call_ids.append(tool_id)
+
+        async def _handle_tool_end(
+            tool_id: str,
+            tool_name: str,
+            args_string: str,
+            tc_result: Any = None,
+        ) -> None:
+            """Shared logic when a tool call completes (AG-UI or legacy).
+
+            Parses args JSON, builds display name / summary, creates a
+            StoredToolCall, and emits the AGUI TOOL_CALL_END event.
+            """
+            params_obj: dict = {}
+            if args_string:
+                try:
+                    params_obj = json.loads(args_string)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            display = self._get_tool_display_name(tool_name, params_obj)
+            summary = f"🔧 `{display}`"
+            result.tool_summaries.append(summary)
+            if on_tool_summary:
+                await on_tool_summary(summary)
+
+            _tool_calls.append(StoredToolCall(
+                id=tool_id,
+                tool_name=tool_name,
+                args=params_obj,
+                args_string=args_string,
+                status=ToolCallStatus.COMPLETED,
+                result=tc_result,
+                end_time=int(time.time() * 1000),
+            ))
+
+            _emit_agui({"type": "TOOL_CALL_END", "toolCallId": tool_id, "result": tc_result})
 
         try:
             async with asyncio.timeout(timeout):
@@ -412,6 +547,10 @@ class ChannelService:
                                 if text:
                                     result.collected_text_parts.append(text)
                                     has_streamed_text = True
+                                    if not _agui_text_started:
+                                        _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
+                                        _agui_text_started = True
+                                    _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": text})
                                     if on_text_delta:
                                         await on_text_delta(text)
                             elif delta_type == "input_json_delta":
@@ -424,53 +563,23 @@ class ChannelService:
                         elif evt_type == "TOOL_CALL_START":
                             tool_name = event.get("toolCallName", "unknown")
                             tool_id = event.get("toolCallId", "")
-                            result.tool_call_count += 1
                             if tool_id:
                                 agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
-                                # Flush preceding text as a segment
-                                current_text = "".join(result.collected_text_parts)
-                                new_text = current_text[len(_last_text_snapshot):]
-                                if new_text.strip():
-                                    _content_segments.append(ContentSegment(type="text", content=new_text, sequence=_segment_seq))
-                                    _segment_seq += 1
-                                _last_text_snapshot = current_text
-                                # Add tool_call segment
-                                _content_segments.append(ContentSegment(type="tool_call", tool_call_id=tool_id, sequence=_segment_seq))
-                                _segment_seq += 1
-                                _tool_call_ids.append(tool_id)
+                                _handle_tool_start(tool_id, tool_name)
 
                         elif evt_type == "TOOL_CALL_ARGS":
                             tool_id = event.get("toolCallId", "")
                             delta_str = event.get("delta", "")
                             if tool_id and delta_str and tool_id in agui_tool_buffer:
                                 agui_tool_buffer[tool_id]["args"] += delta_str
+                                _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": delta_str})
 
                         elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
                             tool_id = event.get("toolCallId", "")
                             if tool_id and tool_id in agui_tool_buffer:
                                 entry = agui_tool_buffer.pop(tool_id)
-                                params_obj = {}
-                                if entry["args"]:
-                                    try:
-                                        params_obj = json.loads(entry["args"])
-                                    except (json.JSONDecodeError, TypeError):
-                                        pass
-                                display = self._get_tool_display_name(entry["name"], params_obj)
-                                summary = f"🔧 `{display}`"
-                                result.tool_summaries.append(summary)
-                                if on_tool_summary:
-                                    await on_tool_summary(summary)
-                                # Build StoredToolCall for AGUI archival
                                 tc_result = event.get("result") if evt_type == "TOOL_CALL_END" else event.get("content")
-                                _tool_calls.append(StoredToolCall(
-                                    id=tool_id,
-                                    tool_name=entry["name"],
-                                    args=params_obj,
-                                    args_string=entry["args"],
-                                    status=ToolCallStatus.COMPLETED,
-                                    result=tc_result,
-                                    end_time=int(time.time() * 1000),
-                                ))
+                                await _handle_tool_end(tool_id, entry["name"], entry["args"], tc_result)
 
                         # Legacy tool blocks
                         elif evt_type == "content_block_start":
@@ -479,44 +588,14 @@ class ChannelService:
                                 tool_name = content_block.get("name", "unknown")
                                 tool_id = content_block.get("id", f"tool-{uuid.uuid4().hex[:8]}")
                                 index = event.get("index", 0)
-                                result.tool_call_count += 1
                                 tool_block_buffer[index] = {"name": tool_name, "json_buf": "", "id": tool_id}
-                                # Flush preceding text as a segment
-                                current_text = "".join(result.collected_text_parts)
-                                new_text = current_text[len(_last_text_snapshot):]
-                                if new_text.strip():
-                                    _content_segments.append(ContentSegment(type="text", content=new_text, sequence=_segment_seq))
-                                    _segment_seq += 1
-                                _last_text_snapshot = current_text
-                                # Add tool_call segment
-                                _content_segments.append(ContentSegment(type="tool_call", tool_call_id=tool_id, sequence=_segment_seq))
-                                _segment_seq += 1
-                                _tool_call_ids.append(tool_id)
+                                _handle_tool_start(tool_id, tool_name)
 
                         elif evt_type == "content_block_stop":
                             index = event.get("index", 0)
                             if index in tool_block_buffer:
                                 entry = tool_block_buffer.pop(index)
-                                params_obj = {}
-                                if entry["json_buf"]:
-                                    try:
-                                        params_obj = json.loads(entry["json_buf"])
-                                    except (json.JSONDecodeError, TypeError):
-                                        pass
-                                display = self._get_tool_display_name(entry["name"], params_obj)
-                                summary = f"🔧 `{display}`"
-                                result.tool_summaries.append(summary)
-                                if on_tool_summary:
-                                    await on_tool_summary(summary)
-                                # Build StoredToolCall for AGUI archival
-                                _tool_calls.append(StoredToolCall(
-                                    id=entry["id"],
-                                    tool_name=entry["name"],
-                                    args=params_obj,
-                                    args_string=entry["json_buf"],
-                                    status=ToolCallStatus.COMPLETED,
-                                    end_time=int(time.time() * 1000),
-                                ))
+                                await _handle_tool_end(entry["id"], entry["name"], entry["json_buf"])
 
                     # --- assistant event (skip if already streamed) ---
                     elif event_type == "assistant":
@@ -529,6 +608,10 @@ class ChannelService:
                                         text = item.get("text", "")
                                         if text:
                                             result.collected_text_parts.append(text)
+                                            if not _agui_text_started:
+                                                _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
+                                                _agui_text_started = True
+                                            _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": text})
                                             if on_text_delta:
                                                 await on_text_delta(text)
 
@@ -553,56 +636,28 @@ class ChannelService:
             result.is_error = True
             result.final_content = f"❌ 处理出错：{str(e)[:200]}"
 
-        # --- Unified archival: store user + assistant messages to Redis (AGUI format) ---
+        # --- Close any open AGUI text segment and emit RUN_FINISHED ---
+        if _agui_text_started:
+            _emit_agui({"type": "TEXT_MESSAGE_END", "messageId": _agui_msg_id})
+        _emit_agui({"type": "RUN_FINISHED", "threadId": session_id})
+
+        # --- Set session status to COMPLETED ---
+        try:
+            _agui_storage.update_session_status(
+                session_id,
+                SessionStatus.ERROR if result.is_error else SessionStatus.COMPLETED,
+            )
+        except Exception as e:
+            logger.warning(f"[{message.channel}] Failed to set session completed: {e}")
+
+        # --- Archive assistant message to Redis (AGUI format) ---
+        # (User message is already persisted by _archive_user_message before
+        #  _consume_executor_events is called.)
         final = result.final_content or "".join(result.collected_text_parts).strip()
         if final:
             try:
                 storage = get_session_storage()
 
-                # Build user message content with embedded image/file paths
-                # Prefer content_parts (preserves interleaving order) over flat lists
-                req_content_parts = getattr(request, "content_parts", None) or []
-                if req_content_parts:
-                    # Reconstruct content with {image: path} tags in original order
-                    assembled: list[str] = []
-                    for part in req_content_parts:
-                        if part.get("type") == "image":
-                            p = part.get("path") or part.get("url", "")
-                            assembled.append(f"{{image: {p}}}")
-                        elif part.get("type") == "text":
-                            assembled.append(part.get("content", ""))
-                        elif part.get("type") == "file":
-                            p = part.get("path") or part.get("url", "")
-                            assembled.append(f"{{file: {p}}}")
-                    user_content = "\n".join(assembled)
-                else:
-                    # Fallback: flat image_paths + file_paths (old behavior)
-                    user_content = message.content or ""
-                    image_paths = getattr(request, "image_paths", None) or []
-                    file_paths = getattr(request, "file_paths", None) or []
-                    if image_paths or file_paths:
-                        parts: list[str] = []
-                        for p in image_paths:
-                            parts.append(f"{{image: {p}}}")
-                        for p in file_paths:
-                            parts.append(f"{{file: {p}}}")
-                        media_tags = " ".join(parts)
-                        if user_content.strip():
-                            user_content = f"{media_tags}\n\n{user_content}"
-                        else:
-                            user_content = media_tags
-
-                storage.add_session_message(
-                    session_id,
-                    StoredMessage(
-                        id=f"ch-u-{uuid.uuid4().hex[:8]}",
-                        role="user",
-                        content=user_content,
-                        status=MessageStatus.COMPLETE,
-                    ),
-                )
-
-                # Build assistant message with content_segments and tool_call_ids
                 # Flush any remaining text after the last tool call as a final segment
                 current_text = "".join(result.collected_text_parts)
                 remaining = current_text[len(_last_text_snapshot):]
@@ -652,6 +707,7 @@ class ChannelService:
         session_id = gen_channel_session_id(message.channel, message.chat_id)
 
         # Ensure session meta exists in Redis (so it shows up in Runtime list)
+        # Always set status to RUNNING so the frontend can detect new activity
         exec_user = settings.exec_user or "ubuntu"
         try:
             storage = get_session_storage()
@@ -673,6 +729,23 @@ class ChannelService:
                 )
                 storage.save_session_meta(meta)
                 logger.info(f"[{message.channel}] Created session meta: {session_id}")
+            else:
+                # Session already exists — update status to RUNNING so the
+                # frontend picks up the new activity (shows running indicator,
+                # connects SSE stream, etc.)
+                storage.update_session_status(session_id, SessionStatus.RUNNING)
+                logger.info(f"[{message.channel}] Updated existing session to running: {session_id}")
+
+            # CRITICAL: Write RUN_STARTED event IMMEDIATELY after setting status
+            # to RUNNING.  Channel messages use _consume_executor_events() which
+            # bypasses the archiver/orchestrator, so no RUN_STARTED event is
+            # emitted automatically.  Without this, the SSE self-heal logic sees
+            # the previous run's RUN_FINISHED without a matching RUN_STARTED and
+            # incorrectly resets the status back to completed.
+            storage.append_agui_event(session_id, {
+                "type": "RUN_STARTED",
+                "threadId": session_id,
+            })
         except Exception as e:
             logger.warning(f"[{message.channel}] Failed to init session meta: {e}")
 
@@ -729,6 +802,9 @@ class ChannelService:
             return
 
         request = await self._build_request(message, session_id)
+
+        # Persist user message immediately so it appears in the UI
+        self._archive_user_message(message, session_id, request)
 
         # Callbacks: write text deltas and tool summaries to StreamBuffer in real time
         async def _on_text(text: str) -> None:
@@ -924,6 +1000,9 @@ class ChannelService:
         callback so the user sees periodic "⏳ processing…" updates.
         """
         request = await self._build_request(message, session_id)
+
+        # Persist user message immediately so it appears in the UI
+        self._archive_user_message(message, session_id, request)
 
         last_progress_time = time.time()
         collected_chars = 0

@@ -28,6 +28,20 @@ logger = logging.getLogger(__name__)
 
 
 class StreamOrchestrator:
+    def __init__(self) -> None:
+        self._pending_archive_tasks: list[asyncio.Task] = []
+
+    async def _flush_pending_archives(self) -> None:
+        """Wait for all pending archive tasks to complete before finalizing."""
+        if not self._pending_archive_tasks:
+            return
+        tasks = self._pending_archive_tasks
+        self._pending_archive_tasks = []
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        failed = sum(1 for r in results if isinstance(r, Exception))
+        if failed:
+            logger.warning(f"[StreamOrchestrator] {failed}/{len(results)} archive tasks failed")
+
     async def stream_agui(
         self,
         *,
@@ -124,7 +138,21 @@ class StreamOrchestrator:
                 event_count += self._count_sse_events(end_event)
                 yield end_event
 
+            # Wait for all pending archive tasks before finalizing session status
+            await self._flush_pending_archives()
             await archiver.on_run_finished()
+
+        except (asyncio.CancelledError, GeneratorExit):
+            # Client disconnected or generator closed — finalize session status
+            logger.info("Stream cancelled/closed by client, finalizing session")
+            try:
+                await self._flush_pending_archives()
+                await archiver.on_run_finished()
+            except Exception:
+                pass
+            # Do NOT re-raise GeneratorExit (it's not an error)
+            # For CancelledError, let it propagate after cleanup
+            return
 
         except Exception as e:
             try:
@@ -139,7 +167,8 @@ class StreamOrchestrator:
                 event_type = payload.get("type", "unknown")
                 if event_type in ("TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT", "TEXT_MESSAGE_END"):
                     logger.debug(f"[StreamOrchestrator] Scheduling archive: type={event_type}, messageId={payload.get('messageId')}")
-                asyncio.create_task(archiver.archive_event(payload))
+                task = asyncio.create_task(archiver.archive_event(payload))
+                self._pending_archive_tasks.append(task)
             except Exception as e:
                 logger.warning(f"[StreamOrchestrator] Failed to schedule archive: {e}")
 
