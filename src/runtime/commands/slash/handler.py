@@ -17,7 +17,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import logging
 
@@ -255,20 +255,24 @@ class SlashCommandHandler:
                     return self._handle_history_list(
                         num=int(parsed.options.get("num", 10)),
                         provider_filter=parsed.options.get("provider"),
+                        user_filter=parsed.options.get("user"),
                         source_session_id=source_session_id,
                     )
                 if parsed.subcmd == "jsonl":
                     return self._handle_history_jsonl(
-                        session_id=parsed.options["jsonl"],
+                        session_id=parsed.options.get("session"),
+                        user_filter=parsed.options.get("user"),
                     )
                 if parsed.subcmd == "fetch":
                     return self._handle_history_fetch(
-                        cli_session_id=parsed.options["fetch"],
+                        cli_session_id=parsed.options["session"],
+                        user_filter=parsed.options.get("user"),
                         current_session_id=source_session_id,
                     )
                 if parsed.subcmd == "continue":
                     return self._handle_history_continue(
-                        cli_session_id=parsed.options["continue"],
+                        cli_session_id=parsed.options["session"],
+                        user_filter=parsed.options.get("user"),
                         current_session_id=source_session_id,
                     )
 
@@ -1847,35 +1851,61 @@ class SlashCommandHandler:
 
     # ==================== /history handlers ====================
 
-    def _handle_history_list(self, num: int = 10, provider_filter: Optional[str] = None, source_session_id: Optional[str] = None) -> str:
-        """Handle `/history` or `/history -n <N> -r <provider>` — list recent CLI history sessions."""
+    def _create_history_service(self):
         from src.runtime.history import HistoryService
         from src.runtime.history.claude_parser import ClaudeHistoryParser
         from src.runtime.history.codex_parser import CodexHistoryParser
         from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
         from src.runtime.history.gemini_parser import GeminiHistoryParser
 
-        import asyncio
+        service = HistoryService()
+        service.register_parser(ClaudeHistoryParser())
+        service.register_parser(CodexHistoryParser())
+        service.register_parser(CodeBuddyHistoryParser())
+        service.register_parser(GeminiHistoryParser())
+        return service
 
-        num = max(1, min(num, 100))
+    def _resolve_history_user_homes(self, user_filter: Optional[str] = None) -> List[Path]:
+        selected_user = (user_filter or "").strip()
+        if selected_user:
+            candidate = Path("/home") / selected_user
+            if candidate.is_dir():
+                return [candidate]
+            fallback = Path(self.config.user_home_base) / selected_user
+            if fallback.is_dir():
+                return [fallback]
+            return [candidate]
 
         user_home = Path(self.config.user_home_base)
         if str(user_home).strip() == "/home":
             user_home = Path.home()
 
-        # Determine project_path: prefer session's exec_dir_override over process cwd
-        project_path = None
-        if source_session_id:
-            try:
-                from ...runtime.stores.session_storage import get_session_storage
-                storage = get_session_storage()
-                project_path = storage.get_exec_dir_override(source_session_id)
-            except Exception:
-                pass
-        if not project_path:
-            project_path = str(Path.cwd())
+        user_homes: List[Path] = []
+        home_root = Path("/home")
+        if home_root.is_dir():
+            for entry in sorted(home_root.iterdir()):
+                if entry.is_dir():
+                    user_homes.append(entry)
+        if user_home not in user_homes:
+            user_homes.append(user_home)
+        if not user_homes:
+            user_homes = [user_home]
+        return user_homes
 
-        # Build alias -> config_path map (defaults only)
+    def _get_alias_registry_map(self) -> dict:
+        try:
+            from ...stores.alias_registry import get_alias_registry
+            alias_registry = get_alias_registry()
+            return alias_registry.list_all() or {}
+        except Exception:
+            return {}
+
+    def _build_history_alias_map(
+        self,
+        home: Path,
+        provider_filter: Optional[str] = None,
+        alias_registry_map: Optional[dict] = None,
+    ) -> dict:
         provider_config_dirs = {
             "claude": ".claude",
             "codebuddy": ".codebuddy",
@@ -1883,79 +1913,156 @@ class SlashCommandHandler:
             "gemini": ".gemini",
         }
 
-        service = HistoryService()
-        service.register_parser(ClaudeHistoryParser())
-        service.register_parser(CodexHistoryParser())
-        service.register_parser(CodeBuddyHistoryParser())
-        service.register_parser(GeminiHistoryParser())
-
         alias_map = {}
         for provider_name, config_dir in provider_config_dirs.items():
             if provider_filter and provider_name != provider_filter:
                 continue
-            alias_map[provider_name] = user_home / config_dir
+            config_path = home / config_dir
+            try:
+                if config_path.exists():
+                    alias_map[provider_name] = config_path
+            except OSError:
+                continue
 
-        # Also try alias registry for custom paths
-        try:
-            from ...stores.alias_registry import get_alias_registry
-            alias_registry = get_alias_registry()
-            all_aliases = alias_registry.list_all()
-            for alias_name, provider_name in all_aliases.items():
-                if alias_name in alias_map:
-                    continue
-                if provider_filter and provider_name != provider_filter and alias_name != provider_filter:
-                    continue
-                config_dir = user_home / f".{alias_name}"
+        registry_map = alias_registry_map or {}
+        for alias_name, provider_name in registry_map.items():
+            if alias_name in alias_map:
+                continue
+            if provider_filter and provider_name != provider_filter and alias_name != provider_filter:
+                continue
+            config_dir = home / f".{alias_name}"
+            try:
                 if config_dir.exists():
                     alias_map[alias_name] = config_dir
+            except OSError:
+                continue
+
+        try:
+            for entry in home.iterdir():
+                if not entry.is_dir():
+                    continue
+                if not entry.name.startswith("."):
+                    continue
+                alias_name = entry.name[1:]
+                if not alias_name or alias_name in alias_map:
+                    continue
+                if not any(alias_name.startswith(p) for p in provider_config_dirs):
+                    continue
+                if provider_filter and alias_name != provider_filter and not alias_name.startswith(provider_filter):
+                    continue
+                alias_map[alias_name] = entry
         except Exception:
             pass
 
-        # Run async list_all_sessions synchronously
+        return alias_map
+
+    def _run_history_async(self, coro):
+        import asyncio
+
         try:
             loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(
-                        asyncio.run,
-                        service.list_all_sessions(
-                            user_home=user_home,
-                            project_path=project_path,
-                            alias_config_map=alias_map,
-                            provider_filter=provider_filter,
-                            page=1,
-                            page_size=num,
-                        ),
-                    ).result()
-            else:
-                result = asyncio.run(
-                    service.list_all_sessions(
-                        user_home=user_home,
-                        project_path=project_path,
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(asyncio.run, coro).result()
+        return asyncio.run(coro)
+
+    def _find_history_session_detail(
+        self,
+        service,
+        session_id: str,
+        provider_filter: Optional[str] = None,
+        user_filter: Optional[str] = None,
+    ):
+        alias_registry_map = self._get_alias_registry_map()
+        for home in self._resolve_history_user_homes(user_filter=user_filter):
+            alias_map = self._build_history_alias_map(home, provider_filter=provider_filter, alias_registry_map=alias_registry_map)
+            for alias_name, config_path in alias_map.items():
+                try:
+                    result = self._run_history_async(
+                        service.get_session_detail(
+                            provider=alias_name,
+                            config_path=config_path,
+                            session_id=session_id,
+                        )
+                    )
+                except Exception:
+                    continue
+                if result:
+                    parser = service._resolve_parser_for_alias(alias_name)
+                    base_provider = parser.provider_name if parser else alias_name
+                    return result, alias_name, base_provider, home.name
+        return None, None, None, None
+
+    def _handle_history_list(
+        self,
+        num: int = 10,
+        provider_filter: Optional[str] = None,
+        user_filter: Optional[str] = None,
+        source_session_id: Optional[str] = None,
+    ) -> str:
+        """Handle `/history` list — list recent CLI history sessions globally."""
+        num = max(1, min(num, 100))
+        selected_user = (user_filter or "").strip() or None
+
+        service = self._create_history_service()
+        user_homes = self._resolve_history_user_homes(user_filter=selected_user)
+        alias_registry_map = self._get_alias_registry_map()
+
+        merged = {}
+        total_sessions = 0
+
+        for home in user_homes:
+            alias_map = self._build_history_alias_map(
+                home,
+                provider_filter=provider_filter,
+                alias_registry_map=alias_registry_map,
+            )
+            if not alias_map:
+                continue
+            linux_user = home.name
+
+            try:
+                result = self._run_history_async(
+                    service.list_global_sessions(
                         alias_config_map=alias_map,
                         provider_filter=provider_filter,
                         page=1,
                         page_size=num,
+                        linux_user=linux_user,
                     )
                 )
-        except Exception as e:
-            return f"## ❌ 读取历史失败\n\n{str(e)}"
+            except Exception as e:
+                return f"## ❌ 读取历史失败\n\n{str(e)}"
 
-        sessions = result.sessions
+            total_sessions += result.total
+            for s in result.sessions:
+                key = f"{s.exec_user or linux_user}:{getattr(s, 'provider', '')}:{s.id}"
+                prev = merged.get(key)
+                if prev is None or (s.updated_at or 0) > (prev.updated_at or 0):
+                    merged[key] = s
+
+        sessions = sorted(merged.values(), key=lambda s: s.updated_at or 0, reverse=True)[:num]
+
+        filters = []
+        if provider_filter:
+            filters.append(f"provider: {provider_filter}")
+        if selected_user:
+            filters.append(f"user: {selected_user}")
+        filter_hint = f"（{'，'.join(filters)}）" if filters else ""
+
         if not sessions:
-            filter_hint = f"（provider: {provider_filter}）" if provider_filter else ""
-            return f"## 📂 CLI 历史会话{filter_hint}\n\n暂无历史会话。\n\n当前项目路径: `{project_path}`"
+            return f"## 📂 CLI 历史会话{filter_hint}\n\n暂无历史会话。"
 
         from datetime import datetime, timezone
 
-        response = f"## 📂 CLI 历史会话"
-        if provider_filter:
-            response += f"（{provider_filter}）"
-        response += f"\n\n**项目:** `{project_path}`\n"
-        response += f"**显示:** {len(sessions)} / {result.total} 个会话\n\n"
-        response += "| # | Provider | Session ID | 标题 | 更新时间 |\n"
-        response += "|---|----------|-----------|------|----------|\n"
+        response = f"## 📂 CLI 历史会话{filter_hint}"
+        response += f"\n\n**显示:** {len(sessions)} / {total_sessions} 个会话\n\n"
+        response += "| # | 用户 | Provider | Session ID | 标题 | 项目 | 更新时间 |\n"
+        response += "|---|------|----------|-----------|------|------|----------|\n"
 
         for i, s in enumerate(sessions, 1):
             provider_name = getattr(s, "provider", "") or getattr(s, "alias", "") or "?"
@@ -1963,84 +2070,38 @@ class SlashCommandHandler:
             title = (s.title or "无标题")[:40]
             if len(s.title or "") > 40:
                 title += "..."
+            exec_user = getattr(s, "exec_user", "") or "?"
+            # Show shortened project path
+            project = s.exec_dir or ""
+            if project and len(project) > 30:
+                project = "..." + project[-27:]
             try:
                 dt = datetime.fromtimestamp(s.updated_at / 1000, tz=timezone.utc)
                 time_str = dt.strftime("%m-%d %H:%M")
             except Exception:
                 time_str = "?"
-            # Show full session ID so users can copy it for -j/-f/-c operations
-            response += f"| {i} | {provider_name} | `{sid}` | {title} | {time_str} |\n"
+            response += f"| {i} | {exec_user} | {provider_name} | `{sid}` | {title} | {project} | {time_str} |\n"
 
         response += "\n**操作：**\n"
-        response += "- `/history -j <session_id>` — 查看详情\n"
-        response += "- `/history -f <session_id>` — 从 CLI 文件刷新当前 Runtime session\n"
-        response += "- `/history -c <session_id>` — 恢复为 Runtime session\n"
+        response += "- `/history -s <session_id>` — 查看详情\n"
+        response += "- `/history -f -s <session_id>` — 从 CLI 文件刷新当前 Runtime session\n"
+        response += "- `/history -c -s <session_id>` — 恢复为 Runtime session\n"
+        response += "- `/history -u <user>` — 按用户筛选（默认全部用户）\n"
         return response
 
-    def _handle_history_jsonl(self, session_id: str) -> str:
-        """Handle `/history -j <session_id>` — show JSONL session detail."""
-        from src.runtime.history import HistoryService
-        from src.runtime.history.claude_parser import ClaudeHistoryParser
-        from src.runtime.history.codex_parser import CodexHistoryParser
-        from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
-        from src.runtime.history.gemini_parser import GeminiHistoryParser
-
-        import asyncio
-
+    def _handle_history_jsonl(self, session_id: str, user_filter: Optional[str] = None) -> str:
+        """Handle `/history -s <session_id>` — show JSONL session detail."""
         session_id = (session_id or "").strip()
+        selected_user = (user_filter or "").strip() or None
         if not session_id:
-            return "## ❌ 缺少参数\n\n**Usage:** `/history -j <session_id>`"
+            return "## ❌ 缺少参数\n\n**Usage:** `/history -s <session_id> [-u <user>]`"
 
-        user_home = Path(self.config.user_home_base)
-        if str(user_home).strip() == "/home":
-            user_home = Path.home()
-
-        service = HistoryService()
-        service.register_parser(ClaudeHistoryParser())
-        service.register_parser(CodexHistoryParser())
-        service.register_parser(CodeBuddyHistoryParser())
-        service.register_parser(GeminiHistoryParser())
-
-        # Try each provider to find the session
-        provider_config_dirs = {
-            "claude": ".claude",
-            "codebuddy": ".codebuddy",
-            "codex": ".codex",
-            "gemini": ".gemini",
-        }
-
-        detail = None
-        found_provider = None
-
-        for provider_name, config_dir in provider_config_dirs.items():
-            config_path = user_home / config_dir
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        result = pool.submit(
-                            asyncio.run,
-                            service.get_session_detail(
-                                provider=provider_name,
-                                config_path=config_path,
-                                session_id=session_id,
-                            ),
-                        ).result()
-                else:
-                    result = asyncio.run(
-                        service.get_session_detail(
-                            provider=provider_name,
-                            config_path=config_path,
-                            session_id=session_id,
-                        )
-                    )
-                if result:
-                    detail = result
-                    found_provider = provider_name
-                    break
-            except Exception:
-                continue
+        service = self._create_history_service()
+        detail, found_alias, found_provider, found_linux_user = self._find_history_session_detail(
+            service,
+            session_id,
+            user_filter=selected_user,
+        )
 
         if not detail:
             return f"## ❌ 未找到\n\n历史会话 `{session_id}` 未找到。"
@@ -2052,8 +2113,13 @@ class SlashCommandHandler:
 
         response = f"## 📋 历史会话详情\n\n"
         response += f"| 项 | 值 |\n|---|---|\n"
+        provider_label = found_alias or found_provider or "?"
+        if found_provider and found_alias and found_alias != found_provider:
+            provider_label = f"{found_alias} ({found_provider})"
+
         response += f"| Session ID | `{session_id}` |\n"
-        response += f"| Provider | {found_provider} |\n"
+        response += f"| Provider | {provider_label} |\n"
+        response += f"| 用户 | {found_linux_user or '?'} |\n"
         response += f"| 标题 | {title} |\n"
         response += f"| 消息数 | {len(msgs)} |\n"
 
@@ -2082,24 +2148,23 @@ class SlashCommandHandler:
                 response += f"**{prefix}:** {content}\n\n"
 
         response += "\n**操作：**\n"
-        response += f"- `/history -f {session_id}` — 从 CLI 文件刷新当前 Runtime session\n"
-        response += f"- `/history -c {session_id}` — 恢复为 Runtime session\n"
+        response += f"- `/history -f -s {session_id}` — 从 CLI 文件刷新当前 Runtime session\n"
+        response += f"- `/history -c -s {session_id}` — 恢复为 Runtime session\n"
         return response
 
-    def _handle_history_fetch(self, cli_session_id: str, current_session_id: Optional[str] = None) -> str:
-        """Handle `/history -f <session_id>` — fetch/refresh CLI data into current Runtime session."""
-        from src.runtime.history import HistoryService
-        from src.runtime.history.claude_parser import ClaudeHistoryParser
-        from src.runtime.history.codex_parser import CodexHistoryParser
-        from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
-        from src.runtime.history.gemini_parser import GeminiHistoryParser
+    def _handle_history_fetch(
+        self,
+        cli_session_id: str,
+        user_filter: Optional[str] = None,
+        current_session_id: Optional[str] = None,
+    ) -> str:
+        """Handle `/history -f -s <session_id>` — fetch/refresh CLI data into current Runtime session."""
         from ...models.session import MessageStatus
 
-        import asyncio
-
         cli_session_id = (cli_session_id or "").strip()
+        selected_user = (user_filter or "").strip() or None
         if not cli_session_id:
-            return "## ❌ 缺少参数\n\n**Usage:** `/history -f <session_id>`"
+            return "## ❌ 缺少参数\n\n**Usage:** `/history -f -s <session_id> [-u <user>]`"
 
         if not current_session_id:
             return "## ❌ 无法操作\n\n需要在活跃的 Runtime session 中执行此命令。"
@@ -2109,56 +2174,12 @@ class SlashCommandHandler:
         if not meta:
             return "## ❌ 未找到\n\n当前 Runtime session 不存在。"
 
-        user_home = Path(self.config.user_home_base)
-        if str(user_home).strip() == "/home":
-            user_home = Path.home()
-
-        service = HistoryService()
-        service.register_parser(ClaudeHistoryParser())
-        service.register_parser(CodexHistoryParser())
-        service.register_parser(CodeBuddyHistoryParser())
-        service.register_parser(GeminiHistoryParser())
-
-        provider_config_dirs = {
-            "claude": ".claude",
-            "codebuddy": ".codebuddy",
-            "codex": ".codex",
-            "gemini": ".gemini",
-        }
-
-        # Find the session
-        detail = None
-        found_provider = None
-
-        for provider_name, config_dir in provider_config_dirs.items():
-            config_path = user_home / config_dir
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        result = pool.submit(
-                            asyncio.run,
-                            service.get_session_detail(
-                                provider=provider_name,
-                                config_path=config_path,
-                                session_id=cli_session_id,
-                            ),
-                        ).result()
-                else:
-                    result = asyncio.run(
-                        service.get_session_detail(
-                            provider=provider_name,
-                            config_path=config_path,
-                            session_id=cli_session_id,
-                        )
-                    )
-                if result:
-                    detail = result
-                    found_provider = provider_name
-                    break
-            except Exception:
-                continue
+        service = self._create_history_service()
+        detail, found_alias, found_provider, found_linux_user = self._find_history_session_detail(
+            service,
+            cli_session_id,
+            user_filter=selected_user,
+        )
 
         if not detail:
             return f"## ❌ 未找到\n\n历史会话 `{cli_session_id}` 未找到。"
@@ -2195,101 +2216,70 @@ class SlashCommandHandler:
         # Update cli_session_id mapping
         storage.set_cli_session_id(current_session_id, cli_session_id)
 
+        provider_label = found_alias or found_provider or "?"
+        if found_provider and found_alias and found_alias != found_provider:
+            provider_label = f"{found_alias} ({found_provider})"
+
         return (
             f"## ✅ 已刷新\n\n"
             f"从 CLI 文件重新加载了历史数据到当前 Runtime session。\n\n"
             f"| 项 | 值 |\n|---|---|\n"
-            f"| Provider | {found_provider} |\n"
+            f"| Provider | {provider_label} |\n"
+            f"| 用户 | {found_linux_user or '?'} |\n"
             f"| CLI Session ID | `{cli_session_id}` |\n"
             f"| 导入消息数 | {msg_count} |\n"
             f"| 导入工具调用数 | {tc_count} |\n"
         )
 
-    def _handle_history_continue(self, cli_session_id: str, current_session_id: Optional[str] = None) -> str:
-        """Handle `/history -c <session_id>` — create a new Runtime session from history (= promote)."""
-        from src.runtime.history import HistoryService
-        from src.runtime.history.claude_parser import ClaudeHistoryParser
-        from src.runtime.history.codex_parser import CodexHistoryParser
-        from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
-        from src.runtime.history.gemini_parser import GeminiHistoryParser
+    def _handle_history_continue(
+        self,
+        cli_session_id: str,
+        user_filter: Optional[str] = None,
+        current_session_id: Optional[str] = None,
+    ) -> str:
+        """Handle `/history -c -s <session_id>` — create a new Runtime session from history (= promote)."""
         from ...models.session import SessionStatus, MessageStatus
-
-        import asyncio
         import time as time_mod
 
         cli_session_id = (cli_session_id or "").strip()
+        selected_user = (user_filter or "").strip() or None
         if not cli_session_id:
-            return "## ❌ 缺少参数\n\n**Usage:** `/history -c <session_id>`"
+            return "## ❌ 缺少参数\n\n**Usage:** `/history -c -s <session_id> [-u <user>]`"
 
-        user_home = Path(self.config.user_home_base)
-        if str(user_home).strip() == "/home":
-            user_home = Path.home()
-
-        service = HistoryService()
-        service.register_parser(ClaudeHistoryParser())
-        service.register_parser(CodexHistoryParser())
-        service.register_parser(CodeBuddyHistoryParser())
-        service.register_parser(GeminiHistoryParser())
-
-        provider_config_dirs = {
-            "claude": ".claude",
-            "codebuddy": ".codebuddy",
-            "codex": ".codex",
-            "gemini": ".gemini",
-        }
-
-        detail = None
-        found_provider = None
-
-        for provider_name, config_dir in provider_config_dirs.items():
-            config_path = user_home / config_dir
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        result = pool.submit(
-                            asyncio.run,
-                            service.get_session_detail(
-                                provider=provider_name,
-                                config_path=config_path,
-                                session_id=cli_session_id,
-                            ),
-                        ).result()
-                else:
-                    result = asyncio.run(
-                        service.get_session_detail(
-                            provider=provider_name,
-                            config_path=config_path,
-                            session_id=cli_session_id,
-                        )
-                    )
-                if result:
-                    detail = result
-                    found_provider = provider_name
-                    break
-            except Exception:
-                continue
+        service = self._create_history_service()
+        detail, found_alias, found_provider, found_linux_user = self._find_history_session_detail(
+            service,
+            cli_session_id,
+            user_filter=selected_user,
+        )
 
         if not detail:
             return f"## ❌ 未找到\n\n历史会话 `{cli_session_id}` 未找到。"
 
         storage = get_session_storage()
-        project_path = str(Path.cwd())
+
+        # Use the history session's original working directory (exec_dir) if available,
+        # so that --resume runs in the same directory as the original session.
+        # This is equivalent to `-w <history_path>` inplace mode.
+        history_exec_dir = (detail.session.exec_dir if detail.session else None) or None
+        project_path = history_exec_dir or str(Path.cwd())
+
+        provider_key = found_alias or found_provider or "unknown"
 
         # Check idempotent mapping
-        mapped = storage.get_history_runtime_mapping(found_provider, cli_session_id, project_path)
+        mapped = storage.get_history_runtime_mapping(provider_key, cli_session_id, project_path)
         if mapped and storage.get_session_meta(mapped):
             return (
                 f"## ℹ️ 已存在\n\n"
                 f"此历史会话已恢复为 Runtime session: `{mapped}`。\n\n"
-                f"如需刷新数据，请使用 `/history -f {cli_session_id}`。"
+                f"如需刷新数据，请使用 `/history -f -s {cli_session_id}`。"
             )
 
         # Create new runtime session
         from src.server.utils.ids import gen_session_id
         runtime_session_id = gen_session_id()
 
+        now_ms = int(time_mod.time() * 1000)
         title = (detail.session.title if detail.session else None) or f"History: {cli_session_id}"
         from ...models.session import SessionMeta as SessionMetaModel
         meta = SessionMetaModel(
@@ -2299,8 +2289,8 @@ class SlashCommandHandler:
             title=title,
             username=self.exec_user,
             exec_user=self.exec_user,
-            provider=found_provider,
-            alias=found_provider,
+            provider=found_provider or provider_key,
+            alias=provider_key,
             created_at=now_ms,
             updated_at=now_ms,
             message_count=0,
@@ -2334,11 +2324,15 @@ class SlashCommandHandler:
 
         # Set up runtime state
         storage.set_exec_dir_override(runtime_session_id, project_path)
-        storage.set_workspace_provider(runtime_session_id, found_provider)
-        storage.set_workspace_alias(runtime_session_id, found_provider)
-        storage.set_inherited_session(runtime_session_id, f"history:{found_provider}:{cli_session_id}")
-        storage.set_history_runtime_mapping(found_provider, cli_session_id, project_path, runtime_session_id)
+        storage.set_workspace_provider(runtime_session_id, found_provider or provider_key)
+        storage.set_workspace_alias(runtime_session_id, provider_key)
+        storage.set_inherited_session(runtime_session_id, f"history:{provider_key}:{cli_session_id}")
+        storage.set_history_runtime_mapping(provider_key, cli_session_id, project_path, runtime_session_id)
         storage.set_cli_session_id(runtime_session_id, cli_session_id)
+
+        provider_label = provider_key
+        if found_provider and provider_key != found_provider:
+            provider_label = f"{provider_key} ({found_provider})"
 
         return (
             f"## ✅ 已恢复\n\n"
@@ -2346,10 +2340,12 @@ class SlashCommandHandler:
             f"| 项 | 值 |\n|---|---|\n"
             f"| Runtime Session ID | `{runtime_session_id}` |\n"
             f"| CLI Session ID | `{cli_session_id}` |\n"
-            f"| Provider | {found_provider} |\n"
+            f"| Provider | {provider_label} |\n"
+            f"| 用户 | {found_linux_user or '?'} |\n"
+            f"| 工作目录 | `{project_path}` |\n"
             f"| 标题 | {title} |\n"
             f"| 导入消息数 | {msg_count} |\n\n"
-            f"后续消息将通过 `--resume {cli_session_id}` 恢复 CLI 会话。"
+            f"后续消息将在 `{project_path}` 下通过 `--resume {cli_session_id}` 恢复 CLI 会话。"
         )
 
     def _handle_help(self) -> str:
@@ -2428,12 +2424,13 @@ class SlashCommandHandler:
 
 **`/history`** - CLI 历史会话管理
 ```
-/history                      # 列出最近 10 个 CLI 历史会话
+/history                      # 列出最近 10 个 CLI 历史会话（默认所有用户）
+/history -u tswitch           # 只看指定用户
 /history -n 20                # 列出最近 20 个
 /history -r gemini            # 只看 gemini 的
-/history -j <session_id>      # 查看某个 JSONL session 详情
-/history -f <session_id>      # 从 CLI 文件刷新当前 Runtime session
-/history -c <session_id>      # 从历史恢复为 Runtime session
+/history -s <session_id>      # 查看某个 JSONL session 详情
+/history -f -s <session_id>   # 从 CLI 文件刷新当前 Runtime session
+/history -c -s <session_id>   # 从历史恢复为 Runtime session
 ```
 
 ---

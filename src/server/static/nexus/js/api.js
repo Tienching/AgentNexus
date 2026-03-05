@@ -597,8 +597,11 @@ class NexusAPI {
      * @returns {Promise<Array>} List of project entries
      */
     static async getHistoryProjects(options = {}) {
+        const execUser = Object.prototype.hasOwnProperty.call(options, 'execUser')
+            ? (options.execUser ?? '')
+            : _defaultExecUser;
         const params = new URLSearchParams({
-            exec_user: options.execUser || _defaultExecUser,
+            exec_user: execUser,
         });
         if (options.provider) params.append('provider', options.provider);
         if (options.customPaths) params.append('custom_paths', JSON.stringify(options.customPaths));
@@ -616,11 +619,14 @@ class NexusAPI {
      * @returns {Promise<Object>} Session list response
      */
     static async getHistorySessions(options = {}) {
+        const execUser = Object.prototype.hasOwnProperty.call(options, 'execUser')
+            ? (options.execUser ?? '')
+            : _defaultExecUser;
         const params = new URLSearchParams({
             project_path: options.projectPath || '',
             page: options.page || 1,
             page_size: options.pageSize || 50,
-            exec_user: options.execUser || _defaultExecUser,
+            exec_user: execUser,
         });
         if (options.provider) params.append('provider', options.provider);
         if (options.search) params.append('search', options.search);
@@ -641,8 +647,11 @@ class NexusAPI {
      * @returns {Promise<Object>} Messages response
      */
     static async getHistoryMessages(provider, sessionId, options = {}) {
+        const execUser = Object.prototype.hasOwnProperty.call(options, 'execUser')
+            ? (options.execUser ?? '')
+            : _defaultExecUser;
         const params = new URLSearchParams({
-            exec_user: options.execUser || _defaultExecUser,
+            exec_user: execUser,
         });
         if (options.configPath) params.append('config_path', options.configPath);
 

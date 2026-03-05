@@ -59,7 +59,7 @@ class HistoryService:
         self._cache[key] = _CacheEntry(value, ttl=ttl)
 
     def invalidate_project_caches(self) -> int:
-        """Invalidate all project-list and session-list caches.
+        """Invalidate all project-list, session-list, and global session caches.
 
         Called after a CLI execution completes so that the History UI
         immediately reflects updated file timestamps.
@@ -67,7 +67,10 @@ class HistoryService:
         Returns:
             Number of cache entries removed.
         """
-        keys_to_remove = [k for k in self._cache if k.startswith("projects:") or k.startswith("sessions:")]
+        keys_to_remove = [
+            k for k in self._cache
+            if k.startswith("projects:") or k.startswith("sessions:") or k.startswith("global_sessions:")
+        ]
         for k in keys_to_remove:
             self._cache.pop(k, None)
         return len(keys_to_remove)
@@ -135,6 +138,92 @@ class HistoryService:
                     sessions = []
 
             all_sessions.extend(sessions)
+
+        # Search filter
+        if search:
+            search_lower = search.lower()
+            all_sessions = [s for s in all_sessions if search_lower in s.title.lower()]
+
+        # Sort by updated_at descending
+        all_sessions.sort(key=lambda s: s.updated_at, reverse=True)
+
+        total = len(all_sessions)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_sessions = all_sessions[start:end]
+
+        return SessionListResponse(
+            total=total,
+            page=page,
+            page_size=page_size,
+            sessions=page_sessions,
+        )
+
+    async def list_global_sessions(
+        self,
+        alias_config_map: Dict[str, Path],
+        provider_filter: Optional[str] = None,
+        search: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+        linux_user: Optional[str] = None,
+    ) -> SessionListResponse:
+        """List sessions across ALL projects and ALL providers globally.
+
+        Unlike list_all_sessions, this does NOT filter by project_path.
+        It calls each parser's list_all_sessions(config_path) to get every
+        session, then merges, deduplicates, and sorts by updated_at descending.
+
+        Args:
+            alias_config_map: Mapping of alias/provider -> config_path
+            provider_filter: Optional provider name to filter by
+            search: Optional search text for session title
+            page: Page number (1-based)
+            page_size: Page size
+            linux_user: Optional Linux username to tag on each session
+        """
+        all_sessions: List[SessionMeta] = []
+
+        for alias, config_path in alias_config_map.items():
+            parser = self._resolve_parser_for_alias(alias)
+            if parser is None:
+                continue
+            if provider_filter and parser.provider_name != provider_filter and alias != provider_filter:
+                continue
+
+            cache_key = f"global_sessions:{config_path}:{parser.provider_name}:{linux_user or ''}"
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                sessions = cached
+            else:
+                try:
+                    sessions = await asyncio.to_thread(
+                        parser.list_all_sessions, config_path, linux_user
+                    )
+                    # Tag alias and linux user on each session
+                    for s in sessions:
+                        if not s.alias:
+                            s.alias = alias
+                        if linux_user and not s.exec_user:
+                            s.exec_user = linux_user
+                    self._set_cached(cache_key, sessions, ttl=_PROJECTS_CACHE_TTL_SECONDS)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to list global sessions for alias=%s config_path=%s: %s",
+                        alias, config_path, e,
+                    )
+                    sessions = []
+
+            all_sessions.extend(sessions)
+
+        # Deduplicate by exec_user:provider:session_id (keep the one with latest updated_at)
+        merged: Dict[str, SessionMeta] = {}
+        for s in all_sessions:
+            key = f"{s.exec_user or ''}:{s.provider or ''}:{s.id}"
+            prev = merged.get(key)
+            if prev is None or (s.updated_at or 0) > (prev.updated_at or 0):
+                merged[key] = s
+        all_sessions = list(merged.values())
 
         # Search filter
         if search:

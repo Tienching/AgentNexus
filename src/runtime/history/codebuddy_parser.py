@@ -107,6 +107,35 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
             return None
         return decode_encoded_project_path(segments, leading_slash=True)
 
+    def list_all_sessions(self, config_path: Path, linux_user: Optional[str] = None) -> List[SessionMeta]:
+        """List ALL CodeBuddy sessions across all projects (no project filter).
+
+        Scans every subdirectory under {config_path}/projects/ and attaches
+        the decoded project path as exec_dir on each SessionMeta.
+
+        Args:
+            config_path: Provider config directory (e.g. ~/.codebuddy)
+            linux_user: Optional Linux username to tag on each session
+        """
+        projects_dir = config_path / "projects"
+        if not projects_dir.is_dir():
+            return []
+
+        all_sessions: List[SessionMeta] = []
+        for subdir in projects_dir.iterdir():
+            if not subdir.is_dir():
+                continue
+            decoded_path = self._decode_project_path(subdir.name)
+            sessions = self._list_sessions_in_dir(subdir)
+            for s in sessions:
+                s.exec_dir = decoded_path or subdir.name
+                if linux_user and not s.exec_user:
+                    s.exec_user = linux_user
+            all_sessions.extend(sessions)
+
+        all_sessions.sort(key=lambda s: s.updated_at, reverse=True)
+        return all_sessions
+
     def list_sessions(self, config_path: Path, project_path: str) -> List[SessionMeta]:
         """List CodeBuddy sessions for a specific project.
 
@@ -119,6 +148,14 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
         if not projects_dir.is_dir():
             return []
 
+        return self._list_sessions_in_dir(projects_dir)
+
+    def _list_sessions_in_dir(self, projects_dir: Path) -> List[SessionMeta]:
+        """Scan a single project directory for sessions.
+
+        Reads all *.jsonl (excluding agent-*) in projects_dir,
+        groups entries by sessionId, and returns session metadata.
+        """
         jsonl_files = sorted(
             [f for f in projects_dir.glob("*.jsonl") if not f.name.startswith("agent-")],
             key=lambda f: f.stat().st_mtime,
@@ -243,6 +280,7 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
             return None
 
         entries = []
+        found_project_subdir: Optional[Path] = None
         for project_subdir in projects_dir.iterdir():
             if not project_subdir.is_dir():
                 continue
@@ -252,6 +290,8 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
                 for entry in self.safe_read_jsonl(jsonl_file):
                     if entry.get("sessionId") == session_id:
                         entries.append(entry)
+                        if found_project_subdir is None:
+                            found_project_subdir = project_subdir
 
         if not entries:
             return None
@@ -379,10 +419,27 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
                         tc.status = ToolCallStatus.COMPLETED
                     tc.end_time = ts_ms
 
+        # Attach session metadata with exec_dir decoded from project subdirectory
+        session_meta = None
+        if found_project_subdir is not None:
+            decoded_path = self._decode_project_path(found_project_subdir.name)
+            if decoded_path:
+                session_meta = SessionMeta(
+                    id=session_id,
+                    thread_id=session_id,
+                    title="",
+                    username="",
+                    provider="codebuddy",
+                    status=SessionStatus.COMPLETED,
+                    source="history",
+                    exec_dir=decoded_path,
+                )
+
         return HistorySessionDetail(
             session_id=session_id,
             messages=messages,
             tool_calls=tool_calls,
+            session=session_meta,
         )
 
     # ---- Private helpers ----

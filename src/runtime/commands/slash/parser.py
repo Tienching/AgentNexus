@@ -114,7 +114,7 @@ INFER_SUBCMD_FROM_OPTIONS: Dict[str, Dict[str, str]] = {
     "trash": {"p": "restore", "e": "empty"},
     "chat": {"c": "continue"},
     "config": {"s": "set", "r": "reset", "c": "concurrency"},
-    "history": {"j": "jsonl", "f": "fetch", "c": "continue"},
+    "history": {"s": "jsonl", "f": "fetch", "c": "continue"},
 }
 
 
@@ -272,6 +272,7 @@ SPECS: List[CommandSpec] = [
         options=(
             OptionDef(short="n", long="num", type="number", required=False, default=10),
             OptionDef(short="r", long="provider", type="string", required=False),
+            OptionDef(short="u", long="user", type="string", required=False),
         ),
         allow_free_text=False,
     ),
@@ -279,7 +280,8 @@ SPECS: List[CommandSpec] = [
         cmd="history",
         subcmd="jsonl",
         options=(
-            OptionDef(short="j", long="jsonl", type="string", required=True),
+            OptionDef(short="s", long="session", type="string", required=False),
+            OptionDef(short="u", long="user", type="string", required=False),
         ),
         allow_free_text=False,
     ),
@@ -287,7 +289,9 @@ SPECS: List[CommandSpec] = [
         cmd="history",
         subcmd="fetch",
         options=(
-            OptionDef(short="f", long="fetch", type="string", required=True),
+            OptionDef(short="f", long="fetch", type="boolean", required=False, default=False),
+            OptionDef(short="s", long="session", type="string", required=True),
+            OptionDef(short="u", long="user", type="string", required=False),
         ),
         allow_free_text=False,
     ),
@@ -295,7 +299,9 @@ SPECS: List[CommandSpec] = [
         cmd="history",
         subcmd="continue",
         options=(
-            OptionDef(short="c", long="continue", type="string", required=True),
+            OptionDef(short="c", long="continue", type="boolean", required=False, default=False),
+            OptionDef(short="s", long="session", type="string", required=True),
+            OptionDef(short="u", long="user", type="string", required=False),
         ),
         allow_free_text=False,
     ),
@@ -382,7 +388,7 @@ def _infer_subcmd_from_tokens(cmd: str, tokens: List[str]) -> Optional[str]:
                 "task": "t", "project": "p", "list": "l",
                 "continue": "c", "empty": "e",
                 "set": "s", "reset": "r",
-                "jsonl": "j", "fetch": "f",
+                "session": "s", "fetch": "f",
             }
             short = long_to_short.get(long_name)
             if short and short in infer_map:
