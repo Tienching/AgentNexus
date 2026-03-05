@@ -120,6 +120,41 @@ class TestMediaAttachment:
         assert "file_path" not in data  # None 值被过滤
 
 
+class _CaptureStorage:
+    def __init__(self):
+        self.records = []
+
+    def add_session_message(self, session_id, msg):
+        self.records.append((session_id, msg))
+
+
+class TestArchiveUserMessage:
+    def test_fallback_to_media_url_tags_when_local_paths_missing(self, monkeypatch):
+        service = ChannelService()
+        storage = _CaptureStorage()
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: storage)
+
+        class _Req:
+            content_parts = None
+            image_paths = []
+            file_paths = []
+
+        message = InboundMessage(
+            channel="wecom",
+            sender_id="u1",
+            chat_id="c1",
+            content="介绍一下这个图",
+            media=[MediaAttachment(url="https://example.com/a.jpg", mime_type=None)],
+        )
+
+        service._archive_user_message(message, "sess1", _Req())
+
+        assert storage.records
+        _, saved = storage.records[0]
+        assert "{image: https://example.com/a.jpg}" in saved.content
+        assert "介绍一下这个图" in saved.content
+
+
 # ============== 配置类测试 ==============
 
 class TestChannelConfig:
@@ -435,6 +470,185 @@ class TestChannelService:
     def test_tool_display_name_non_dict(self):
         assert ChannelService._get_tool_display_name("Read", "not a dict") == "Read"
         assert ChannelService._get_tool_display_name("Read", None) == "Read"
+
+
+class _FakeWeComStreamBuffer:
+    def __init__(self, full_content: str = ""):
+        self.full_content = full_content
+        self.finished = False
+        self.set_final_calls = 0
+
+    def append(self, text: str) -> None:
+        if text:
+            self.full_content += text
+
+    def set_final(self, text: str) -> None:
+        self.set_final_calls += 1
+        self.full_content = text
+
+    def mark_finished(self) -> None:
+        self.finished = True
+
+
+class _FakeWeComChannel:
+    def __init__(self, buf: _FakeWeComStreamBuffer):
+        self._buf = buf
+
+    def get_stream_buffer_by_id(self, stream_id: str):
+        return self._buf
+
+
+class _FakeManager:
+    def __init__(self, channel: _FakeWeComChannel):
+        self._channel = channel
+
+    def get_channel(self, name: str):
+        if name == "wecom":
+            return self._channel
+        return None
+
+
+class _FakeExecResult:
+    def __init__(self, final_content: str, is_error: bool = False):
+        self.final_content = final_content
+        self.is_error = is_error
+        self.tool_call_count = 0
+        self.tool_summaries = []
+
+
+class TestWeComStreamFinalization:
+    @pytest.mark.asyncio
+    async def test_keep_streamed_content_when_final_is_inconsistent(self, monkeypatch):
+        service = ChannelService()
+        initial = "我看到你想继续工作。让我先看一下是否有之前的记忆文件。"
+        buf = _FakeWeComStreamBuffer(full_content=initial)
+        service.manager = _FakeManager(_FakeWeComChannel(buf))
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        async def _fake_consume(*args, **kwargs):
+            return _FakeExecResult(final_content="我是新会话，没有之前的记忆。")
+
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_consume_executor_events", _fake_consume)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        message = InboundMessage(channel="wecom", sender_id="u1", chat_id="c1", content="hi")
+        await service._process_wecom_stream(message, "sess1", "stream1")
+
+        assert buf.full_content == initial
+        assert buf.set_final_calls == 0
+        assert buf.finished is True
+
+    @pytest.mark.asyncio
+    async def test_allow_safe_extension_of_streamed_content(self, monkeypatch):
+        service = ChannelService()
+        initial = "前文"
+        buf = _FakeWeComStreamBuffer(full_content=initial)
+        service.manager = _FakeManager(_FakeWeComChannel(buf))
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        async def _fake_consume(*args, **kwargs):
+            return _FakeExecResult(final_content="前文后续")
+
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_consume_executor_events", _fake_consume)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        message = InboundMessage(channel="wecom", sender_id="u1", chat_id="c1", content="hi")
+        await service._process_wecom_stream(message, "sess1", "stream1")
+
+        assert buf.full_content == "前文后续"
+        assert buf.set_final_calls == 1
+        assert buf.finished is True
+
+    @pytest.mark.asyncio
+    async def test_tool_summary_has_trailing_blank_line_before_following_text(self, monkeypatch):
+        service = ChannelService()
+        buf = _FakeWeComStreamBuffer()
+        service.manager = _FakeManager(_FakeWeComChannel(buf))
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        async def _fake_consume(message, session_id, request, *, on_text_delta=None, on_tool_summary=None):
+            if on_tool_summary:
+                await on_tool_summary("🔧 `Bash: List current directory files`")
+            if on_text_delta:
+                await on_text_delta("后续正文")
+            return _FakeExecResult(final_content="")
+
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_consume_executor_events", _fake_consume)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        message = InboundMessage(channel="wecom", sender_id="u1", chat_id="c1", content="hi")
+        await service._process_wecom_stream(message, "sess1", "stream1")
+
+        assert "🔧 `Bash: List current directory files`\n\n后续正文" in buf.full_content
+        assert buf.finished is True
+
+    @pytest.mark.asyncio
+    async def test_normalize_final_when_streamed_is_substring(self, monkeypatch):
+        service = ChannelService()
+        streamed = "工具调用结果：\nCPU: ok"
+        final_body = "工具调用结果：\nCPU: ok"
+        expected = "🔧 `Bash: Show CPU model`\n\n---\n\n工具调用结果：\nCPU: ok"
+        buf = _FakeWeComStreamBuffer(full_content=streamed)
+        service.manager = _FakeManager(_FakeWeComChannel(buf))
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        async def _fake_consume(*args, **kwargs):
+            r = _FakeExecResult(final_content=final_body)
+            r.tool_call_count = 1
+            r.tool_summaries = ["🔧 `Bash: Show CPU model`"]
+            return r
+
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_consume_executor_events", _fake_consume)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        message = InboundMessage(channel="wecom", sender_id="u1", chat_id="c1", content="hi")
+        await service._process_wecom_stream(message, "sess1", "stream1")
+
+        assert buf.full_content == expected
+        assert buf.set_final_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_append_missing_tool_summaries_when_skip_unsafe_override(self, monkeypatch):
+        service = ChannelService()
+        streamed = "好，先检查系统状态。\n\n🔧 `Bash: Show CPU model`"
+        final = "🔧 `Bash: Show CPU model`\n🔧 `Bash: Show system uptime`\n\n---\n\n系统运行正常"
+        buf = _FakeWeComStreamBuffer(full_content=streamed)
+        service.manager = _FakeManager(_FakeWeComChannel(buf))
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        async def _fake_consume(*args, **kwargs):
+            r = _FakeExecResult(final_content=final)
+            r.tool_call_count = 2
+            r.tool_summaries = [
+                "🔧 `Bash: Show CPU model`",
+                "🔧 `Bash: Show system uptime`",
+            ]
+            return r
+
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_consume_executor_events", _fake_consume)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        message = InboundMessage(channel="wecom", sender_id="u1", chat_id="c1", content="hi")
+        await service._process_wecom_stream(message, "sess1", "stream1")
+
+        assert "🔧 `Bash: Show system uptime`" in buf.full_content
+        assert buf.set_final_calls == 0
+        assert buf.finished is True
 
 
 # ============== _process_with_ai Tool Call Tests ==============

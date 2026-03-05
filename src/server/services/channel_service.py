@@ -373,12 +373,26 @@ class ChannelService:
                 user_content = message.content or ""
                 image_paths = getattr(request, "image_paths", None) or []
                 file_paths = getattr(request, "file_paths", None) or []
-                if image_paths or file_paths:
-                    parts: list[str] = []
-                    for p in image_paths:
-                        parts.append(f"{{image: {p}}}")
-                    for p in file_paths:
-                        parts.append(f"{{file: {p}}}")
+
+                parts: list[str] = []
+                for p in image_paths:
+                    parts.append(f"{{image: {p}}}")
+                for p in file_paths:
+                    parts.append(f"{{file: {p}}}")
+
+                # Fallback: when media download fails, keep original media URL tags
+                # so Nexus still renders placeholders like {image: ...}.
+                if not parts and getattr(message, "media", None):
+                    for m in message.media:
+                        if not getattr(m, "url", None):
+                            continue
+                        mime = (getattr(m, "mime_type", "") or "").lower()
+                        if (not mime) or ("image" in mime):
+                            parts.append(f"{{image: {m.url}}}")
+                        else:
+                            parts.append(f"{{file: {m.url}}}")
+
+                if parts:
                     media_tags = " ".join(parts)
                     if user_content.strip():
                         user_content = f"{media_tags}\n\n{user_content}"
@@ -518,7 +532,12 @@ class ChannelService:
                 end_time=int(time.time() * 1000),
             ))
 
-            _emit_agui({"type": "TOOL_CALL_END", "toolCallId": tool_id, "result": tc_result})
+            _emit_agui({
+                "type": "TOOL_CALL_END",
+                "toolCallId": tool_id,
+                "result": tc_result,
+                "toolCallDisplayName": display,
+            })
 
         try:
             async with asyncio.timeout(timeout):
@@ -558,6 +577,9 @@ class ChannelService:
                                 partial = delta.get("partial_json", "")
                                 if partial and index in tool_block_buffer:
                                     tool_block_buffer[index]["json_buf"] += partial
+                                    tool_id = tool_block_buffer[index].get("id")
+                                    if tool_id:
+                                        _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": partial})
 
                         # AG-UI tool tracking
                         elif evt_type == "TOOL_CALL_START":
@@ -811,7 +833,7 @@ class ChannelService:
             buf.append(text)
 
         async def _on_tool(summary: str) -> None:
-            buf.append(f"\n\n{summary}")
+            buf.append(f"\n\n{summary}\n\n")
 
         try:
             result = await self._consume_executor_events(
@@ -826,7 +848,28 @@ class ChannelService:
                 if result.tool_call_count > 0 and result.tool_summaries:
                     tool_section = "\n".join(result.tool_summaries)
                     content = tool_section + "\n\n---\n\n" + content
-                buf.set_final(content)
+
+                current = buf.full_content
+                if not current:
+                    # 没有任何流式增量时，直接落地最终内容
+                    buf.set_final(content)
+                elif content.startswith(current) or current in content:
+                    # 最终内容包含当前已展示内容：可安全切换为规范化终稿
+                    if content != current:
+                        buf.set_final(content)
+                        logger.debug(
+                            f"[wecom] Stream final content normalized: {len(current)} -> {len(content)}"
+                        )
+                elif content != current:
+                    # 防止回退覆盖：当前已展示内容优先；但补齐缺失工具摘要，减少与 Nexus 不一致
+                    if result.tool_summaries:
+                        missing = [s for s in result.tool_summaries if s not in current]
+                        if missing:
+                            buf.append("\n\n" + "\n".join(missing))
+                    logger.info(
+                        f"[wecom] Skip unsafe final override: "
+                        f"streamed_len={len(current)}, final_len={len(content)}"
+                    )
             elif result.is_error and not result.final_content:
                 buf.append("\n\n⏰ 处理超时，请稍后重试。")
         except Exception as e:
