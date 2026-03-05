@@ -235,6 +235,20 @@ class TestSessionMetadataOperations:
         assert user_key in mock_redis._sorted_sets
         assert "session-123" in mock_redis._sorted_sets[user_key]
 
+    def test_save_session_meta_rejects_empty_id(self, session_storage, mock_redis):
+        """Empty session_id should be rejected to avoid undeletable sessions"""
+        meta = SessionMeta(
+            id="",
+            thread_id="",
+            username="testuser",
+            title="New Session",
+        )
+
+        result = session_storage.save_session_meta(meta)
+
+        assert result is False
+        assert mock_redis._key("session::meta") not in mock_redis._hashes
+
     def test_get_session_meta(self, session_storage):
         """Test getting session metadata"""
         # First save a session
@@ -259,6 +273,27 @@ class TestSessionMetadataOperations:
         """Test getting non-existent session metadata"""
         result = session_storage.get_session_meta("nonexistent")
         assert result is None
+
+    def test_get_session_meta_self_heals_missing_id_fields(self, session_storage, mock_redis):
+        """Partial meta hash should be auto-healed with id/thread_id from key."""
+        mock_redis.hset("session:sess1:meta", {
+            "title": "New Session",
+            "username": "",
+            "status": "error",
+            "created_at": "0",
+            "updated_at": "1704067200000",
+            "message_count": "0",
+        })
+
+        meta = session_storage.get_session_meta("sess1")
+
+        assert meta is not None
+        assert meta.id == "sess1"
+        assert meta.thread_id == "sess1"
+
+        saved = mock_redis.hgetall("session:sess1:meta")
+        assert saved.get("id") == "sess1"
+        assert saved.get("thread_id") == "sess1"
 
     def test_get_user_sessions(self, session_storage):
         """Test getting user's sessions"""
@@ -310,6 +345,44 @@ class TestSessionMetadataOperations:
         
         assert total == 10
         assert len(sessions) == 3
+
+    def test_get_all_sessions_self_heals_empty_session_id(self, session_storage, mock_redis):
+        """Invalid empty session_id should be auto-cleaned and excluded from list."""
+        good_meta = SessionMeta(
+            id="session-valid",
+            thread_id="thread-valid",
+            username="testuser",
+            title="Valid",
+            updated_at=1704067201000,
+        )
+        session_storage.save_session_meta(good_meta)
+
+        # Inject a malformed empty-id record and index entry
+        global_key = mock_redis._key("sessions:all")
+        mock_redis._sorted_sets[global_key][""] = 1704067202000
+        mock_redis.hset("session::meta", {
+            "id": "",
+            "thread_id": "",
+            "username": "",
+            "title": "New Session",
+            "status": "error",
+            "created_at": "0",
+            "updated_at": "1704067202000",
+            "message_count": "0",
+            "run_id": "",
+            "exec_user": "",
+            "provider": "",
+            "alias": "",
+            "exec_dir": "",
+        })
+
+        sessions, total = session_storage.get_all_sessions()
+
+        assert total == 1
+        assert len(sessions) == 1
+        assert sessions[0].id == "session-valid"
+        assert "" not in mock_redis._sorted_sets.get(global_key, {})
+        assert mock_redis._key("session::meta") not in mock_redis._hashes
 
     def test_get_user_sessions_with_search(self, session_storage):
         """Test getting user's sessions with search filter"""
