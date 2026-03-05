@@ -123,6 +123,35 @@ class CodexHistoryParser(BaseHistoryParser):
             for path, info in projects.items()
         ]
 
+    def list_all_sessions(self, config_path: Path, linux_user: Optional[str] = None) -> List[SessionMeta]:
+        """List ALL Codex sessions without project_path filtering.
+
+        Scans all JSONL files and returns every session with exec_dir set
+        to the session's cwd.
+
+        Args:
+            config_path: Provider config directory (e.g. ~/.codex)
+            linux_user: Optional Linux username to tag on each session
+        """
+        sessions_dir = config_path / "sessions"
+        if not sessions_dir.is_dir():
+            return []
+
+        jsonl_files = _find_jsonl_files(sessions_dir)
+        if not jsonl_files:
+            return []
+
+        sessions: List[SessionMeta] = []
+        for jsonl_file in jsonl_files:
+            meta = self._parse_session_meta_unfiltered(jsonl_file)
+            if meta:
+                if linux_user and not meta.exec_user:
+                    meta.exec_user = linux_user
+                sessions.append(meta)
+
+        sessions.sort(key=lambda s: s.updated_at, reverse=True)
+        return sessions
+
     def list_sessions(self, config_path: Path, project_path: str) -> List[SessionMeta]:
         """List Codex sessions filtered by project_path (cwd matching).
 
@@ -160,6 +189,7 @@ class CodexHistoryParser(BaseHistoryParser):
         # Find the JSONL file containing this session
         jsonl_files = _find_jsonl_files(sessions_dir)
         target_file: Optional[Path] = None
+        found_cwd: Optional[str] = None
 
         for jsonl_file in jsonl_files:
             for entry in self.safe_read_jsonl(jsonl_file):
@@ -167,6 +197,7 @@ class CodexHistoryParser(BaseHistoryParser):
                     payload = entry.get("payload", {})
                     if payload.get("id") == session_id or entry.get("id") == session_id:
                         target_file = jsonl_file
+                        found_cwd = payload.get("cwd", "") or None
                         break
             if target_file:
                 break
@@ -181,7 +212,20 @@ class CodexHistoryParser(BaseHistoryParser):
         if target_file is None:
             return None
 
-        return self._parse_session_messages(target_file, session_id)
+        detail = self._parse_session_messages(target_file, session_id)
+        # Attach exec_dir from session_meta cwd
+        if found_cwd and detail.session is None:
+            detail.session = SessionMeta(
+                id=session_id,
+                thread_id=session_id,
+                title="",
+                username="",
+                provider="codex",
+                status=SessionStatus.COMPLETED,
+                source="history",
+                exec_dir=found_cwd,
+            )
+        return detail
 
     def _parse_session_meta(self, jsonl_file: Path, normalized_project: str) -> Optional[SessionMeta]:
         """Parse a single JSONL file for session metadata.
@@ -258,6 +302,71 @@ class CodexHistoryParser(BaseHistoryParser):
             updated_at=last_timestamp,
             message_count=message_count,
             source="history",
+        )
+
+    def _parse_session_meta_unfiltered(self, jsonl_file: Path) -> Optional[SessionMeta]:
+        """Parse a single JSONL file for session metadata without cwd filtering.
+
+        Returns SessionMeta with exec_dir set to the session's cwd.
+        """
+        session_id = None
+        cwd = ""
+        model = ""
+        message_count = 0
+        last_user_message = ""
+        last_timestamp = 0
+
+        for entry in self.safe_read_jsonl(jsonl_file):
+            entry_type = entry.get("type", "")
+
+            if entry_type == "session_meta":
+                payload = entry.get("payload", {})
+                session_id = payload.get("id") or entry.get("id")
+                cwd = payload.get("cwd", "")
+                model = payload.get("model", "")
+                ts = entry.get("timestamp")
+                if ts:
+                    last_timestamp = self._parse_timestamp_ms(ts)
+
+            elif entry_type == "event_msg":
+                payload = entry.get("payload", {})
+                if payload.get("type") == "user_message":
+                    message_count += 1
+                    msg_text = payload.get("message", "") or ""
+                    if not msg_text:
+                        msg_text = _extract_text(payload.get("content", ""))
+                    if msg_text:
+                        last_user_message = msg_text[:100]
+
+            elif entry_type == "response_item":
+                payload = entry.get("payload", {})
+                p_type = payload.get("type", "")
+                if p_type == "message" and payload.get("role") == "assistant":
+                    message_count += 1
+
+            ts = entry.get("timestamp")
+            if ts:
+                ts_ms = self._parse_timestamp_ms(ts)
+                if ts_ms > last_timestamp:
+                    last_timestamp = ts_ms
+
+        if not session_id:
+            session_id = jsonl_file.stem
+
+        title = last_user_message or "New Session"
+
+        return SessionMeta(
+            id=session_id,
+            thread_id=session_id,
+            title=title,
+            username="",
+            provider="codex",
+            status=SessionStatus.COMPLETED,
+            created_at=last_timestamp,
+            updated_at=last_timestamp,
+            message_count=message_count,
+            source="history",
+            exec_dir=cwd or None,
         )
 
     def _parse_session_messages(self, jsonl_file: Path, session_id: str) -> HistorySessionDetail:

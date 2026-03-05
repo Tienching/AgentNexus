@@ -2,11 +2,13 @@
 """NexusHub Web API Integration Tests"""
 
 import pytest
+from pathlib import Path
 from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
 
 from src.server.app import app
+from src.server.routers.nexus_history import _build_alias_config_map
 from src.server.models import (
     SessionMeta,
     SessionStatus,
@@ -598,6 +600,140 @@ class TestAPIEdgeCases:
         assert response.status_code == 200
         # Should not cause any errors, just return no matches
 
+
+class TestHistoryAliasConfigMap:
+    def test_auto_detects_registry_alias_directory(self, tmp_path):
+        user_home = tmp_path / "ubuntu"
+        user_home.mkdir()
+        (user_home / ".claude").mkdir()
+        (user_home / ".claude-internal").mkdir()
+
+        class _Registry:
+            def list_all(self):
+                return {
+                    "claude": "claude",
+                    "claude-internal": "claude",
+                }
+
+        with patch("src.runtime.stores.alias_registry.get_alias_registry", return_value=_Registry()):
+            alias_map = _build_alias_config_map(user_home, custom_paths_str="", provider_filter=None)
+
+        assert "claude" in alias_map
+        assert "claude-internal" in alias_map
+        assert alias_map["claude-internal"] == user_home / ".claude-internal"
+
+    def test_provider_filter_keeps_matching_alias(self, tmp_path):
+        user_home = tmp_path / "ubuntu"
+        user_home.mkdir()
+        (user_home / ".claude-internal").mkdir()
+
+        class _Registry:
+            def list_all(self):
+                return {"claude-internal": "claude"}
+
+        with patch("src.runtime.stores.alias_registry.get_alias_registry", return_value=_Registry()):
+            alias_map = _build_alias_config_map(user_home, custom_paths_str="", provider_filter="claude")
+
+        assert "claude-internal" in alias_map
+
+    def test_custom_paths_skip_other_home_path(self, tmp_path):
+        user_home = tmp_path / "ubuntu"
+        user_home.mkdir()
+        (user_home / ".claude").mkdir()
+
+        with patch("src.runtime.stores.alias_registry.get_alias_registry", return_value=type("_Registry", (), {"list_all": lambda self: {}})()):
+            alias_map = _build_alias_config_map(
+                user_home,
+                custom_paths_str='{"claude-internal":"/home/tswitch/.claude-internal"}',
+                provider_filter=None,
+            )
+
+        assert "claude-internal" not in alias_map
+        assert alias_map["claude"] == user_home / ".claude"
+
+    def test_custom_paths_keep_same_home_path(self, tmp_path):
+        user_home = tmp_path / "ubuntu"
+        user_home.mkdir()
+        (user_home / ".claude").mkdir()
+
+        with patch("src.runtime.stores.alias_registry.get_alias_registry", return_value=type("_Registry", (), {"list_all": lambda self: {}})()):
+            alias_map = _build_alias_config_map(
+                user_home,
+                custom_paths_str='{"claude-internal":"/home/ubuntu/.claude-internal"}',
+                provider_filter=None,
+            )
+
+        assert alias_map["claude-internal"] == Path("/home/ubuntu/.claude-internal")
+
+
+class _MockHistoryAllUsersService:
+    async def list_projects(self, alias_config_map, provider_filter=None):
+        cfg = str(next(iter(alias_config_map.values()))) if alias_config_map else ""
+        if "/home/tswitch/" in cfg:
+            return [{
+                "path": "/home/tswitch/demo",
+                "providers": [{"provider": "claude", "alias": "claude-internal", "session_count": 2}],
+                "total_sessions": 2,
+                "last_active": 200,
+            }]
+        return [{
+            "path": "/home/ubuntu/demo",
+            "providers": [{"provider": "claude", "alias": "claude", "session_count": 1}],
+            "total_sessions": 1,
+            "last_active": 100,
+        }]
+
+    async def list_all_sessions(self, user_home, project_path, alias_config_map, provider_filter=None, search=None, page=1, page_size=20):
+        if "tswitch" in str(user_home):
+            sess = SessionMeta(
+                id="sess-tswitch-1",
+                thread_id="sess-tswitch-1",
+                title="TSwitch Session",
+                username="tswitch",
+                provider="claude",
+                alias="claude-internal",
+                updated_at=300,
+                created_at=290,
+                message_count=2,
+                status=SessionStatus.COMPLETED,
+                exec_dir=project_path,
+            )
+            return SessionListResponse(total=1, page=1, page_size=min(page_size, 100), sessions=[sess])
+
+        sess = SessionMeta(
+            id="sess-ubuntu-1",
+            thread_id="sess-ubuntu-1",
+            title="Ubuntu Session",
+            username="ubuntu",
+            provider="claude",
+            alias="claude",
+            updated_at=200,
+            created_at=190,
+            message_count=1,
+            status=SessionStatus.COMPLETED,
+            exec_dir=project_path,
+        )
+        return SessionListResponse(total=1, page=1, page_size=min(page_size, 100), sessions=[sess])
+
+
+class TestHistoryAllUsersAPI:
+    @pytest.mark.asyncio
+    async def test_projects_all_users_aggregates(self, client):
+        service = _MockHistoryAllUsersService()
+
+        def _alias_map(user_home, custom_paths_str, provider_filter=None):
+            return {"claude": Path(user_home) / ".claude"}
+
+        with patch("src.server.routers.nexus_history._get_history_service", return_value=service), \
+             patch("src.server.routers.nexus_history._resolve_history_user_homes", return_value=[Path("/home/ubuntu"), Path("/home/tswitch")]), \
+             patch("src.server.routers.nexus_history._build_alias_config_map", side_effect=_alias_map):
+            response = await client.get("/api/nexus/history/projects", params={"exec_user": "", "provider": "claude"})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+        assert data[0]["path"] == "/home/tswitch/demo"
+        assert data[1]["path"] == "/home/ubuntu/demo"
 
 class _MockHistoryService:
     async def get_session_detail(self, provider, config_path, session_id):

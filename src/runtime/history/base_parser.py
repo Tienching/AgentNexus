@@ -78,6 +78,46 @@ class BaseHistoryParser(ABC):
         """
         return []
 
+    def list_all_sessions(self, config_path: Path, linux_user: Optional[str] = None) -> List[SessionMeta]:
+        """List ALL sessions across all projects (no project_path filter).
+
+        Default implementation: enumerate projects via list_projects(), then
+        call list_sessions() for each discovered project path.
+        Subclasses can override for more efficient implementations.
+
+        Args:
+            config_path: Provider config directory (e.g. ~/.claude)
+            linux_user: Optional Linux username to tag on each session
+
+        Each returned SessionMeta will have exec_dir set to the project path
+        and exec_user set to linux_user if provided.
+        """
+        all_sessions: List[SessionMeta] = []
+        try:
+            projects = self.list_projects(config_path)
+        except Exception as e:
+            logger.warning("list_all_sessions: list_projects failed for %s: %s", config_path, e)
+            return []
+
+        for proj in projects:
+            project_path = proj.get("path")
+            if not project_path or not isinstance(project_path, str):
+                continue
+            try:
+                sessions = self.list_sessions(config_path, project_path)
+                for s in sessions:
+                    if not s.exec_dir:
+                        s.exec_dir = project_path
+                    if linux_user and not s.exec_user:
+                        s.exec_user = linux_user
+                all_sessions.extend(sessions)
+            except Exception as e:
+                logger.warning(
+                    "list_all_sessions: list_sessions failed for %s project=%s: %s",
+                    self.provider_name, project_path, e,
+                )
+        return all_sessions
+
     # ---- Shared Utilities ----
 
     @staticmethod
