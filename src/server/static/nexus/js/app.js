@@ -541,13 +541,11 @@ class ChatView {
                                 </button>
                             </div>
                         </div>
-                        <div class="session-source-tabs" style="display:flex;gap:0;margin:6px 0 4px 0;">
-                            <button class="session-source-tab ${!isHistory ? 'active' : ''}" data-source="runtime" data-pane="${paneId}"
-                                style="flex:1;padding:4px 0;font-size:12px;border:1px solid var(--border);background:${!isHistory ? 'var(--primary)' : 'var(--bg-secondary)'};color:${!isHistory ? '#fff' : 'var(--text-secondary)'};border-radius:4px 0 0 4px;cursor:pointer;">
+                        <div class="session-source-tabs">
+                            <button class="session-source-tab ${!isHistory ? 'active' : ''}" data-source="runtime" data-pane="${paneId}">
                                 Runtime
                             </button>
-                            <button class="session-source-tab ${isHistory ? 'active' : ''}" data-source="history" data-pane="${paneId}"
-                                style="flex:1;padding:4px 0;font-size:12px;border:1px solid var(--border);border-left:none;background:${isHistory ? 'var(--primary)' : 'var(--bg-secondary)'};color:${isHistory ? '#fff' : 'var(--text-secondary)'};border-radius:0 4px 4px 0;cursor:pointer;">
+                            <button class="session-source-tab ${isHistory ? 'active' : ''}" data-source="history" data-pane="${paneId}">
                                 History
                             </button>
                         </div>
@@ -1051,7 +1049,7 @@ class ChatView {
                         </svg>
                     </div>
                     <div class="message-content">
-                        <div class="message-text">${this.escapeHtml(message)}</div>
+                        <div class="message-bubble"><div class="message-text">${this.escapeHtml(message)}</div></div>
                     </div>
                 </div>
                 <div class="message assistant" id="thinking-${paneId}">
@@ -1479,11 +1477,39 @@ class ChatView {
         return hasContent;
     }
 
+    buildTodoToolDisplayName(todosValue) {
+        if (todosValue === undefined || todosValue === null || todosValue === '') return '';
+
+        let todos = todosValue;
+        if (typeof todos === 'string') {
+            try {
+                todos = JSON.parse(todos);
+            } catch (_) {
+                return '';
+            }
+        }
+
+        if (!Array.isArray(todos) || todos.length === 0) return '';
+
+        const total = todos.length;
+        const currentIndex = todos.findIndex(todo => todo && typeof todo === 'object' && todo.status === 'in_progress');
+        if (currentIndex >= 0) {
+            const currentContent = String(todos[currentIndex]?.content || '').trim();
+            return currentContent
+                ? `Todos: ${currentIndex + 1}/${total} - ${currentContent}`
+                : `Todos: ${currentIndex + 1}/${total}`;
+        }
+
+        return `Todos: ${total} items`;
+    }
+
     buildToolDisplayName(toolName, params = {}) {
         const name = toolName || 'Tool Call';
         if (!params || typeof params !== 'object') return name;
 
-        if (name === 'Task' || name === 'task') {
+        const normalizedName = typeof name === 'string' ? name.trim().toLowerCase() : '';
+
+        if (normalizedName === 'task') {
             const subagent = params.subagent_type || params.subagent_name || '';
             const desc = params.description || '';
             if (subagent && desc) return `Task: ${subagent} - ${desc}`;
@@ -1491,32 +1517,32 @@ class ChatView {
             if (desc) return `Task: ${desc}`;
         }
 
-        if (name === 'Skill' || name === 'use_skill') {
+        if (normalizedName === 'skill' || normalizedName === 'use_skill') {
             const skill = params.skill || params.command || '';
             if (skill) return `Skill: ${skill}`;
         }
 
-        if (name === 'Read' || name === 'read_file') {
+        if (normalizedName === 'read' || normalizedName === 'read_file') {
             const fp = params.file_path || params.filePath || '';
             if (fp) return `Read: ${fp}`;
         }
 
-        if (name === 'Write' || name === 'write_to_file') {
+        if (normalizedName === 'write' || normalizedName === 'write_to_file') {
             const fp = params.file_path || params.filePath || '';
             if (fp) return `Write: ${fp}`;
         }
 
-        if (name === 'Edit' || name === 'replace_in_file') {
+        if (normalizedName === 'edit' || normalizedName === 'replace_in_file' || normalizedName === 'apply_patch') {
             const fp = params.file_path || params.filePath || '';
             if (fp) return `Edit: ${fp}`;
         }
 
-        if (name === 'Grep' || name === 'search_content') {
+        if (normalizedName === 'grep' || normalizedName === 'search_content') {
             const path = params.path || params.directory || '';
             if (path) return `Grep: ${path}`;
         }
 
-        if (name === 'Glob' || name === 'search_file') {
+        if (normalizedName === 'glob' || normalizedName === 'search_file') {
             const path = params.path || params.target_directory || '';
             const pattern = params.pattern || '';
             if (path && pattern) return `Glob: ${pattern} in ${path}`;
@@ -1524,19 +1550,24 @@ class ChatView {
             if (pattern) return `Glob: ${pattern}`;
         }
 
-        if (name === 'Bash' || name === 'execute_command') {
+        if (normalizedName === 'bash' || normalizedName === 'execute_command') {
             const explanation = params.explanation || params.description || '';
             if (explanation) return `Bash: ${explanation}`;
             const command = params.command || '';
             if (command) return `Bash: ${command.length > 60 ? `${command.slice(0, 60)}…` : command}`;
         }
 
-        if (name === 'WebSearch' || name === 'web_search') {
+        if (normalizedName === 'todowrite' || normalizedName === 'todo_write') {
+            const todoTitle = this.buildTodoToolDisplayName(params.todos);
+            if (todoTitle) return todoTitle;
+        }
+
+        if (normalizedName === 'websearch' || normalizedName === 'web_search') {
             const query = params.query || params.searchTerm || '';
             if (query) return `Search: ${query.length > 60 ? `${query.slice(0, 60)}…` : query}`;
         }
 
-        if (name === 'WebFetch' || name === 'web_fetch') {
+        if (normalizedName === 'webfetch' || normalizedName === 'web_fetch') {
             const url = params.url || '';
             if (url) return `Fetch: ${url.length > 60 ? `${url.slice(0, 60)}…` : url}`;
         }
@@ -1547,13 +1578,23 @@ class ChatView {
     extractPartialToolParams(argsString) {
         if (typeof argsString !== 'string' || !argsString.trim()) return {};
         const extracted = {};
-        const keys = ['explanation', 'description', 'command', 'searchTerm', 'query'];
+        const keys = ['explanation', 'description', 'command', 'searchTerm', 'query', 'pattern', 'filePath', 'file_path', 'path', 'directory', 'target_directory'];
         for (const key of keys) {
             const m = argsString.match(new RegExp(`"${key}"\\s*:\\s*"([^\\"]*)`));
             if (m && m[1]) {
                 extracted[key] = m[1].replace(/\\n/g, ' ').replace(/\\t/g, ' ').trim();
             }
         }
+
+        const todosMatch = argsString.match(/"todos"\s*:\s*"((?:\\.|[^"\\])*)"/s);
+        if (todosMatch && todosMatch[1]) {
+            extracted.todos = todosMatch[1]
+                .replace(/\\n/g, ' ')
+                .replace(/\\t/g, ' ')
+                .replace(/\\"/g, '"')
+                .trim();
+        }
+
         return extracted;
     }
 
@@ -3208,13 +3249,191 @@ class ChatView {
     }
 
     formatMessageContent(content) {
-        if (!content) return '';
-        // Basic markdown-like formatting
-        return this.escapeHtml(content)
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`([^`]+)`/g, '<code style="background: var(--bg-tertiary); padding: 2px 4px; border-radius: 4px;">$1</code>')
-            .replace(/\n/g, '<br>');
+        if (content === undefined || content === null || content === '') return '';
+        return this.renderMarkdown(String(content));
+    }
+
+    renderMarkdown(content) {
+        const normalized = content.replace(/\r\n?/g, '\n');
+        const blocks = [];
+        const lines = normalized.split('\n');
+        let index = 0;
+
+        while (index < lines.length) {
+            const line = lines[index];
+            if (!line.trim()) {
+                index++;
+                continue;
+            }
+
+            const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
+            if (fenceMatch) {
+                const language = fenceMatch[1] || '';
+                const codeLines = [];
+                index++;
+                while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+                    codeLines.push(lines[index]);
+                    index++;
+                }
+                if (index < lines.length && /^```\s*$/.test(lines[index])) {
+                    index++;
+                }
+                const languageClass = language ? ` class="language-${this.escapeHtml(language)}"` : '';
+                blocks.push(`<pre class="message-code-block"><code${languageClass}>${this.escapeHtml(codeLines.join('\n'))}</code></pre>`);
+                continue;
+            }
+
+            const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+            if (headingMatch) {
+                const level = headingMatch[1].length;
+                blocks.push(`<h${level}>${this.formatInlineMarkdown(headingMatch[2])}</h${level}>`);
+                index++;
+                continue;
+            }
+
+            if (/^([-*_])(?:\s*\1){2,}\s*$/.test(line.trim())) {
+                blocks.push('<hr class="message-hr">');
+                index++;
+                continue;
+            }
+
+            if (/^\s*>\s?/.test(line)) {
+                const quoteBlock = this.renderMarkdownBlockquote(lines, index);
+                blocks.push(quoteBlock.html);
+                index = quoteBlock.nextIndex;
+                continue;
+            }
+
+            if (this.isMarkdownListItem(line)) {
+                const listBlock = this.renderMarkdownList(lines, index);
+                blocks.push(listBlock.html);
+                index = listBlock.nextIndex;
+                continue;
+            }
+
+            const paragraphLines = [line];
+            index++;
+            while (index < lines.length && lines[index].trim() && !this.isMarkdownBlockStart(lines[index])) {
+                paragraphLines.push(lines[index]);
+                index++;
+            }
+            blocks.push(`<p>${paragraphLines.map(part => this.formatInlineMarkdown(part)).join('<br>')}</p>`);
+        }
+
+        return blocks.join('');
+    }
+
+    isMarkdownBlockStart(line) {
+        const trimmed = line.trimStart();
+        return /^```/.test(trimmed)
+            || /^(#{1,6})\s+/.test(trimmed)
+            || /^([-*_])(?:\s*\1){2,}\s*$/.test(trimmed)
+            || /^>\s?/.test(trimmed)
+            || this.isMarkdownListItem(trimmed);
+    }
+
+    isMarkdownListItem(line) {
+        const trimmed = line.trimStart();
+        return /^[-*+]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed);
+    }
+
+    renderMarkdownList(lines, startIndex) {
+        const firstLine = lines[startIndex].trimStart();
+        const ordered = /^\d+\.\s+/.test(firstLine);
+        const items = [];
+        let index = startIndex;
+
+        while (index < lines.length) {
+            const current = lines[index];
+            if (!current.trim()) break;
+            const trimmed = current.trimStart();
+            if (ordered ? !/^\d+\.\s+/.test(trimmed) : !/^[-*+]\s+/.test(trimmed)) break;
+            items.push(trimmed.replace(ordered ? /^\d+\.\s+/ : /^[-*+]\s+/, ''));
+            index++;
+        }
+
+        const tag = ordered ? 'ol' : 'ul';
+        return {
+            html: `<${tag}>${items.map(item => `<li>${this.formatInlineMarkdown(item)}</li>`).join('')}</${tag}>`,
+            nextIndex: index,
+        };
+    }
+
+    renderMarkdownBlockquote(lines, startIndex) {
+        const quoteLines = [];
+        let index = startIndex;
+
+        while (index < lines.length) {
+            const current = lines[index];
+            if (!current.trim()) break;
+            if (!/^\s*>\s?/.test(current)) break;
+            quoteLines.push(current.replace(/^\s*>\s?/, ''));
+            index++;
+        }
+
+        return {
+            html: `<blockquote class="message-blockquote">${quoteLines.map(line => `<p>${this.formatInlineMarkdown(line)}</p>`).join('')}</blockquote>`,
+            nextIndex: index,
+        };
+    }
+
+    formatInlineMarkdown(text) {
+        if (!text) return '';
+
+        const tokens = [];
+        const createToken = (html) => `@@MD_TOKEN_${tokens.push(html) - 1}@@`;
+        let formatted = text;
+
+        formatted = formatted.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_match, alt, url) => {
+            const safeUrl = this.sanitizeMarkdownUrl(url);
+            if (!safeUrl) {
+                return createToken(this.escapeHtml(`![${alt}](${url})`));
+            }
+            return createToken(`<img src="${safeUrl}" alt="${this.escapeHtml(alt)}" class="message-markdown-image" loading="lazy">`);
+        });
+
+        formatted = formatted.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, url) => {
+            const safeUrl = this.sanitizeMarkdownUrl(url);
+            if (!safeUrl) {
+                return createToken(this.escapeHtml(`[${label}](${url})`));
+            }
+            return createToken(`<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${this.escapeHtml(label)}</a>`);
+        });
+
+        formatted = formatted.replace(/`([^`]+)`/g, (_match, code) => createToken(`<code>${this.escapeHtml(code)}</code>`));
+
+        formatted = this.escapeHtml(formatted)
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+            .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+        return this.restoreMarkdownTokens(formatted, tokens);
+    }
+
+    restoreMarkdownTokens(text, tokens) {
+        return text.replace(/@@MD_TOKEN_(\d+)@@/g, (_match, index) => tokens[Number(index)] ?? '');
+    }
+
+    sanitizeMarkdownUrl(url) {
+        if (!url) return '';
+        const trimmed = String(url).trim();
+        if (!trimmed) return '';
+
+        try {
+            if (trimmed.startsWith('/')) {
+                const safe = new URL(trimmed, window.location.origin);
+                return this.escapeHtml(`${safe.pathname}${safe.search}${safe.hash}`);
+            }
+
+            const parsed = new URL(trimmed);
+            const protocol = parsed.protocol.toLowerCase();
+            if (!['http:', 'https:', 'mailto:'].includes(protocol)) {
+                return '';
+            }
+            return this.escapeHtml(parsed.href);
+        } catch {
+            return '';
+        }
     }
 
     escapeHtml(str) {
@@ -3994,6 +4213,15 @@ class TaskView {
         const isSelected = this.selectedTask[paneId] === task.id;
         const isInSelectionMode = this.selectionMode[paneId];
         const isChecked = this.selectedTaskIds[paneId]?.has(task.id);
+        const alias = String(task?.alias || '').trim();
+        const provider = String(task?.provider || '').trim();
+        const targetInfo = {
+            primary: alias || provider,
+            secondary: alias && provider && alias.toLowerCase() !== provider.toLowerCase() ? provider : '',
+            tooltip: alias && provider && alias.toLowerCase() !== provider.toLowerCase()
+                ? `Alias: ${alias} · Provider: ${provider}`
+                : (alias || provider),
+        };
 
         return `
             <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-task-id="${task.id}">
@@ -4015,12 +4243,13 @@ class TaskView {
                             </svg>
                             ${timeStr}
                         </span>
-                        ${task.provider ? `
-                            <span class="task-card-meta-item">
+                        ${targetInfo.primary ? `
+                            <span class="task-card-meta-item" title="${this.escapeHtml(targetInfo.tooltip)}">
                                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                                 </svg>
-                                ${task.provider}
+                                <span>${this.escapeHtml(targetInfo.primary)}</span>
+                                ${targetInfo.secondary ? `<span class="task-provider-base">${this.escapeHtml(targetInfo.secondary)}</span>` : ''}
                             </span>
                         ` : ''}
                     </div>
@@ -4087,6 +4316,15 @@ class TaskView {
         const statusClass = this._normalizeTaskStatus(task.status);
         const isRunning = statusClass === 'doing';
         const hasConversation = isRunning || statusClass === 'done' || statusClass === 'completed' || statusClass === 'failed';
+        const alias = String(task?.alias || '').trim();
+        const provider = String(task?.provider || '').trim();
+        const targetInfo = {
+            primary: alias || provider,
+            secondary: alias && provider && alias.toLowerCase() !== provider.toLowerCase() ? provider : '',
+            tooltip: alias && provider && alias.toLowerCase() !== provider.toLowerCase()
+                ? `Alias: ${alias} · Provider: ${provider}`
+                : (alias || provider),
+        };
 
         detailPanel.dataset.taskId = task.id;
         detailPanel.dataset.taskStatus = statusClass;
@@ -4107,7 +4345,8 @@ class TaskView {
                             <span class="status-dot"></span>
                             ${task.status || 'TODO'}
                         </span>
-                        ${task.provider ? `<span style="font-size: 11px; color: var(--text-muted); background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${this.escapeHtml(task.provider)}</span>` : ''}
+                        ${targetInfo.primary ? `<span class="task-target-badge" title="${this.escapeHtml(targetInfo.tooltip)}">${this.escapeHtml(targetInfo.primary)}</span>` : ''}
+                        ${targetInfo.secondary ? `<span class="task-target-badge task-target-badge-base" title="Base provider">${this.escapeHtml(targetInfo.secondary)}</span>` : ''}
                         ${task.workspace ? `<span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);" title="${this.escapeHtml(task.workspace)}">${this.escapeHtml(task.workspace.split('/').pop() || task.workspace)}</span>` : ''}
                     </div>
                     <p style="margin: 6px 0 0; font-size: 13px; color: var(--text-secondary);">${this.escapeHtml(task.description || 'No description')}</p>
@@ -4204,7 +4443,7 @@ class TaskView {
         const globalUserFilter = document.getElementById('globalUserFilter');
         const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
 
-        const es = NexusAPI.streamTaskMessages(taskId, { execUser, tail: 500 });
+        const es = NexusAPI.streamTaskMessages(taskId, { execUser, tail: 5000 });
         this._activeStreams.set(taskId, es);
 
         // State for streaming rendering
@@ -5579,13 +5818,17 @@ class NexusApp {
         if (!providerOrAlias) return '';
         const name = providerOrAlias.trim().toLowerCase();
         const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const models = this._loadProviderModels();
         if (defaultProviders.includes(name)) {
-            const models = this._loadProviderModels();
             return models[name] || '';
         }
         // Custom alias
         const found = this.customProviders.find(p => p.name.toLowerCase() === name);
-        return found ? (found.defaultModel || '') : '';
+        if (found) {
+            return found.defaultModel || models[found.baseProvider] || '';
+        }
+        const inferredBaseProvider = defaultProviders.find(provider => name.startsWith(`${provider}-`));
+        return inferredBaseProvider ? (models[inferredBaseProvider] || '') : '';
     }
 
     setProviderDefaultModel(providerOrAlias, model) {
@@ -6100,20 +6343,34 @@ class NexusApp {
         };
         const ids = mapping[mode] || mapping.single;
         const execUser = document.getElementById(ids.userId)?.value || globalUserFilter?.value || NexusAPI.getDefaultExecUser();
-        const provider = document.getElementById(ids.modelId)?.value || this.getDefaultProvider();
-        return { execUser, provider };
+        const providerSelection = document.getElementById(ids.modelId)?.value || this.getDefaultProvider();
+        return { execUser, providerSelection };
+    }
+
+    resolveProviderSelection(providerSelection) {
+        const normalizedSelection = (providerSelection || this.getDefaultProvider() || 'codebuddy').trim().toLowerCase();
+        const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+        const baseProvider = defaultProviders.includes(normalizedSelection)
+            ? normalizedSelection
+            : ((this.getBaseProvider && this.getBaseProvider(normalizedSelection))
+                || defaultProviders.find(providerName => normalizedSelection.startsWith(`${providerName}-`))
+                || normalizedSelection);
+        return {
+            provider: baseProvider,
+            alias: normalizedSelection,
+        };
     }
 
     async submitTask() {
-        const { execUser, provider } = this.getTaskAgentSelection(this.activeModalTab);
+        const { execUser, providerSelection } = this.getTaskAgentSelection(this.activeModalTab);
 
         try {
             if (this.activeModalTab === 'single') {
-                await this.submitSingleTask(execUser, provider);
+                await this.submitSingleTask(execUser, providerSelection);
             } else if (this.activeModalTab === 'bulk') {
-                await this.submitBulkTasks(execUser, provider);
+                await this.submitBulkTasks(execUser, providerSelection);
             } else if (this.activeModalTab === 'chain') {
-                await this.submitTaskChain(execUser, provider);
+                await this.submitTaskChain(execUser, providerSelection);
             }
 
             document.getElementById('createTaskModal')?.classList.remove('open');
@@ -6126,13 +6383,12 @@ class NexusApp {
         }
     }
 
-    async submitSingleTask(execUser, provider) {
+    async submitSingleTask(execUser, providerSelection) {
         const description = document.getElementById('taskDescription')?.value.trim();
         const workspace = document.getElementById('taskWorkspace')?.value.trim();
         const dependsOnStr = document.getElementById('taskDependsOn')?.value.trim();
         const llmModel = document.getElementById('taskLlmModel')?.value.trim();
-        const selectedProvider = provider || this.getDefaultProvider();
-        const aliasValue = selectedProvider;
+        const { provider: selectedProvider, alias: aliasValue } = this.resolveProviderSelection(providerSelection);
 
         if (!description) {
             throw new Error('Description is required');
@@ -6142,7 +6398,7 @@ class NexusApp {
             description,
             provider: selectedProvider,
             alias: aliasValue,
-            model: llmModel || this.getProviderDefaultModel(aliasValue) || undefined,
+            model: llmModel || this.getProviderDefaultModel(aliasValue) || this.getProviderDefaultModel(selectedProvider) || undefined,
             workspace: workspace || undefined,
             depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined
         };
@@ -6151,12 +6407,11 @@ class NexusApp {
         this.showToast('Task created successfully', 'success');
     }
 
-    async submitBulkTasks(execUser, provider) {
+    async submitBulkTasks(execUser, providerSelection) {
         const tasksText = document.getElementById('bulkTasks')?.value.trim();
         const workspace = document.getElementById('bulkWorkspace')?.value.trim();
         const llmModel = document.getElementById('bulkLlmModel')?.value.trim();
-        const selectedProvider = provider || this.getDefaultProvider();
-        const aliasValue = selectedProvider;
+        const { provider: selectedProvider, alias: aliasValue } = this.resolveProviderSelection(providerSelection);
 
         if (!tasksText) {
             throw new Error('Please enter at least one task');
@@ -6171,7 +6426,7 @@ class NexusApp {
         }
 
         // Use bulk create API
-        const effectiveModel = llmModel || this.getProviderDefaultModel(aliasValue) || undefined;
+        const effectiveModel = llmModel || this.getProviderDefaultModel(aliasValue) || this.getProviderDefaultModel(selectedProvider) || undefined;
         const tasks = taskDescriptions.map(description => ({
             description,
             provider: selectedProvider,
@@ -6189,12 +6444,11 @@ class NexusApp {
         }
     }
 
-    async submitTaskChain(execUser, provider) {
+    async submitTaskChain(execUser, providerSelection) {
         const tasksText = document.getElementById('chainTasks')?.value.trim();
         const workspace = document.getElementById('chainWorkspace')?.value.trim();
         const llmModel = document.getElementById('chainLlmModel')?.value.trim();
-        const selectedProvider = provider || this.getDefaultProvider();
-        const aliasValue = selectedProvider;
+        const { provider: selectedProvider, alias: aliasValue } = this.resolveProviderSelection(providerSelection);
 
         if (!tasksText) {
             throw new Error('Please enter at least one task');
@@ -6209,7 +6463,7 @@ class NexusApp {
         }
 
         // Use bulk create API with temp_id dependencies for chain
-        const effectiveModel = llmModel || this.getProviderDefaultModel(aliasValue) || undefined;
+        const effectiveModel = llmModel || this.getProviderDefaultModel(aliasValue) || this.getProviderDefaultModel(selectedProvider) || undefined;
         const tasks = taskDescriptions.map((description, index) => ({
             description,
             provider: selectedProvider,

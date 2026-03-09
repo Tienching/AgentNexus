@@ -31,6 +31,7 @@ from .config import (
     SignalConfig,
     FeishuConfig,
     WeComConfig,
+    WeComBotConfig,
 )
 from .manager import ChannelManager
 from .registry import ChannelRegistry
@@ -54,6 +55,7 @@ __all__ = [
     "SignalConfig",
     "FeishuConfig",
     "WeComConfig",
+    "WeComBotConfig",
     # 管理类
     "ChannelManager",
     "ChannelRegistry",
@@ -87,3 +89,7 @@ def _get_feishu():
 def _get_wecom():
     from .wecom import WeComChannel
     return WeComChannel
+
+def _get_wecom_bot():
+    from .wecom_bot import WeComBotChannel
+    return WeComBotChannel

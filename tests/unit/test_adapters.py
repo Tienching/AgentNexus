@@ -267,6 +267,15 @@ Some text after"""
         assert len(calls) == 0
         assert cleaned == ""
     
+    def test_get_tool_display_name_bash_prefers_description(self, adapter):
+        """Bash 展示名优先使用底层透传的 description。"""
+        display = adapter._get_tool_display_name(
+            "Bash",
+            json.dumps({"description": "收集系统状态与网络接口", "explanation": "显示网络接口"}, ensure_ascii=False),
+        )
+
+        assert display == "Bash: 收集系统状态与网络接口"
+
     def test_generate_subagent_tool_events(self, adapter):
         """测试生成 subagent 工具调用事件"""
         from src.runtime.adapters import ParsedToolCall

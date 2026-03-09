@@ -81,7 +81,7 @@ class ConfigCommand(BaseCommand):
             "title": "Provider 配置",
             "keys": [
                 ("CLI_COMMAND", "CLI 执行命令（默认 Provider）", "claude"),
-                ("CLI_TIMEOUT", "CLI 执行超时（秒）", "120"),
+                ("CLI_TIMEOUT", "CLI 执行超时（秒）", "600"),
                 ("GEMINI_COMMAND", "Gemini CLI 命令", "gemini"),
             ],
         },

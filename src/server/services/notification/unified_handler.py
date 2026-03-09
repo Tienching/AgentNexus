@@ -16,6 +16,7 @@ from .discord_sink import DiscordSink
 from .feishu_sink import FeishuSink
 from .slack_sink import SlackSink
 from .wecom_sink import WeComSink
+from .wecom_bot_sink import WeComBotSink
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class UnifiedNotificationHandler:
             "feishu": FeishuSink(),
             "slack": SlackSink(),
             "wecom": WeComSink(),
+            "wecom_bot": WeComBotSink(),
         }
 
     def register_sink(self, sink_type: str, sink: NotificationSink) -> None:
