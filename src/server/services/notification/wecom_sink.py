@@ -129,9 +129,11 @@ class WeComSink(NotificationSink):
         target: NotificationTarget,
         status: str,
     ) -> NotificationResult:
-        # WeCom's response_url is single-use. We must NOT consume it
-        # for intermediate progress messages — save it for the final reply.
-        # Simply return success without actually sending anything.
+        channel = self._get_channel()
+        if channel and getattr(channel.config, "mode", "webhook") == "websocket":
+            return await self.send_text(target, f"⏳ {status}")
+
+        # Webhook 模式下 response_url 是一次性的，不能被进度消息提前消耗。
         logger.debug(
             f"[wecom] Skipping progress message (response_url is single-use): "
             f"{status[:60]}"

@@ -1040,6 +1040,39 @@ class TestTaskAPI:
         assert data["messages"][0]["role"] == "assistant"
 
     @pytest.mark.asyncio
+    async def test_task_agui_messages_accept_large_tail(self, client, mock_storage, mock_task_queue):
+        task = next(iter(mock_task_queue._tasks.values()))
+        task.session_id = f"task_{task.id}"
+        mock_storage.save_session_meta(
+            SessionMeta(
+                id=task.session_id,
+                thread_id=task.session_id,
+                username="ubuntu",
+                title="Task Session",
+                status=SessionStatus.COMPLETED,
+                created_at=1704067200000,
+                updated_at=1704067200000,
+                message_count=2,
+            )
+        )
+        mock_storage.messages[task.session_id] = [
+            StoredMessage(id="m1", role="assistant", content="first", status=MessageStatus.COMPLETE),
+            StoredMessage(id="m2", role="assistant", content="second", status=MessageStatus.COMPLETE),
+        ]
+
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue):
+            response = await client.get(
+                f"/api/nexus/tasks/{task.id}/agui/messages",
+                params={"exec_user": "ubuntu", "tail": 5000},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "MESSAGES_SNAPSHOT"
+        assert [msg["content"] for msg in data["messages"]] == ["first", "second"]
+
+    @pytest.mark.asyncio
     async def test_task_agui_stream_replays_in_order_and_ends(self, client, mock_storage):
         task = Task(
             description="Replay AGUI stream",
@@ -1066,7 +1099,7 @@ class TestTaskAPI:
              patch('src.server.routers.nexus._get_task_queue', return_value=queue):
             response = await client.get(
                 f"/api/nexus/tasks/{task.id}/agui/stream",
-                params={"exec_user": "ubuntu", "tail": 500, "poll_interval_ms": 200},
+                params={"exec_user": "ubuntu", "tail": 5000, "poll_interval_ms": 200},
             )
 
         assert response.status_code == 200

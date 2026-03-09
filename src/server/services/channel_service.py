@@ -7,8 +7,10 @@ Supports non-blocking AI processing with real-time progress updates
 via the unified notification system.
 """
 
+import ast
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -27,6 +29,7 @@ from src.channels import (
     SignalConfig,
     FeishuConfig,
     WeComConfig,
+    WeComBotConfig,
 )
 from .notification import (
     NotificationTarget,
@@ -48,6 +51,7 @@ CHANNEL_MAX_LENGTH = {
     "slack": 3800,
     "feishu": 3800,
     "wecom": 20480,
+    "wecom_bot": 20480,
     "whatsapp": 65000,
     "signal": 65000,
 }
@@ -88,6 +92,19 @@ class ChannelService:
         self._executor = None  # AI 执行器
         self._active_sessions: Dict[str, Dict[str, Any]] = {}
         self._background_tasks: Dict[str, asyncio.Task] = {}
+
+    def _get_channel_config(self, channel_name: str) -> Optional["ChannelConfig"]:
+        """Get the ChannelConfig for a given channel name from the manager."""
+        if self.manager and channel_name in self.manager.configs:
+            return self.manager.configs[channel_name]
+        return None
+
+    def _resolve_exec_user(self, channel_name: str) -> str:
+        """Resolve exec_user: channel-level config > global settings."""
+        cfg = self._get_channel_config(channel_name)
+        if cfg and cfg.exec_user:
+            return cfg.exec_user
+        return settings.exec_user or "ubuntu"
         
     async def initialize(self) -> bool:
         """初始化 channel 服务
@@ -109,6 +126,9 @@ class ChannelService:
                     name="telegram",
                     bot_token=settings.telegram_bot_token,
                     allowed_users=allowed_list,
+                    provider=settings.telegram_provider or None,
+                    alias=settings.telegram_alias or None,
+                    exec_user=settings.telegram_exec_user or None,
                 )
                 logger.info("Telegram channel configured")
             except Exception as e:
@@ -122,6 +142,9 @@ class ChannelService:
                     bot_token=settings.slack_bot_token,
                     app_token=settings.slack_app_token,
                     socket_mode=True,
+                    provider=settings.slack_provider or None,
+                    alias=settings.slack_alias or None,
+                    exec_user=settings.slack_exec_user or None,
                 )
                 logger.info("Slack channel configured")
             except Exception as e:
@@ -133,6 +156,9 @@ class ChannelService:
                 configs["discord"] = DiscordConfig(
                     name="discord",
                     bot_token=settings.discord_bot_token,
+                    provider=settings.discord_provider or None,
+                    alias=settings.discord_alias or None,
+                    exec_user=settings.discord_exec_user or None,
                 )
                 logger.info("Discord channel configured")
             except Exception as e:
@@ -148,6 +174,9 @@ class ChannelService:
                     verification_token=settings.feishu_verification_token,
                     encrypt_key=settings.feishu_encrypt_key,
                     domain=settings.feishu_domain,
+                    provider=settings.feishu_provider or None,
+                    alias=settings.feishu_alias or None,
+                    exec_user=settings.feishu_exec_user or None,
                 )
                 logger.info("Feishu channel configured")
             except Exception as e:
@@ -179,17 +208,50 @@ class ChannelService:
                 logger.error(f"Failed to configure Signal: {e}")
 
         # 企业微信智能机器人配置
-        if settings.wecom_token and settings.wecom_encoding_aes_key:
+        if (
+            settings.wecom_mode == "websocket"
+            or (settings.wecom_token and settings.wecom_encoding_aes_key)
+        ):
             try:
                 configs["wecom"] = WeComConfig(
                     name="wecom",
-                    token=settings.wecom_token,
-                    encoding_aes_key=settings.wecom_encoding_aes_key,
+                    mode=settings.wecom_mode,
+                    token=settings.wecom_token or "",
+                    encoding_aes_key=settings.wecom_encoding_aes_key or "",
                     aibot_id=settings.wecom_aibot_id,
+                    bot_id=settings.wecom_ai_bot_id or "",
+                    secret=settings.wecom_secret or "",
+                    ws_url=settings.wecom_ws_url,
+                    heartbeat_interval=settings.wecom_heartbeat_interval,
+                    reconnect_max_attempts=settings.wecom_reconnect_max_attempts,
+                    reconnect_base_delay=settings.wecom_reconnect_base_delay,
+                    reconnect_max_delay=settings.wecom_reconnect_max_delay,
+                    ws_stream_interval_ms=settings.wecom_ws_stream_interval_ms,
+                    provider=settings.wecom_provider or None,
+                    alias=settings.wecom_alias or None,
+                    exec_user=settings.wecom_exec_user or None,
                 )
-                logger.info("WeCom AI Bot channel configured")
+                logger.info(f"WeCom AI Bot channel configured ({settings.wecom_mode})")
             except Exception as e:
                 logger.error(f"Failed to configure WeCom: {e}")
+
+        # 企业微信普通机器人配置
+        if settings.wecom_bot_token and settings.wecom_bot_encoding_aes_key:
+            try:
+                configs["wecom_bot"] = WeComBotConfig(
+                    name="wecom_bot",
+                    token=settings.wecom_bot_token,
+                    encoding_aes_key=settings.wecom_bot_encoding_aes_key,
+                    webhook_key=settings.wecom_bot_webhook_key or "",
+                    stream_chunk_size=settings.wecom_bot_stream_chunk_size,
+                    stream_interval_ms=settings.wecom_bot_stream_interval_ms,
+                    provider=settings.wecom_bot_provider or None,
+                    alias=settings.wecom_bot_alias or None,
+                    exec_user=settings.wecom_bot_exec_user or None,
+                )
+                logger.info("WeCom Bot channel configured (webhook)")
+            except Exception as e:
+                logger.error(f"Failed to configure WeCom Bot: {e}")
         
         if not configs:
             logger.info("No channel configured, channel service disabled")
@@ -230,6 +292,27 @@ class ChannelService:
     # Shared helpers — build request & consume executor events
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _get_wecom_bot_followup_instruction() -> str:
+        """Return a prompt prefix describing WeCom Bot interaction limits."""
+        return (
+            "[渠道限制]\n"
+            "当前渠道是企业微信普通机器人。不要调用 `ask_followup_question` / `AskUserQuestion`，"
+            "也不要依赖按钮、卡片或表单回传选择结果。"
+            "如果需要用户确认，请直接用自然语言提问，把选项写成“1. ... / 2. ...”这样的编号列表，"
+            "并在本轮结束后等待用户下一条消息。"
+        )
+
+    @staticmethod
+    def _resolve_cli_timeout(channel: str) -> int:
+        """Resolve per-channel CLI timeout with channel-specific override."""
+        base_timeout = int(settings.cli_timeout or 600)
+        if channel == "wecom_bot":
+            wecom_bot_timeout = int(getattr(settings, "wecom_bot_cli_timeout", 0) or 0)
+            if wecom_bot_timeout > 0:
+                return max(base_timeout, wecom_bot_timeout)
+        return base_timeout
+
     async def _build_request(
         self,
         message: InboundMessage,
@@ -242,7 +325,7 @@ class ChannelService:
         from ..services import CLIExecutor  # noqa: F811
         from ..models import RequestModel
 
-        exec_user = settings.exec_user or "ubuntu"
+        exec_user = self._resolve_exec_user(message.channel)
         session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -252,6 +335,10 @@ class ChannelService:
         _decrypt_fn = None
         if message.channel == "wecom" and self.manager:
             _ch = self.manager.get_channel("wecom")
+            _crypto = getattr(_ch, "_crypto", None) if _ch else None
+            _decrypt_fn = _crypto.decrypt_file if _crypto else None
+        elif message.channel == "wecom_bot" and self.manager:
+            _ch = self.manager.get_channel("wecom_bot")
             _crypto = getattr(_ch, "_crypto", None) if _ch else None
             _decrypt_fn = _crypto.decrypt_file if _crypto else None
         if message.media:
@@ -300,6 +387,13 @@ class ChannelService:
         if not content.strip() and image_paths:
             content = ""
 
+        if message.channel == "wecom_bot" and not content.lstrip().startswith("/"):
+            user_prompt = content.strip() or "（用户未附带文字，请结合图片或附件理解需求。）"
+            content = (
+                f"{self._get_wecom_bot_followup_instruction()}\n\n"
+                f"用户消息：\n{user_prompt}"
+            )
+
         request = RequestModel(
             content=content,
             user=f"{message.channel}_{message.sender_id}",
@@ -310,7 +404,8 @@ class ChannelService:
             content_parts=content_parts if content_parts else None,
         )
 
-        # Apply model / provider overrides (from /switch)
+        # Apply model / provider overrides
+        # Priority: session-level /switch > channel-level config > global defaults
         try:
             storage = get_session_storage()
             model_override = storage.get_model_override(session_id)
@@ -334,9 +429,22 @@ class ChannelService:
                 request.provider = hp_provider
                 request.alias = hp_alias
                 logger.info(
-                    f"[{message.channel}] Provider override: provider={hp_provider}, alias={hp_alias}",
+                    f"[{message.channel}] Provider override (session): provider={hp_provider}, alias={hp_alias}",
                     extra={"session_id": session_id},
                 )
+            else:
+                # No session-level override — apply channel-level config if present
+                ch_cfg = self._get_channel_config(message.channel)
+                if ch_cfg:
+                    if ch_cfg.provider:
+                        request.provider = ch_cfg.provider
+                    if ch_cfg.alias:
+                        request.alias = ch_cfg.alias
+                    if ch_cfg.provider or ch_cfg.alias:
+                        logger.info(
+                            f"[{message.channel}] Provider override (channel): provider={ch_cfg.provider}, alias={ch_cfg.alias}",
+                            extra={"session_id": session_id},
+                        )
         except Exception as e:
             logger.warning(f"[{message.channel}] Failed to read session overrides: {e}")
 
@@ -418,7 +526,9 @@ class ChannelService:
         request,
         *,
         on_text_delta: Optional[OnTextDelta] = None,
-        on_tool_summary: Optional[Callable[[str], Coroutine[Any, Any, None]]] = None,
+        on_tool_start: Optional[Callable[[str, str], Coroutine[Any, Any, None]]] = None,
+        on_tool_display_update: Optional[Callable[[str, str], Coroutine[Any, Any, None]]] = None,
+        on_tool_summary: Optional[Callable[[str, str], Coroutine[Any, Any, None]]] = None,
     ) -> ExecutorResult:
         """Consume raw executor events — **single source of truth** for all channels.
 
@@ -434,18 +544,23 @@ class ChannelService:
 
         Channel-specific behaviour is injected via callbacks:
         - *on_text_delta(text)*: called for each incremental text chunk (wecom writes to StreamBuffer)
-        - *on_tool_summary(summary)*: called when a tool call is finalised (wecom appends to StreamBuffer)
+        - *on_tool_start(tool_id, tool_name)*: called when a tool call starts (for real-time progress)
+        - *on_tool_display_update(tool_id, display)*: called when tool args arrive and a richer
+          display name can be generated (e.g. ``Grep: /path`` instead of ``Grep: 搜索内容``)
+        - *on_tool_summary(tool_id, summary)*: called when a tool call is finalised (wecom appends to StreamBuffer)
         """
         from ..services import CLIExecutor
 
         executor = CLIExecutor(config=settings)
-        exec_user = settings.exec_user or "ubuntu"
-        timeout = settings.cli_timeout or 120
+        exec_user = self._resolve_exec_user(message.channel)
+        timeout = self._resolve_cli_timeout(message.channel)
 
         result = ExecutorResult()
         tool_block_buffer: Dict[int, Dict[str, str]] = {}
         agui_tool_buffer: Dict[str, Dict[str, str]] = {}
         has_streamed_text = False
+        _tool_display_updated: set = set()  # tool_ids that already got a display update
+        _tool_id_to_name: Dict[str, str] = {}  # tool_id -> raw tool_name (for subagent detection)
 
         # AGUI archival state — tracks content_segments and tool_calls for
         # faithful reproduction of the assistant response in the Nexus UI.
@@ -467,7 +582,7 @@ class ChannelService:
             except Exception:
                 pass
 
-        def _handle_tool_start(tool_id: str, tool_name: str) -> None:
+        async def _handle_tool_start(tool_id: str, tool_name: str) -> None:
             """Shared logic when a tool call begins (AG-UI or legacy).
 
             Closes any open text segment, emits TOOL_CALL_START, flushes
@@ -477,6 +592,7 @@ class ChannelService:
             nonlocal _agui_text_started, _segment_seq, _last_text_snapshot
 
             result.tool_call_count += 1
+            _tool_id_to_name[tool_id] = tool_name
 
             # End any open text segment before tool call
             if _agui_text_started:
@@ -484,6 +600,10 @@ class ChannelService:
                 _agui_text_started = False
 
             _emit_agui({"type": "TOOL_CALL_START", "toolCallId": tool_id, "toolCallName": tool_name})
+
+            # Notify channel that a tool call is starting (real-time progress)
+            if on_tool_start:
+                await on_tool_start(tool_id, tool_name)
 
             # Flush preceding text as a content segment
             current_text = "".join(result.collected_text_parts)
@@ -498,6 +618,39 @@ class ChannelService:
             _segment_seq += 1
             _tool_call_ids.append(tool_id)
 
+        async def _try_update_tool_display(tool_id: str, tool_name: str, accumulated_args: str) -> None:
+            """Try to parse accumulated args and generate a richer display name.
+
+            Called each time a TOOL_CALL_ARGS delta arrives.  Fires
+            ``on_tool_display_update`` at most once per tool_id — only when
+            the parsed args yield a display name different from the
+            parameter-less fallback.
+
+            Handles the case where *tool_name* was already formatted by the
+            adapter (e.g. ``"Read: 读取文件"``).  In that scenario we strip the
+            prefix, resolve the raw tool key, and re-derive the display name
+            with the newly-arrived params.
+            """
+            if tool_id in _tool_display_updated:
+                return
+            params = self._parse_tool_params(accumulated_args)
+            if not params:
+                return
+
+            # If the adapter already formatted tool_name (contains ": "),
+            # _get_tool_display_name would short-circuit and return it as-is.
+            # We need to recover the raw tool key so params can take effect.
+            raw_tool_name = tool_name
+            if ": " in tool_name:
+                raw_tool_name = self._resolve_raw_tool_key(tool_name)
+
+            new_display = self._get_tool_display_name(raw_tool_name, params)
+            fallback_display = self._get_tool_display_name(raw_tool_name, {})
+            if new_display and new_display != fallback_display:
+                _tool_display_updated.add(tool_id)
+                if on_tool_display_update:
+                    await on_tool_display_update(tool_id, new_display)
+
         async def _handle_tool_end(
             tool_id: str,
             tool_name: str,
@@ -509,18 +662,18 @@ class ChannelService:
             Parses args JSON, builds display name / summary, creates a
             StoredToolCall, and emits the AGUI TOOL_CALL_END event.
             """
-            params_obj: dict = {}
-            if args_string:
-                try:
-                    params_obj = json.loads(args_string)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            params_obj = self._parse_tool_params(args_string)
 
-            display = self._get_tool_display_name(tool_name, params_obj)
-            summary = f"🔧 `{display}`"
+            # Recover raw tool key if the adapter already formatted tool_name
+            # (e.g. "Glob: 搜索文件" → "search_file"), so params can take effect.
+            raw_name = tool_name
+            if ": " in tool_name:
+                raw_name = self._resolve_raw_tool_key(tool_name)
+            display = self._get_tool_display_name(raw_name, params_obj)
+            summary = self._format_tool_summary(message.channel, display)
             result.tool_summaries.append(summary)
             if on_tool_summary:
-                await on_tool_summary(summary)
+                await on_tool_summary(tool_id, summary)
 
             _tool_calls.append(StoredToolCall(
                 id=tool_id,
@@ -580,6 +733,11 @@ class ChannelService:
                                     tool_id = tool_block_buffer[index].get("id")
                                     if tool_id:
                                         _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": partial})
+                                        await _try_update_tool_display(
+                                            tool_id,
+                                            tool_block_buffer[index].get("name", "unknown"),
+                                            tool_block_buffer[index]["json_buf"],
+                                        )
 
                         # AG-UI tool tracking
                         elif evt_type == "TOOL_CALL_START":
@@ -587,7 +745,7 @@ class ChannelService:
                             tool_id = event.get("toolCallId", "")
                             if tool_id:
                                 agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
-                                _handle_tool_start(tool_id, tool_name)
+                                await _handle_tool_start(tool_id, tool_name)
 
                         elif evt_type == "TOOL_CALL_ARGS":
                             tool_id = event.get("toolCallId", "")
@@ -595,6 +753,11 @@ class ChannelService:
                             if tool_id and delta_str and tool_id in agui_tool_buffer:
                                 agui_tool_buffer[tool_id]["args"] += delta_str
                                 _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": delta_str})
+                                await _try_update_tool_display(
+                                    tool_id,
+                                    agui_tool_buffer[tool_id]["name"],
+                                    agui_tool_buffer[tool_id]["args"],
+                                )
 
                         elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
                             tool_id = event.get("toolCallId", "")
@@ -611,7 +774,7 @@ class ChannelService:
                                 tool_id = content_block.get("id", f"tool-{uuid.uuid4().hex[:8]}")
                                 index = event.get("index", 0)
                                 tool_block_buffer[index] = {"name": tool_name, "json_buf": "", "id": tool_id}
-                                _handle_tool_start(tool_id, tool_name)
+                                await _handle_tool_start(tool_id, tool_name)
 
                         elif evt_type == "content_block_stop":
                             index = event.get("index", 0)
@@ -637,6 +800,58 @@ class ChannelService:
                                             if on_text_delta:
                                                 await on_text_delta(text)
 
+                    # --- user event (tool_result may embed nested subagent tool calls) ---
+                    elif event_type == "user":
+                        user_message = data.get("message", {})
+                        user_content = user_message.get("content", [])
+                        if isinstance(user_content, list):
+                            for item in user_content:
+                                if not isinstance(item, dict) or item.get("type") != "tool_result":
+                                    continue
+
+                                parent_tool_use_id = item.get("tool_use_id", "")
+                                raw_result = self._extract_tool_result_text(item.get("content"))
+                                nested_calls = self._parse_subagent_tool_calls(raw_result)
+                                for nested in nested_calls:
+                                    tool_id = nested["tool_id"]
+                                    tool_name = nested["tool_name"]
+                                    args_obj = nested.get("arguments") or {}
+                                    args_str = json.dumps(args_obj, ensure_ascii=False) if args_obj else ""
+                                    await _handle_tool_start(tool_id, tool_name)
+                                    if args_str:
+                                        _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": args_str})
+                                    await _handle_tool_end(tool_id, tool_name, args_str)
+
+                                # If the tool_result belongs to a "task" (subagent),
+                                # extract the text content (excluding <tool_call> blocks)
+                                # and emit it so channels can display the subagent analysis.
+                                parent_tool_name = _tool_id_to_name.get(parent_tool_use_id, "")
+                                parent_tool_key = parent_tool_name.strip().lower()
+                                # Also handle formatted names like "Task: analyst - ..."
+                                is_task_tool = parent_tool_key == "task" or parent_tool_key.startswith("task:")
+                                if is_task_tool and raw_result:
+                                    # Strip <tool_call>...</tool_call> blocks to get pure text
+                                    subagent_text = re.sub(
+                                        r'<tool_call>.*?</tool_call>', '', raw_result, flags=re.DOTALL
+                                    ).strip()
+                                    if subagent_text:
+                                        # Truncate overly long subagent output
+                                        max_subagent_len = CHANNEL_MAX_LENGTH.get(message.channel, 4000)
+                                        if len(subagent_text) > max_subagent_len:
+                                            subagent_text = subagent_text[:max_subagent_len] + "\n\n... (子任务输出被截断)"
+                                        result.collected_text_parts.append(subagent_text)
+                                        has_streamed_text = True
+                                        if not _agui_text_started:
+                                            _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
+                                            _agui_text_started = True
+                                        _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": subagent_text})
+                                        if on_text_delta:
+                                            await on_text_delta(subagent_text)
+                                        logger.debug(
+                                            f"[{message.channel}] Emitted subagent text content "
+                                            f"({len(subagent_text)} chars) from tool {parent_tool_use_id}"
+                                        )
+
                     # --- result event ---
                     elif event_type == "result":
                         is_error = data.get("is_error", False)
@@ -651,6 +866,7 @@ class ChannelService:
 
         except TimeoutError:
             logger.error(f"[{message.channel}] AI execution timed out after {timeout}s")
+            executor.kill_process()
             result.is_error = True
             result.final_content = ""
         except Exception as e:
@@ -730,7 +946,7 @@ class ChannelService:
 
         # Ensure session meta exists in Redis (so it shows up in Runtime list)
         # Always set status to RUNNING so the frontend can detect new activity
-        exec_user = settings.exec_user or "ubuntu"
+        exec_user = self._resolve_exec_user(message.channel)
         try:
             storage = get_session_storage()
             existing_meta = storage.get_session_meta(session_id)
@@ -777,12 +993,32 @@ class ChannelService:
             chat_id=message.chat_id,
         )
 
-        # 企微通道：使用流式被动回复，不发进度消息
+        # 企微智能机器人通道：Webhook 模式走被动流式，WebSocket 模式走原生长连接流式
         if message.channel == "wecom":
-            stream_id = message.metadata.get("stream_id", "")
-            task = asyncio.create_task(
-                self._process_wecom_stream(message, session_id, stream_id)
-            )
+            if message.metadata.get("ws_mode"):
+                req_id = message.metadata.get("req_id", "")
+                task = asyncio.create_task(
+                    self._process_wecom_ws_stream(message, session_id, req_id)
+                )
+            else:
+                stream_id = message.metadata.get("stream_id", "")
+                task = asyncio.create_task(
+                    self._process_wecom_stream(message, session_id, stream_id)
+                )
+        elif message.channel == "wecom_bot":
+            # 企微普通机器人通道：按 chattype 区分单聊/群聊
+            simulator_id = message.metadata.get("simulator_id", "")
+            if message.chat_type == "group":
+                # 群聊：先发进度提示，再按语义事件分段发送
+                await handler.notify_progress(target, "正在处理，请稍候…")
+                task = asyncio.create_task(
+                    self._process_wecom_bot_event_based(message, session_id, simulator_id)
+                )
+            else:
+                # 单聊：等 AI 完成后一次性发送完整回复
+                task = asyncio.create_task(
+                    self._process_wecom_bot_single(message, session_id, simulator_id)
+                )
         else:
             # 其他通道：发进度占位消息
             progress_result = await handler.notify_progress(
@@ -801,6 +1037,126 @@ class ChannelService:
         def _cleanup(t: asyncio.Task, key: str = task_key):
             self._background_tasks.pop(key, None)
         task.add_done_callback(_cleanup)
+
+    async def _process_wecom_ws_stream(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        req_id: str,
+    ) -> None:
+        """企微智能机器人 WebSocket 模式：直接通过长连接推送原生流式消息。"""
+        channel = self.manager.get_channel("wecom") if self.manager else None
+        if not channel:
+            logger.error("[wecom] Channel not found for websocket stream processing")
+            return
+
+        if not req_id:
+            logger.error("[wecom] Missing req_id for websocket response")
+            return
+
+        request = await self._build_request(message, session_id)
+        self._archive_user_message(message, session_id, request)
+
+        stream_id = f"ws_stream_{uuid.uuid4().hex[:12]}"
+        ws_interval = max(
+            getattr(channel.config, "ws_stream_interval_ms", 500) / 1000.0,
+            0.2,
+        )
+        buffer = {"content": "", "last_sent": 0.0}
+
+        async def _maybe_push(*, force: bool = False, finish: bool = False) -> None:
+            content = buffer["content"]
+            if not content and not finish:
+                return
+            now = time.time()
+            if not force and not finish and buffer["last_sent"] > 0 and (now - buffer["last_sent"]) < ws_interval:
+                return
+            payload = self._truncate_response(content, "wecom") if content else ""
+            ok = await channel.send_ws_stream_update(req_id, stream_id, payload, finish=finish)
+            if ok:
+                buffer["last_sent"] = time.time()
+
+        async def _on_text(text: str) -> None:
+            if not text:
+                return
+            buffer["content"] += text
+            await _maybe_push()
+
+        # Track in-progress tool start placeholders so the summary can replace them
+        _ws_tool_placeholders: Dict[str, str] = {}  # tool_id -> placeholder text
+
+        async def _on_tool_start(tool_id: str, tool_name: str) -> None:
+            display = self._get_tool_display_name(tool_name, {})
+            placeholder = f"⏳ `{display}`"
+            _ws_tool_placeholders[tool_id] = placeholder
+            if buffer["content"]:
+                buffer["content"] += "\n\n"
+            buffer["content"] += placeholder
+            buffer["content"] += "\n\n"
+            await _maybe_push(force=True)
+
+        async def _on_tool_display_update(tool_id: str, new_display: str) -> None:
+            old_placeholder = _ws_tool_placeholders.get(tool_id)
+            if not old_placeholder:
+                return
+            new_placeholder = f"⏳ `{new_display}`"
+            if old_placeholder in buffer["content"]:
+                buffer["content"] = buffer["content"].replace(old_placeholder, new_placeholder, 1)
+                _ws_tool_placeholders[tool_id] = new_placeholder
+                await _maybe_push(force=True)
+
+        async def _on_tool(tool_id: str, summary: str) -> None:
+            if not summary:
+                return
+            # Use tool_id to precisely locate the correct placeholder
+            placeholder = _ws_tool_placeholders.pop(tool_id, None)
+            if placeholder and placeholder in buffer["content"]:
+                buffer["content"] = buffer["content"].replace(placeholder, summary, 1)
+            else:
+                if buffer["content"]:
+                    buffer["content"] += "\n\n"
+                buffer["content"] += summary
+                buffer["content"] += "\n\n"
+            await _maybe_push(force=True)
+
+        try:
+            result = await self._consume_executor_events(
+                message,
+                session_id,
+                request,
+                on_text_delta=_on_text,
+                on_tool_start=_on_tool_start,
+                on_tool_display_update=_on_tool_display_update,
+                on_tool_summary=_on_tool,
+            )
+
+            content = result.final_content
+            if content:
+                content = self._truncate_response(content, "wecom")
+                content = self._prepend_tool_summaries(content, result)
+
+                current = buffer["content"]
+                if not current:
+                    buffer["content"] = content
+                elif content.startswith(current) or current in content:
+                    buffer["content"] = content
+                elif result.tool_summaries:
+                    missing = [s for s in result.tool_summaries if s not in current]
+                    if missing:
+                        if buffer["content"]:
+                            buffer["content"] += "\n\n"
+                        buffer["content"] += "\n".join(missing)
+            elif result.is_error and not result.final_content:
+                if buffer["content"]:
+                    buffer["content"] += "\n\n"
+                buffer["content"] += "⏰ 处理超时，请稍后重试。"
+        except Exception as e:
+            logger.error(f"[wecom] AI processing error (websocket): {e}", exc_info=True)
+            buffer["content"] = f"❌ 处理出错：{str(e)[:200]}"
+        finally:
+            final_content = self._truncate_response(buffer["content"], "wecom") if buffer["content"] else ""
+            if final_content:
+                await channel.send_ws_stream_finish(req_id, stream_id, final_content)
 
     async def _process_wecom_stream(
         self,
@@ -832,7 +1188,7 @@ class ChannelService:
         async def _on_text(text: str) -> None:
             buf.append(text)
 
-        async def _on_tool(summary: str) -> None:
+        async def _on_tool(tool_id: str, summary: str) -> None:
             buf.append(f"\n\n{summary}\n\n")
 
         try:
@@ -845,9 +1201,7 @@ class ChannelService:
             content = result.final_content
             if content:
                 content = self._truncate_response(content, "wecom")
-                if result.tool_call_count > 0 and result.tool_summaries:
-                    tool_section = "\n".join(result.tool_summaries)
-                    content = tool_section + "\n\n---\n\n" + content
+                content = self._prepend_tool_summaries(content, result)
 
                 current = buf.full_content
                 if not current:
@@ -877,6 +1231,267 @@ class ChannelService:
             buf.set_final(f"❌ 处理出错：{str(e)[:200]}")
         finally:
             buf.mark_finished()
+
+    async def _process_wecom_bot_stream(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        simulator_id: str,
+    ) -> None:
+        """企微普通机器人专用：AI 事件实时写入 StreamSimulator，
+        并启动模拟流式发送任务。
+
+        Uses the shared ``_consume_executor_events()`` loop; channel-specific
+        behaviour is injected via callbacks.
+        """
+        channel = self.manager.get_channel("wecom_bot") if self.manager else None
+        if not channel:
+            logger.error("[wecom_bot] Channel not found for stream processing")
+            return
+
+        sim = channel.get_stream_simulator_by_id(simulator_id)
+        if not sim:
+            logger.error(f"[wecom_bot] StreamSimulator not found: {simulator_id}")
+            return
+
+        request = await self._build_request(message, session_id)
+
+        # Persist user message immediately
+        self._archive_user_message(message, session_id, request)
+
+        # Start the stream simulation task (sends incremental content)
+        stream_task = asyncio.create_task(
+            channel.send_stream_content(simulator_id)
+        )
+
+        # Callbacks: write text deltas and tool summaries to StreamSimulator
+        async def _on_text(text: str) -> None:
+            sim.append(text)
+
+        async def _on_tool(tool_id: str, summary: str) -> None:
+            sim.append(f"\n\n{summary}\n\n")
+
+        try:
+            result = await self._consume_executor_events(
+                message, session_id, request,
+                on_text_delta=_on_text,
+                on_tool_summary=_on_tool,
+            )
+
+            content = result.final_content
+            if content:
+                content = self._truncate_response(content, "wecom_bot")
+                content = self._prepend_tool_summaries(content, result)
+
+                current = sim.full_content
+                if not current:
+                    sim.set_final(content)
+                elif content != current:
+                    # 补齐缺失工具摘要
+                    if result.tool_summaries:
+                        missing = [s for s in result.tool_summaries if s not in current]
+                        if missing:
+                            sim.append("\n\n" + "\n".join(missing))
+            elif result.is_error and not result.final_content:
+                sim.append("\n\n⏰ 处理超时，请稍后重试。")
+        except Exception as e:
+            logger.error(f"[wecom_bot] AI processing error: {e}", exc_info=True)
+            sim.set_final(f"❌ 处理出错：{str(e)[:200]}")
+        finally:
+            sim.mark_finished()
+            # Wait for stream simulation to complete sending
+            try:
+                await asyncio.wait_for(stream_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.warning("[wecom_bot] Stream simulation timed out")
+                stream_task.cancel()
+
+    async def _process_wecom_bot_single(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        simulator_id: str,
+    ) -> None:
+        """企微普通机器人单聊专用：等 AI 全部完成后一次性发送完整消息。
+
+        单聊场景不需要流式模拟，等待 AI 处理完毕后直接发送最终结果。
+        仍使用 StreamSimulator 收集内容，但不启动 send_stream_content 任务。
+        """
+        channel = self.manager.get_channel("wecom_bot") if self.manager else None
+        if not channel:
+            logger.error("[wecom_bot] Channel not found for single chat processing")
+            return
+
+        sim = channel.get_stream_simulator_by_id(simulator_id)
+        if not sim:
+            logger.error(f"[wecom_bot] StreamSimulator not found: {simulator_id}")
+            return
+
+        request = await self._build_request(message, session_id)
+
+        # Persist user message immediately
+        self._archive_user_message(message, session_id, request)
+
+        # Callbacks: still accumulate text in StreamSimulator (for final content)
+        async def _on_text(text: str) -> None:
+            sim.append(text)
+
+        async def _on_tool(tool_id: str, summary: str) -> None:
+            sim.append(f"\n\n{summary}\n\n")
+
+        try:
+            result = await self._consume_executor_events(
+                message, session_id, request,
+                on_text_delta=_on_text,
+                on_tool_summary=_on_tool,
+            )
+
+            content = result.final_content
+            if content:
+                content = self._truncate_response(content, "wecom_bot")
+                content = self._prepend_tool_summaries(content, result)
+
+                current = sim.full_content
+                if not current:
+                    sim.set_final(content)
+                elif content != current:
+                    if result.tool_summaries:
+                        missing = [s for s in result.tool_summaries if s not in current]
+                        if missing:
+                            sim.append("\n\n" + "\n".join(missing))
+            elif result.is_error and not result.final_content:
+                sim.set_final("⏰ 处理超时，请稍后重试。")
+        except Exception as e:
+            logger.error(f"[wecom_bot] AI processing error (single): {e}", exc_info=True)
+            sim.set_final(f"❌ 处理出错：{str(e)[:200]}")
+        finally:
+            sim.mark_finished()
+
+            # 单聊：AI 完成后通过 webhook 一次性发送完整消息
+            final_content = sim.full_content
+            if final_content:
+                chat_id = sim.chat_id
+                sender_id = message.sender_id
+                logger.info(
+                    f"[wecom_bot] Single chat: sending final message "
+                    f"({len(final_content)} chars) to {chat_id}, "
+                    f"sender={sender_id}"
+                )
+                # 单聊通过 webhook 发到群里，@发送者以便其知道回复
+                await channel._send_via_webhook(
+                    final_content,
+                    msgtype="text",
+                    mentioned_list=[sender_id] if sender_id else None,
+                    chatid=chat_id,
+                )
+
+            # Cleanup simulator
+            channel._cleanup_simulator(simulator_id, sim.chat_id)
+
+    async def _process_wecom_bot_event_based(
+        self,
+        message: InboundMessage,
+        session_id: str,
+        simulator_id: str,
+    ) -> None:
+        """企微普通机器人群聊专用：按 AGUI 语义事件分段发送。
+
+        不同于 _process_wecom_bot_single（一次性发完整消息）和
+        _process_wecom_bot_stream（每隔 3s 发文本碎片），此方法
+        按语义事件分界发送：
+
+        1. 当 tool_call 开始时 → flush 之前累积的文本段为一条消息
+        2. 当 tool_call 结束时 → 发一条 "🔧 ToolName" 消息
+        3. AI 完成后 → flush 剩余文本段为最终消息
+
+        遵守 webhook 频率限制（20 条/分钟，≥3s 间隔）。
+        """
+        channel = self.manager.get_channel("wecom_bot") if self.manager else None
+        if not channel:
+            logger.error("[wecom_bot] Channel not found for event-based processing")
+            return
+
+        sim = channel.get_stream_simulator_by_id(simulator_id)
+        if not sim:
+            logger.error(f"[wecom_bot] StreamSimulator not found: {simulator_id}")
+            return
+
+        request = await self._build_request(message, session_id)
+        self._archive_user_message(message, session_id, request)
+
+        # -- Event-based sending state --
+        _text_buffer: list[str] = []  # accumulates text deltas between events
+        _last_send_time: float = 0.0
+        _min_interval: float = 3.0  # webhook rate limit
+        _chat_id: str = sim.chat_id  # 目标群的 chatid
+
+        async def _send_event_msg(content: str, msgtype: str = "markdown") -> None:
+            """Send a single message respecting webhook rate limit."""
+            nonlocal _last_send_time
+            if not content.strip():
+                return
+            elapsed = time.time() - _last_send_time
+            if _last_send_time > 0 and elapsed < _min_interval:
+                await asyncio.sleep(_min_interval - elapsed)
+            await channel._send_via_webhook(content, msgtype=msgtype, chatid=_chat_id)
+            _last_send_time = time.time()
+
+        async def _flush_text() -> None:
+            """Flush accumulated text buffer as one webhook message."""
+            text = "".join(_text_buffer).strip()
+            _text_buffer.clear()
+            if text:
+                await _send_event_msg(text)
+
+        # Callbacks
+        async def _on_text(text: str) -> None:
+            _text_buffer.append(text)
+            sim.append(text)
+
+        async def _on_tool_start(tool_id: str, tool_name: str) -> None:
+            # Tool call started → flush preceding text so it arrives before the tool summary
+            await _flush_text()
+
+        async def _on_tool(tool_id: str, summary: str) -> None:
+            # Tool call ended → flush preceding text, then send tool summary
+            await _flush_text()
+            await _send_event_msg(summary)
+            sim.append(f"\n\n{summary}\n\n")
+
+        try:
+            result = await self._consume_executor_events(
+                message, session_id, request,
+                on_text_delta=_on_text,
+                on_tool_start=_on_tool_start,
+                on_tool_summary=_on_tool,
+            )
+
+            # AI finished → always flush remaining text buffer first
+            remaining = "".join(_text_buffer).strip()
+            _text_buffer.clear()
+
+            content = result.final_content
+            current_streamed = sim.full_content.strip()
+
+            if content and not current_streamed:
+                # Nothing was sent yet → send the full final content
+                content = self._truncate_response(content, "wecom_bot")
+                await _send_event_msg(content)
+                sim.set_final(content)
+            elif remaining:
+                # We've been streaming; flush any remaining text buffer
+                await _send_event_msg(remaining)
+            elif result.is_error:
+                await _send_event_msg("⏰ 处理超时，请稍后重试。")
+                sim.set_final("⏰ 处理超时，请稍后重试。")
+        except Exception as e:
+            logger.error(f"[wecom_bot] AI processing error (event-based): {e}", exc_info=True)
+            err_msg = f"❌ 处理出错：{str(e)[:200]}"
+            await _send_event_msg(err_msg)
+            sim.set_final(err_msg)
+        finally:
+            sim.mark_finished()
+            channel._cleanup_simulator(simulator_id, sim.chat_id)
 
     async def _process_and_notify(
         self,
@@ -925,6 +1540,242 @@ class ChannelService:
         return content
 
     @staticmethod
+    def _prepend_tool_summaries(content: str, result) -> str:
+        """Prepend tool summaries to final content when tools were called."""
+        if result.tool_call_count > 0 and result.tool_summaries:
+            tool_section = "\n".join(result.tool_summaries)
+            return tool_section + "\n\n---\n\n" + content
+        return content
+
+    @staticmethod
+    def _extract_tool_result_text(result_content: Any) -> str:
+        """Normalize tool_result payloads into plain text for nested tool parsing."""
+        if isinstance(result_content, str):
+            return result_content
+        if isinstance(result_content, list):
+            text_parts: list[str] = []
+            for item in result_content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text", "")
+                    if isinstance(text, str):
+                        text_parts.append(text)
+                elif isinstance(item, str):
+                    text_parts.append(item)
+                else:
+                    text_parts.append(str(item))
+            return "\n".join(text_parts) if text_parts else ""
+        if result_content is None:
+            return ""
+        return str(result_content)
+
+    @staticmethod
+    def _parse_single_subagent_tool_call(content: str) -> Optional[dict[str, Any]]:
+        """Parse one nested ``<tool_call>`` block emitted inside a tool_result."""
+        if not content:
+            return None
+
+        lines = content.strip().splitlines()
+        if not lines:
+            return None
+
+        tool_name = lines[0].strip()
+        if not tool_name:
+            return None
+
+        arguments: dict[str, Any] = {}
+        remaining = "\n".join(lines[1:]) if len(lines) > 1 else ""
+        arg_pattern = r'<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>'
+
+        for key, value in re.findall(arg_pattern, remaining, flags=re.DOTALL):
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            try:
+                arguments[key] = json.loads(value)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                arguments[key] = value
+
+        return {
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "tool_id": f"subagent_{uuid.uuid4().hex[:12]}",
+        }
+
+    @classmethod
+    def _parse_subagent_tool_calls(cls, text: str) -> list[dict[str, Any]]:
+        """Extract nested tool calls embedded in ``tool_result`` text."""
+        if not text or "<tool_call>" not in text:
+            return []
+
+        calls: list[dict[str, Any]] = []
+        pattern = r'<tool_call>(.*?)</tool_call>'
+        for match in re.findall(pattern, text, flags=re.DOTALL):
+            parsed = cls._parse_single_subagent_tool_call(match.strip())
+            if parsed:
+                calls.append(parsed)
+        return calls
+
+    @staticmethod
+    def _parse_tool_params(raw_params: Any) -> dict:
+        """Parse tool parameters from structured data or raw argument strings.
+
+        Handles several common edge cases from streaming executors:
+        - Complete JSON objects
+        - Truncated JSON missing the leading ``{"`` (Claude partial_json deltas)
+        - Regex fallback for partially formed JSON strings
+        """
+        if isinstance(raw_params, dict):
+            return raw_params
+        if not isinstance(raw_params, str):
+            return {}
+
+        raw_text = raw_params.strip()
+        if not raw_text:
+            return {}
+
+        # 1. Try direct JSON / literal_eval parse
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(raw_text)
+            except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
+        # 2. Try repairing truncated JSON (e.g. missing leading `{"`)
+        #    Claude partial_json deltas may omit the outer `{` / `}`.
+        repaired = raw_text
+        if not repaired.startswith("{"):
+            repaired = "{" + repaired
+        if not repaired.endswith("}"):
+            repaired = repaired + "}"
+        # Also handle first key missing its leading quote:
+        #   e.g. 'command":"value"' → '"command":"value"'
+        repaired = re.sub(r'^{\s*([a-zA-Z_]\w*)"', r'{"\1"', repaired)
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(repaired)
+            except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
+        # 3. Regex fallback: extract known keys from partially formed JSON.
+        #    The pattern allows the key to optionally lack its leading quote
+        #    (covers truncated-delta edge case).
+        extracted: dict[str, Any] = {}
+        for key in (
+            "explanation",
+            "description",
+            "command",
+            "query",
+            "searchTerm",
+            "pattern",
+            "filePath",
+            "file_path",
+            "path",
+            "directory",
+            "target_directory",
+            "subagent_name",
+            "subagent_type",
+            "title",
+            "prompt",
+            "url",
+            "skill",
+        ):
+            # Try strict match first: "key": "value"
+            match = re.search(
+                rf'"{re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+                raw_text,
+                re.S,
+            )
+            if not match:
+                # Fallback: key without leading quote (truncated JSON)
+                match = re.search(
+                    rf'(?:^|[{{,\s]){re.escape(key)}"\s*:\s*"((?:\\.|[^"\\])*)"',
+                    raw_text,
+                    re.S,
+                )
+            if not match:
+                continue
+            value = match.group(1)
+            try:
+                extracted[key] = json.loads(f'"{value}"')
+            except json.JSONDecodeError:
+                extracted[key] = value.replace("\\n", " ").replace("\\t", " ").strip()
+
+        return extracted
+
+    @staticmethod
+    def _format_tool_summary(channel: str, display: str) -> str:
+        """Format a tool summary string for downstream channels."""
+        display = (display or "").strip()
+        if not display:
+            return "🔧 Tool"
+
+        if channel == "wecom_bot":
+            return f"🔧 {display}"
+
+        return f"🔧 `{display}`"
+
+    @staticmethod
+    def _extract_followup_question(params: dict) -> str:
+        """Extract a readable follow-up question from ask_followup_question params."""
+        if not isinstance(params, dict):
+            return ""
+
+        questions = params.get("questions")
+        parsed_questions = questions
+        if isinstance(questions, str):
+            try:
+                parsed_questions = json.loads(questions)
+            except (json.JSONDecodeError, TypeError):
+                parsed_questions = None
+
+        if isinstance(parsed_questions, list):
+            for item in parsed_questions:
+                if isinstance(item, dict):
+                    question = str(item.get("question", "")).strip()
+                    if question:
+                        return question
+
+        title = str(params.get("title", "")).strip()
+        if title:
+            return title
+
+        return ""
+
+    @staticmethod
+    def _resolve_raw_tool_key(formatted_name: str) -> str:
+        """Reverse-map a formatted display name back to a raw tool key.
+
+        When the adapter already formatted the tool name (e.g. ``"Read: 读取文件"``),
+        ``_get_tool_display_name`` would short-circuit.  This helper extracts
+        the prefix (``"Read"``) and maps it back to a canonical raw tool key
+        so that ``_get_tool_display_name`` can re-derive the display with params.
+        """
+        _PREFIX_TO_RAW: dict[str, str] = {
+            "read": "read_file",
+            "write": "write_to_file",
+            "edit": "replace_in_file",
+            "grep": "search_content",
+            "glob": "search_file",
+            "bash": "execute_command",
+            "task": "task",
+            "skill": "use_skill",
+            "search": "web_search",
+            "fetch": "web_fetch",
+            "todo": "todo_write",
+            "codebase": "codebase_search",
+            "list": "list_dir",
+        }
+        if ": " not in formatted_name:
+            return formatted_name
+        prefix = formatted_name.split(": ", 1)[0].strip().lower()
+        return _PREFIX_TO_RAW.get(prefix, formatted_name)
+
+    @staticmethod
     def _get_tool_display_name(tool_name: str, params: dict) -> str:
         """Generate a semantic display title for a tool call, matching AGUI style.
 
@@ -935,7 +1786,12 @@ class ChannelService:
         if not isinstance(params, dict):
             return tool_name
 
-        if tool_name in ("Task", "task"):
+        if ": " in tool_name:
+            return tool_name
+
+        tool_key = (tool_name or "").strip().lower()
+
+        if tool_key == "task":
             subagent = params.get("subagent_type", params.get("subagent_name", ""))
             desc = params.get("description", "")
             if subagent and desc:
@@ -945,32 +1801,45 @@ class ChannelService:
             elif desc:
                 return f"Task: {desc}"
 
-        elif tool_name in ("Skill", "use_skill"):
+        elif tool_key in ("skill", "use_skill"):
             skill = params.get("skill", params.get("command", ""))
             if skill:
                 return f"Skill: {skill}"
 
-        elif tool_name in ("Read", "read_file"):
+        elif tool_key in ("read", "read_file"):
             fp = params.get("file_path", params.get("filePath", ""))
             if fp:
                 return f"Read: {fp}"
+            return "Read: 读取文件"
 
-        elif tool_name in ("Write", "write_to_file"):
+        elif tool_key in ("write", "write_to_file"):
             fp = params.get("file_path", params.get("filePath", ""))
             if fp:
                 return f"Write: {fp}"
+            return "Write: 写入文件"
 
-        elif tool_name in ("Edit", "replace_in_file"):
+        elif tool_key in ("edit", "replace_in_file", "apply_patch"):
             fp = params.get("file_path", params.get("filePath", ""))
             if fp:
                 return f"Edit: {fp}"
+            return "Edit: 编辑文件"
 
-        elif tool_name in ("Grep", "search_content"):
+        elif tool_key in ("grep", "search_content"):
+            pattern = params.get("pattern", "")
             path = params.get("path", params.get("directory", ""))
-            if path:
+            if pattern and path:
+                if len(pattern) > 40:
+                    pattern = pattern[:40] + "…"
+                return f"Grep: `{pattern}` in {path}"
+            elif pattern:
+                if len(pattern) > 60:
+                    pattern = pattern[:60] + "…"
+                return f"Grep: `{pattern}`"
+            elif path:
                 return f"Grep: {path}"
+            return "Grep: 搜索内容"
 
-        elif tool_name in ("Glob", "search_file"):
+        elif tool_key in ("glob", "search_file"):
             path = params.get("path", params.get("target_directory", ""))
             pattern = params.get("pattern", "")
             if path and pattern:
@@ -979,18 +1848,20 @@ class ChannelService:
                 return f"Glob: {path}"
             elif pattern:
                 return f"Glob: {pattern}"
+            return "Glob: 搜索文件"
 
-        elif tool_name in ("Bash", "execute_command"):
-            explanation = params.get("explanation", params.get("description", ""))
-            if explanation:
-                return f"Bash: {explanation}"
+        elif tool_key in ("bash", "execute_command"):
+            description = params.get("description", params.get("explanation", ""))
+            if description:
+                return f"Bash: {description}"
             command = params.get("command", "")
             if command:
                 if len(command) > 60:
                     command = command[:60] + "…"
                 return f"Bash: {command}"
+            return "Bash: 执行命令"
 
-        elif tool_name in ("TodoWrite", "todo_write"):
+        elif tool_key in ("todowrite", "todo_write"):
             todos_str = params.get("todos", "")
             if todos_str:
                 try:
@@ -1026,6 +1897,35 @@ class ChannelService:
                 if len(url) > 60:
                     url = url[:60] + "…"
                 return f"Fetch: {url}"
+
+        elif tool_name in ("AskUserQuestion", "ask_followup_question"):
+            question = ChannelService._extract_followup_question(params)
+            if question:
+                if len(question) > 60:
+                    question = question[:60] + "…"
+                return f"AskUserQuestion: {question}"
+
+        generic_context = [
+            params.get("description"),
+            params.get("explanation"),
+            ChannelService._extract_followup_question(params),
+            params.get("title"),
+            params.get("prompt"),
+            params.get("query"),
+            params.get("searchTerm"),
+            params.get("pattern"),
+            params.get("command"),
+            params.get("file_path", params.get("filePath", "")),
+            params.get("path", params.get("directory", params.get("target_directory", ""))),
+            params.get("url"),
+        ]
+        for candidate in generic_context:
+            if isinstance(candidate, str):
+                candidate = candidate.strip()
+                if candidate:
+                    if len(candidate) > 60:
+                        candidate = candidate[:60] + "…"
+                    return f"{tool_name}: {candidate}"
 
         # mcp__xxx and other tools — keep original name
         return tool_name
@@ -1077,9 +1977,7 @@ class ChannelService:
             return None
 
         content = self._truncate_response(content, message.channel)
-        if result.tool_call_count > 0 and result.tool_summaries:
-            tool_section = "\n".join(result.tool_summaries)
-            content = tool_section + "\n\n---\n\n" + content
+        content = self._prepend_tool_summaries(content, result)
 
         return content
     

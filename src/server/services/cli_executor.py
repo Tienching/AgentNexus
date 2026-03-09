@@ -48,6 +48,21 @@ class CLIExecutor:
         self.config = config or settings
         self.user_dir_manager = UserDirectoryManager(config)
         self._slash_handlers: Dict[str, SlashCommandHandler] = {}
+        self._current_process: Optional[asyncio.subprocess.Process] = None
+
+    def kill_process(self) -> None:
+        """Kill the currently running subprocess if any.
+
+        Called by the outer timeout handler in channel_service to prevent
+        orphan CLI processes when the overall request times out.
+        """
+        proc = self._current_process
+        if proc and proc.returncode is None:
+            try:
+                proc.kill()
+                logger.info(f"Killed orphan CLI process (pid={proc.pid})")
+            except (ProcessLookupError, OSError):
+                pass
 
     def _get_slash_handler(self, exec_user: str) -> SlashCommandHandler:
         """Get or create slash command handler for exec_user"""
@@ -389,6 +404,7 @@ class CLIExecutor:
                 stderr=asyncio.subprocess.PIPE,
                 limit=10 * 1024 * 1024,
             )
+            self._current_process = process
 
             # 处理流式输出
             async for output in self._process_stream(process, request, output_format):

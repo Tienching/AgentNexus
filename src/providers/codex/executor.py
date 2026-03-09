@@ -27,7 +27,7 @@ class CodexExecutorConfig(ExecutorConfig):
     
     def __init__(
         self,
-        timeout: float = 120.0,
+        timeout: float = 600.0,
         user_home_base: str = "/home",
         codex_command: str = "codex",
         mcp_server_mode: str = "auto",
