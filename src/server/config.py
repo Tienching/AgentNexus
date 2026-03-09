@@ -82,9 +82,49 @@ class ServerSettings(BaseSettings):
     signal_phone_number: str | None = None
 
     # 企业微信智能机器人 (WeCom AI Bot) 配置
-    wecom_token: str | None = None  # 回调配置的 Token
-    wecom_encoding_aes_key: str | None = None  # 回调配置的 EncodingAESKey
+    wecom_mode: str = "webhook"  # API 模式：webhook | websocket
+    wecom_token: str | None = None  # 回调配置的 Token（Webhook 模式）
+    wecom_encoding_aes_key: str | None = None  # 回调配置的 EncodingAESKey（Webhook 模式）
     wecom_aibot_id: str | None = None  # 智能机器人 ID（可选）
+    wecom_ai_bot_id: str | None = None  # 智能机器人 BotID（WebSocket 模式）
+    wecom_secret: str | None = None  # 长连接专用 Secret（WebSocket 模式）
+    wecom_ws_url: str = "wss://openws.work.weixin.qq.com"  # WebSocket 连接地址
+    wecom_heartbeat_interval: int = 30  # 心跳间隔（秒）
+    wecom_reconnect_max_attempts: int = 20  # 最大重连次数
+    wecom_reconnect_base_delay: float = 5.0  # 重连基础延迟（秒）
+    wecom_reconnect_max_delay: float = 60.0  # 重连最大延迟（秒）
+    wecom_ws_stream_interval_ms: int = 500  # WS 流式更新间隔（毫秒）
+
+    # 企业微信普通机器人 (WeCom Bot) 配置
+    wecom_bot_token: str | None = None  # 回调配置的 Token
+    wecom_bot_encoding_aes_key: str | None = None  # 回调配置的 EncodingAESKey
+    wecom_bot_webhook_key: str | None = None  # Webhook Key（必填，单聊/群聊发送）
+    wecom_bot_stream_chunk_size: int = 50  # 流式模拟每次发送字符数（群聊生效）
+    wecom_bot_stream_interval_ms: int = 200  # 流式模拟发送间隔 ms（群聊生效）
+    wecom_bot_cli_timeout: int = 1800  # 企微普通机器人 CLI 超时（秒），避免交互/慢任务过早超时
+
+    # Channel-level provider/alias/exec_user overrides
+    # Format: <CHANNEL>_PROVIDER / <CHANNEL>_ALIAS / <CHANNEL>_EXEC_USER
+    # When set, the channel will use the specified provider/alias/exec_user
+    # instead of global defaults. Session-level /switch still takes priority.
+    telegram_provider: str | None = None
+    telegram_alias: str | None = None
+    telegram_exec_user: str | None = None
+    slack_provider: str | None = None
+    slack_alias: str | None = None
+    slack_exec_user: str | None = None
+    discord_provider: str | None = None
+    discord_alias: str | None = None
+    discord_exec_user: str | None = None
+    feishu_provider: str | None = None
+    feishu_alias: str | None = None
+    feishu_exec_user: str | None = None
+    wecom_provider: str | None = None
+    wecom_alias: str | None = None
+    wecom_exec_user: str | None = None
+    wecom_bot_provider: str | None = None
+    wecom_bot_alias: str | None = None
+    wecom_bot_exec_user: str | None = None
 
     model_config = {
         "env_file": ".env",
@@ -98,7 +138,7 @@ class ProviderSettings(BaseSettings):
 
     # CLI Executor 配置（服务于所有 Provider）
     cli_command: str = "codebuddy"
-    cli_timeout: int = 120
+    cli_timeout: int = 600
     agent_cli_command_map: dict = {}
 
     # Gemini CLI 配置

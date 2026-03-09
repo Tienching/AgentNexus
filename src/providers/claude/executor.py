@@ -39,7 +39,7 @@ class CLIExecutorConfig(ExecutorConfig):
     
     def __init__(
         self,
-        timeout: float = 120.0,
+        timeout: float = 600.0,
         user_home_base: str = "/home",
         cli_command: str = "claude",
         agent_cli_command_map: Optional[Dict[str, str]] = None,

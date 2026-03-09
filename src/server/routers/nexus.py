@@ -1283,8 +1283,8 @@ def _parse_task_conversation(conversation_obj) -> List[AGUIMessage]:
 async def get_task_agui_messages(
     task_id: str,
     exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
-    limit: Optional[int] = Query(None, ge=1, le=500, description="Max number of messages"),
-    tail: Optional[int] = Query(None, ge=1, le=500, description="Return only the last N messages"),
+    limit: Optional[int] = Query(None, ge=1, le=5000, description="Max number of messages"),
+    tail: Optional[int] = Query(None, ge=1, le=5000, description="Return only the last N messages"),
 ):
     """Get task conversation log as an AGUI MessagesSnapshot.
 
@@ -1374,7 +1374,7 @@ def _self_heal_running_session(storage, session_id: str, updated_at) -> Optional
 
     Scans the last N events for RUN_STARTED / RUN_FINISHED / RUN_ERROR.
     Only heals if the terminal event appears AFTER the last RUN_STARTED.
-    Falls back to stale-timeout healing (5 min) if no terminal event found.
+    Falls back to stale-timeout healing (cli_timeout + 60s) if no terminal event found.
 
     Returns the new status if healed, or None if no healing was performed.
     """
@@ -1417,8 +1417,9 @@ def _self_heal_running_session(storage, session_id: str, updated_at) -> Optional
             logger.info(f"Self-healed session {session_id} status: running -> {new_status.value}")
             return new_status
 
-    # Stale timeout: 5 minutes with no terminal event
-    stale_threshold_ms = 5 * 60 * 1000
+    # Stale timeout: cli_timeout + 60 seconds with no terminal event
+    stale_threshold_seconds = max(int(getattr(settings, "cli_timeout", 600) or 600) + 60, 60)
+    stale_threshold_ms = stale_threshold_seconds * 1000
     if updated_at_ms > 0 and (now_ms - updated_at_ms) > stale_threshold_ms:
         storage.update_session_status(session_id, SessionStatus.COMPLETED)
         logger.info(f"Self-healed stale session {session_id} status: running -> completed (stale {(now_ms - updated_at_ms) // 1000}s)")
@@ -1541,7 +1542,7 @@ async def stream_task_agui_messages(
     request: Request,
     task_id: str,
     exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
-    tail: Optional[int] = Query(200, ge=1, le=1000, description="Replay only the last N events on first connect"),
+    tail: Optional[int] = Query(200, ge=1, le=5000, description="Replay only the last N events on first connect"),
     poll_interval_ms: int = Query(300, ge=200, le=5000, description="Polling interval in ms"),
 ):
     """以 SSE 方式流式输出任务的 AG-UI 事件（参考 Chat 的 AGUI SSE）。

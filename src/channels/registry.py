@@ -99,6 +99,9 @@ class ChannelRegistry:
             elif type_ == "wecom":
                 from .wecom import WeComChannel
                 return WeComChannel
+            elif type_ == "wecom_bot":
+                from .wecom_bot import WeComBotChannel
+                return WeComBotChannel
         except ImportError as e:
             logger.warning(f"Failed to import {type_} channel: {e}")
         return None
@@ -128,7 +131,7 @@ class ChannelRegistry:
     def list_available(self) -> list:
         """列出所有可用通道类型"""
         available = []
-        for type_ in ["telegram", "slack", "discord", "whatsapp", "signal", "feishu", "wecom"]:
+        for type_ in ["telegram", "slack", "discord", "whatsapp", "signal", "feishu", "wecom", "wecom_bot"]:
             if self._import_builtin(type_):
                 available.append(type_)
         return available

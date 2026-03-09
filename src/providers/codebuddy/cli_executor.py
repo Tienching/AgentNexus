@@ -26,7 +26,7 @@ class CodebuddyExecutorConfig(ExecutorConfig):
 
     def __init__(
         self,
-        timeout: float = 120.0,
+        timeout: float = 600.0,
         user_home_base: str = "/home",
         codebuddy_command: str = "codebuddy",
         **kwargs,
@@ -52,7 +52,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
         # Backward-compat: accept server settings-like objects.
         super().__init__(
             CodebuddyExecutorConfig(
-                timeout=getattr(config, "cli_timeout", 120.0),
+                timeout=getattr(config, "cli_timeout", 600.0),
                 user_home_base=getattr(config, "user_home_base", "/home"),
                 codebuddy_command=getattr(config, "codebuddy_command", "codebuddy"),
             )
