@@ -26,7 +26,7 @@ class GeminiExecutorConfig(ExecutorConfig):
     
     def __init__(
         self,
-        timeout: float = 120.0,
+        timeout: float = 600.0,
         user_home_base: str = "/home",
         gemini_command: str = "gemini",
         **kwargs,
@@ -52,7 +52,7 @@ class GeminiExecutor(BaseExecutor):
         # Backward-compat: accept server settings-like objects.
         super().__init__(
             GeminiExecutorConfig(
-                timeout=getattr(config, "cli_timeout", 120.0),
+                timeout=getattr(config, "cli_timeout", 600.0),
                 user_home_base=getattr(config, "user_home_base", "/home"),
                 gemini_command=getattr(config, "gemini_command", "gemini"),
             )

@@ -912,7 +912,7 @@ class SessionStorage:
         """
         try:
             key = f"session:{session_id}:meta"
-            self._redis.hset(key, "session_cleared", "1")
+            self._redis.hset(key, {"session_cleared": "1"})
             logger.info(f"Set session_cleared flag: {session_id}")
             return True
         except Exception as e:

@@ -248,10 +248,10 @@ class AGUIAdapter(BaseAdapter):
                 return f"Glob: {pattern}"
         
         elif tool_name == "Bash" or tool_name == "execute_command":
-            # Bash: 显示 explanation/description
-            explanation = params.get("explanation", params.get("description", ""))
-            if explanation:
-                return f"Bash: {explanation}"
+            # Bash: 优先显示底层透传的 description
+            description = params.get("description", params.get("explanation", ""))
+            if description:
+                return f"Bash: {description}"
         
         elif tool_name == "TodoWrite" or tool_name == "todo_write":
             # TodoWrite: 显示 Todos: 当前进度/总数 - 当前任务内容
@@ -841,12 +841,7 @@ class AGUIAdapter(BaseAdapter):
         is_error = event.get("is_error", False)
         
         if is_error:
-            # 获取错误信息
             error_msg = event.get("result", "Unknown error")
-            
-            # 记录错误日志
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"CLI returned error: {error_msg}")
             
             results = []

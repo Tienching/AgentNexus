@@ -14,6 +14,7 @@ class ChannelType(str, Enum):
     SIGNAL = "signal"
     FEISHU = "feishu"
     WECOM = "wecom"
+    WECOM_BOT = "wecom_bot"
 
 
 @dataclass
@@ -37,6 +38,13 @@ class ChannelConfig:
     blocked_users: List[str] = field(default_factory=list)
     rate_limit: int = 0
     extra: Dict[str, Any] = field(default_factory=dict)
+
+    # Channel-level AI provider overrides (optional)
+    # When set, these take priority over global defaults but are
+    # overridden by session-level /switch commands.
+    provider: Optional[str] = None   # e.g. "claude", "gemini", "codebuddy"
+    alias: Optional[str] = None      # e.g. "claude-internal"
+    exec_user: Optional[str] = None  # e.g. "ubuntu", "tswitch"
 
     def __post_init__(self):
         """后处理"""
@@ -159,19 +167,83 @@ class FeishuConfig(ChannelConfig):
 class WeComConfig(ChannelConfig):
     """企业微信智能机器人 (WeCom AI Bot) 配置
 
+    支持两种 API 模式（通过 mode 字段选择）：
+
+    Webhook 模式（默认）：
+    - 必填：token + encoding_aes_key
+    - 通过 HTTP 回调接收消息
+    - 支持被动回复（加密 JSON）和 response_url 主动回复
+
+    WebSocket 长连接模式：
+    - 必填：bot_id + secret
+    - 通过 wss://openws.work.weixin.qq.com 长连接收发消息
+    - 支持原生流式消息（stream.id + finish）
+    - 无需加解密，无需公网 IP
+
     参考文档: https://developer.work.weixin.qq.com/document/path/101039
     """
     type: ChannelType = ChannelType.WECOM
-    token: str = ""  # 回调配置的 Token
-    encoding_aes_key: str = ""  # 回调配置的 EncodingAESKey（43 字符）
+    mode: str = "webhook"
+    token: str = ""  # 回调配置的 Token（Webhook 模式）
+    encoding_aes_key: str = ""  # 回调配置的 EncodingAESKey（Webhook 模式）
     aibot_id: Optional[str] = None  # 智能机器人 ID（可选，用于过滤）
+    bot_id: str = ""  # 智能机器人 BotID（WebSocket 模式）
+    secret: str = ""  # 长连接专用 Secret（WebSocket 模式）
+    ws_url: str = "wss://openws.work.weixin.qq.com"  # WebSocket 连接地址
+    heartbeat_interval: int = 30  # 心跳间隔（秒）
+    reconnect_max_attempts: int = 20  # 最大重连次数
+    reconnect_base_delay: float = 5.0  # 重连基础延迟（秒）
+    reconnect_max_delay: float = 60.0  # 重连最大延迟（秒）
+    ws_stream_interval_ms: int = 500  # WS 流式更新间隔（毫秒）
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.mode == "webhook":
+            if not self.token:
+                raise ValueError("WeCom webhook mode requires token")
+            if not self.encoding_aes_key:
+                raise ValueError("WeCom webhook mode requires encoding_aes_key")
+        elif self.mode == "websocket":
+            if not self.bot_id:
+                raise ValueError("WeCom websocket mode requires bot_id")
+            if not self.secret:
+                raise ValueError("WeCom websocket mode requires secret")
+        else:
+            raise ValueError(f"Invalid WeCom mode: {self.mode}, must be 'webhook' or 'websocket'")
+
+
+@dataclass
+class WeComBotConfig(ChannelConfig):
+    """企业微信普通机器人 (WeCom Bot) 配置
+
+    必填：token + encoding_aes_key + webhook_key（从 Webhook 地址中提取 key）
+
+    发送策略：
+    - 单聊 → webhook/send 一次性发送完整回复
+    - 群聊 → webhook/send 多次发送模拟流式（受 20条/分钟 限制）
+
+    参考文档:
+    - 主动消息通告(webhook): https://developer.work.weixin.qq.com/document/path/99110
+    """
+    type: ChannelType = ChannelType.WECOM_BOT
+    token: str = ""  # 回调配置的 Token（接收消息用）
+    encoding_aes_key: str = ""  # 回调配置的 EncodingAESKey（43 字符）
+
+    # Webhook 参数（必填，从 Webhook 地址中提取 key=xxx）
+    webhook_key: str = ""  # Webhook URL 中的 key 参数
+
+    # 流式模拟配置（群聊生效）
+    stream_chunk_size: int = 50  # 每次发送的增量字符数
+    stream_interval_ms: int = 200  # 增量发送间隔（毫秒）
 
     def __post_init__(self):
         super().__post_init__()
         if not self.token:
-            raise ValueError("WeCom token is required")
+            raise ValueError("WeCom Bot token is required")
         if not self.encoding_aes_key:
-            raise ValueError("WeCom encoding_aes_key is required")
+            raise ValueError("WeCom Bot encoding_aes_key is required")
+        if not self.webhook_key:
+            raise ValueError("WeCom Bot webhook_key is required")
 
 
 # 配置类型映射
@@ -183,6 +255,7 @@ CONFIG_MAP = {
     ChannelType.SIGNAL: SignalConfig,
     ChannelType.FEISHU: FeishuConfig,
     ChannelType.WECOM: WeComConfig,
+    ChannelType.WECOM_BOT: WeComBotConfig,
 }
 
 

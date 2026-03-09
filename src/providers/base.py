@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class ExecutorConfig:
     """Configuration for CLI executors."""
     
-    timeout: float = 120.0
+    timeout: float = 600.0
     user_home_base: str = "/home"
     
     # Additional config fields

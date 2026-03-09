@@ -200,7 +200,7 @@ class UserDirectoryManager:
             if process.returncode != 0:
                 error_msg = stderr.decode('utf-8').strip() if stderr else "Unknown error"
                 logger.error(
-                    f"Failed to clear user session directory via su",
+                    f"Failed to clear user session directory command",
                     extra={
                         "exec_user": exec_user,
                         "api_user": api_user,

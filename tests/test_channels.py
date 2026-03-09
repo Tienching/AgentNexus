@@ -172,6 +172,23 @@ class TestChannelConfig:
         config = ChannelConfig(type="slack")
         assert config.type == ChannelType.SLACK
 
+    def test_provider_alias_exec_user_defaults_none(self):
+        config = ChannelConfig(type=ChannelType.TELEGRAM)
+        assert config.provider is None
+        assert config.alias is None
+        assert config.exec_user is None
+
+    def test_provider_alias_exec_user_set(self):
+        config = ChannelConfig(
+            type=ChannelType.WECOM_BOT,
+            provider="claude",
+            alias="claude-internal",
+            exec_user="tswitch",
+        )
+        assert config.provider == "claude"
+        assert config.alias == "claude-internal"
+        assert config.exec_user == "tswitch"
+
 
 # ============== Channel 基类测试 ==============
 
@@ -383,6 +400,17 @@ class TestChannelManager:
 
 # ============== ChannelService 测试 ==============
 
+class _BuildRequestStorage:
+    def get_model_override(self, session_id):
+        return None
+
+    def get_active_model(self, session_id):
+        return None
+
+    def get_handoff_provider(self, session_id):
+        return None
+
+
 class TestChannelService:
     def test_truncate_response_by_channel(self):
         service = ChannelService()
@@ -441,9 +469,21 @@ class TestChannelService:
         name = ChannelService._get_tool_display_name("Bash", {"explanation": "安装依赖包"})
         assert name == "Bash: 安装依赖包"
 
+    def test_tool_display_name_bash_prefers_description(self):
+        name = ChannelService._get_tool_display_name(
+            "Bash",
+            {"description": "收集系统状态与网络接口", "explanation": "显示网络接口"},
+        )
+        assert name == "Bash: 收集系统状态与网络接口"
+
     def test_tool_display_name_grep(self):
         name = ChannelService._get_tool_display_name("Grep", {"directory": "/home/ubuntu/project"})
         assert name == "Grep: /home/ubuntu/project"
+
+    def test_tool_display_name_uppercase_file_tools(self):
+        assert ChannelService._get_tool_display_name("READ", {"filePath": "/tmp/a.py"}) == "Read: /tmp/a.py"
+        assert ChannelService._get_tool_display_name("WRITE", {"file_path": "/tmp/b.py"}) == "Write: /tmp/b.py"
+        assert ChannelService._get_tool_display_name("GREP", {"directory": "/tmp/project"}) == "Grep: /tmp/project"
 
     def test_tool_display_name_glob(self):
         name = ChannelService._get_tool_display_name("Glob", {"pattern": "*.ts", "target_directory": "/src"})
@@ -467,9 +507,220 @@ class TestChannelService:
         name = ChannelService._get_tool_display_name("mcp__custom_tool", {"foo": "bar"})
         assert name == "mcp__custom_tool"
 
+    def test_tool_display_name_unknown_tool_uses_description(self):
+        name = ChannelService._get_tool_display_name("TaskCreate", {"description": "创建调试任务"})
+        assert name == "TaskCreate: 创建调试任务"
+
+    def test_tool_display_name_unknown_tool_uses_query(self):
+        name = ChannelService._get_tool_display_name("ToolSearch", {"query": "显示目录信息"})
+        assert name == "ToolSearch: 显示目录信息"
+
+    def test_tool_display_name_ask_user_question(self):
+        name = ChannelService._get_tool_display_name(
+            "AskUserQuestion",
+            {
+                "title": "工具确认",
+                "questions": '[{"id":"q1","question":"要继续执行哪个步骤？","options":["A","B"]}]',
+            },
+        )
+        assert name == "AskUserQuestion: 要继续执行哪个步骤？"
+
+    def test_tool_display_name_passthrough_when_already_semantic(self):
+        name = ChannelService._get_tool_display_name(
+            "Bash: 显示目录信息",
+            {"command": "pwd"},
+        )
+        assert name == "Bash: 显示目录信息"
+
     def test_tool_display_name_non_dict(self):
         assert ChannelService._get_tool_display_name("Read", "not a dict") == "Read"
         assert ChannelService._get_tool_display_name("Read", None) == "Read"
+
+    def test_parse_tool_params_fallback_extracts_bash_explanation(self):
+        params = ChannelService._parse_tool_params(
+            '{"command":"pwd","explanation":"显示当前工作目录"'
+        )
+        assert params["explanation"] == "显示当前工作目录"
+        assert ChannelService._get_tool_display_name("Bash", params) == "Bash: 显示当前工作目录"
+
+    def test_parse_subagent_tool_calls_extracts_nested_bash(self):
+        calls = ChannelService._parse_subagent_tool_calls(
+            "Task completed.\n"
+            "<tool_call>Bash\n"
+            "<arg_key>explanation</arg_key><arg_value>显示当前工作目录</arg_value>\n"
+            "</tool_call>\n"
+            "Final result"
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["tool_name"] == "Bash"
+        assert calls[0]["arguments"]["explanation"] == "显示当前工作目录"
+        assert calls[0]["tool_id"].startswith("subagent_")
+
+    def test_tool_summary_format_default_channel(self):
+        summary = ChannelService._format_tool_summary("wecom", "Bash: 显示目录信息")
+        assert summary == "🔧 `Bash: 显示目录信息`"
+
+    def test_tool_summary_format_wecom_bot_includes_description(self):
+        summary = ChannelService._format_tool_summary("wecom_bot", "Bash: 显示目录信息")
+        assert summary == "🔧 Bash: 显示目录信息"
+
+    def test_resolve_cli_timeout_uses_wecom_bot_override(self, monkeypatch):
+        monkeypatch.setattr(settings, "cli_timeout", 120)
+        monkeypatch.setattr(settings, "wecom_bot_cli_timeout", 300)
+        assert ChannelService._resolve_cli_timeout("wecom_bot") == 300
+        assert ChannelService._resolve_cli_timeout("wecom") == 120
+
+    # ---------- Channel-level provider/alias/exec_user overrides ----------
+
+    def test_resolve_exec_user_channel_override(self, monkeypatch):
+        """Channel-level exec_user should take priority over global settings."""
+        service = ChannelService()
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot", exec_user="tswitch")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}})()
+        service.manager = fake_mgr
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        assert service._resolve_exec_user("wecom_bot") == "tswitch"
+
+    def test_resolve_exec_user_falls_back_to_global(self, monkeypatch):
+        """When no channel-level exec_user, global settings should be used."""
+        service = ChannelService()
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}})()
+        service.manager = fake_mgr
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        assert service._resolve_exec_user("wecom_bot") == "ubuntu"
+
+    def test_resolve_exec_user_no_manager(self, monkeypatch):
+        """When manager is None, fall back to global settings."""
+        service = ChannelService()
+        service.manager = None
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        assert service._resolve_exec_user("wecom_bot") == "ubuntu"
+
+    @pytest.mark.asyncio
+    async def test_build_request_uses_channel_provider_override(self, monkeypatch, tmp_path):
+        """Channel-level provider/alias should be applied when no session-level override exists."""
+        service = ChannelService()
+        monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot", provider="claude", alias="claude-internal")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}, "get_channel": lambda self, name: None})()
+        service.manager = fake_mgr
+
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _BuildRequestStorage())
+
+        message = InboundMessage(
+            channel="wecom_bot",
+            sender_id="u1",
+            chat_id="c1",
+            content="hello",
+        )
+
+        request = await service._build_request(message, "sess-ch-override")
+
+        assert request.provider == "claude"
+        assert request.alias == "claude-internal"
+
+    @pytest.mark.asyncio
+    async def test_build_request_session_override_beats_channel(self, monkeypatch, tmp_path):
+        """Session-level /switch should take priority over channel-level config."""
+        service = ChannelService()
+        monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot", provider="claude", alias="claude-internal")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}, "get_channel": lambda self, name: None})()
+        service.manager = fake_mgr
+
+        class _SessionOverrideStorage(_BuildRequestStorage):
+            def get_handoff_provider(self, session_id):
+                return ("gemini", "gemini-flash")
+
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _SessionOverrideStorage())
+
+        message = InboundMessage(
+            channel="wecom_bot",
+            sender_id="u1",
+            chat_id="c1",
+            content="hello",
+        )
+
+        request = await service._build_request(message, "sess-session-override")
+
+        # Session-level should win
+        assert request.provider == "gemini"
+        assert request.alias == "gemini-flash"
+
+    @pytest.mark.asyncio
+    async def test_build_request_channel_exec_user_override(self, monkeypatch, tmp_path):
+        """Channel-level exec_user should be used for session_dir creation."""
+        service = ChannelService()
+        monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot", exec_user="tswitch")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}, "get_channel": lambda self, name: None})()
+        service.manager = fake_mgr
+
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _BuildRequestStorage())
+
+        message = InboundMessage(
+            channel="wecom_bot",
+            sender_id="u1",
+            chat_id="c1",
+            content="hello",
+        )
+
+        await service._build_request(message, "sess-exec-override")
+
+        # The session directory should be created under the channel-level exec_user, not global
+        expected_dir = tmp_path / "tswitch" / ".nexus" / "sessions" / "sess-exec-override"
+        assert expected_dir.exists()
+        # The global exec_user directory should NOT have been created
+        global_dir = tmp_path / "ubuntu" / ".nexus" / "sessions" / "sess-exec-override"
+        assert not global_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_build_request_adds_wecom_bot_followup_instruction(self, monkeypatch, tmp_path):
+        service = ChannelService()
+        monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _BuildRequestStorage())
+
+        message = InboundMessage(
+            channel="wecom_bot",
+            sender_id="u1",
+            chat_id="c1",
+            content="你推荐我选哪个工具？",
+        )
+
+        request = await service._build_request(message, "sess-wecom-bot")
+
+        assert "不要调用 `ask_followup_question` / `AskUserQuestion`" in request.content
+        assert "用户消息：\n你推荐我选哪个工具？" in request.content
+
+    @pytest.mark.asyncio
+    async def test_build_request_keeps_wecom_bot_slash_command_raw(self, monkeypatch, tmp_path):
+        service = ChannelService()
+        monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _BuildRequestStorage())
+
+        message = InboundMessage(
+            channel="wecom_bot",
+            sender_id="u1",
+            chat_id="c1",
+            content="/task -- 帮我检查当前目录",
+        )
+
+        request = await service._build_request(message, "sess-wecom-bot-slash")
+
+        assert request.content == "/task -- 帮我检查当前目录"
 
 
 class _FakeWeComStreamBuffer:
@@ -501,6 +752,7 @@ class _FakeWeComChannel:
 class _FakeManager:
     def __init__(self, channel: _FakeWeComChannel):
         self._channel = channel
+        self.configs = {}
 
     def get_channel(self, name: str):
         if name == "wecom":
@@ -653,10 +905,20 @@ class TestWeComStreamFinalization:
 
 # ============== _process_with_ai Tool Call Tests ==============
 
+import asyncio
 import json
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.server.services.notification.models import NotificationTarget
+
+
+def _patch_asyncio_timeout(monkeypatch) -> None:
+    @asynccontextmanager
+    async def _fake_timeout(*args, **kwargs):
+        yield
+
+    monkeypatch.setattr(asyncio, "timeout", _fake_timeout, raising=False)
 
 
 def _make_stream_event(event: dict) -> str:
@@ -674,6 +936,46 @@ async def _fake_executor_factory(events):
 
     mock_executor.execute = fake_execute
     return mock_executor
+
+
+class _FakeWeComBotSimulator:
+    def __init__(self, chat_id: str = "group-1"):
+        self.chat_id = chat_id
+        self.full_content = ""
+        self.finished = False
+
+    def append(self, text: str) -> None:
+        if text:
+            self.full_content += text
+
+    def set_final(self, text: str) -> None:
+        self.full_content = text
+
+    def mark_finished(self) -> None:
+        self.finished = True
+
+
+class _FakeWeComBotChannel:
+    def __init__(self):
+        self.sim = _FakeWeComBotSimulator()
+        self._send_via_webhook = AsyncMock()
+
+    def get_stream_simulator_by_id(self, simulator_id: str):
+        return self.sim
+
+    def _cleanup_simulator(self, simulator_id: str, chat_id: str) -> None:
+        pass
+
+
+class _FakeWeComBotManager:
+    def __init__(self, channel: _FakeWeComBotChannel):
+        self._channel = channel
+        self.configs = {}
+
+    def get_channel(self, name: str):
+        if name == "wecom_bot":
+            return self._channel
+        return None
 
 
 class TestProcessWithAiToolCalls:
@@ -700,6 +1002,81 @@ class TestProcessWithAiToolCalls:
         h = AsyncMock()
         h.notify_progress = AsyncMock()
         return h
+
+    @pytest.mark.asyncio
+    async def test_wecom_bot_event_based_tool_summary_uses_markdown(
+        self, monkeypatch
+    ):
+        service = ChannelService()
+        channel = _FakeWeComBotChannel()
+        service.manager = _FakeWeComBotManager(channel)
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        async def _fake_consume(*args, **kwargs):
+            on_tool_summary = kwargs.get("on_tool_summary")
+            if on_tool_summary:
+                await on_tool_summary("🔧 Bash: 显示当前工作目录")
+            return _FakeExecResult(final_content="")
+
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_consume_executor_events", _fake_consume)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        message = InboundMessage(channel="wecom_bot", sender_id="u1", chat_id="c1", content="hi")
+        await service._process_wecom_bot_event_based(message, "sess1", "sim-1")
+
+        channel._send_via_webhook.assert_awaited_once_with(
+            "🔧 Bash: 显示当前工作目录",
+            msgtype="markdown",
+            chatid="group-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_wecom_bot_event_based_forwards_nested_tool_calls_from_user_event(
+        self, monkeypatch
+    ):
+        service = ChannelService()
+        channel = _FakeWeComBotChannel()
+        service.manager = _FakeWeComBotManager(channel)
+
+        async def _fake_build_request(*args, **kwargs):
+            return object()
+
+        events = [
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "task_123",
+                            "content": "Task completed.\n<tool_call>Bash\n<arg_key>explanation</arg_key><arg_value>显示当前工作目录</arg_value>\n</tool_call>",
+                            "is_error": False,
+                        }
+                    ],
+                },
+            })
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        _patch_asyncio_timeout(monkeypatch)
+        monkeypatch.setattr(service, "_build_request", _fake_build_request)
+        monkeypatch.setattr(service, "_archive_user_message", lambda *args, **kwargs: None)
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            message = InboundMessage(channel="wecom_bot", sender_id="u1", chat_id="c1", content="hi")
+            await service._process_wecom_bot_event_based(message, "sess1", "sim-1")
+
+        channel._send_via_webhook.assert_awaited_once_with(
+            "🔧 Bash: 显示当前工作目录",
+            msgtype="markdown",
+            chatid="group-1",
+        )
 
     # --- AG-UI format ---
 
@@ -746,6 +1123,39 @@ class TestProcessWithAiToolCalls:
             result = await service._process_with_ai(inbound, "sess1", target, handler)
 
         assert "`Edit: /a.py`" in result
+
+    @pytest.mark.asyncio
+    async def test_user_tool_result_nested_tool_calls_appear_in_response(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """Nested <tool_call> blocks inside tool_result should surface as tool summaries."""
+        events = [
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "task_123",
+                            "content": "Task completed.\n<tool_call>Bash\n<arg_key>explanation</arg_key><arg_value>显示当前工作目录</arg_value>\n</tool_call>\nFinal result: success",
+                            "is_error": False,
+                        }
+                    ],
+                },
+            }),
+            json.dumps({"type": "result", "content": "已完成检查"}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        _patch_asyncio_timeout(monkeypatch)
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`Bash: 显示当前工作目录`" in result
+        assert result.endswith("已完成检查")
 
     @pytest.mark.asyncio
     async def test_agui_multiple_tool_calls(
