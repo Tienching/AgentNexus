@@ -391,6 +391,8 @@
                     <button class="modal-tab active" data-tab="single">Single Task</button>
                     <button class="modal-tab" data-tab="bulk">Bulk Create</button>
                     <button class="modal-tab" data-tab="chain">Task Chain</button>
+                    <button class="modal-tab" data-tab="schedule">Schedule</button>
+                    <button class="modal-tab" data-tab="loop">Ralph Loop</button>
                 </div>
 
                 <!-- Single Task Form -->
@@ -475,6 +477,89 @@
                         <p class="form-hint">Tasks will be created as a chain - each task depends on the previous one</p>
                     </div>
                 </div>
+
+                <!-- Schedule Form -->
+                <div id="scheduleTaskForm" class="modal-tab-content" data-tab-content="schedule">
+                    <div class="form-group">
+                        <label class="form-label">Schedule Name <span class="required">*</span></label>
+                        <input id="scheduleName" type="text" class="form-input" placeholder="e.g., Daily code review">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Cron Expression <span class="required">*</span></label>
+                        <input id="scheduleCron" type="text" class="form-input" placeholder="e.g., 0 9 * * * (every day at 9am)">
+                        <p class="form-hint">5-field cron: minute hour day month weekday. Examples: <code>*/30 * * * *</code> (every 30min), <code>0 9 * * 1-5</code> (weekdays 9am)</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Timezone</label>
+                        <input id="scheduleTimezone" type="text" class="form-input" placeholder="UTC" value="UTC">
+                        <p class="form-hint">IANA timezone (e.g., UTC, Asia/Shanghai, US/Pacific)</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Agent</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <select id="scheduleUser" class="form-input form-select" style="min-width:160px;"></select>
+                            <select id="scheduleModel" class="form-input form-select" style="min-width:180px;"></select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">LLM Model</label>
+                        <input id="scheduleLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6 (optional)">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Task Description <span class="required">*</span></label>
+                        <textarea id="scheduleDescription" class="form-input form-textarea" placeholder="What should each triggered task do?" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workspace</label>
+                        <input id="scheduleWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Runs</label>
+                        <input id="scheduleMaxRuns" type="number" class="form-input" placeholder="Unlimited" min="1" style="width:160px;">
+                        <p class="form-hint">Auto-cancel after N runs (leave empty for unlimited)</p>
+                    </div>
+                </div>
+
+                <!-- Ralph Loop Form -->
+                <div id="loopTaskForm" class="modal-tab-content" data-tab-content="loop">
+                    <div class="form-group">
+                        <label class="form-label">Agent</label>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <select id="loopUser" class="form-input form-select" style="min-width:160px;"></select>
+                            <select id="loopModel" class="form-input form-select" style="min-width:180px;"></select>
+                        </div>
+                        <p class="form-hint">Select a user and model for this loop task</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">LLM Model</label>
+                        <input id="loopLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6 (optional)">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Prompt <span class="required">*</span></label>
+                        <textarea id="loopDescription" class="form-input form-textarea" placeholder="This prompt will be re-sent until a keyword is found in the output" rows="4"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workspace</label>
+                        <input id="loopWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max Iterations <span class="required">*</span></label>
+                        <input id="loopMaxIterations" type="number" class="form-input" value="5" min="1" max="100" style="width:160px;">
+                        <p class="form-hint">Maximum number of attempts (1-100)</p>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Stop Keywords <span class="required">*</span></label>
+                        <input id="loopKeywords" type="text" class="form-input" placeholder="e.g., SUCCESS, PASSED, all tests passed">
+                        <p class="form-hint">Comma-separated keywords. Loop stops when ANY keyword is found in the output (case-insensitive)</p>
+                    </div>
+                    <div style="background: var(--bg-secondary); border-radius: 8px; padding: 12px; margin-top: 8px;">
+                        <p style="font-size: 13px; color: var(--text-secondary); margin: 0;">
+                            <strong>How Ralph Loop works:</strong> The prompt is sent to the agent. After execution,
+                            the output is checked for the stop keywords. If a keyword is found, the task completes.
+                            If not, the same prompt is re-sent. This repeats until a keyword matches or max iterations is reached.
+                        </p>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="action-btn" data-close-modal>Cancel</button>
@@ -500,6 +585,53 @@
             <div class="modal-footer">
                 <button class="action-btn" data-close-modal>Cancel</button>
                 <button id="confirmDeleteBtn" class="action-btn" style="background: var(--error); border-color: var(--error); color: white;">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Schedule Modal -->
+    <div id="editScheduleModal" class="modal-backdrop">
+        <div class="modal" style="max-width: 560px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Edit Schedule</h3>
+                <button class="modal-close" data-close-modal>
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <input id="editScheduleId" type="hidden">
+                <div class="form-group">
+                    <label class="form-label">Schedule Name</label>
+                    <input id="editScheduleName" type="text" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Cron Expression</label>
+                    <input id="editScheduleCron" type="text" class="form-input">
+                    <p class="form-hint">5-field cron: minute hour day month weekday</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Timezone</label>
+                    <input id="editScheduleTimezone" type="text" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Task Description</label>
+                    <textarea id="editScheduleDescription" class="form-input form-textarea" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Workspace</label>
+                    <input id="editScheduleWorkspace" type="text" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Max Runs</label>
+                    <input id="editScheduleMaxRuns" type="number" class="form-input" min="1" style="width:160px;">
+                    <p class="form-hint">Leave empty for unlimited</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="action-btn" data-close-modal>Cancel</button>
+                <button id="saveScheduleBtn" class="action-btn primary">Save Changes</button>
             </div>
         </div>
     </div>
