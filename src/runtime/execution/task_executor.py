@@ -19,6 +19,9 @@ from .workspace_queue import WorkspaceQueueManager
 
 logger = logging.getLogger(__name__)
 
+# Ralph Loop: sentinel returned by task_handler to signal re-queue (not an error)
+RALPH_LOOP_RETRY_SIGNAL = "__RALPH_LOOP_RETRY__"
+
 
 class ExecutorState(str, Enum):
     """Executor lifecycle states"""
@@ -247,7 +250,20 @@ class TaskExecutor:
             
             # Update task status
             try:
-                if error_message:
+                if error_message == RALPH_LOOP_RETRY_SIGNAL:
+                    # Ralph Loop: re-queue without treating as error
+                    logger.info(f"Ralph Loop re-queue for task {task.id}")
+                    current_task = self._task_queue.get_task(task.id)
+                    if current_task:
+                        self._task_queue._update_task_status(current_task, TaskStatus.TODO)
+                        await asyncio.sleep(self._config.retry_delay)
+                        self._task_queue._redis.rpush(
+                            self._task_queue._queue_key(task.workspace),
+                            task.id
+                        )
+                    else:
+                        self._task_queue.complete_task(task.id)
+                elif error_message:
                     # Check if should retry
                     current_task = self._task_queue.get_task(task.id)
                     if current_task and current_task.attempt_count < self._config.max_retries:

@@ -127,6 +127,9 @@ class Task(BaseModel):
     # Legacy alias kept for backward-compat Redis data (mapped in from_redis_hash)
     claude_session_id: Optional[str] = None
 
+    # Schedule reference - set when task was created by a schedule
+    schedule_id: Optional[str] = None
+
     # Callback notification configuration for async task completion
     response_url: Optional[str] = None          # Callback URL for task completion notification
     callback_msg_id: Optional[str] = None       # Message ID to pass back in callback
@@ -138,6 +141,13 @@ class Task(BaseModel):
     notification_channel: Optional[str] = None      # channel name
     notification_chat_id: Optional[str] = None      # chat/channel ID
     notification_message_id: Optional[str] = None   # for editing existing progress message
+
+    # Ralph Loop configuration
+    loop_enabled: bool = False                                      # Whether Ralph Loop is active
+    loop_max_iterations: int = 1                                    # Max number of loop iterations
+    loop_iteration: int = 0                                         # Current iteration count
+    loop_keywords: List[str] = Field(default_factory=list)          # Keywords to match in output
+    loop_keyword_found: bool = False                                # Whether keyword was found
 
     model_config = ConfigDict(use_enum_values=True)
     
@@ -176,6 +186,12 @@ class Task(BaseModel):
                 parsed[key] = json.loads(value) if value else []
             elif key == "attempt_count":
                 parsed[key] = int(value)
+            elif key in ("loop_iteration", "loop_max_iterations"):
+                parsed[key] = int(value)
+            elif key in ("loop_enabled", "loop_keyword_found"):
+                parsed[key] = value.lower() in ("true", "1", "yes")
+            elif key == "loop_keywords":
+                parsed[key] = json.loads(value) if value else []
             elif key == "priority":
                 parsed[key] = TaskPriority(value)
             elif key == "status":

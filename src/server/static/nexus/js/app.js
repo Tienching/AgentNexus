@@ -3784,6 +3784,12 @@ class TaskView {
                                 </svg>
                                 <span>Select</span>
                             </button>
+                            <button class="action-btn" data-action="toggle-schedules" title="Show/hide scheduled tasks">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
+                                <span>Schedules</span>
+                            </button>
                             <div class="selection-actions" id="selectionActions-${paneId}" style="display: none;">
                                 <button class="action-btn" data-action="select-all">
                                     <span>Select All</span>
@@ -3804,6 +3810,30 @@ class TaskView {
                                 <option value="">All Projects</option>
                             </select>
                             <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" data-pane="${paneId}" id="taskSearch-${paneId}">
+                        </div>
+                    </div>
+                    <!-- Schedules Panel (collapsible) -->
+                    <div class="schedule-panel" id="schedulePanel-${paneId}" style="display: none;">
+                        <div class="schedule-panel-header">
+                            <span class="schedule-panel-title">Scheduled Tasks</span>
+                            <div class="schedule-panel-actions">
+                                <select class="form-input form-select schedule-status-filter" id="scheduleStatusFilter-${paneId}" style="width:120px; height:30px; font-size:12px;">
+                                    <option value="">All Status</option>
+                                    <option value="active">Active</option>
+                                    <option value="paused">Paused</option>
+                                    <option value="cancelled">Cancelled</option>
+                                </select>
+                                <button class="action-btn schedule-refresh-btn" data-action="refresh-schedules" title="Refresh schedules">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="schedule-list" id="scheduleList-${paneId}">
+                            <div class="empty-state" style="padding: 16px;">
+                                <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
+                            </div>
                         </div>
                     </div>
                     <div class="kanban-board" id="kanbanBoard-${paneId}">
@@ -3978,6 +4008,30 @@ class TaskView {
         if (projectFilter) {
             projectFilter.addEventListener('change', () => {
                 this.loadTasks(paneId);
+            });
+        }
+
+        // Toggle schedules panel
+        const toggleSchedulesBtn = container.querySelector(`[data-action="toggle-schedules"]`);
+        if (toggleSchedulesBtn) {
+            toggleSchedulesBtn.addEventListener('click', () => {
+                this.toggleSchedulePanel(paneId);
+            });
+        }
+
+        // Refresh schedules
+        const refreshSchedulesBtn = container.querySelector(`[data-action="refresh-schedules"]`);
+        if (refreshSchedulesBtn) {
+            refreshSchedulesBtn.addEventListener('click', () => {
+                this.loadSchedules(paneId);
+            });
+        }
+
+        // Schedule status filter
+        const scheduleStatusFilter = document.getElementById(`scheduleStatusFilter-${paneId}`);
+        if (scheduleStatusFilter) {
+            scheduleStatusFilter.addEventListener('change', () => {
+                this.loadSchedules(paneId);
             });
         }
     }
@@ -4234,6 +4288,7 @@ class TaskView {
                     <div class="task-card-header">
                         <span class="task-card-id">#${task.id.slice(0, 8)}</span>
                         ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
+                        ${task.loop_enabled ? `<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: ${task.loop_keyword_found ? 'var(--success, #22c55e)' : 'var(--accent, #6366f1)'}; color: #fff; font-weight: 600;">Loop ${task.loop_iteration || 0}/${task.loop_max_iterations || 1}${task.loop_keyword_found ? ' \u2713' : ''}</span>` : ''}
                     </div>
                     <p class="task-card-title">${this.escapeHtml(task.description || 'No description')}</p>
                     <div class="task-card-meta">
@@ -4351,6 +4406,20 @@ class TaskView {
                     </div>
                     <p style="margin: 6px 0 0; font-size: 13px; color: var(--text-secondary);">${this.escapeHtml(task.description || 'No description')}</p>
                     ${task.error_message ? `<p style="margin: 4px 0 0; font-size: 12px; color: var(--error);">${this.escapeHtml(task.error_message)}</p>` : ''}
+                    ${task.loop_enabled ? `
+                        <div style="margin-top: 8px; padding: 8px 10px; background: var(--bg-secondary); border-radius: 6px; font-size: 12px;">
+                            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+                                <span style="font-weight: 600; color: var(--text-primary);">Ralph Loop</span>
+                                <span style="padding: 1px 6px; border-radius: 4px; background: ${task.loop_keyword_found ? 'var(--success, #22c55e)' : 'var(--accent, #6366f1)'}; color: #fff; font-weight: 600; font-size: 10px;">
+                                    ${task.loop_iteration || 0}/${task.loop_max_iterations || 1}${task.loop_keyword_found ? ' \u2713 Found' : ''}
+                                </span>
+                            </div>
+                            <div style="color: var(--text-secondary);">
+                                <span>Keywords: </span>
+                                ${(task.loop_keywords || []).map(kw => `<code style="background: var(--bg-tertiary, #374151); padding: 1px 4px; border-radius: 3px; font-size: 11px;">${this.escapeHtml(kw)}</code>`).join(' ')}
+                            </div>
+                        </div>
+                    ` : ''}
                 </div>
 
                 ${hasConversation ? `
@@ -4850,6 +4919,209 @@ class TaskView {
                 this.app.showToast('Failed to delete tasks', 'error');
             }
         });
+    }
+
+    // ==================== Schedule Methods ====================
+
+    toggleSchedulePanel(paneId) {
+        const panel = document.getElementById(`schedulePanel-${paneId}`);
+        if (!panel) return;
+        const isHidden = panel.style.display === 'none';
+        panel.style.display = isHidden ? 'block' : 'none';
+        if (isHidden) {
+            this.loadSchedules(paneId);
+        }
+    }
+
+    async loadSchedules(paneId) {
+        const listEl = document.getElementById(`scheduleList-${paneId}`);
+        if (!listEl) return;
+
+        const statusFilter = document.getElementById(`scheduleStatusFilter-${paneId}`)?.value || '';
+
+        try {
+            const data = await NexusAPI.getSchedules({ status: statusFilter || undefined, pageSize: 100 });
+            const schedules = data.schedules || [];
+
+            if (schedules.length === 0) {
+                listEl.innerHTML = `<div class="empty-state" style="padding: 16px;"><p style="color: var(--text-muted); font-size: 13px;">No schedules found</p></div>`;
+                return;
+            }
+
+            listEl.innerHTML = schedules.map(s => this._renderScheduleCard(s)).join('');
+
+            // Bind schedule card events
+            listEl.querySelectorAll('.schedule-card').forEach(card => {
+                const scheduleId = card.dataset.scheduleId;
+
+                card.querySelector('[data-action="trigger-schedule"]')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.triggerSchedule(scheduleId, paneId);
+                });
+                card.querySelector('[data-action="pause-schedule"]')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.pauseSchedule(scheduleId, paneId);
+                });
+                card.querySelector('[data-action="resume-schedule"]')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.resumeSchedule(scheduleId, paneId);
+                });
+                card.querySelector('[data-action="cancel-schedule"]')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.cancelSchedule(scheduleId, paneId);
+                });
+                card.querySelector('[data-action="edit-schedule"]')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.showEditScheduleModal(scheduleId);
+                });
+                card.querySelector('[data-action="delete-schedule"]')?.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this.deleteSchedule(scheduleId, paneId);
+                });
+            });
+        } catch (error) {
+            console.error('Failed to load schedules:', error);
+            listEl.innerHTML = `<div class="empty-state" style="padding: 16px;"><p style="color: var(--error); font-size: 13px;">Failed to load schedules</p></div>`;
+        }
+    }
+
+    _renderScheduleCard(schedule) {
+        const statusColors = {
+            active: 'var(--status-doing)',
+            paused: 'var(--status-todo)',
+            cancelled: 'var(--status-cancelled)',
+        };
+        const statusColor = statusColors[schedule.status] || 'var(--text-muted)';
+        const isActive = schedule.status === 'active';
+        const isPaused = schedule.status === 'paused';
+        const isCancelled = schedule.status === 'cancelled';
+
+        const nextRun = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : '-';
+        const lastRun = schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString() : 'Never';
+        const maxRunsText = schedule.max_runs ? `${schedule.run_count}/${schedule.max_runs}` : `${schedule.run_count}`;
+
+        return `
+            <div class="schedule-card" data-schedule-id="${schedule.id}">
+                <div class="schedule-card-header">
+                    <div class="schedule-card-info">
+                        <span class="schedule-status-dot" style="background: ${statusColor};"></span>
+                        <span class="schedule-card-name">${this._escapeHtml(schedule.name)}</span>
+                        <code class="schedule-cron-badge">${this._escapeHtml(schedule.cron_expression)}</code>
+                    </div>
+                    <div class="schedule-card-actions">
+                        ${isActive ? `
+                            <button class="schedule-action-btn" data-action="trigger-schedule" title="Trigger now">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </button>
+                            <button class="schedule-action-btn" data-action="pause-schedule" title="Pause">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </button>
+                        ` : ''}
+                        ${isPaused ? `
+                            <button class="schedule-action-btn" data-action="resume-schedule" title="Resume">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </button>
+                        ` : ''}
+                        ${!isCancelled ? `
+                            <button class="schedule-action-btn" data-action="cancel-schedule" title="Cancel">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            </button>
+                        ` : ''}
+                        <button class="schedule-action-btn" data-action="edit-schedule" title="Edit">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                        </button>
+                        <button class="schedule-action-btn danger" data-action="delete-schedule" title="Delete">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="schedule-card-meta">
+                    <span title="Provider">${this._escapeHtml(schedule.alias || schedule.provider || '-')}</span>
+                    <span title="Runs">${maxRunsText} runs</span>
+                    <span title="Next run">Next: ${nextRun}</span>
+                    <span title="Last run">Last: ${lastRun}</span>
+                </div>
+                <div class="schedule-card-desc">${this._escapeHtml(schedule.description || '').substring(0, 120)}${(schedule.description || '').length > 120 ? '...' : ''}</div>
+            </div>
+        `;
+    }
+
+    _escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    async triggerSchedule(scheduleId, paneId) {
+        try {
+            await NexusAPI.triggerSchedule(scheduleId);
+            this.app.showToast('Schedule triggered successfully', 'success');
+            this.loadSchedules(paneId);
+        } catch (error) {
+            this.app.showToast(error.message || 'Failed to trigger schedule', 'error');
+        }
+    }
+
+    async pauseSchedule(scheduleId, paneId) {
+        try {
+            await NexusAPI.pauseSchedule(scheduleId);
+            this.app.showToast('Schedule paused', 'success');
+            this.loadSchedules(paneId);
+        } catch (error) {
+            this.app.showToast(error.message || 'Failed to pause schedule', 'error');
+        }
+    }
+
+    async resumeSchedule(scheduleId, paneId) {
+        try {
+            await NexusAPI.resumeSchedule(scheduleId);
+            this.app.showToast('Schedule resumed', 'success');
+            this.loadSchedules(paneId);
+        } catch (error) {
+            this.app.showToast(error.message || 'Failed to resume schedule', 'error');
+        }
+    }
+
+    async cancelSchedule(scheduleId, paneId) {
+        if (!confirm('Cancel this schedule permanently? Cancelled schedules cannot be resumed.')) return;
+        try {
+            await NexusAPI.cancelSchedule(scheduleId);
+            this.app.showToast('Schedule cancelled', 'success');
+            this.loadSchedules(paneId);
+        } catch (error) {
+            this.app.showToast(error.message || 'Failed to cancel schedule', 'error');
+        }
+    }
+
+    async deleteSchedule(scheduleId, paneId) {
+        if (!confirm('Delete this schedule? This action cannot be undone.')) return;
+        try {
+            await NexusAPI.deleteSchedule(scheduleId);
+            this.app.showToast('Schedule deleted', 'success');
+            this.loadSchedules(paneId);
+        } catch (error) {
+            this.app.showToast(error.message || 'Failed to delete schedule', 'error');
+        }
+    }
+
+    async showEditScheduleModal(scheduleId) {
+        try {
+            const schedule = await NexusAPI.getSchedule(scheduleId);
+            const modal = document.getElementById('editScheduleModal');
+            if (!modal) return;
+
+            document.getElementById('editScheduleId').value = schedule.id;
+            document.getElementById('editScheduleName').value = schedule.name || '';
+            document.getElementById('editScheduleCron').value = schedule.cron_expression || '';
+            document.getElementById('editScheduleTimezone').value = schedule.timezone || 'UTC';
+            document.getElementById('editScheduleDescription').value = schedule.description || '';
+            document.getElementById('editScheduleWorkspace').value = schedule.workspace || '';
+            document.getElementById('editScheduleMaxRuns').value = schedule.max_runs || '';
+
+            modal.classList.add('open');
+        } catch (error) {
+            this.app.showToast(error.message || 'Failed to load schedule', 'error');
+        }
     }
 }
 
@@ -6093,6 +6365,13 @@ class NexusApp {
                 tab.closest('.modal-body').querySelectorAll('.modal-tab-content').forEach(content => {
                     content.classList.toggle('active', content.dataset.tabContent === tabId);
                 });
+
+                // Update submit button text based on active tab
+                const submitBtn = document.getElementById('submitTaskBtn');
+                if (submitBtn) {
+                    const btnTextMap = { schedule: 'Create Schedule', loop: 'Create Loop Task' };
+                    submitBtn.textContent = btnTextMap[tabId] || 'Create Task';
+                }
             });
         });
 
@@ -6124,6 +6403,50 @@ class NexusApp {
                     this.renameTabCallback = null;
                 }
                 document.getElementById('renameTabModal')?.classList.remove('open');
+            });
+        }
+
+        // Save schedule (edit modal) button
+        const saveScheduleBtn = document.getElementById('saveScheduleBtn');
+        if (saveScheduleBtn) {
+            saveScheduleBtn.addEventListener('click', async () => {
+                const scheduleId = document.getElementById('editScheduleId')?.value;
+                if (!scheduleId) return;
+
+                const name = document.getElementById('editScheduleName')?.value.trim();
+                const cronExpression = document.getElementById('editScheduleCron')?.value.trim();
+                const timezone = document.getElementById('editScheduleTimezone')?.value.trim();
+                const description = document.getElementById('editScheduleDescription')?.value.trim();
+                const workspace = document.getElementById('editScheduleWorkspace')?.value.trim();
+                const maxRunsStr = document.getElementById('editScheduleMaxRuns')?.value.trim();
+
+                if (!name) { this.showToast('Schedule name is required', 'error'); return; }
+                if (!cronExpression) { this.showToast('Cron expression is required', 'error'); return; }
+                if (!description) { this.showToast('Task description is required', 'error'); return; }
+
+                const payload = {};
+                if (name) payload.name = name;
+                if (cronExpression) payload.cron_expression = cronExpression;
+                if (timezone) payload.timezone = timezone;
+                if (description) payload.description = description;
+                payload.workspace = workspace || null;
+                if (maxRunsStr) {
+                    const maxRuns = parseInt(maxRunsStr, 10);
+                    if (!isNaN(maxRuns) && maxRuns > 0) payload.max_runs = maxRuns;
+                }
+
+                try {
+                    await NexusAPI.updateSchedule(scheduleId, payload);
+                    this.showToast('Schedule updated', 'success');
+                    document.getElementById('editScheduleModal')?.classList.remove('open');
+                    // Refresh schedule panel if visible
+                    const panel = document.getElementById('schedulePanel-global');
+                    if (panel && panel.style.display !== 'none') {
+                        this.taskView.loadSchedules('global');
+                    }
+                } catch (error) {
+                    this.showToast(error.message || 'Failed to update schedule', 'error');
+                }
             });
         }
     }
@@ -6222,6 +6545,7 @@ class NexusApp {
         updateSelectors('taskUser', 'taskModel');
         updateSelectors('bulkUser', 'bulkModel');
         updateSelectors('chainUser', 'chainModel');
+        updateSelectors('loopUser', 'loopModel');
     }
 
     showCreateTaskModal(mode = 'single') {
@@ -6255,6 +6579,32 @@ class NexusApp {
         if (bulkWorkspace) bulkWorkspace.value = '';
         const chainWorkspace = document.getElementById('chainWorkspace');
         if (chainWorkspace) chainWorkspace.value = '';
+        // Reset schedule fields
+        const scheduleName = document.getElementById('scheduleName');
+        if (scheduleName) scheduleName.value = '';
+        const scheduleCron = document.getElementById('scheduleCron');
+        if (scheduleCron) scheduleCron.value = '';
+        const scheduleTimezone = document.getElementById('scheduleTimezone');
+        if (scheduleTimezone) scheduleTimezone.value = 'UTC';
+        const scheduleLlmModel = document.getElementById('scheduleLlmModel');
+        if (scheduleLlmModel) scheduleLlmModel.value = '';
+        const scheduleDescription = document.getElementById('scheduleDescription');
+        if (scheduleDescription) scheduleDescription.value = '';
+        const scheduleWorkspace = document.getElementById('scheduleWorkspace');
+        if (scheduleWorkspace) scheduleWorkspace.value = '';
+        const scheduleMaxRuns = document.getElementById('scheduleMaxRuns');
+        if (scheduleMaxRuns) scheduleMaxRuns.value = '';
+        // Reset loop fields
+        const loopDescription = document.getElementById('loopDescription');
+        if (loopDescription) loopDescription.value = '';
+        const loopWorkspace = document.getElementById('loopWorkspace');
+        if (loopWorkspace) loopWorkspace.value = '';
+        const loopLlmModel = document.getElementById('loopLlmModel');
+        if (loopLlmModel) loopLlmModel.value = '';
+        const loopMaxIterations = document.getElementById('loopMaxIterations');
+        if (loopMaxIterations) loopMaxIterations.value = '5';
+        const loopKeywords = document.getElementById('loopKeywords');
+        if (loopKeywords) loopKeywords.value = '';
 
         // Set active tab
         this.activeModalTab = mode;
@@ -6330,6 +6680,8 @@ class NexusApp {
         setupAgentSelectors('taskUser', 'taskModel');
         setupAgentSelectors('bulkUser', 'bulkModel');
         setupAgentSelectors('chainUser', 'chainModel');
+        setupAgentSelectors('scheduleUser', 'scheduleModel');
+        setupAgentSelectors('loopUser', 'loopModel');
 
         modal.classList.add('open');
     }
@@ -6340,6 +6692,8 @@ class NexusApp {
             single: { userId: 'taskUser', modelId: 'taskModel' },
             bulk: { userId: 'bulkUser', modelId: 'bulkModel' },
             chain: { userId: 'chainUser', modelId: 'chainModel' },
+            schedule: { userId: 'scheduleUser', modelId: 'scheduleModel' },
+            loop: { userId: 'loopUser', modelId: 'loopModel' },
         };
         const ids = mapping[mode] || mapping.single;
         const execUser = document.getElementById(ids.userId)?.value || globalUserFilter?.value || NexusAPI.getDefaultExecUser();
@@ -6371,6 +6725,10 @@ class NexusApp {
                 await this.submitBulkTasks(execUser, providerSelection);
             } else if (this.activeModalTab === 'chain') {
                 await this.submitTaskChain(execUser, providerSelection);
+            } else if (this.activeModalTab === 'schedule') {
+                await this.submitSchedule(execUser, providerSelection);
+            } else if (this.activeModalTab === 'loop') {
+                await this.submitLoopTask(execUser, providerSelection);
             }
 
             document.getElementById('createTaskModal')?.classList.remove('open');
@@ -6474,12 +6832,87 @@ class NexusApp {
         }));
 
         const result = await NexusAPI.bulkCreateTasks(tasks, { execUser });
-        
+
         if (result.errors && result.errors.length > 0) {
             this.showToast(`Created ${result.created.length} tasks in chain, ${result.errors.length} failed`, 'warning');
         } else {
             this.showToast(`Created task chain with ${result.created.length} tasks`, 'success');
         }
+    }
+
+    async submitSchedule(execUser, providerSelection) {
+        const name = document.getElementById('scheduleName')?.value.trim();
+        const cronExpression = document.getElementById('scheduleCron')?.value.trim();
+        const timezone = document.getElementById('scheduleTimezone')?.value.trim() || 'UTC';
+        const description = document.getElementById('scheduleDescription')?.value.trim();
+        const workspace = document.getElementById('scheduleWorkspace')?.value.trim();
+        const llmModel = document.getElementById('scheduleLlmModel')?.value.trim();
+        const maxRunsStr = document.getElementById('scheduleMaxRuns')?.value.trim();
+        const { provider: selectedProvider, alias: aliasValue } = this.resolveProviderSelection(providerSelection);
+
+        if (!name) throw new Error('Please enter a schedule name');
+        if (!cronExpression) throw new Error('Please enter a cron expression');
+        if (!description) throw new Error('Please enter a task description');
+
+        const payload = {
+            name,
+            cron_expression: cronExpression,
+            timezone,
+            description,
+            provider: selectedProvider,
+            alias: aliasValue,
+            exec_user: execUser,
+        };
+
+        if (workspace) payload.workspace = workspace;
+        if (llmModel) payload.model = llmModel;
+        if (maxRunsStr) {
+            const maxRuns = parseInt(maxRunsStr, 10);
+            if (!isNaN(maxRuns) && maxRuns > 0) payload.max_runs = maxRuns;
+        }
+
+        await NexusAPI.createSchedule(payload);
+        this.showToast(`Schedule "${name}" created`, 'success');
+
+        // Refresh schedule panel if visible
+        const panel = document.getElementById('schedulePanel-global');
+        if (panel && panel.style.display !== 'none') {
+            this.taskView.loadSchedules('global');
+        }
+    }
+
+    async submitLoopTask(execUser, providerSelection) {
+        const description = document.getElementById('loopDescription')?.value.trim();
+        const workspace = document.getElementById('loopWorkspace')?.value.trim();
+        const llmModel = document.getElementById('loopLlmModel')?.value.trim();
+        const maxIterationsStr = document.getElementById('loopMaxIterations')?.value.trim();
+        const keywordsStr = document.getElementById('loopKeywords')?.value.trim();
+        const { provider: selectedProvider, alias: aliasValue } = this.resolveProviderSelection(providerSelection);
+
+        if (!description) throw new Error('Please enter a prompt/description');
+        if (!keywordsStr) throw new Error('Please enter at least one stop keyword');
+
+        const maxIterations = parseInt(maxIterationsStr, 10);
+        if (isNaN(maxIterations) || maxIterations < 1 || maxIterations > 100) {
+            throw new Error('Max iterations must be between 1 and 100');
+        }
+
+        const keywords = keywordsStr.split(',').map(k => k.trim()).filter(Boolean);
+        if (keywords.length === 0) throw new Error('Please enter at least one valid stop keyword');
+
+        const payload = {
+            description,
+            provider: selectedProvider,
+            alias: aliasValue,
+            model: llmModel || this.getProviderDefaultModel(aliasValue) || this.getProviderDefaultModel(selectedProvider) || undefined,
+            workspace: workspace || undefined,
+            loop_enabled: true,
+            loop_max_iterations: maxIterations,
+            loop_keywords: keywords,
+        };
+
+        await NexusAPI.createTask(payload, { execUser });
+        this.showToast(`Loop task created (max ${maxIterations} iterations)`, 'success');
     }
 
     showDeleteModal(type, id, callback) {
