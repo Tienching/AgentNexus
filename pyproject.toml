@@ -16,6 +16,7 @@ dependencies = [
     "redis>=5.0.0",
     "sse-starlette>=2.0.0",
     "cryptography>=46.0.5",
+    "croniter>=2.0.0",
 ]
 
 [project.scripts]

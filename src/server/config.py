@@ -50,6 +50,10 @@ class ServerSettings(BaseSettings):
     executor_max_retries: int = 3
     executor_retry_delay: float = 5.0
     executor_task_timeout: float = 3600.0
+
+    # Scheduler configuration
+    scheduler_enabled: bool = True
+    scheduler_poll_interval: float = 15.0  # seconds between schedule checks
     
     # Channel 服务配置
     channels_enabled: bool = True

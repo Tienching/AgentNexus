@@ -18,6 +18,7 @@ from .routers import chat_router, health_router, channels_router
 from .routers.nexus import router as nexus_router
 from .routers.nexus_auth import router as nexus_auth_router
 from .routers.nexus_history import router as nexus_history_router
+from .routers.nexus_schedules import router as nexus_schedules_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -37,6 +38,9 @@ metrics = {
 
 # 全局任务队列
 _task_queue: Optional[TaskQueue] = None
+
+# Ralph Loop: sentinel returned by task_handler to signal re-queue (not an error)
+RALPH_LOOP_RETRY_SIGNAL = "__RALPH_LOOP_RETRY__"
 
 
 async def task_handler(task: Task) -> Optional[str]:
@@ -266,6 +270,43 @@ async def task_handler(task: Task) -> Optional[str]:
         if end_event:
             await _archive_converted_sse(end_event)
 
+        # --- Ralph Loop post-execution keyword check ---
+        if getattr(task, 'loop_enabled', False) and task.loop_iteration < task.loop_max_iterations:
+            task.loop_iteration = (task.loop_iteration or 0) + 1
+            keyword_found = False
+            loop_keywords = getattr(task, 'loop_keywords', []) or []
+
+            if loop_keywords:
+                try:
+                    messages = storage.get_session_messages(session_id)
+                    assistant_msgs = [m for m in messages if m.role == "assistant"]
+                    if assistant_msgs:
+                        last_content = (assistant_msgs[-1].content or "").lower()
+                        for kw in loop_keywords:
+                            if kw.lower() in last_content:
+                                keyword_found = True
+                                break
+                except Exception as e:
+                    logger.warning(f"Ralph Loop keyword check failed for task {task.id}: {e}")
+
+            task.loop_keyword_found = keyword_found
+            queue = _task_queue
+            if queue:
+                queue.update_task(task)
+
+            if keyword_found:
+                logger.info(f"Ralph Loop: keyword found for task {task.id} at iteration {task.loop_iteration}")
+                _task_error = None
+                return None  # Success — keyword matched
+            elif task.loop_iteration >= task.loop_max_iterations:
+                logger.info(f"Ralph Loop: max iterations ({task.loop_max_iterations}) reached for task {task.id}")
+                _task_error = None
+                return None  # Exhausted — treat as success
+            else:
+                logger.info(f"Ralph Loop: keyword NOT found for task {task.id}, iteration {task.loop_iteration}/{task.loop_max_iterations}, re-queuing")
+                _task_error = None
+                return RALPH_LOOP_RETRY_SIGNAL
+
         logger.info(f"Task {task.id} completed successfully")
         _task_error = None  # Track error for notification
         return None  # 成功
@@ -389,6 +430,23 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to start task executor: {e}", exc_info=True)
 
+    # 启动定时调度器 (Cron Scheduler)
+    scheduler = None
+    if settings.scheduler_enabled and settings.executor_enabled and _task_queue:
+        try:
+            from .services.schedule_storage import ScheduleStorage
+            from src.runtime.execution.scheduler import create_and_start_scheduler
+
+            schedule_storage = ScheduleStorage(exec_user=exec_user)
+            scheduler = await create_and_start_scheduler(
+                schedule_storage=schedule_storage,
+                task_queue=_task_queue,
+                poll_interval=settings.scheduler_poll_interval,
+            )
+            logger.info(f"Task scheduler started (poll_interval={settings.scheduler_poll_interval}s)")
+        except Exception as e:
+            logger.error(f"Failed to start task scheduler: {e}", exc_info=True)
+
     # 启动 Channel 服务（Telegram, Slack, Discord 等）
     channel_service = None
     try:
@@ -412,6 +470,14 @@ async def lifespan(app: FastAPI):
             logger.info("Channel service stopped")
         except Exception as e:
             logger.error(f"Error stopping channel service: {e}")
+
+    # 停止定时调度器
+    if scheduler:
+        try:
+            await scheduler.stop()
+            logger.info("Task scheduler stopped")
+        except Exception as e:
+            logger.error(f"Error stopping task scheduler: {e}")
 
     if executor:
         try:
@@ -450,6 +516,7 @@ app.include_router(channels_router)
 app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
 app.include_router(nexus_history_router)
+app.include_router(nexus_schedules_router)
 
 # Mount static files for NexusHub Web UI (with cache-control middleware)
 static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")

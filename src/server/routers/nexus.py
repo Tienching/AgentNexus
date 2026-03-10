@@ -637,6 +637,12 @@ class TaskItem(BaseModel):
     exec_user: Optional[str] = None
     session_id: Optional[str] = None  # Session ID for conversation storage
     depends_on: List[str] = Field(default_factory=list)  # Task dependencies
+    # Ralph Loop fields
+    loop_enabled: bool = False
+    loop_iteration: int = 0
+    loop_max_iterations: int = 1
+    loop_keywords: List[str] = Field(default_factory=list)
+    loop_keyword_found: bool = False
 
 
 class TaskListResponse(BaseModel):
@@ -722,6 +728,11 @@ def _task_to_item(task) -> TaskItem:
         exec_user=task.exec_user,
         session_id=session_id,
         depends_on=depends_on,
+        loop_enabled=getattr(task, "loop_enabled", False),
+        loop_iteration=getattr(task, "loop_iteration", 0),
+        loop_max_iterations=getattr(task, "loop_max_iterations", 1),
+        loop_keywords=getattr(task, "loop_keywords", []) or [],
+        loop_keyword_found=getattr(task, "loop_keyword_found", False),
     )
 
 
@@ -806,6 +817,10 @@ class CreateTaskRequest(BaseModel):
     exec_user: Optional[str] = Field(None, description="Execution user (optional)")
     source_session_id: Optional[str] = Field(None, description="Optional source session id")
     depends_on: Optional[List[str]] = Field(None, description="List of task IDs this task depends on")
+    # Ralph Loop configuration
+    loop_enabled: Optional[bool] = Field(False, description="Enable Ralph Loop mode")
+    loop_max_iterations: Optional[int] = Field(None, ge=1, le=100, description="Max loop iterations (1-100)")
+    loop_keywords: Optional[List[str]] = Field(None, description="Keywords to match in output (loop stops when found)")
 
 
 @router.post("/tasks", response_model=TaskItem)
@@ -852,6 +867,9 @@ async def create_task(
         source_session_id=(request.source_session_id or "").strip() or None,
         exec_user=effective_exec_user,
         depends_on=request.depends_on or [],
+        loop_enabled=bool(request.loop_enabled),
+        loop_max_iterations=request.loop_max_iterations or 1,
+        loop_keywords=request.loop_keywords or [],
     )
 
     return _task_to_item(task)

@@ -105,6 +105,10 @@ class TaskQueue:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        # Ralph Loop
+        loop_enabled: bool = False,
+        loop_max_iterations: int = 1,
+        loop_keywords: Optional[list] = None,
     ) -> Task:
         """Add new task to queue
 
@@ -151,6 +155,9 @@ class TaskQueue:
             response_url=response_url,
             callback_msg_id=callback_msg_id,
             callback_user=callback_user,
+            loop_enabled=loop_enabled,
+            loop_max_iterations=loop_max_iterations,
+            loop_keywords=loop_keywords or [],
         )
         
         # Store task data
