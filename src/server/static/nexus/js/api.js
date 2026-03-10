@@ -763,6 +763,141 @@ class NexusAPI {
         });
         return `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/files/download?${params}`;
     }
+
+    // ==================== Schedule API ====================
+
+    /**
+     * List schedules with pagination and optional status filter
+     */
+    static async getSchedules(options = {}) {
+        const params = new URLSearchParams();
+        params.append('page', options.page || 1);
+        params.append('page_size', options.pageSize || 50);
+        if (options.status) params.append('status', options.status);
+        const response = await fetch(`${API_BASE}/schedules?${params}`, {
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to fetch schedules: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Get schedule detail by ID
+     */
+    static async getSchedule(scheduleId) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}`, {
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to fetch schedule: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Create a new cron schedule
+     */
+    static async createSchedule(data) {
+        const response = await fetch(`${API_BASE}/schedules`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `Failed to create schedule: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Update schedule fields
+     */
+    static async updateSchedule(scheduleId, data) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...this._authHeaders() },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `Failed to update schedule: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Delete a schedule
+     */
+    static async deleteSchedule(scheduleId) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}`, {
+            method: 'DELETE',
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to delete schedule: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Pause a schedule
+     */
+    static async pauseSchedule(scheduleId) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}/pause`, {
+            method: 'POST',
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to pause schedule: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Resume a paused schedule
+     */
+    static async resumeSchedule(scheduleId) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}/resume`, {
+            method: 'POST',
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to resume schedule: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Cancel a schedule permanently
+     */
+    static async cancelSchedule(scheduleId) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}/cancel`, {
+            method: 'POST',
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to cancel schedule: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Manually trigger a schedule (bypass cron timing)
+     */
+    static async triggerSchedule(scheduleId) {
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}/trigger`, {
+            method: 'POST',
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || `Failed to trigger schedule: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    /**
+     * Get recent task IDs spawned by a schedule
+     */
+    static async getScheduleHistory(scheduleId, limit = 20) {
+        const params = new URLSearchParams({ limit });
+        const response = await fetch(`${API_BASE}/schedules/${encodeURIComponent(scheduleId)}/history?${params}`, {
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) throw new Error(`Failed to fetch schedule history: ${response.statusText}`);
+        return response.json();
+    }
 }
 
 // Export for use in other scripts
