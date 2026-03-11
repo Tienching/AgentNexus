@@ -277,7 +277,7 @@ curl --no-buffer -X POST http://localhost:8081/chat/stream/ubuntu \
   -d '{"user": "test", "content": "你好", "provider": "claude"}'
 ```
 
-> Provider 也可通过 `X-Provider` 请求头或 `provider` 字段指定；若缺省，则使用配置的 `DEFAULT_PROVIDER`。
+> Provider 也可通过 `X-Provider` 请求头、`provider` 查询参数或请求体中的 `provider` 字段指定；也支持通过查询参数传 `alias`，例如 `/chat/stream/{exec_user}?provider=gemini` 或 `/chat/stream/{exec_user}?alias=gemini-internal`。查询参数会覆盖请求体中的 provider/alias。
 
 ## Nexus Web UI
 

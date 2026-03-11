@@ -59,8 +59,9 @@ class ScheduleStorage:
     def add_schedule(
         self,
         name: str,
-        cron_expression: str,
         description: str,
+        cron_expression: Optional[str] = None,
+        run_at: Optional[datetime] = None,
         timezone_str: str = "UTC",
         provider: str = "claude",
         alias: Optional[str] = None,
@@ -73,10 +74,11 @@ class ScheduleStorage:
         max_runs: Optional[int] = None,
         created_by: Optional[str] = None,
     ) -> Schedule:
-        """Create a new schedule definition."""
+        """Create a new schedule definition (recurring cron or one-time run_at)."""
         schedule = Schedule(
             name=name,
             cron_expression=cron_expression,
+            run_at=run_at,
             timezone=timezone_str,
             description=description,
             provider=provider,
@@ -111,9 +113,10 @@ class ScheduleStorage:
                 {schedule.id: schedule.next_run_at.timestamp()},
             )
 
+        trigger_info = f"cron={cron_expression!r}" if cron_expression else f"run_at={run_at!r}"
         logger.info(
             f"Added schedule {schedule.id}: {name!r} "
-            f"cron={cron_expression!r} next_run={schedule.next_run_at}"
+            f"{trigger_info} next_run={schedule.next_run_at}"
         )
         return schedule
 
