@@ -32,7 +32,8 @@ class CreateScheduleRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
     name: str = Field(..., description="Schedule name")
-    cron_expression: str = Field(..., description="Cron expression (5-field)")
+    cron_expression: Optional[str] = Field(None, description="Cron expression (5-field). Required for recurring schedules.")
+    run_at: Optional[datetime] = Field(None, description="One-time trigger datetime (ISO 8601). Mutually exclusive with cron_expression.")
     description: str = Field(..., description="Task description template")
     timezone: str = Field("UTC", description="Timezone for cron evaluation")
     provider: Optional[str] = Field(None, description="Provider name (claude/gemini/codex/codebuddy)")
@@ -51,6 +52,7 @@ class UpdateScheduleRequest(BaseModel):
 
     name: Optional[str] = Field(None, description="Schedule name")
     cron_expression: Optional[str] = Field(None, description="Cron expression (5-field)")
+    run_at: Optional[datetime] = Field(None, description="One-time trigger datetime")
     description: Optional[str] = Field(None, description="Task description template")
     timezone: Optional[str] = Field(None, description="Timezone for cron evaluation")
     provider: Optional[str] = Field(None, description="Provider name")
@@ -67,7 +69,8 @@ class UpdateScheduleRequest(BaseModel):
 class ScheduleItem(BaseModel):
     id: str
     name: str
-    cron_expression: str
+    cron_expression: Optional[str] = None
+    run_at: Optional[datetime] = None
     timezone: str = "UTC"
     status: str
     description: str
@@ -126,6 +129,7 @@ def _schedule_to_item(schedule) -> ScheduleItem:
         id=schedule.id,
         name=schedule.name,
         cron_expression=schedule.cron_expression,
+        run_at=schedule.run_at,
         timezone=schedule.timezone,
         status=status_val,
         description=schedule.description,
@@ -197,33 +201,44 @@ async def get_schedule(schedule_id: str):
 
 @router.post("/schedules", response_model=ScheduleItem)
 async def create_schedule(request: CreateScheduleRequest):
-    """Create a new cron schedule.
+    """Create a new schedule (recurring cron or one-time run_at).
 
-    The cron expression is validated on creation. The schedule starts in ACTIVE state
-    and will begin firing tasks at the next matching cron time.
+    Exactly one of cron_expression or run_at must be provided.
+    The schedule starts in ACTIVE state and will fire at the appropriate time.
     """
     name = (request.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
 
-    cron_expr = (request.cron_expression or "").strip()
-    if not cron_expr:
-        raise HTTPException(status_code=400, detail="cron_expression is required")
-
     desc = (request.description or "").strip()
     if not desc:
         raise HTTPException(status_code=400, detail="description is required")
 
-    # Validate cron expression early
-    try:
-        from croniter import croniter
-        if not croniter.is_valid(cron_expr):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid cron expression: {cron_expr}",
-            )
-    except ImportError:
-        raise HTTPException(status_code=500, detail="croniter library not installed")
+    cron_expr = (request.cron_expression or "").strip() or None
+    run_at_val = request.run_at
+
+    # Validate mutually exclusive trigger
+    if not cron_expr and not run_at_val:
+        raise HTTPException(status_code=400, detail="Either cron_expression or run_at is required")
+    if cron_expr and run_at_val:
+        raise HTTPException(status_code=400, detail="Cannot set both cron_expression and run_at")
+
+    # Validate cron expression if provided
+    if cron_expr:
+        try:
+            from croniter import croniter
+            if not croniter.is_valid(cron_expr):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid cron expression: {cron_expr}",
+                )
+        except ImportError:
+            raise HTTPException(status_code=500, detail="croniter library not installed")
+
+    # For one-time schedules, auto-set max_runs=1 if not provided
+    max_runs = request.max_runs
+    if run_at_val and max_runs is None:
+        max_runs = 1
 
     # Resolve defaults
     default_provider = (settings.default_provider or "").strip().lower() or "codebuddy"
@@ -245,8 +260,9 @@ async def create_schedule(request: CreateScheduleRequest):
     try:
         schedule = storage.add_schedule(
             name=name,
-            cron_expression=cron_expr,
             description=desc,
+            cron_expression=cron_expr,
+            run_at=run_at_val,
             timezone_str=(request.timezone or "UTC").strip(),
             provider=provider,
             alias=alias_value,
@@ -256,7 +272,7 @@ async def create_schedule(request: CreateScheduleRequest):
             project_name=(request.project_name or "").strip() or None,
             exec_user=effective_exec_user,
             context=request.context,
-            max_runs=request.max_runs,
+            max_runs=max_runs,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -298,6 +314,12 @@ async def update_schedule(schedule_id: str, request: UpdateScheduleRequest):
         except ImportError:
             raise HTTPException(status_code=500, detail="croniter library not installed")
         schedule.cron_expression = cron_expr
+        schedule.run_at = None  # Clear run_at if switching to cron
+
+    # Handle run_at update
+    if request.run_at is not None:
+        schedule.run_at = request.run_at
+        schedule.cron_expression = None  # Clear cron if switching to one-time
 
     # Apply updates for provided fields
     if request.name is not None:
@@ -325,8 +347,8 @@ async def update_schedule(schedule_id: str, request: UpdateScheduleRequest):
     if request.max_runs is not None:
         schedule.max_runs = request.max_runs
 
-    # Re-compute next_run_at if cron or timezone changed
-    if request.cron_expression is not None or request.timezone is not None:
+    # Re-compute next_run_at if trigger or timezone changed
+    if request.cron_expression is not None or request.run_at is not None or request.timezone is not None:
         schedule.next_run_at = schedule.compute_next_run()
 
     ok = storage.update_schedule(schedule)

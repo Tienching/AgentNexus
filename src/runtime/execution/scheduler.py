@@ -21,6 +21,14 @@ from ..stores.task_storage import TaskQueue
 logger = logging.getLogger(__name__)
 
 
+def _extract_loop_config(context: Dict[str, Any]) -> tuple[bool, int, Optional[list[str]]]:
+    """Extract Ralph Loop settings from schedule context while keeping task context clean."""
+    loop_enabled = bool(context.pop("loop_enabled", False))
+    loop_max_iterations = int(context.pop("loop_max_iterations", 1) or 1)
+    loop_keywords = context.pop("loop_keywords", None)
+    return loop_enabled, loop_max_iterations, list(loop_keywords) if loop_keywords else None
+
+
 class SchedulerState(str, Enum):
     """Scheduler lifecycle states"""
     STOPPED = "stopped"
@@ -137,6 +145,8 @@ class TaskScheduler:
         context["schedule_name"] = schedule.name
         context["schedule_run_number"] = schedule.run_count + 1
 
+        loop_enabled, loop_max_iterations, loop_keywords = _extract_loop_config(context)
+
         # Use TaskQueue.add_task() -- same path as regular task creation
         task = self._task_queue.add_task(
             description=schedule.description,
@@ -149,6 +159,9 @@ class TaskScheduler:
             alias=schedule.alias,
             model=schedule.model,
             exec_user=schedule.exec_user,
+            loop_enabled=loop_enabled,
+            loop_max_iterations=loop_max_iterations,
+            loop_keywords=loop_keywords,
         )
 
         # Set schedule_id on the task for lineage tracking
