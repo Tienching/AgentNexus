@@ -569,8 +569,17 @@ class NexusAPI {
      * @param {Object} payload - AGUI request payload
      * @returns {Promise<Response>} Fetch response for streaming
      */
-    static async chatStream(execUser, payload) {
-        const response = await fetch(`/chat/stream/${execUser}`, {
+    static async chatStream(execUser, payload, providerOrAlias = '') {
+        const resolvedExecUser = execUser || _defaultExecUser;
+        const normalizedTarget = (providerOrAlias || '').trim();
+        const params = new URLSearchParams();
+        if (normalizedTarget) {
+            params.set('alias', normalizedTarget);
+        }
+        const query = params.toString();
+        const streamUrl = `/chat/stream/${encodeURIComponent(resolvedExecUser)}${query ? `?${query}` : ''}`;
+
+        const response = await fetch(streamUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

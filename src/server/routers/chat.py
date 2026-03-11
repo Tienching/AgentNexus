@@ -2,8 +2,13 @@
 """Chat streaming endpoint router"""
 
 import json
+import uuid
+from typing import Any, Optional
+
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import StreamingResponse
+
+from src.runtime.stores.alias_registry import KNOWN_PROVIDERS, get_alias_registry
 
 from ..services.stream_handler import StreamHandler
 from ..logger import get_logger
@@ -12,6 +17,123 @@ from ..utils.ids import resolve_session_id, resolve_run_id, gen_run_id, gen_sess
 
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
+
+
+def _normalize_selector(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _resolve_provider_alias_target(provider_or_alias: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a provider/alias input into canonical provider + alias."""
+    normalized = _normalize_selector(provider_or_alias)
+    if not normalized:
+        return None, None
+
+    alias_registry = get_alias_registry()
+    resolved_provider = alias_registry.resolve(normalized)
+    if resolved_provider:
+        return resolved_provider, normalized
+
+    if normalized in KNOWN_PROVIDERS:
+        return normalized, normalized
+
+    inferred_provider = next(
+        (provider_name for provider_name in sorted(KNOWN_PROVIDERS) if normalized.startswith(f"{provider_name}-")),
+        None,
+    )
+    if inferred_provider:
+        return inferred_provider, normalized
+
+    return normalized, normalized
+
+
+def _get_or_create_forwarded_props(body_dict: dict[str, Any]) -> dict[str, Any]:
+    forwarded_props = body_dict.get("forwardedProps")
+    if isinstance(forwarded_props, dict):
+        return forwarded_props
+
+    forwarded_props = {}
+    body_dict["forwardedProps"] = forwarded_props
+    return forwarded_props
+
+
+def _upgrade_legacy_request(body_dict: dict[str, Any]) -> dict[str, Any]:
+    """Convert minimal legacy requests into the AG-UI request shape."""
+    content = str(body_dict.get("content") or "").strip()
+    if not content:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Missing required field: content",
+        )
+
+    thread_id = resolve_session_id(body_dict.get("session_id"))
+    run_id = resolve_run_id(body_dict.get("msg_id"))
+    forwarded_props = {}
+
+    original_forwarded = body_dict.get("forwardedProps")
+    if isinstance(original_forwarded, dict):
+        forwarded_props.update(original_forwarded)
+
+    for forwarded_key, raw_value in {
+        "username": body_dict.get("user"),
+        "provider": body_dict.get("provider"),
+        "alias": body_dict.get("alias"),
+        "model": body_dict.get("model"),
+    }.items():
+        normalized_value = str(raw_value or "").strip()
+        if normalized_value:
+            forwarded_props.setdefault(forwarded_key, normalized_value)
+
+    agui_body = {
+        "threadId": thread_id,
+        "runId": run_id,
+        "messages": [
+            {"id": run_id, "role": "user", "content": content}
+        ],
+        "forwardedProps": forwarded_props,
+    }
+
+    provider = str(body_dict.get("provider") or "").strip()
+    if provider:
+        agui_body["provider"] = provider
+
+    return agui_body
+
+
+def _apply_query_provider_alias(request: Request, body_dict: dict[str, Any]) -> dict[str, Any]:
+    """Inject query-level provider/alias selection into the request body."""
+    try:
+        query_provider = _normalize_selector(request.query_params.get("provider", ""))
+        query_alias = _normalize_selector(request.query_params.get("alias", ""))
+    except Exception:
+        return body_dict
+
+    if not query_provider and not query_alias:
+        return body_dict
+
+    forwarded_props = _get_or_create_forwarded_props(body_dict)
+
+    if query_alias:
+        resolved_provider, resolved_alias = _resolve_provider_alias_target(query_alias)
+        query_alias = resolved_alias or query_alias
+        if not query_provider:
+            query_provider = _normalize_selector(resolved_provider)
+
+    if query_provider:
+        body_dict["provider"] = query_provider
+        forwarded_props["provider"] = query_provider
+    if query_alias:
+        body_dict["alias"] = query_alias
+        forwarded_props["alias"] = query_alias
+
+    logger.info(
+        "Applied query-level provider/alias override",
+        extra={
+            "query_provider": query_provider,
+            "query_alias": query_alias,
+        },
+    )
+    return body_dict
 
 
 @router.post("/chat/stream", response_class=StreamingResponse)
@@ -35,19 +157,19 @@ async def chat_stream(request: Request, exec_user: str):
     # 获取原始请求体
     try:
         body_bytes = await request.body()
-        body_str = body_bytes.decode('utf-8')
+        body_str = body_bytes.decode("utf-8")
     except Exception as e:
         logger.error(f"Failed to read request body: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to read request body"
+            detail="Failed to read request body",
         )
-    
+
     # 记录完整请求信息
     logger.info(f"REQUEST BODY: {body_str if body_str else '(empty)'}")
 
     # 检查是否是测试连接请求（空body或仅包含{}）
-    if not body_str or body_str.strip() in ['', '{}']:
+    if not body_str or body_str.strip() in ["", "{}"]:
         logger.info(f"Received test connectivity request for exec_user {exec_user} (empty body)")
         return await _handle_test_request()
 
@@ -57,52 +179,27 @@ async def chat_stream(request: Request, exec_user: str):
     except json.JSONDecodeError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid JSON in request body"
+            detail="Invalid JSON in request body",
+        )
+
+    if not isinstance(body_dict, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must be a JSON object",
         )
 
     # 兼容 legacy/minimal 请求：仅包含 user/content
     if "threadId" not in body_dict and "runId" not in body_dict:
-        content = (body_dict.get("content") or "").strip()
-        if not content:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Missing required field: content"
-            )
-        thread_id = resolve_session_id(body_dict.get("session_id"))
-        run_id = resolve_run_id(body_dict.get("msg_id"))
-        user = body_dict.get("user")
-        provider = (body_dict.get("provider") or "").strip()
-        alias = (body_dict.get("alias") or "").strip()
-        model_name = (body_dict.get("model") or "").strip()
-        forwarded_props = {}
-        original_forwarded = body_dict.get("forwardedProps")
-        if isinstance(original_forwarded, dict):
-            forwarded_props.update(original_forwarded)
-        if user:
-            forwarded_props.setdefault("username", user)
-        if provider:
-            forwarded_props.setdefault("provider", provider)
-        if alias:
-            forwarded_props.setdefault("alias", alias)
-        if model_name:
-            forwarded_props.setdefault("model", model_name)
-        body_dict = {
-            "threadId": thread_id,
-            "runId": run_id,
-            "messages": [
-                {"id": run_id, "role": "user", "content": content}
-            ],
-            "forwardedProps": forwarded_props,
-        }
-        if provider:
-            body_dict["provider"] = provider
+        body_dict = _upgrade_legacy_request(body_dict)
+
+    body_dict = _apply_query_provider_alias(request, body_dict)
 
     logger.info(
-        f"Processing request with AG-UI protocol",
+        "Processing request with AG-UI protocol",
         extra={
             "exec_user": exec_user,
             "protocol": "agui",
-        }
+        },
     )
 
     # 创建流处理器并处理 AG-UI 请求
@@ -114,7 +211,7 @@ async def _handle_test_request() -> StreamingResponse:
     """处理测试连接请求 - 返回 AG-UI 格式响应"""
     test_run_id = f"test-{uuid.uuid4()}"
     test_msg_id = f"test-msg-{uuid.uuid4()}"
-    
+
     async def test_response():
         """返回 AG-UI 格式测试响应"""
         yield f'data: {{"type":"RUN_STARTED","runId":"{test_run_id}"}}\n\n'
@@ -131,7 +228,7 @@ async def _handle_test_request() -> StreamingResponse:
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
             "Transfer-Encoding": "chunked",
-        }
+        },
     )
 
 
@@ -141,7 +238,7 @@ async def agui_test():
     test_thread_id = gen_session_id()
     test_run_id = gen_run_id()
     test_msg_id = f"test-msg-{gen_run_id()}"
-    
+
     async def generate_test_events():
         # RUN_STARTED
         yield f'data: {{"type":"RUN_STARTED","threadId":"{test_thread_id}","runId":"{test_run_id}"}}\n\n'
@@ -153,7 +250,7 @@ async def agui_test():
         yield f'data: {{"type":"TEXT_MESSAGE_END","messageId":"{test_msg_id}"}}\n\n'
         # RUN_FINISHED
         yield f'data: {{"type":"RUN_FINISHED","threadId":"{test_thread_id}","runId":"{test_run_id}"}}\n\n'
-    
+
     return StreamingResponse(
         generate_test_events(),
         media_type="text/event-stream",
@@ -161,5 +258,5 @@ async def agui_test():
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
-        }
+        },
     )

@@ -14,7 +14,8 @@ from src.runtime.stores.session_storage import get_session_storage
 # All test session IDs used in this module — cleaned up after each test.
 _TEST_SESSION_IDS = [
     "t-gem", "t-gem-int", "t-codex-int", "t-cb", "t-cla", "t-cla-int",
-    "t-meta", "t-cb-init", "t-cb-tool", "t-cb-err", "t-cb-mix", "t-cb-slash",
+    "t-meta", "t-query-gem", "t-query-alias", "t-cb-init", "t-cb-tool",
+    "t-cb-err", "t-cb-mix", "t-cb-slash",
 ]
 
 
@@ -29,7 +30,12 @@ def _cleanup_test_sessions():
         storage.delete_session(sid)
 
 
-def _agui_body(thread_id: str, run_id: str, provider: str | None = None):
+def _agui_body(
+    thread_id: str,
+    run_id: str,
+    provider: str | None = None,
+    alias: str | None = None,
+):
     body = {
         "threadId": thread_id,
         "runId": run_id,
@@ -42,6 +48,9 @@ def _agui_body(thread_id: str, run_id: str, provider: str | None = None):
     if provider:
         body["provider"] = provider
         body["forwardedProps"]["provider"] = provider
+    if alias:
+        body["alias"] = alias
+        body["forwardedProps"]["alias"] = alias
     return body
 
 
@@ -110,6 +119,61 @@ class TestProviderRouting:
         ):
             body = _agui_body("t-gem-int", "r-gem-int", provider="gemini")
             async with client.stream("POST", "/chat/stream/ubuntu", json=body) as resp:
+                assert resp.status_code == 200
+                events = await _collect_agui_events(resp)
+
+        message_ids = [e.get("messageId") for e in events if isinstance(e, dict) and "messageId" in e]
+        assert any(isinstance(mid, str) and mid.startswith("gemini-msg-") for mid in message_ids)
+
+    @pytest.mark.asyncio
+    async def test_query_provider_overrides_body_provider(self, client):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
+            assert request_model.provider == "gemini"
+            yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
+
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
+            raise AssertionError("CLIExecutor.execute should not be used when query provider=gemini")
+
+        with patch(
+            "src.server.services.stream_handler.GeminiExecutor.execute",
+            new=gemini_execute,
+        ), patch(
+            "src.server.services.stream_handler.CLIExecutor.execute",
+            new=claude_execute,
+        ):
+            body = _agui_body("t-query-gem", "r-query-gem", provider="claude")
+            async with client.stream("POST", "/chat/stream/ubuntu?provider=gemini", json=body) as resp:
+                assert resp.status_code == 200
+                events = await _collect_agui_events(resp)
+
+        message_ids = [e.get("messageId") for e in events if isinstance(e, dict) and "messageId" in e]
+        assert any(isinstance(mid, str) and mid.startswith("gemini-msg-") for mid in message_ids)
+
+    @pytest.mark.asyncio
+    async def test_query_alias_resolves_provider_and_keeps_alias(self, client):
+        async def gemini_execute(self, request_model, exec_user: str, output_format: str = "raw"):
+            assert request_model.provider == "gemini"
+            assert getattr(request_model, "alias", None) == "gemini-internal"
+            yield json.dumps({"type": "message", "role": "assistant", "content": "Hello"})
+
+        async def claude_execute(self, request_model, exec_user: str, output_format: str = "raw"):
+            raise AssertionError("CLIExecutor.execute should not be used when query alias=gemini-internal")
+
+        async def codex_execute(self, request_model, exec_user: str, output_format: str = "raw"):
+            raise AssertionError("CodexCLIExecutor.execute should not be used when query alias=gemini-internal")
+
+        with patch(
+            "src.server.services.stream_handler.GeminiExecutor.execute",
+            new=gemini_execute,
+        ), patch(
+            "src.server.services.stream_handler.CLIExecutor.execute",
+            new=claude_execute,
+        ), patch(
+            "src.server.services.stream_handler.CodexCLIExecutor.execute",
+            new=codex_execute,
+        ):
+            body = _agui_body("t-query-alias", "r-query-alias")
+            async with client.stream("POST", "/chat/stream/ubuntu?alias=gemini-internal", json=body) as resp:
                 assert resp.status_code == 200
                 events = await _collect_agui_events(resp)
 

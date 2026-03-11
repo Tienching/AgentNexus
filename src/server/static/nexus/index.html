@@ -386,178 +386,106 @@
                 </button>
             </div>
             <div class="modal-body">
-                <!-- Modal Tabs -->
-                <div class="modal-tabs">
-                    <button class="modal-tab active" data-tab="single">Single Task</button>
-                    <button class="modal-tab" data-tab="bulk">Bulk Create</button>
-                    <button class="modal-tab" data-tab="chain">Task Chain</button>
-                    <button class="modal-tab" data-tab="schedule">Schedule</button>
-                    <button class="modal-tab" data-tab="loop">Ralph Loop</button>
+                <!-- Name (optional) -->
+                <div class="form-group">
+                    <label class="form-label">Name</label>
+                    <input id="taskName" type="text" class="form-input" placeholder="Optional task/schedule name">
                 </div>
 
-                <!-- Single Task Form -->
-                <div id="singleTaskForm" class="modal-tab-content active" data-tab-content="single">
-                    <div class="form-group">
-                        <label class="form-label">Agent</label>
-                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                            <select id="taskUser" class="form-input form-select" style="min-width:160px;"></select>
-                            <select id="taskModel" class="form-input form-select" style="min-width:180px;"></select>
-                        </div>
-                        <p class="form-hint">Select a user and model for this task</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">LLM Model</label>
-                        <input id="taskLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, gemini-2.5-pro (optional)">
-                        <p class="form-hint">Optional: Specify a specific LLM model name to use</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Description <span class="required">*</span></label>
-                        <textarea id="taskDescription" class="form-input form-textarea" placeholder="What should this task do?" rows="4"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Workspace</label>
-                        <input id="taskWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
-                        <p class="form-hint">Optional: Specify a working directory for the task</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Depends On</label>
-                        <input id="taskDependsOn" type="text" class="form-input" placeholder="task-id-1, task-id-2">
-                        <p class="form-hint">Optional: Comma-separated task IDs this task depends on</p>
-                    </div>
+                <!-- Description (required) -->
+                <div class="form-group">
+                    <label class="form-label">Description <span class="required">*</span></label>
+                    <textarea id="taskDescription" class="form-input form-textarea" placeholder="What should this task do?" rows="4"></textarea>
                 </div>
 
-                <!-- Bulk Create Form -->
-                <div id="bulkTaskForm" class="modal-tab-content" data-tab-content="bulk">
+                <!-- User / Provider / Model -->
+                <div class="form-group">
+                    <label class="form-label">User</label>
+                    <select id="taskUser" class="form-input form-select"></select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Provider</label>
+                    <select id="taskProvider" class="form-input form-select"></select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Model</label>
+                    <input id="taskLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, gemini-2.5-pro (optional)">
+                </div>
+
+                <!-- Workspace / Depends On -->
+                <div class="form-group">
+                    <label class="form-label">Workspace</label>
+                    <input id="taskWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Depends On</label>
+                    <input id="taskDependsOn" type="text" class="form-input" placeholder="task-id-1, task-id-2 (optional)">
+                    <p class="form-hint">Comma-separated task IDs this task depends on</p>
+                </div>
+
+                <!-- Loop -->
+                <div class="form-group">
+                    <label class="form-label">Loop</label>
+                    <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="loopMode" value="normal" checked> Disable
+                        </label>
+                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="loopMode" value="loop"> Ralph Loop
+                        </label>
+                    </div>
+                </div>
+                <div id="loopFields" style="display:none;">
                     <div class="form-group">
-                        <label class="form-label">Agent</label>
-                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                            <select id="bulkUser" class="form-input form-select" style="min-width:160px;"></select>
-                            <select id="bulkModel" class="form-input form-select" style="min-width:180px;"></select>
-                        </div>
-                        <p class="form-hint">Select a user and model for these tasks</p>
+                        <label class="form-label">Stop Keywords <span class="required">*</span></label>
+                        <input id="loopKeywords" type="text" class="form-input" placeholder="SUCCESS, PASSED, all tests passed">
+                        <p class="form-hint">Comma-separated. Loop stops when any keyword is found in output.</p>
                     </div>
                     <div class="form-group">
-                        <label class="form-label">LLM Model</label>
-                        <input id="bulkLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, gemini-2.5-pro (optional)">
-                        <p class="form-hint">Optional: Specify a specific LLM model name to use</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Workspace (shared)</label>
-                        <input id="bulkWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Tasks <span class="required">*</span></label>
-                        <textarea id="bulkTasks" class="form-input form-textarea" placeholder="Enter one task description per line:&#10;&#10;Implement user login&#10;Add password reset feature&#10;Create user profile page" rows="8"></textarea>
-                        <p class="form-hint">Each line will create a separate task</p>
+                        <label class="form-label">Max Iterations</label>
+                        <input id="loopMaxIterations" type="number" class="form-input" value="5" min="1" max="100" style="width:160px;">
                     </div>
                 </div>
 
-                <!-- Task Chain Form -->
-                <div id="chainTaskForm" class="modal-tab-content" data-tab-content="chain">
-                    <div class="form-group">
-                        <label class="form-label">Agent</label>
-                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                            <select id="chainUser" class="form-input form-select" style="min-width:160px;"></select>
-                            <select id="chainModel" class="form-input form-select" style="min-width:180px;"></select>
-                        </div>
-                        <p class="form-hint">Select a user and model for this task chain</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">LLM Model</label>
-                        <input id="chainLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6 (optional)">
-                        <p class="form-hint">Optional: Specify a specific LLM model name</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Workspace (shared)</label>
-                        <input id="chainWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Task Chain <span class="required">*</span></label>
-                        <textarea id="chainTasks" class="form-input form-textarea" placeholder="Enter tasks in order (each depends on the previous):&#10;&#10;1. Set up project structure&#10;2. Implement database models&#10;3. Create API endpoints&#10;4. Add frontend components" rows="8"></textarea>
-                        <p class="form-hint">Tasks will be created as a chain - each task depends on the previous one</p>
+                <!-- Trigger: Immediate / Cron / One-Time -->
+                <div class="form-group">
+                    <label class="form-label">Trigger</label>
+                    <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="triggerMode" value="immediate" checked> Immediate
+                        </label>
+                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="triggerMode" value="cron"> Cron
+                        </label>
+                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                            <input type="radio" name="triggerMode" value="onetime"> One-Time
+                        </label>
                     </div>
                 </div>
-
-                <!-- Schedule Form -->
-                <div id="scheduleTaskForm" class="modal-tab-content" data-tab-content="schedule">
-                    <div class="form-group">
-                        <label class="form-label">Schedule Name <span class="required">*</span></label>
-                        <input id="scheduleName" type="text" class="form-input" placeholder="e.g., Daily code review">
-                    </div>
+                <div id="cronFields" style="display:none;">
                     <div class="form-group">
                         <label class="form-label">Cron Expression <span class="required">*</span></label>
                         <input id="scheduleCron" type="text" class="form-input" placeholder="e.g., 0 9 * * * (every day at 9am)">
-                        <p class="form-hint">5-field cron: minute hour day month weekday. Examples: <code>*/30 * * * *</code> (every 30min), <code>0 9 * * 1-5</code> (weekdays 9am)</p>
+                        <p class="form-hint">minute hour day month weekday</p>
                     </div>
+                </div>
+                <div id="onetimeFields" style="display:none;">
+                    <div class="form-group">
+                        <label class="form-label">Run At <span class="required">*</span></label>
+                        <input id="scheduleRunAt" type="datetime-local" class="form-input" style="width:280px;">
+                    </div>
+                </div>
+                <div id="scheduleExtraFields" style="display:none;">
                     <div class="form-group">
                         <label class="form-label">Timezone</label>
                         <input id="scheduleTimezone" type="text" class="form-input" placeholder="UTC" value="UTC">
-                        <p class="form-hint">IANA timezone (e.g., UTC, Asia/Shanghai, US/Pacific)</p>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label">Agent</label>
-                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                            <select id="scheduleUser" class="form-input form-select" style="min-width:160px;"></select>
-                            <select id="scheduleModel" class="form-input form-select" style="min-width:180px;"></select>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">LLM Model</label>
-                        <input id="scheduleLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6 (optional)">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Task Description <span class="required">*</span></label>
-                        <textarea id="scheduleDescription" class="form-input form-textarea" placeholder="What should each triggered task do?" rows="4"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Workspace</label>
-                        <input id="scheduleWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
-                    </div>
+                </div>
+                <div id="cronExtraFields" style="display:none;">
                     <div class="form-group">
                         <label class="form-label">Max Runs</label>
                         <input id="scheduleMaxRuns" type="number" class="form-input" placeholder="Unlimited" min="1" style="width:160px;">
-                        <p class="form-hint">Auto-cancel after N runs (leave empty for unlimited)</p>
-                    </div>
-                </div>
-
-                <!-- Ralph Loop Form -->
-                <div id="loopTaskForm" class="modal-tab-content" data-tab-content="loop">
-                    <div class="form-group">
-                        <label class="form-label">Agent</label>
-                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                            <select id="loopUser" class="form-input form-select" style="min-width:160px;"></select>
-                            <select id="loopModel" class="form-input form-select" style="min-width:180px;"></select>
-                        </div>
-                        <p class="form-hint">Select a user and model for this loop task</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">LLM Model</label>
-                        <input id="loopLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6 (optional)">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Prompt <span class="required">*</span></label>
-                        <textarea id="loopDescription" class="form-input form-textarea" placeholder="This prompt will be re-sent until a keyword is found in the output" rows="4"></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Workspace</label>
-                        <input id="loopWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Max Iterations <span class="required">*</span></label>
-                        <input id="loopMaxIterations" type="number" class="form-input" value="5" min="1" max="100" style="width:160px;">
-                        <p class="form-hint">Maximum number of attempts (1-100)</p>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Stop Keywords <span class="required">*</span></label>
-                        <input id="loopKeywords" type="text" class="form-input" placeholder="e.g., SUCCESS, PASSED, all tests passed">
-                        <p class="form-hint">Comma-separated keywords. Loop stops when ANY keyword is found in the output (case-insensitive)</p>
-                    </div>
-                    <div style="background: var(--bg-secondary); border-radius: 8px; padding: 12px; margin-top: 8px;">
-                        <p style="font-size: 13px; color: var(--text-secondary); margin: 0;">
-                            <strong>How Ralph Loop works:</strong> The prompt is sent to the agent. After execution,
-                            the output is checked for the stop keywords. If a keyword is found, the task completes.
-                            If not, the same prompt is re-sent. This repeats until a keyword matches or max iterations is reached.
-                        </p>
+                        <p class="form-hint">Auto-cancel after N runs (empty = unlimited)</p>
                     </div>
                 </div>
             </div>

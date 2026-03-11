@@ -54,7 +54,7 @@ async def root():
             "redoc": "/redoc",
         },
         "description": {
-            "/chat/stream/{exec_user}": "统一SSE接口（自动检测协议类型：易事厅/AG-UI）",
+            "/chat/stream/{exec_user}": "统一SSE接口（自动检测协议类型：易事厅/AG-UI），支持通过 query/body/header 指定 provider 或 alias",
             "exec_user": "URL路径参数，Linux系统用户名，用于执行命令",
             "api_user": "请求体中的user字段，用于创建工作目录/home/{exec_user}/{api_user}"
         },

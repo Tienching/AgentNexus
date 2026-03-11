@@ -277,7 +277,7 @@ curl --no-buffer -X POST http://localhost:8081/chat/stream/ubuntu \
   -d '{"user": "test", "content": "Hello", "provider": "claude"}'
 ```
 
-> Provider can also be specified via the `X-Provider` header or `provider` field. Defaults to the configured `DEFAULT_PROVIDER` if omitted.
+> Provider can also be specified via the `X-Provider` header, the `provider` query param, or the `provider` field in the body. You can also pass `alias` as a query param, for example `/chat/stream/{exec_user}?provider=gemini` or `/chat/stream/{exec_user}?alias=gemini-internal`. Query params override request-body `provider`/`alias` values.
 
 ## Nexus Web UI
 
