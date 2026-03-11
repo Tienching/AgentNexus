@@ -12,7 +12,7 @@ import json
 import uuid
 
 from croniter import croniter
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 def _utcnow() -> datetime:
@@ -33,10 +33,11 @@ class ScheduleStatus(str, Enum):
 
 
 class Schedule(BaseModel):
-    """Cron-based schedule definition for periodic task creation.
+    """Schedule definition for periodic or one-time task creation.
 
-    When the cron expression fires, a new Task is created via TaskQueue.add_task()
-    using the template fields stored in this schedule.
+    Supports two trigger modes (mutually exclusive):
+    - Recurring: cron_expression fires periodically
+    - One-time: run_at fires once at a specific datetime
     """
     id: str = Field(default_factory=_generate_schedule_id)
 
@@ -44,7 +45,11 @@ class Schedule(BaseModel):
     name: str
 
     # Cron expression (standard 5-field: minute hour day_of_month month day_of_week)
-    cron_expression: str
+    # Optional: None for one-time schedules that use run_at instead
+    cron_expression: Optional[str] = None
+
+    # One-time trigger datetime (mutually exclusive with cron_expression)
+    run_at: Optional[datetime] = None
 
     # Timezone for cron evaluation (default: UTC)
     timezone: str = "UTC"
@@ -83,22 +88,41 @@ class Schedule(BaseModel):
 
     model_config = ConfigDict(use_enum_values=True)
 
-    @field_validator("cron_expression")
-    @classmethod
-    def validate_cron_expression(cls, v: str) -> str:
-        if not croniter.is_valid(v):
-            raise ValueError(f"Invalid cron expression: {v}")
-        return v
+    @model_validator(mode="after")
+    def validate_trigger(self):
+        """Require either cron_expression or run_at, not both."""
+        if not self.cron_expression and not self.run_at:
+            raise ValueError("Either cron_expression or run_at is required")
+        if self.cron_expression and self.run_at:
+            raise ValueError("Cannot set both cron_expression and run_at")
+        if self.cron_expression and not croniter.is_valid(self.cron_expression):
+            raise ValueError(f"Invalid cron expression: {self.cron_expression}")
+        return self
 
     def compute_next_run(self, base_time: Optional[datetime] = None) -> Optional[datetime]:
-        """Compute the next fire time using croniter.
+        """Compute the next fire time.
+
+        For one-time schedules (run_at), returns run_at if not yet fired.
+        For cron schedules, uses croniter to compute the next fire time.
 
         Args:
             base_time: Base time for computation. Defaults to last_run_at or now.
 
         Returns:
-            Next fire datetime (UTC), or None if cron is invalid.
+            Next fire datetime (UTC), or None if not applicable.
         """
+        # One-time schedule: return run_at if not yet fired
+        if self.run_at:
+            if self.run_count == 0:
+                run_at = self.run_at
+                if run_at.tzinfo is None:
+                    run_at = run_at.replace(tzinfo=timezone.utc)
+                return run_at
+            return None  # already fired
+
+        # Recurring cron schedule
+        if not self.cron_expression:
+            return None
         base = base_time or self.last_run_at or datetime.now(timezone.utc)
         # Ensure base is timezone-aware
         if base.tzinfo is None:
@@ -140,7 +164,7 @@ class Schedule(BaseModel):
         parsed = {}
         datetime_fields = (
             "created_at", "updated_at", "last_run_at", "next_run_at",
-            "paused_at", "cancelled_at",
+            "paused_at", "cancelled_at", "run_at",
         )
         for key, value in data.items():
             if key in datetime_fields:
@@ -159,7 +183,8 @@ class Schedule(BaseModel):
         return cls(**parsed)
 
     def __repr__(self):
+        trigger = f"cron={self.cron_expression!r}" if self.cron_expression else f"run_at={self.run_at!r}"
         return (
             f"<Schedule(id={self.id}, name={self.name!r}, "
-            f"cron={self.cron_expression!r}, status={self.status})>"
+            f"{trigger}, status={self.status})>"
         )
