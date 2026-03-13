@@ -2,7 +2,7 @@
 """
 onboard 命令实现
 
-一站式引导用户完成 VHSDK 的初始化配置和启动。
+一站式引导用户完成 Agent Nexus 的初始化配置和启动。
 类似 openclaw onboard，交互式向导引导用户选择 Channel、配置 Token、安装依赖，
 最终启动服务。
 """
@@ -150,7 +150,7 @@ class OnboardCommand(BaseCommand):
         self._print_banner()
 
         # ── 风险确认 ──
-        if not self.printer.confirm("该向导将引导你完成 VHSDK 的完整配置，是否继续？", default=True):
+        if not self.printer.confirm("该向导将引导你完成 Agent Nexus 的完整配置，是否继续？", default=True):
             self.printer.info("已取消")
             return 2
 
@@ -202,7 +202,7 @@ class OnboardCommand(BaseCommand):
         self.printer.print(self.printer._colorize(
             "║                                                      ║", "cyan"))
         self.printer.print(self.printer._colorize(
-            "║       🤖  Virtual Human SDK — Onboard Wizard         ║", "cyan"))
+            "║       🤖  Agent Nexus — Onboard Wizard         ║", "cyan"))
         self.printer.print(self.printer._colorize(
             "║                                                      ║", "cyan"))
         self.printer.print(self.printer._colorize(
@@ -307,7 +307,7 @@ class OnboardCommand(BaseCommand):
         )
 
         if not selected_channels:
-            self.printer.warning("未选择任何 Channel，稍后可通过 'vhsdk config wizard --section channels' 配置")
+            self.printer.warning("未选择任何 Channel，稍后可通过 'anexus config wizard --section channels' 配置")
             return []
 
         selected_names = [channel_names[i] for i in selected_channels]
@@ -400,7 +400,7 @@ class OnboardCommand(BaseCommand):
         if not self.printer.confirm("是否立即安装？", default=True):
             self.printer.info("跳过安装。稍后可运行:")
             for extra in extras:
-                self.printer.list_item(f"vhsdk install channel {extra}")
+                self.printer.list_item(f"anexus install channel {extra}")
             return
 
         pkg_mgr = self._detect_package_manager()
@@ -430,8 +430,8 @@ class OnboardCommand(BaseCommand):
 
     def _offer_start(self) -> bool:
         """询问是否启动服务"""
-        if not self.printer.confirm("是否立即启动 VHSDK 服务？", default=True):
-            self.printer.info("跳过启动。稍后可运行 'vhsdk start' 启动服务")
+        if not self.printer.confirm("是否立即启动 Agent Nexus 服务？", default=True):
+            self.printer.info("跳过启动。稍后可运行 'anexus start' 启动服务")
             return False
 
         _, mode = self.printer.select("选择启动方式:", ["前台运行 (推荐调试用)", "后台运行 (daemon)"], default=0)
@@ -470,7 +470,7 @@ class OnboardCommand(BaseCommand):
 
         except Exception as e:
             self.printer.error(f"启动失败: {e}")
-            self.printer.print("可手动运行: vhsdk start")
+            self.printer.print("可手动运行: anexus start")
             return False
 
     # ─── 完成总结 ──────────────────────────────────────────────────────
@@ -511,10 +511,10 @@ class OnboardCommand(BaseCommand):
 
         if not started:
             self.printer.print(self.printer._colorize("下一步操作:", "bold"))
-            self.printer.list_item("运行 'vhsdk start' 启动服务")
-            self.printer.list_item("运行 'vhsdk status' 查看服务和 Channel 状态")
-            self.printer.list_item("运行 'vhsdk config show' 查看完整配置")
-            self.printer.list_item("运行 'vhsdk config wizard --section channels' 修改 Channel 配置")
+            self.printer.list_item("运行 'anexus start' 启动服务")
+            self.printer.list_item("运行 'anexus status' 查看服务和 Channel 状态")
+            self.printer.list_item("运行 'anexus config show' 查看完整配置")
+            self.printer.list_item("运行 'anexus config wizard --section channels' 修改 Channel 配置")
             self.printer.print()
 
     # ─── 工具方法 ──────────────────────────────────────────────────────

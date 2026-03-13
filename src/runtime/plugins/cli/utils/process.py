@@ -17,11 +17,11 @@ from typing import List, Optional, Dict, Any
 class ProcessManager:
     """进程管理器
     
-    管理 vhsdk 服务进程的启动、停止和状态检查。
+    管理 anexus 服务进程的启动、停止和状态检查。
     """
     
-    DEFAULT_PID_FILE = "logs/vhsdk.pid"
-    DEFAULT_LOG_FILE = "logs/vhsdk.log"
+    DEFAULT_PID_FILE = "logs/anexus.pid"
+    DEFAULT_LOG_FILE = "logs/anexus.log"
     
     def __init__(
         self,
@@ -32,8 +32,8 @@ class ProcessManager:
         """初始化进程管理器
         
         Args:
-            pid_file: PID 文件路径，默认为 logs/vhsdk.pid
-            log_file: 日志文件路径，默认为 logs/vhsdk.log
+            pid_file: PID 文件路径，默认为 logs/anexus.pid
+            log_file: 日志文件路径，默认为 logs/anexus.log
             base_dir: 项目根目录，默认为当前工作目录
         """
         self.base_dir = base_dir or Path.cwd()

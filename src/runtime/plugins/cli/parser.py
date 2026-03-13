@@ -16,21 +16,21 @@ def create_parser() -> argparse.ArgumentParser:
         配置好的 ArgumentParser 实例
     """
     parser = argparse.ArgumentParser(
-        prog="vhsdk",
-        description="Virtual Human SDK CLI - 一站式服务管理工具",
+        prog="anexus",
+        description="Agent Nexus CLI - 一站式服务管理工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  vhsdk onboard                 # 一站式配置向导（推荐首次使用）
-  vhsdk init                    # 初始化项目配置
-  vhsdk start                   # 前台启动服务
-  vhsdk start --daemon          # 后台启动服务
-  vhsdk stop                    # 停止服务
-  vhsdk status                  # 查看服务状态
-  vhsdk config wizard           # 交互式配置向导
-  vhsdk install channel telegram  # 安装 Telegram 依赖
+  anexus onboard                 # 一站式配置向导（推荐首次使用）
+  anexus init                    # 初始化项目配置
+  anexus start                   # 前台启动服务
+  anexus start --daemon          # 后台启动服务
+  anexus stop                    # 停止服务
+  anexus status                  # 查看服务状态
+  anexus config wizard           # 交互式配置向导
+  anexus install channel telegram  # 安装 Telegram 依赖
 
-更多信息请访问: https://github.com/your-org/virtual-human-sdk
+更多信息请访问: https://github.com/your-org/agent-nexus
         """,
     )
     
@@ -66,7 +66,7 @@ def _add_onboard_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "onboard",
         help="一站式配置向导 — 引导完成 Channel 选择、Token 配置、依赖安装和服务启动",
-        description="交互式引导向导，帮助你一次性完成 VHSDK 的完整配置和启动。",
+        description="交互式引导向导，帮助你一次性完成 Agent Nexus 的完整配置和启动。",
     )
     parser.add_argument(
         "--reset",
@@ -120,7 +120,7 @@ def _add_start_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "start",
         help="启动服务",
-        description="启动 Virtual Human SDK 服务",
+        description="启动 Agent Nexus 服务",
     )
     parser.add_argument(
         "--daemon", "-d",

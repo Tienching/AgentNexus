@@ -10,7 +10,7 @@
                 "id": "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg",
                 "name": "Read",
                 "input": {
-                    "file_path": "/home/ubuntu/Projects/virtual-human-sdk-feature-aionui/pyproject.toml",
+                    "file_path": "/home/ubuntu/Projects/agent-nexus/pyproject.toml",
                     "limit": 5,
                     "offset": 1
                 }

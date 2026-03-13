@@ -59,8 +59,8 @@ class PluginInstaller:
             self.config_dir = config_dir
         else:
             # 优先使用项目目录，否则用户目录
-            project_config = Path.cwd() / "config" / "vhsdk"
-            user_config = Path.home() / ".config" / "vhsdk"
+            project_config = Path.cwd() / "config" / "anexus"
+            user_config = Path.home() / ".config" / "anexus"
 
             if project_config.exists():
                 self.config_dir = project_config
@@ -78,7 +78,7 @@ class PluginInstaller:
         # 生成默认配置
         main_config = self.config_dir / "config.yaml"
         if not main_config.exists():
-            main_config.write_text("""# VHSDK 配置
+            main_config.write_text("""# ANEXUS 配置
 default_provider: codebuddy
 default_alias:
 log_level: INFO

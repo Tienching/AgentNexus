@@ -342,7 +342,7 @@ class WeComChannel(BaseChannel):
         """Build a stable per-bot lock file path for websocket singletons."""
         bot_key = (self.config.bot_id or self.config.aibot_id or self.name or "default").strip() or "default"
         safe_key = re.sub(r"[^A-Za-z0-9_.-]+", "_", bot_key)
-        return os.path.join(tempfile.gettempdir(), f"virtual-human-sdk-wecom-{safe_key}.lock")
+        return os.path.join(tempfile.gettempdir(), f"agent-nexus-wecom-{safe_key}.lock")
 
     def _acquire_ws_process_lock(self) -> bool:
         """Acquire a process-level singleton lock for WeCom websocket mode."""
@@ -819,6 +819,9 @@ class WeComChannel(BaseChannel):
             close_timeout=10,
         )
         self._ws_receive_task = asyncio.create_task(self._ws_receive_loop())
+        # Brief pause to let the WS handshake fully settle before sending subscribe;
+        # without this the WeCom server occasionally returns HTTP 500.
+        await asyncio.sleep(1)
         await self._send_via_websocket(
             "aibot_subscribe",
             {

@@ -97,7 +97,7 @@ class ChannelRegistry:
                 from .feishu import FeishuChannel
                 return FeishuChannel
             elif type_ == "wecom":
-                from .wecom import WeComChannel
+                from .wecom_aibot import WeComChannel
                 return WeComChannel
             elif type_ == "wecom_bot":
                 from .wecom_bot import WeComBotChannel

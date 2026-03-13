@@ -10,13 +10,16 @@ class TestAPIEndpoints:
 
     @pytest.mark.asyncio
     async def test_root_endpoint(self, client: AsyncClient):
-        """测试根路径"""
+        """测试根路径直接提供 Web UI"""
         response = await client.get("/")
         assert response.status_code == 200
-        data = response.json()
-        assert data["service"] == "Virtual Human Agent"
-        assert "version" in data
-        assert "endpoints" in data
+
+    @pytest.mark.asyncio
+    async def test_nexus_redirect_to_root(self, client: AsyncClient):
+        """测试 /nexus 重定向到根路径"""
+        response = await client.get("/nexus", follow_redirects=False)
+        assert response.status_code in (301, 302, 307)
+        assert response.headers.get("location") == "/"
 
     @pytest.mark.asyncio
     async def test_health_endpoint(self, client: AsyncClient):
@@ -25,7 +28,7 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "healthy"
-        assert data["service"] == "virtual-human-agent"
+        assert data["service"] == "agent-nexus"
         assert "version" in data
 
     @pytest.mark.asyncio
@@ -121,5 +124,5 @@ class TestAPIEndpoints:
     @pytest.mark.asyncio
     async def test_method_not_allowed(self, client: AsyncClient):
         """测试不允许的HTTP方法"""
-        response = await client.get("/chat/stream")
+        response = await client.post("/health")
         assert response.status_code == 405  # Method Not Allowed

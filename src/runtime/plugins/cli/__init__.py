@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-vhsdk CLI - Virtual Human SDK 命令行工具
+anexus CLI - Agent Nexus 命令行工具
 
 提供以下命令：
-    vhsdk onboard   - 一站式配置向导（推荐首次使用）
-    vhsdk init      - 初始化项目配置
-    vhsdk start     - 启动服务
-    vhsdk stop      - 停止服务
-    vhsdk status    - 查看服务状态
-    vhsdk config    - 配置管理
-    vhsdk install   - 安装依赖
-    vhsdk list      - 列出已安装的插件
+    anexus onboard   - 一站式配置向导（推荐首次使用）
+    anexus init      - 初始化项目配置
+    anexus start     - 启动服务
+    anexus stop      - 停止服务
+    anexus status    - 查看服务状态
+    anexus config    - 配置管理
+    anexus install   - 安装依赖
+    anexus list      - 列出已安装的插件
 
-使用 `vhsdk --help` 查看所有可用命令。
+使用 `anexus --help` 查看所有可用命令。
 """
 
 import sys
