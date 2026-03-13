@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .base import BaseChannel
 from .events import InboundMessage, MediaAttachment, MessageType, OutboundMessage
-from .wecom import sanitize_wecom_markdown_content
+from .wecom_aibot import sanitize_wecom_markdown_content
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from .config import WeComBotConfig
-    from .wecom import WeComCrypto
+    from .wecom_aibot import WeComCrypto
 
 # WeCom Bot message length limits (bytes, UTF-8)
 # Webhook: text ≤ 2048B, markdown ≤ 4096B
@@ -158,7 +158,7 @@ class WeComBotChannel(BaseChannel):
         self._http_client = httpx.AsyncClient(timeout=30.0)
 
         # 复用智能机器人的 WeComCrypto 加解密模块
-        from .wecom import WeComCrypto
+        from .wecom_aibot import WeComCrypto
 
         self._crypto = WeComCrypto(
             token=self.config.token,

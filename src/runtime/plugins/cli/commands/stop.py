@@ -58,5 +58,5 @@ class StopCommand(BaseCommand):
             return 0
         else:
             self.printer.error("停止服务失败")
-            self.printer.print("尝试使用 'vhsdk stop --force' 强制停止")
+            self.printer.print("尝试使用 'anexus stop --force' 强制停止")
             return 1

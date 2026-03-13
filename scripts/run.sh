@@ -7,7 +7,7 @@ HOST=${API_HOST:-0.0.0.0}
 PORT=${API_PORT:-8081}
 RELOAD=${RELOAD:-true}
 
-echo "Starting Virtual Human Agent..."
+echo "Starting Agent Nexus..."
 echo "Host: $HOST"
 echo "Port: $PORT"
 echo "Reload: $RELOAD"

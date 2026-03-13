@@ -8,7 +8,7 @@ import pytest
 
 from src.channels.config import ChannelType, WeComConfig
 from src.channels.events import InboundMessage, OutboundMessage
-from src.channels.wecom import WeComChannel
+from src.channels.wecom_aibot import WeComChannel
 from src.server.services.channel_service import ChannelService
 from src.server.services.notification.models import NotificationResult, NotificationTarget
 from src.server.services.notification.wecom_sink import WeComSink

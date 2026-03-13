@@ -70,7 +70,7 @@ class InitCommand(BaseCommand):
     
     def run(self, args: argparse.Namespace) -> int:
         """执行 init 命令"""
-        self.printer.header("Virtual Human SDK 初始化向导")
+        self.printer.header("Agent Nexus 初始化向导")
         
         # 1. 检查并创建目录结构
         self.printer.section("创建目录结构")
@@ -171,6 +171,6 @@ class InitCommand(BaseCommand):
         self.printer.print()
         self.printer.print("下一步操作：")
         self.printer.list_item("编辑 .env 文件配置更多选项")
-        self.printer.list_item("运行 'vhsdk start' 启动服务")
-        self.printer.list_item("运行 'vhsdk config wizard' 进行更详细的配置")
+        self.printer.list_item("运行 'anexus start' 启动服务")
+        self.printer.list_item("运行 'anexus config wizard' 进行更详细的配置")
         self.printer.print()

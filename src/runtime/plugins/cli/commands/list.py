@@ -96,5 +96,5 @@ class ListCommand(BaseCommand):
         if not any_configured:
             self.printer.print("  (无已配置的 Channel)")
             self.printer.print()
-            self.printer.print("  提示: 使用 'vhsdk install channel <name>' 安装 Channel 依赖")
+            self.printer.print("  提示: 使用 'anexus install channel <name>' 安装 Channel 依赖")
             self.printer.print("        然后在 .env 文件中配置相应的 Token")

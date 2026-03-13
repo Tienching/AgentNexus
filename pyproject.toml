@@ -1,7 +1,7 @@
 [project]
-name = "virtual-human-agent"
+name = "agent-nexus"
 version = "0.1.0"
-description = "Virtual Human Agent - Multi-provider CLI wrapper with AG-UI SSE streaming"
+description = "Agent Nexus - Multi-provider CLI wrapper with AG-UI SSE streaming"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-vhsdk = "runtime.plugins.cli:main"  # 新的模块化 CLI
+anexus = "runtime.plugins.cli:main"  # 新的模块化 CLI
 
 [project.optional-dependencies]
 dev = [

@@ -152,12 +152,12 @@ class TestHealthResponse:
         """测试有效的健康检查响应"""
         data = {
             "status": "healthy",
-            "service": "virtual-human-agent",
+            "service": "agent-nexus",
             "version": "0.1.0",
         }
         response = HealthResponse(**data)
         assert response.status == "healthy"
-        assert response.service == "virtual-human-agent"
+        assert response.service == "agent-nexus"
         assert response.version == "0.1.0"
 
 

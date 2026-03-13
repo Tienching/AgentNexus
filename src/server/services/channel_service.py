@@ -1,6 +1,6 @@
 """Channel 服务 - 集成多平台消息通道
 
-将 channels 模块集成到 virtual-human-sdk 服务中，
+将 channels 模块集成到 agent-nexus 服务中，
 实现 Telegram、Slack 等平台的消息接收和 AI 回复。
 
 Supports non-blocking AI processing with real-time progress updates
