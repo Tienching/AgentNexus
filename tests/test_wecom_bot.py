@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.channels.config import ChannelType, WeComBotConfig
-from src.channels.wecom import WeComCrypto, sanitize_wecom_markdown_content
+from src.channels.wecom_aibot import WeComCrypto, sanitize_wecom_markdown_content
 from src.channels.wecom_bot import (
     WeComBotChannel,
     StreamSimulator,

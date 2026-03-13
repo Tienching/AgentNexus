@@ -36,7 +36,7 @@ class SlackChannel(BaseChannel):
         if not SLACK_AVAILABLE:
             raise ImportError(
                 "Slack support requires 'slack-sdk'. "
-                "Install with: pip install 'virtual-human-sdk[slack]'"
+                "Install with: pip install 'agent-nexus[slack]'"
             )
         super().__init__(config)
         self.config: "SlackConfig" = config

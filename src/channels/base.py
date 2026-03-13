@@ -116,7 +116,7 @@ class BaseChannel(ABC):
         except Exception as e:
             async with self._lock:
                 self.state = ChannelState.ERROR
-            logger.error(f"[{self.name}] Failed to start channel: {e}")
+            logger.error(f"[{self.name}] Failed to start channel: {type(e).__name__}: {e}", exc_info=True)
             raise
 
     async def stop(self) -> None:

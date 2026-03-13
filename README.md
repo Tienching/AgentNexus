@@ -13,7 +13,7 @@ A multi-provider agent runtime that wraps CLI-based AI providers (Claude, Gemini
 - **Nexus Web UI** — Session replay + Task board + File browser
 - **Task System** — Single task / bulk create / dependency chains with concurrency control
 - **Multi-Channel** — Telegram, Slack, Discord, Feishu (Lark), WhatsApp, Signal integrations
-- **CLI Tool (`vhsdk`)** — Onboard wizard, init, install, start, stop, status, config, list subcommands
+- **CLI Tool (`anexus`)** — Onboard wizard, init, install, start, stop, status, config, list subcommands
 - **Systemd Ready** — Includes `.service` file for production deployment
 
 ## Requirements
@@ -40,7 +40,7 @@ uv sync
 ### Onboard (Recommended for First-Time Setup)
 
 ```bash
-vhsdk onboard
+anexus onboard
 ```
 
 The interactive wizard walks you through **6 steps**:
@@ -62,35 +62,35 @@ cp .env.example .env
 # Edit .env with your settings
 ```
 
-### Running with `vhsdk` CLI
+### Running with `anexus` CLI
 
 ```bash
 # Initialize project (create .env, directories)
-vhsdk init
+anexus init
 
 # Install channel dependencies
-vhsdk install channel telegram
-vhsdk install channel discord
-vhsdk install channel feishu
-vhsdk install channel all        # Install all channels
+anexus install channel telegram
+anexus install channel discord
+anexus install channel feishu
+anexus install channel all        # Install all channels
 
 # Start service (foreground)
-vhsdk start
+anexus start
 
 # Start service (daemon mode)
-vhsdk start --daemon
+anexus start --daemon
 
 # Check service status
-vhsdk status
+anexus status
 
 # Stop service
-vhsdk stop
+anexus stop
 
 # Interactive config wizard
-vhsdk config wizard
+anexus config wizard
 
 # List installed plugins
-vhsdk list
+anexus list
 ```
 
 ### Running with Scripts (Alternative)
@@ -230,12 +230,12 @@ Enable messaging channels by configuring these environment variables:
 Install channel dependencies:
 
 ```bash
-# Using vhsdk CLI (recommended)
-vhsdk install channel telegram
-vhsdk install channel slack
-vhsdk install channel discord
-vhsdk install channel feishu
-vhsdk install channel all        # All channels
+# Using anexus CLI (recommended)
+anexus install channel telegram
+anexus install channel slack
+anexus install channel discord
+anexus install channel feishu
+anexus install channel all        # All channels
 
 # Or using pip directly
 pip install -e ".[telegram]"

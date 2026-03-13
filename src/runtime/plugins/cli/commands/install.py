@@ -50,8 +50,8 @@ class InstallCommand(BaseCommand):
         
         if not install_type:
             self.printer.print("请指定安装类型:")
-            self.printer.list_item("vhsdk install channel <name>  - 安装消息渠道依赖")
-            self.printer.list_item("vhsdk install provider <name> - 安装 Provider")
+            self.printer.list_item("anexus install channel <name>  - 安装消息渠道依赖")
+            self.printer.list_item("anexus install provider <name> - 安装 Provider")
             return 1
         
         if install_type == "channel":
@@ -231,5 +231,5 @@ class InstallCommand(BaseCommand):
             env_key = channel_env_keys[extra]
             self.printer.list_item(f"在 .env 文件中配置 {env_key}")
         
-        self.printer.list_item("运行 'vhsdk start' 启动服务")
-        self.printer.list_item("运行 'vhsdk status' 查看 Channel 状态")
+        self.printer.list_item("运行 'anexus start' 启动服务")
+        self.printer.list_item("运行 'anexus status' 查看 Channel 状态")

@@ -4,7 +4,7 @@
     "uuid": "f2381367-becb-4255-83e2-03ef32139f7e",
     "session_id": "f2381367-becb-4255-83e2-03ef32139f7e",
     "apiKeySource": "copilot.example.com",
-    "cwd": "/home/ubuntu/Projects/virtual-human-sdk-feature-aionui",
+    "cwd": "/home/ubuntu/Projects/agent-nexus",
     "tools": ["Task", "Read", "Write", "Edit", "Bash", "Glob", "Grep"],
     "mcp_servers": [],
     "model": "claude-4.5",

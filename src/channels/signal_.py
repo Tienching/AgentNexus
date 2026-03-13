@@ -36,7 +36,7 @@ class SignalChannel(BaseChannel):
         if not HTTPX_AVAILABLE:
             raise ImportError(
                 "Signal support requires 'httpx'. "
-                "Install with: pip install 'virtual-human-sdk[signal]'"
+                "Install with: pip install 'agent-nexus[signal]'"
             )
         super().__init__(config)
         self.config: "SignalConfig" = config

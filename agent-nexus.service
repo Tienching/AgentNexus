@@ -1,10 +1,10 @@
 [Unit]
-Description=Virtual Human Agent Service
+Description=Agent Nexus Service
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/ubuntu/Projects/virtual-human-sdk-feature-aionui
+WorkingDirectory=/home/ubuntu/Projects/agent-nexus
 ExecStart=/home/ubuntu/.local/bin/uv run python -m uvicorn src.server.app:app --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5s

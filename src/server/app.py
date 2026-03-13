@@ -389,7 +389,7 @@ async def lifespan(app: FastAPI):
     )
     logger = get_logger(__name__)
     logger.info(
-        f"Starting Virtual Human Agent v{app.version} "
+        f"Starting Agent Nexus v{app.version} "
         f"on {settings.api_host}:{settings.api_port}"
     )
     logger.info(f"Environment: {settings.environment}")
@@ -486,12 +486,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error stopping task executor: {e}")
     
-    logger.info("Shutting down Virtual Human Agent")
+    logger.info("Shutting down Agent Nexus")
 
 
 # 创建FastAPI应用
 app = FastAPI(
-    title="Virtual Human Agent",
+    title="Agent Nexus",
     description="Multi-provider CLI wrapper with AG-UI SSE streaming",
     version="0.1.0",
     lifespan=lifespan,
@@ -531,10 +531,10 @@ if os.path.exists(static_dir):
                 return await self.app(scope, receive, send)
 
             path = scope.get("path", "")
+            # Apply no-cache to HTML/JS/CSS assets and the root index page
             should_add_no_cache = (
-                path.startswith("/nexus")
-                and (path.endswith((".html", ".js", ".css"))
-                     or path in ("/nexus", "/nexus/"))
+                path.endswith((".html", ".js", ".css"))
+                or path in ("/", "")
             )
 
             if not should_add_no_cache:
@@ -554,7 +554,7 @@ if os.path.exists(static_dir):
             return await self.app(scope, receive, send_with_no_cache)
 
     app.add_middleware(NexusNoCacheMiddleware)
-    app.mount("/nexus", StaticFiles(directory=static_dir, html=True), name="nexus")
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="nexus-ui")
 
 
 # 获取日志器

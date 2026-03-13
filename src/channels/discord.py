@@ -44,7 +44,7 @@ class DiscordChannel(BaseChannel):
         if not DISCORD_AVAILABLE:
             raise ImportError(
                 "Discord support requires 'discord.py'. "
-                "Install with: pip install 'virtual-human-sdk[discord]'"
+                "Install with: pip install 'agent-nexus[discord]'"
             )
         super().__init__(config)
         self.config: "DiscordConfig" = config
