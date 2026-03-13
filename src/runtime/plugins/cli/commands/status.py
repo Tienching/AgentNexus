@@ -52,7 +52,7 @@ class StatusCommand(BaseCommand):
             return self._output_json(args)
         
         # 常规输出
-        self.printer.header("Virtual Human SDK 状态")
+        self.printer.header("Agent Nexus 状态")
         
         # 1. 服务状态
         self._show_service_status()

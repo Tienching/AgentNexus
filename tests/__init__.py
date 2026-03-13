@@ -1,1 +1,1 @@
-"""Tests package for Virtual Human Agent"""
+"""Tests package for Agent Nexus"""

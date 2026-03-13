@@ -13,7 +13,7 @@
 - **Nexus Web UI** — 会话回放 + 任务看板 + 文件浏览
 - **任务系统** — 支持单任务/批量/依赖链，带并发控制
 - **多渠道集成** — Telegram、Slack、Discord、飞书 (Feishu/Lark)、WhatsApp、Signal
-- **CLI 工具 (`vhsdk`)** — 支持 onboard/init/install/start/stop/status/config/list 子命令
+- **CLI 工具 (`anexus`)** — 支持 onboard/init/install/start/stop/status/config/list 子命令
 - **Systemd 就绪** — 自带 `.service` 文件，可直接用于生产部署
 
 ## 环境要求
@@ -40,7 +40,7 @@ uv sync
 ### 一站式配置向导（推荐首次使用）
 
 ```bash
-vhsdk onboard
+anexus onboard
 ```
 
 交互式向导将引导你完成 **6 个步骤**：
@@ -62,35 +62,35 @@ cp .env.example .env
 # 编辑 .env 填入你的配置
 ```
 
-### 通过 `vhsdk` CLI 运行
+### 通过 `anexus` CLI 运行
 
 ```bash
 # 初始化项目（创建 .env、目录等）
-vhsdk init
+anexus init
 
 # 安装渠道依赖
-vhsdk install channel telegram
-vhsdk install channel discord
-vhsdk install channel feishu
-vhsdk install channel all        # 安装所有渠道
+anexus install channel telegram
+anexus install channel discord
+anexus install channel feishu
+anexus install channel all        # 安装所有渠道
 
 # 前台启动服务
-vhsdk start
+anexus start
 
 # 后台启动服务（守护进程模式）
-vhsdk start --daemon
+anexus start --daemon
 
 # 查看服务状态
-vhsdk status
+anexus status
 
 # 停止服务
-vhsdk stop
+anexus stop
 
 # 交互式配置向导
-vhsdk config wizard
+anexus config wizard
 
 # 列出已安装的插件
-vhsdk list
+anexus list
 ```
 
 ### 通过脚本运行（备选方式）
@@ -230,12 +230,12 @@ cp .env.example .env
 安装渠道依赖：
 
 ```bash
-# 使用 vhsdk CLI（推荐）
-vhsdk install channel telegram
-vhsdk install channel slack
-vhsdk install channel discord
-vhsdk install channel feishu
-vhsdk install channel all        # 安装全部渠道
+# 使用 anexus CLI（推荐）
+anexus install channel telegram
+anexus install channel slack
+anexus install channel discord
+anexus install channel feishu
+anexus install channel all        # 安装全部渠道
 
 # 或直接使用 pip
 pip install -e ".[telegram]"

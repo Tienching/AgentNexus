@@ -2,7 +2,7 @@
 """
 start 命令实现
 
-启动 Virtual Human SDK 服务。
+启动 Agent Nexus 服务。
 """
 
 import argparse
@@ -56,13 +56,13 @@ class StartCommand(BaseCommand):
         if self.process_manager.is_running():
             pid = self.process_manager.get_pid()
             self.printer.warning(f"服务已在运行中 (PID: {pid})")
-            self.printer.print("使用 'vhsdk stop' 先停止服务，或 'vhsdk status' 查看状态")
+            self.printer.print("使用 'anexus stop' 先停止服务，或 'anexus status' 查看状态")
             return 1
         
         # 检查 .env 文件
         if not self.env_manager.exists():
             self.printer.warning(".env 文件不存在，使用默认配置")
-            self.printer.print("建议先运行 'vhsdk init' 初始化配置")
+            self.printer.print("建议先运行 'anexus init' 初始化配置")
         
         # 启动服务
         if daemon:
@@ -81,7 +81,7 @@ class StartCommand(BaseCommand):
         Returns:
             退出码
         """
-        self.printer.header("启动 Virtual Human SDK 服务")
+        self.printer.header("启动 Agent Nexus 服务")
         
         mode = "开发模式" if reload else "生产模式"
         self.printer.info(f"运行模式: {mode}")
@@ -120,8 +120,8 @@ class StartCommand(BaseCommand):
             self.printer.key_value("PID 文件", self.process_manager.pid_file)
             self.printer.key_value("日志文件", self.process_manager.log_file)
             self.printer.print()
-            self.printer.print("使用 'vhsdk status' 查看服务状态")
-            self.printer.print("使用 'vhsdk stop' 停止服务")
+            self.printer.print("使用 'anexus status' 查看服务状态")
+            self.printer.print("使用 'anexus stop' 停止服务")
             return 0
         else:
             self.printer.error("服务启动失败")

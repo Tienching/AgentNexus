@@ -114,10 +114,10 @@ class ConfigCommand(BaseCommand):
         
         if not config_cmd:
             self.printer.print("请指定配置子命令:")
-            self.printer.list_item("vhsdk config init   - 初始化配置")
-            self.printer.list_item("vhsdk config show   - 显示配置")
-            self.printer.list_item("vhsdk config set KEY VALUE - 设置配置")
-            self.printer.list_item("vhsdk config wizard - 配置向导")
+            self.printer.list_item("anexus config init   - 初始化配置")
+            self.printer.list_item("anexus config show   - 显示配置")
+            self.printer.list_item("anexus config set KEY VALUE - 设置配置")
+            self.printer.list_item("anexus config wizard - 配置向导")
             return 1
         
         if config_cmd == "init":
@@ -164,7 +164,7 @@ class ConfigCommand(BaseCommand):
         
         if not self.env_manager.exists():
             self.printer.warning(".env 文件不存在")
-            self.printer.print("运行 'vhsdk init' 或 'vhsdk config init' 初始化配置")
+            self.printer.print("运行 'anexus init' 或 'anexus config init' 初始化配置")
             return 1
         
         env_vars = self.env_manager.load_env()
@@ -237,7 +237,7 @@ class ConfigCommand(BaseCommand):
         
         if not key or value is None:
             self.printer.error("请提供 KEY 和 VALUE")
-            self.printer.print("用法: vhsdk config set KEY VALUE")
+            self.printer.print("用法: anexus config set KEY VALUE")
             return 1
         
         # 确保 .env 文件存在

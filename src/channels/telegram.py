@@ -38,7 +38,7 @@ class TelegramChannel(BaseChannel):
         if not TELEGRAM_AVAILABLE:
             raise ImportError(
                 "Telegram support requires 'python-telegram-bot'. "
-                "Install with: pip install 'virtual-human-sdk[telegram]'"
+                "Install with: pip install 'agent-nexus[telegram]'"
             )
         super().__init__(config)
         self.config: "TelegramConfig" = config

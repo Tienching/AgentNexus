@@ -1,6 +1,6 @@
 """Channels 模块使用示例
 
-展示如何使用 virtual-human-sdk 的 channels 模块连接多个消息平台。
+展示如何使用 agent-nexus 的 channels 模块连接多个消息平台。
 
 运行前请安装依赖:
     pip install -e ".[all-channels]"
@@ -212,7 +212,7 @@ async def demo_send_message():
     msg = OutboundMessage(
         channel="telegram",
         chat_id="123456789",  # 用户或群组 ID
-        content="Hello from virtual-human-sdk!",
+        content="Hello from agent-nexus!",
         parse_mode="HTML",
     )
     await channel.send(msg)

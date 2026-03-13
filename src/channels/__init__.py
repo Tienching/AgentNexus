@@ -87,7 +87,7 @@ def _get_feishu():
     return FeishuChannel
 
 def _get_wecom():
-    from .wecom import WeComChannel
+    from .wecom_aibot import WeComChannel
     return WeComChannel
 
 def _get_wecom_bot():

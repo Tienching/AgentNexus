@@ -156,7 +156,7 @@ class TestToolUseEvent:
         assert events[1]["toolCallId"] == "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg"
         # delta 应该包含序列化的参数
         args = json.loads(events[1]["delta"])
-        assert args["file_path"] == "/home/ubuntu/Projects/virtual-human-sdk-feature-aionui/pyproject.toml"
+        assert args["file_path"] == "/home/ubuntu/Projects/agent-nexus/pyproject.toml"
 
     def test_tool_use_dedup(self, adapter):
         """验证同一工具调用不会重复发送 START"""
