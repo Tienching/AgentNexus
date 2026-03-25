@@ -57,7 +57,19 @@ class CodexCLIExecutor(BaseExecutor):
     """
     
     def __init__(self, config: Optional[CodexCLIExecutorConfig] = None):
-        super().__init__(config or CodexCLIExecutorConfig())
+        if config is None:
+            super().__init__(CodexCLIExecutorConfig())
+            return
+        if isinstance(config, CodexCLIExecutorConfig):
+            super().__init__(config)
+            return
+        super().__init__(
+            CodexCLIExecutorConfig(
+                timeout=getattr(config, "cli_timeout", 600.0),
+                user_home_base=getattr(config, "user_home_base", "/home"),
+                codex_command=getattr(config, "codex_command", "codex"),
+            )
+        )
     
     @property
     def codex_config(self) -> CodexCLIExecutorConfig:

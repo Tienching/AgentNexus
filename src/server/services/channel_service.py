@@ -1,6 +1,6 @@
 """Channel 服务 - 集成多平台消息通道
 
-将 channels 模块集成到 agent-nexus 服务中，
+将 channels 模块集成到 virtual-human-sdk 服务中，
 实现 Telegram、Slack 等平台的消息接收和 AI 回复。
 
 Supports non-blocking AI processing with real-time progress updates
@@ -30,6 +30,7 @@ from src.channels import (
     FeishuConfig,
     WeComConfig,
     WeComBotConfig,
+    WeChatConfig,
 )
 from .notification import (
     NotificationTarget,
@@ -54,6 +55,7 @@ CHANNEL_MAX_LENGTH = {
     "wecom_bot": 20480,
     "whatsapp": 65000,
     "signal": 65000,
+    "wechat": 4000,
 }
 
 # Progress update interval (seconds) — how often to edit the placeholder message
@@ -105,7 +107,21 @@ class ChannelService:
         if cfg and cfg.exec_user:
             return cfg.exec_user
         return settings.exec_user or "ubuntu"
-        
+
+    def _resolve_effective_exec_user(self, channel_name: str, session_id: Optional[str] = None) -> str:
+        """Resolve the effective exec_user, allowing session-level /switch to win."""
+        exec_user = self._resolve_exec_user(channel_name)
+        if not session_id:
+            return exec_user
+        try:
+            storage = get_session_storage()
+            session_exec_user = storage.get_session_exec_user(session_id)
+            if session_exec_user:
+                return session_exec_user
+        except Exception as e:
+            logger.warning(f"[{channel_name}] Failed to resolve session exec_user for {session_id}: {e}")
+        return exec_user
+
     async def initialize(self) -> bool:
         """初始化 channel 服务
         
@@ -252,7 +268,24 @@ class ChannelService:
                 logger.info("WeCom Bot channel configured (webhook)")
             except Exception as e:
                 logger.error(f"Failed to configure WeCom Bot: {e}")
-        
+
+        # WeChat 个人号配置
+        if settings.wechat_bot_token:
+            try:
+                configs["wechat"] = WeChatConfig(
+                    name="wechat",
+                    bot_token=settings.wechat_bot_token,
+                    base_url=settings.wechat_base_url,
+                    poll_timeout_ms=settings.wechat_poll_timeout_ms,
+                    api_timeout_ms=settings.wechat_api_timeout_ms,
+                    provider=settings.wechat_provider or None,
+                    alias=settings.wechat_alias or None,
+                    exec_user=settings.wechat_exec_user or None,
+                )
+                logger.info("WeChat channel configured")
+            except Exception as e:
+                logger.error(f"Failed to configure WeChat: {e}")
+
         if not configs:
             logger.info("No channel configured, channel service disabled")
             return False
@@ -307,6 +340,10 @@ class ChannelService:
     def _resolve_cli_timeout(channel: str) -> int:
         """Resolve per-channel CLI timeout with channel-specific override."""
         base_timeout = int(settings.cli_timeout or 600)
+        if channel == "wecom":
+            wecom_timeout = int(getattr(settings, "wecom_cli_timeout", 0) or 0)
+            if wecom_timeout > 0:
+                return max(base_timeout, wecom_timeout)
         if channel == "wecom_bot":
             wecom_bot_timeout = int(getattr(settings, "wecom_bot_cli_timeout", 0) or 0)
             if wecom_bot_timeout > 0:
@@ -325,7 +362,7 @@ class ChannelService:
         from ..services import CLIExecutor  # noqa: F811
         from ..models import RequestModel
 
-        exec_user = self._resolve_exec_user(message.channel)
+        exec_user = self._resolve_effective_exec_user(message.channel, session_id)
         session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -552,7 +589,7 @@ class ChannelService:
         from ..services import CLIExecutor
 
         executor = CLIExecutor(config=settings)
-        exec_user = self._resolve_exec_user(message.channel)
+        exec_user = self._resolve_effective_exec_user(message.channel, session_id)
         timeout = self._resolve_cli_timeout(message.channel)
 
         result = ExecutorResult()
@@ -946,16 +983,16 @@ class ChannelService:
 
         # Ensure session meta exists in Redis (so it shows up in Runtime list)
         # Always set status to RUNNING so the frontend can detect new activity
-        exec_user = self._resolve_exec_user(message.channel)
+        exec_user = self._resolve_effective_exec_user(message.channel, session_id)
         try:
             storage = get_session_storage()
             existing_meta = storage.get_session_meta(session_id)
+            session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
             if not existing_meta or not existing_meta.id:
                 title = (message.content or "")[:50]
                 if len(message.content or "") > 50:
                     title += "..."
                 title = title or f"Channel: {message.channel}"
-                session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
                 meta = SessionMeta(
                     id=session_id,
                     thread_id=session_id,
@@ -968,6 +1005,34 @@ class ChannelService:
                 storage.save_session_meta(meta)
                 logger.info(f"[{message.channel}] Created session meta: {session_id}")
             else:
+                meta_changed = False
+                previous_exec_user = (
+                    (existing_meta.exec_user or existing_meta.username or "").strip()
+                )
+                existing_exec_dir = (existing_meta.exec_dir or "").strip()
+                if (existing_meta.username or "").strip() != exec_user:
+                    existing_meta.username = exec_user
+                    meta_changed = True
+                if (existing_meta.exec_user or "").strip() != exec_user:
+                    existing_meta.exec_user = exec_user
+                    meta_changed = True
+
+                should_update_exec_dir = not existing_exec_dir
+                if not should_update_exec_dir and previous_exec_user:
+                    previous_default_dir = (
+                        Path(settings.user_home_base)
+                        / previous_exec_user
+                        / ".nexus"
+                        / "sessions"
+                        / session_id
+                    )
+                    should_update_exec_dir = existing_exec_dir == str(previous_default_dir)
+                if should_update_exec_dir and existing_exec_dir != str(session_dir):
+                    existing_meta.exec_dir = str(session_dir)
+                    meta_changed = True
+
+                if meta_changed:
+                    storage.save_session_meta(existing_meta)
                 # Session already exists — update status to RUNNING so the
                 # frontend picks up the new activity (shows running indicator,
                 # connects SSE stream, etc.)
@@ -1055,69 +1120,248 @@ class ChannelService:
             return
 
         request = await self._build_request(message, session_id)
+        # Inject unified notification target for WS-mode slash commands (e.g. /task, /chat -c).
+        # When a slash command creates or re-enqueues a task, the executor reads these
+        # fields and stores them on the Task so that task_notifier can deliver the result
+        # via WeComSink.send_text() → channel.send_ws_msg() when the task completes.
+        if request is not None:
+            try:
+                request.notification_sink_type = "wecom"
+                request.notification_channel = "wecom"
+                request.notification_chat_id = message.chat_id
+            except (AttributeError, TypeError):
+                pass  # Non-receptive request object (e.g. mock/stub in tests)
         self._archive_user_message(message, session_id, request)
 
-        stream_id = f"ws_stream_{uuid.uuid4().hex[:12]}"
+        from dataclasses import dataclass
+
+        @dataclass
+        class _WsState:
+            stream_id: str
+            segment_content: str = ""
+            last_sent: float = 0.0
+            first_push_at: "Optional[float]" = None
+            active_send_mode: bool = False
+            active_send_reason: str = ""
+            active_send_started_at: "Optional[float]" = None
+            current_stream_closed: bool = False
+            final_active_sent: bool = False
+            delivered_content: str = ""
+
+        state = _WsState(stream_id=f"ws_stream_{uuid.uuid4().hex[:12]}")
         ws_interval = max(
             getattr(channel.config, "ws_stream_interval_ms", 500) / 1000.0,
             0.2,
         )
-        buffer = {"content": "", "last_sent": 0.0}
+        soft_limit = max(int(getattr(channel.config, "ws_stream_soft_limit_seconds", 330) or 330), 30)
+        hard_limit = max(int(getattr(channel.config, "ws_stream_hard_limit_seconds", 350) or 350), soft_limit + 5)
+        rollover_notice = "⏭️ 长内容自动分段：接下文..."
+        active_send_notice = "⏭️ 长回复处理中，完成后将主动发送后续结果。"
+        active_chat_type = (message.metadata or {}).get("chattype") or message.chat_type or None
 
-        async def _maybe_push(*, force: bool = False, finish: bool = False) -> None:
-            content = buffer["content"]
-            if not content and not finish:
+        # Track in-progress tool start placeholders so the summary can replace them
+        _ws_tool_placeholders: Dict[str, str] = {}  # tool_id -> placeholder text
+        final_output_content = ""
+
+        def _segment_payload(content: str) -> str:
+            return self._truncate_response(content, "wecom") if content else ""
+
+        def _stream_elapsed() -> float:
+            if state.first_push_at is None:
+                return 0.0
+            return max(time.time() - state.first_push_at, 0.0)
+
+        def _can_rollover_now() -> bool:
+            return bool(state.segment_content) and not _ws_tool_placeholders
+
+        def _remember_delivered_content(content: str) -> None:
+            if not content:
+                return
+
+            normalized = content
+            for placeholder in _ws_tool_placeholders.values():
+                normalized = normalized.replace(f"\n\n{placeholder}\n\n", "\n\n")
+                normalized = normalized.replace(placeholder, "")
+            normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
+            if normalized:
+                state.delivered_content += normalized
+
+        def _build_active_send_payload(content: str) -> str:
+            normalized = _segment_payload(content)
+            if not normalized:
+                return ""
+
+            delivered = state.delivered_content
+            if delivered and normalized.startswith(delivered):
+                remaining = normalized[len(delivered):].lstrip()
+                if remaining:
+                    return remaining
+
+            return normalized
+
+        async def _send_active_message(content: str) -> bool:
+            if not content:
+                return False
+
+            sender = getattr(channel, "send_ws_active_message", None)
+            if callable(sender):
+                return await sender(
+                    message.chat_id,
+                    content,
+                    msgtype="markdown",
+                    chat_type=active_chat_type,
+                )
+
+            return await channel.send_ws_msg(
+                message.chat_id,
+                content,
+                msgtype="markdown",
+                chat_type=active_chat_type,
+            )
+
+        async def _close_current_stream(*, notice: str = "") -> None:
+            if state.current_stream_closed:
+                return
+
+            payload_source = state.segment_content
+            if state.segment_content:
+                _remember_delivered_content(state.segment_content)
+            if notice:
+                payload_source = f"{payload_source}\n\n{notice}".strip() if payload_source else notice
+            payload = _segment_payload(payload_source)
+            if payload:
+                await channel.send_ws_stream_finish(req_id, state.stream_id, payload)
+
+            # Flush completely, so the next stage starts cleanly.
+            state.segment_content = ""
+            state.last_sent = 0.0
+            state.first_push_at = None
+            state.current_stream_closed = True
+
+        async def _rollover_stream(reason: str) -> None:
+            logger.info(
+                f"[wecom] WS stream rollover triggered: req_id={req_id}, "
+                f"chat_id={message.chat_id}, old_stream_id={state.stream_id}, "
+                f"elapsed={_stream_elapsed():.1f}, reason={reason}"
+            )
+            await _close_current_stream(notice=rollover_notice)
+            state.stream_id = f"ws_stream_{uuid.uuid4().hex[:12]}"
+            state.current_stream_closed = False
+
+        async def _switch_to_active_send(reason: str) -> None:
+            if state.active_send_mode:
+                return
+
+            elapsed = _stream_elapsed()
+            state.active_send_mode = True
+            state.active_send_reason = reason
+            state.active_send_started_at = time.time()
+            logger.info(
+                f"[wecom] WS stream switching to active send: req_id={req_id}, "
+                f"chat_id={message.chat_id}, stream_id={state.stream_id}, "
+                f"elapsed={elapsed:.1f}, reason={reason}"
+            )
+            await _close_current_stream(notice=active_send_notice)
+
+        async def _maybe_rollover_stream(*, boundary_safe: bool, reason: str) -> None:
+            """Evaluate whether to roll over or switch to active send."""
+            if state.active_send_mode or state.first_push_at is None:
+                return
+            elapsed = _stream_elapsed()
+            if elapsed < soft_limit:
+                return
+
+            # WeCom WS mode strongly supports sequential distinct stream bubbles for long output,
+            # but once we cross the hard limit we stop streaming and rely on主动补发收尾。
+            if boundary_safe and _can_rollover_now():
+                await _rollover_stream(f"{reason}-soft-limit")
+                return
+            if elapsed >= hard_limit:
+                await _switch_to_active_send(f"{reason}-hard-limit")
+
+        async def _maybe_push(*, force: bool = False) -> None:
+            if state.active_send_mode:
+                return
+
+            content = state.segment_content
+            if not content:
                 return
             now = time.time()
-            if not force and not finish and buffer["last_sent"] > 0 and (now - buffer["last_sent"]) < ws_interval:
+            if not force and state.last_sent > 0 and (now - state.last_sent) < ws_interval:
                 return
-            payload = self._truncate_response(content, "wecom") if content else ""
-            ok = await channel.send_ws_stream_update(req_id, stream_id, payload, finish=finish)
+            if state.first_push_at is not None and _stream_elapsed() >= hard_limit and _ws_tool_placeholders:
+                await _switch_to_active_send("hard-limit-before-unsafe-update")
+                return
+            payload = _segment_payload(content)
+            if not payload:
+                return
+            ok = await channel.send_ws_stream_update(req_id, state.stream_id, payload, finish=False)
             if ok:
-                buffer["last_sent"] = time.time()
+                sent_at = time.time()
+                state.current_stream_closed = False
+                if state.first_push_at is None:
+                    state.first_push_at = sent_at
+                state.last_sent = sent_at
 
         async def _on_text(text: str) -> None:
             if not text:
                 return
-            buffer["content"] += text
+            state.segment_content += text
             await _maybe_push()
-
-        # Track in-progress tool start placeholders so the summary can replace them
-        _ws_tool_placeholders: Dict[str, str] = {}  # tool_id -> placeholder text
+            await _maybe_rollover_stream(
+                boundary_safe=True,
+                reason="text-boundary",
+            )
 
         async def _on_tool_start(tool_id: str, tool_name: str) -> None:
             display = self._get_tool_display_name(tool_name, {})
             placeholder = f"⏳ `{display}`"
             _ws_tool_placeholders[tool_id] = placeholder
-            if buffer["content"]:
-                buffer["content"] += "\n\n"
-            buffer["content"] += placeholder
-            buffer["content"] += "\n\n"
+            if state.segment_content:
+                state.segment_content += "\n\n"
+            state.segment_content += placeholder
+            state.segment_content += "\n\n"
             await _maybe_push(force=True)
+            await _maybe_rollover_stream(boundary_safe=False, reason="tool-start")
 
         async def _on_tool_display_update(tool_id: str, new_display: str) -> None:
             old_placeholder = _ws_tool_placeholders.get(tool_id)
             if not old_placeholder:
                 return
             new_placeholder = f"⏳ `{new_display}`"
-            if old_placeholder in buffer["content"]:
-                buffer["content"] = buffer["content"].replace(old_placeholder, new_placeholder, 1)
+            if old_placeholder in state.segment_content:
+                state.segment_content = state.segment_content.replace(old_placeholder, new_placeholder, 1)
                 _ws_tool_placeholders[tool_id] = new_placeholder
                 await _maybe_push(force=True)
+                await _maybe_rollover_stream(boundary_safe=False, reason="tool-display-update")
 
         async def _on_tool(tool_id: str, summary: str) -> None:
             if not summary:
                 return
-            # Use tool_id to precisely locate the correct placeholder
             placeholder = _ws_tool_placeholders.pop(tool_id, None)
-            if placeholder and placeholder in buffer["content"]:
-                buffer["content"] = buffer["content"].replace(placeholder, summary, 1)
+            if placeholder and placeholder in state.segment_content:
+                state.segment_content = state.segment_content.replace(placeholder, summary, 1)
             else:
-                if buffer["content"]:
-                    buffer["content"] += "\n\n"
-                buffer["content"] += summary
-                buffer["content"] += "\n\n"
+                if state.segment_content:
+                    state.segment_content += "\n\n"
+                state.segment_content += summary
+                state.segment_content += "\n\n"
             await _maybe_push(force=True)
+            await _maybe_rollover_stream(boundary_safe=True, reason="tool-summary")
+
+        def _finalize_pending_tool_placeholders() -> None:
+            if not _ws_tool_placeholders:
+                return
+            for tool_id, placeholder in list(_ws_tool_placeholders.items()):
+                summary = placeholder.replace("⏳", "🔧", 1)
+                if placeholder in state.segment_content:
+                    state.segment_content = state.segment_content.replace(placeholder, summary, 1)
+                else:
+                    if state.segment_content:
+                        state.segment_content += "\n\n"
+                    state.segment_content += summary
+                    state.segment_content += "\n\n"
+                _ws_tool_placeholders.pop(tool_id, None)
 
         try:
             result = await self._consume_executor_events(
@@ -1134,29 +1378,46 @@ class ChannelService:
             if content:
                 content = self._truncate_response(content, "wecom")
                 content = self._prepend_tool_summaries(content, result)
+                final_output_content = content
 
-                current = buffer["content"]
-                if not current:
-                    buffer["content"] = content
-                elif content.startswith(current) or current in content:
-                    buffer["content"] = content
+                # In rollover mode, we don't completely override the accumulated stream text
+                # to prevent duplicating bubbles. We only ensure pending components exist if we miss them.
+                if not state.segment_content and content:
+                    state.segment_content = content
                 elif result.tool_summaries:
-                    missing = [s for s in result.tool_summaries if s not in current]
+                    missing = [s for s in result.tool_summaries if s not in state.segment_content]
                     if missing:
-                        if buffer["content"]:
-                            buffer["content"] += "\n\n"
-                        buffer["content"] += "\n".join(missing)
+                        state.segment_content += "\n\n" + "\n".join(missing)
+
             elif result.is_error and not result.final_content:
-                if buffer["content"]:
-                    buffer["content"] += "\n\n"
-                buffer["content"] += "⏰ 处理超时，请稍后重试。"
+                if state.segment_content:
+                    state.segment_content += "\n\n"
+                state.segment_content += "⏰ 处理超时，请稍后重试。"
+                final_output_content = state.segment_content
         except Exception as e:
             logger.error(f"[wecom] AI processing error (websocket): {e}", exc_info=True)
-            buffer["content"] = f"❌ 处理出错：{str(e)[:200]}"
+            state.segment_content = f"❌ 处理出错：{str(e)[:200]}"
+            final_output_content = state.segment_content
         finally:
-            final_content = self._truncate_response(buffer["content"], "wecom") if buffer["content"] else ""
-            if final_content:
-                await channel.send_ws_stream_finish(req_id, stream_id, final_content)
+            _finalize_pending_tool_placeholders()
+            if not final_output_content:
+                final_output_content = state.segment_content
+
+            if state.active_send_mode:
+                active_payload = _build_active_send_payload(final_output_content)
+                if active_payload:
+                    state.final_active_sent = await _send_active_message(active_payload)
+                    logger.info(
+                        f"[wecom] WS active send finalized: req_id={req_id}, "
+                        f"chat_id={message.chat_id}, stream_id={state.stream_id}, "
+                        f"reason={state.active_send_reason or 'unknown'}, "
+                        f"success={state.final_active_sent}"
+                    )
+                return
+
+            final_content = _segment_payload(state.segment_content)
+            if final_content and not state.current_stream_closed:
+                await channel.send_ws_stream_finish(req_id, state.stream_id, final_content)
 
     async def _process_wecom_stream(
         self,

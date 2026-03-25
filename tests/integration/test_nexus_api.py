@@ -1017,8 +1017,11 @@ class TestTaskAPI:
 
     @pytest.mark.asyncio
     async def test_task_agui_messages_success(self, client, mock_storage, mock_task_queue, tmp_path):
-        task_id = "abc123"
-        log_path = tmp_path / "ubuntu" / ".nexus" / "sessions" / f"task_{task_id}" / ".claude" / "conversation.json"
+        task = next(iter(mock_task_queue._tasks.values()))
+        task.session_id = "sess-real"
+        task.exec_user = "ubuntu"
+
+        log_path = tmp_path / "ubuntu" / ".nexus" / "sessions" / task.session_id / ".claude" / "conversation.json"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text(
             '[{"role":"user","content":"hi","timestamp":"2026-01-01T00:00:00Z"},{"role":"assistant","content":"hello"}]',
@@ -1029,7 +1032,7 @@ class TestTaskAPI:
              patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue), \
              patch('src.server.routers.nexus.settings.user_home_base', str(tmp_path)):
             response = await client.get(
-                f"/api/nexus/tasks/{task_id}/agui/messages",
+                f"/api/nexus/tasks/{task.id}/agui/messages",
                 params={"exec_user": "ubuntu", "tail": 1}
             )
 
@@ -1038,6 +1041,32 @@ class TestTaskAPI:
         assert data["type"] == "MESSAGES_SNAPSHOT"
         assert len(data["messages"]) == 1
         assert data["messages"][0]["role"] == "assistant"
+
+    @pytest.mark.asyncio
+    async def test_task_agui_messages_legacy_task_dir_fallback(self, client, mock_storage, mock_task_queue, tmp_path):
+        task = next(iter(mock_task_queue._tasks.values()))
+        task.session_id = "sess-missing"
+        task.exec_user = "ubuntu"
+
+        log_path = tmp_path / "ubuntu" / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            '[{"role":"assistant","content":"legacy hello"}]',
+            encoding="utf-8",
+        )
+
+        with patch('src.server.routers.nexus.get_session_storage', return_value=mock_storage), \
+             patch('src.server.routers.nexus._get_task_queue', return_value=mock_task_queue), \
+             patch('src.server.routers.nexus.settings.user_home_base', str(tmp_path)):
+            response = await client.get(
+                f"/api/nexus/tasks/{task.id}/agui/messages",
+                params={"exec_user": "ubuntu", "tail": 1}
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["type"] == "MESSAGES_SNAPSHOT"
+        assert data["messages"][0]["content"] == "legacy hello"
 
     @pytest.mark.asyncio
     async def test_task_agui_messages_accept_large_tail(self, client, mock_storage, mock_task_queue):

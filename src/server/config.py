@@ -98,6 +98,9 @@ class ServerSettings(BaseSettings):
     wecom_reconnect_base_delay: float = 5.0  # 重连基础延迟（秒）
     wecom_reconnect_max_delay: float = 60.0  # 重连最大延迟（秒）
     wecom_ws_stream_interval_ms: int = 500  # WS 流式更新间隔（毫秒）
+    wecom_cli_timeout: int = 1800  # 企微智能机器人 CLI 超时（秒），用于长任务/多段流式回复
+    wecom_ws_stream_soft_limit_seconds: int = 330  # WS 单段流在软截止后等待安全边界切流
+    wecom_ws_stream_hard_limit_seconds: int = 350  # WS 单段流硬截止，避免踩到企微 6 分钟上限
 
     # 企业微信普通机器人 (WeCom Bot) 配置
     wecom_bot_token: str | None = None  # 回调配置的 Token
@@ -106,6 +109,12 @@ class ServerSettings(BaseSettings):
     wecom_bot_stream_chunk_size: int = 50  # 流式模拟每次发送字符数（群聊生效）
     wecom_bot_stream_interval_ms: int = 200  # 流式模拟发送间隔 ms（群聊生效）
     wecom_bot_cli_timeout: int = 1800  # 企微普通机器人 CLI 超时（秒），避免交互/慢任务过早超时
+
+    # 微信个人号 (WeChat Personal via iLink Bot API) 配置
+    wechat_bot_token: str | None = None  # iLink bot token（扫码登录后获取）
+    wechat_base_url: str = "https://ilinkai.weixin.qq.com"  # API 基础 URL
+    wechat_poll_timeout_ms: int = 35000  # getUpdates 长轮询超时（毫秒）
+    wechat_api_timeout_ms: int = 15000  # 普通 API 请求超时（毫秒）
 
     # Channel-level provider/alias/exec_user overrides
     # Format: <CHANNEL>_PROVIDER / <CHANNEL>_ALIAS / <CHANNEL>_EXEC_USER
@@ -129,6 +138,9 @@ class ServerSettings(BaseSettings):
     wecom_bot_provider: str | None = None
     wecom_bot_alias: str | None = None
     wecom_bot_exec_user: str | None = None
+    wechat_provider: str | None = None
+    wechat_alias: str | None = None
+    wechat_exec_user: str | None = None
 
     model_config = {
         "env_file": ".env",

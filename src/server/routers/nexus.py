@@ -33,6 +33,7 @@ from ..models import (
     MessageStatus,
 )
 from ..services.task_storage import TaskQueue
+from ..services.user_directory import UserDirectoryManager
 from src.runtime.commands.slash.handler import slugify_project
 from ..providers import get_provider_registry
 from ..services.session_storage import get_session_storage
@@ -40,6 +41,7 @@ from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
+_user_dir_manager = UserDirectoryManager(settings)
 
 router = APIRouter(prefix="/api/nexus", tags=["nexus"], dependencies=[Depends(verify_nexus_auth)])
 
@@ -478,8 +480,6 @@ def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     - Regular session: /home/{exec_user}/.nexus/sessions/{session_id}/
     - Task session with inplace workspace: workspace directory from task
     """
-    current_user = pwd.getpwuid(os.getuid()).pw_name
-
     # Check if this is a task session (has task_id in meta) and has an inplace workspace
     try:
         from ..services.session_storage import get_session_storage
@@ -495,12 +495,7 @@ def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     except Exception:
         pass
 
-    # Default session folder path
-    if current_user != exec_user and os.geteuid() != 0:
-        base_dir = Path.home() / exec_user / ".nexus" / "sessions" / session_id
-    else:
-        base_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
-
+    base_dir = _user_dir_manager.resolve_session_directory(exec_user, session_id)
     return base_dir if base_dir.exists() else None
 
 
@@ -1205,22 +1200,29 @@ async def bulk_delete_tasks(
     return TaskBulkResponse(success=True, message=f"Deleted {len(deleted)} tasks", result=result)
 
 
-def _resolve_task_conversation_log_path(exec_user: str, task_id: str) -> Path:
+def _resolve_task_conversation_log_path(exec_user: str, task_id: str, task=None) -> Path:
     """解析任务对话日志路径。
 
-    注意：`UserDirectoryManager` 在非 root 且 current_user != exec_user 时会降级到当前用户 HOME 下。
-    这里必须复用相同规则，否则 UI 会一直拿不到对话记录。
+    优先使用任务元数据里的真实 `session_id` 与 `exec_user`，
+    仅在旧任务/旧目录布局下才回退到 legacy session 命名。
     """
-    session_id = f"task_{task_id}"
-    preferred_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
-
-    current_user = pwd.getpwuid(os.getuid()).pw_name
-    if current_user != exec_user and os.geteuid() != 0:
-        base_dir = Path.home() / exec_user / ".nexus" / "sessions" / session_id
-    else:
-        base_dir = preferred_dir
-
-    return base_dir / ".claude" / "conversation.json"
+    resolved_exec_user = (getattr(task, "exec_user", None) or exec_user or "").strip() or exec_user
+    resolved_session_id = (getattr(task, "session_id", None) or "").strip() or None
+    session_dir, actual_session_id, used_legacy_fallback = _user_dir_manager.resolve_task_session_directory(
+        resolved_exec_user,
+        task_id,
+        resolved_session_id,
+    )
+    if used_legacy_fallback:
+        logger.info(
+            "Resolved task conversation log via legacy session fallback",
+            extra={
+                "task_id": task_id,
+                "exec_user": resolved_exec_user,
+                "resolved_session_id": actual_session_id,
+            },
+        )
+    return session_dir / ".claude" / "conversation.json"
 
 
 def _sanitize_text(text: str) -> str:
@@ -1352,7 +1354,7 @@ async def get_task_agui_messages(
         pass
 
     # 2) Fallback to filesystem conversation log
-    log_path = _resolve_task_conversation_log_path(exec_user=exec_user, task_id=task_id)
+    log_path = _resolve_task_conversation_log_path(exec_user=exec_user, task_id=task_id, task=task)
 
     if not log_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task conversation log not found")
@@ -1385,6 +1387,16 @@ def _parse_last_event_id(request: Request) -> Optional[int]:
         return int(str(v).strip())
     except Exception:
         return None
+
+
+def _resolve_session_stale_timeout_seconds(session_id: str) -> int:
+    """Resolve stale self-heal threshold for a runtime session."""
+    base_timeout = int(getattr(settings, "cli_timeout", 600) or 600)
+    if session_id.startswith("channel_wecom_bot_"):
+        return max(base_timeout, int(getattr(settings, "wecom_bot_cli_timeout", 0) or 0), 60) + 60
+    if session_id.startswith("channel_wecom_"):
+        return max(base_timeout, int(getattr(settings, "wecom_cli_timeout", 0) or 0), 60) + 60
+    return max(base_timeout, 60) + 60
 
 
 def _self_heal_running_session(storage, session_id: str, updated_at) -> Optional[SessionStatus]:
@@ -1435,8 +1447,8 @@ def _self_heal_running_session(storage, session_id: str, updated_at) -> Optional
             logger.info(f"Self-healed session {session_id} status: running -> {new_status.value}")
             return new_status
 
-    # Stale timeout: cli_timeout + 60 seconds with no terminal event
-    stale_threshold_seconds = max(int(getattr(settings, "cli_timeout", 600) or 600) + 60, 60)
+    # Stale timeout: effective session timeout + 60 seconds with no terminal event
+    stale_threshold_seconds = _resolve_session_stale_timeout_seconds(session_id)
     stale_threshold_ms = stale_threshold_seconds * 1000
     if updated_at_ms > 0 and (now_ms - updated_at_ms) > stale_threshold_ms:
         storage.update_session_status(session_id, SessionStatus.COMPLETED)

@@ -2851,16 +2851,48 @@ class ChatView {
         }
     }
 
+    normalizeContentSegments(segments) {
+        if (!Array.isArray(segments) || segments.length === 0) {
+            return [];
+        }
+
+        const sortedSegments = [...segments].sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+        const normalized = [];
+
+        for (const segment of sortedSegments) {
+            if (!segment || !segment.type) continue;
+
+            if (segment.type === 'text') {
+                const text = segment.content ?? '';
+                if (!text) continue;
+
+                const prev = normalized[normalized.length - 1];
+                if (prev && prev.type === 'text') {
+                    prev.content = `${prev.content || ''}${text}`;
+                    continue;
+                }
+
+                normalized.push({ ...segment, content: text });
+                continue;
+            }
+
+            normalized.push({ ...segment });
+        }
+
+        return normalized;
+    }
+
     renderMessage(msg, toolCalls) {
         const isUser = msg.role === 'user';
         const avatar = isUser ? 'U' : 'A';
         const timeStr = this.formatTime(msg.timestamp);
         const hasContent = msg.content && msg.content.trim();
+        const normalizedSegments = this.normalizeContentSegments(msg.content_segments);
 
         // Find tool calls for this message
         const messageToolCallIds = new Set([
             ...(msg.tool_call_ids || []),
-            ...((msg.content_segments || [])
+            ...(normalizedSegments
                 .filter(segment => segment.type === 'tool_call' && segment.tool_call_id)
                 .map(segment => segment.tool_call_id))
         ]);
@@ -2874,11 +2906,8 @@ class ChatView {
         let bubbleContent = '';
         
         // Check if message has content_segments for ordered rendering
-        if (msg.content_segments && msg.content_segments.length > 0) {
-            // Sort segments by sequence number
-            const sortedSegments = [...msg.content_segments].sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
-            
-            for (const segment of sortedSegments) {
+        if (normalizedSegments.length > 0) {
+            for (const segment of normalizedSegments) {
                 if (segment.type === 'text' && segment.content) {
                     bubbleContent += `<div class="message-text">${this.formatMessageContent(segment.content)}</div>`;
                 } else if (segment.type === 'tool_call' && segment.tool_call_id) {

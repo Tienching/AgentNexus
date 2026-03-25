@@ -15,6 +15,7 @@ class ChannelType(str, Enum):
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_BOT = "wecom_bot"
+    WECHAT = "wechat"
 
 
 @dataclass
@@ -195,6 +196,8 @@ class WeComConfig(ChannelConfig):
     reconnect_base_delay: float = 5.0  # 重连基础延迟（秒）
     reconnect_max_delay: float = 60.0  # 重连最大延迟（秒）
     ws_stream_interval_ms: int = 500  # WS 流式更新间隔（毫秒）
+    ws_stream_soft_limit_seconds: int = 330  # 单段 stream.id 软截止（秒）
+    ws_stream_hard_limit_seconds: int = 350  # 单段 stream.id 硬截止（秒）
 
     def __post_init__(self):
         super().__post_init__()
@@ -246,6 +249,32 @@ class WeComBotConfig(ChannelConfig):
             raise ValueError("WeCom Bot webhook_key is required")
 
 
+@dataclass
+class WeChatConfig(ChannelConfig):
+    """微信个人号 (WeChat Personal via iLink Bot API) 配置
+
+    通过 iLink Bot API 接入微信个人号，使用 HTTP JSON + Long-Polling 模式收发消息。
+
+    必填：bot_token（通过扫码登录获取）
+
+    参考文档: https://github.com/nicepkg/openclaw-weixin (openclaw-weixin plugin)
+    """
+    type: ChannelType = ChannelType.WECHAT
+    bot_token: str = ""  # iLink bot token（扫码登录后获取）
+    base_url: str = "https://ilinkai.weixin.qq.com"  # API 基础 URL
+    poll_timeout_ms: int = 35000  # getUpdates 长轮询超时（毫秒）
+    api_timeout_ms: int = 15000  # 普通 API 请求超时（毫秒）
+    reconnect_max_attempts: int = 20  # 最大重连次数
+    reconnect_base_delay: float = 5.0  # 重连基础延迟（秒）
+    reconnect_max_delay: float = 60.0  # 重连最大延迟（秒）
+    sync_buf_path: str = ""  # get_updates_buf 持久化路径（空则用默认）
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not self.bot_token:
+            raise ValueError("WeChat bot_token is required")
+
+
 # 配置类型映射
 CONFIG_MAP = {
     ChannelType.TELEGRAM: TelegramConfig,
@@ -256,6 +285,7 @@ CONFIG_MAP = {
     ChannelType.FEISHU: FeishuConfig,
     ChannelType.WECOM: WeComConfig,
     ChannelType.WECOM_BOT: WeComBotConfig,
+    ChannelType.WECHAT: WeChatConfig,
 }
 
 

@@ -90,12 +90,20 @@ class StreamArchiver:
             if existing:
                 # Update existing session
                 self._storage.update_session_status(self.session_id, SessionStatus.RUNNING)
-                if self.provider and not existing.provider:
+                meta_changed = False
+                if self.username and existing.username != self.username:
+                    existing.username = self.username
+                    meta_changed = True
+                if self.exec_user and existing.exec_user != self.exec_user:
+                    existing.exec_user = self.exec_user
+                    meta_changed = True
+                if self.provider and existing.provider != self.provider:
                     existing.provider = self.provider
-                    existing.updated_at = int(time.time() * 1000)
-                    self._storage.save_session_meta(existing)
-                if self.alias and not getattr(existing, "alias", None):
+                    meta_changed = True
+                if self.alias and getattr(existing, "alias", None) != self.alias:
                     existing.alias = self.alias
+                    meta_changed = True
+                if meta_changed:
                     existing.updated_at = int(time.time() * 1000)
                     self._storage.save_session_meta(existing)
                 self._initialized = True
@@ -423,12 +431,18 @@ class StreamArchiver:
     def _append_text_segment(self, content: str) -> None:
         if not content:
             return
-        self._content_segments.append(ContentSegment(
-            type="text",
-            content=content,
-            sequence=self._segment_sequence,
-        ))
-        self._segment_sequence += 1
+
+        if self._content_segments and self._content_segments[-1].type == "text":
+            previous = self._content_segments[-1].content or ""
+            self._content_segments[-1].content = f"{previous}{content}"
+        else:
+            self._content_segments.append(ContentSegment(
+                type="text",
+                content=content,
+                sequence=self._segment_sequence,
+            ))
+            self._segment_sequence += 1
+
         self._last_text_content = self._current_message_content
 
     def _update_current_message(self) -> None:
@@ -456,12 +470,7 @@ class StreamArchiver:
         if self._current_message_content and self._current_message_content != self._last_text_content:
             new_text = self._current_message_content[len(self._last_text_content):]
             if new_text.strip():
-                self._content_segments.append(ContentSegment(
-                    type="text",
-                    content=new_text,
-                    sequence=self._segment_sequence
-                ))
-                self._segment_sequence += 1
+                self._append_text_segment(new_text)
             self._last_text_content = self._current_message_content
         
         # Add tool call segment
@@ -542,20 +551,11 @@ class StreamArchiver:
             if content and content != self._last_text_content:
                 remaining_text = content[len(self._last_text_content):]
                 if remaining_text.strip():
-                    self._content_segments.append(ContentSegment(
-                        type="text",
-                        content=remaining_text,
-                        sequence=self._segment_sequence
-                    ))
-                    self._segment_sequence += 1
+                    self._append_text_segment(remaining_text)
             
             # If no segments but have content, create a single text segment
             if not self._content_segments and content:
-                self._content_segments.append(ContentSegment(
-                    type="text",
-                    content=content,
-                    sequence=0
-                ))
+                self._append_text_segment(content)
             
             # Update message
             msg = StoredMessage(

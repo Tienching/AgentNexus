@@ -42,8 +42,8 @@ class StreamHandler:
     def __init__(self):
         self._cli_executor = CLIExecutor(config=settings)
         self._gemini_executor = GeminiExecutor(config=settings)
-        self._codex_executor = CodexCLIExecutor()
-        self._codebuddy_executor = CodebuddyCLIExecutor()
+        self._codex_executor = CodexCLIExecutor(config=settings)
+        self._codebuddy_executor = CodebuddyCLIExecutor(config=settings)
         self.callback_handler = CallbackHandler()
 
     def _get_provider(self, request: Request, body_dict: Dict[str, Any]) -> str:
@@ -277,13 +277,23 @@ class StreamHandler:
         # In /workspace -t mode, the workspace provider (stored in Redis session)
         # should override the request-level provider for executor and adapter selection.
         # Without this, a workspace using gemini would get a Claude executor/adapter.
-        # Priority: workspace_provider (from /workspace -t) > handoff_provider > request default
+        # Priority: session-level exec_user/provider overrides > workspace_provider > handoff_provider > request default
         session_id = resolved_session_id
         workspace_provider = None
         workspace_alias = None
+        storage = None
         if session_id:
             try:
                 storage = get_session_storage()
+
+                session_exec_user = storage.get_session_exec_user(session_id)
+                if session_exec_user and session_exec_user != exec_user:
+                    logger.info(
+                        f"Session exec_user override: {exec_user} -> {session_exec_user}",
+                        extra={"session_id": session_id, "session_exec_user": session_exec_user},
+                    )
+                    exec_user = session_exec_user
+
                 workspace_provider = storage.get_workspace_provider(session_id)
                 if workspace_provider:
                     logger.info(
@@ -315,7 +325,7 @@ class StreamHandler:
                     request_model.cwd_mode = "inplace"
                     logger.info(f"Workspace exec_dir override: {exec_dir_override}")
             except Exception as e:
-                logger.warning(f"Failed to check workspace/switch provider/alias: {e}")
+                logger.warning(f"Failed to check workspace/switch provider/alias/exec_user: {e}")
 
         request_model.provider = provider
         request_model.agent_type = provider
@@ -615,7 +625,7 @@ class StreamHandler:
         msg_id = agui_request.get_msg_id()
         
         # Create archiver for session storage
-        username = request_model.user or "anonymous"
+        username = exec_user or request_model.user or "anonymous"
         alias = agui_request.get_alias() or provider
         archiver = create_archiver(
             thread_id=agui_request.threadId,

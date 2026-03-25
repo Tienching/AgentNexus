@@ -27,6 +27,7 @@ from ...models.session import StoredMessage
 from ...stores.task_storage import TaskQueue
 from ...stores.user_config import UserConfigStore
 from ...stores.concurrency_config import get_concurrency_config_store
+from ....server.services.user_directory import UserDirectoryManager
 from .worktree import (
     NotGitRepoError,
     WorktreeDirConflictError,
@@ -78,14 +79,11 @@ class SlashCommandHandler:
 
         # User config store (Redis)
         self._user_config_store = UserConfigStore()
+        self._user_dir_manager = UserDirectoryManager(config)
 
         # Store startup CWD for /exit command
-        # Use config.user_home_base or Path.home() to ensure stability
-        # avoiding issues where process CWD has already changed
-        base = Path(self.config.user_home_base)
-        if str(base).strip() == "/home":
-            base = Path.home()
-        self.startup_cwd = base
+        # Prefer the effective exec_user home root rather than the current process home.
+        self.startup_cwd = self._user_dir_manager.resolve_user_home(exec_user)
 
     @property
     def task_queue(self) -> TaskQueue:
@@ -93,6 +91,27 @@ class SlashCommandHandler:
         if self._task_queue is None:
             self._task_queue = TaskQueue(self._db_path, self.exec_user)
         return self._task_queue
+
+    def _resolve_session_exec_user(self, session_id: Optional[str]) -> str:
+        """Resolve the effective exec_user for a runtime session."""
+        if not session_id:
+            return self.exec_user
+        try:
+            storage = get_session_storage()
+            return storage.get_session_exec_user(session_id) or self.exec_user
+        except Exception:
+            return self.exec_user
+
+    def _resolve_session_directory(self, session_id: str, exec_user: Optional[str] = None) -> Path:
+        """Resolve the default session directory for the given runtime session."""
+        resolved_exec_user = (exec_user or "").strip() or self._resolve_session_exec_user(session_id)
+        return self._user_dir_manager.resolve_session_directory(resolved_exec_user, session_id)
+
+    def _resolve_task_session_directory(self, task) -> Tuple[Path, str, bool]:
+        """Resolve the best-matching session directory for a task."""
+        task_exec_user = (getattr(task, "exec_user", None) or self.exec_user or "").strip() or self.exec_user
+        task_session_id = (getattr(task, "session_id", None) or "").strip() or None
+        return self._user_dir_manager.resolve_task_session_directory(task_exec_user, str(task.id), task_session_id)
 
     def is_slash_command(self, content: str) -> bool:
         """Check if content starts with a known slash command"""
@@ -117,6 +136,9 @@ class SlashCommandHandler:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        notification_sink_type: Optional[str] = None,
+        notification_channel: Optional[str] = None,
+        notification_chat_id: Optional[str] = None,
     ) -> str:
         """Handle a slash command and return markdown response.
 
@@ -129,6 +151,11 @@ class SlashCommandHandler:
             response_url: Optional callback URL for async task completion notification
             callback_msg_id: Optional message ID to pass back in callback
             callback_user: Optional user identifier for callback
+            notification_sink_type: Unified sink type for task completion notification
+                                    (e.g. "wecom" for WebSocket mode). Takes priority
+                                    over response_url when set.
+            notification_channel: Channel name for unified notification.
+            notification_chat_id: Chat/channel ID for unified notification.
 
         Notes:
             - Free text MUST appear after `--`.
@@ -172,6 +199,9 @@ class SlashCommandHandler:
                     response_url=response_url,
                     callback_msg_id=callback_msg_id,
                     callback_user=callback_user,
+                    notification_sink_type=notification_sink_type,
+                    notification_channel=notification_channel,
+                    notification_chat_id=notification_chat_id,
                 )
 
             if parsed.cmd == "chat" and parsed.subcmd == "history":
@@ -187,6 +217,9 @@ class SlashCommandHandler:
                     response_url=response_url,
                     callback_msg_id=callback_msg_id,
                     callback_user=callback_user,
+                    notification_sink_type=notification_sink_type,
+                    notification_channel=notification_channel,
+                    notification_chat_id=notification_chat_id,
                 )
 
             if parsed.cmd == "check" and parsed.subcmd == "status":
@@ -244,10 +277,12 @@ class SlashCommandHandler:
                     provider=parsed.options.get("provider"),
                     alias=parsed.options.get("alias"),
                     model=parsed.options.get("model"),
+                    exec_user=parsed.options.get("exec-user"),
                     auto_summary=bool(parsed.options.get("auto", False)),
                     context_mode=(parsed.options.get("context-mode") or "full"),
                     summary=parsed.free_text,
                     current_session_id=source_session_id,
+                    callback_user=callback_user,
                 )
 
             if parsed.cmd == "history":
@@ -495,6 +530,9 @@ class SlashCommandHandler:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        notification_sink_type: Optional[str] = None,
+        notification_channel: Optional[str] = None,
+        notification_chat_id: Optional[str] = None,
     ) -> str:
         """Handle `/task create` (strict syntax; free text must be after `--`).
 
@@ -625,6 +663,9 @@ class SlashCommandHandler:
             response_url=response_url,
             callback_msg_id=callback_msg_id,
             callback_user=callback_user,
+            notification_sink_type=notification_sink_type or None,
+            notification_channel=notification_channel or None,
+            notification_chat_id=notification_chat_id or None,
         )
 
         priority_emoji = "🔴" if priority == TaskPriority.PROJECT else "💭"
@@ -661,6 +702,9 @@ class SlashCommandHandler:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        notification_sink_type: Optional[str] = None,
+        notification_channel: Optional[str] = None,
+        notification_chat_id: Optional[str] = None,
     ) -> str:
         """Handle `/chat continue` - enqueue a background run for an existing task.
 
@@ -668,6 +712,9 @@ class SlashCommandHandler:
             response_url: Optional callback URL for completion notification.
             callback_msg_id: Optional message ID to pass back in callback.
             callback_user: Optional user identifier for callback.
+            notification_sink_type: Unified sink type for task completion notification.
+            notification_channel: Channel name for unified notification.
+            notification_chat_id: Chat/channel ID for unified notification.
         """
         task_id = (task_id or "").strip()
         msg = (message or "").strip()
@@ -702,6 +749,9 @@ class SlashCommandHandler:
                 response_url=response_url,
                 callback_msg_id=callback_msg_id,
                 callback_user=callback_user,
+                notification_sink_type=notification_sink_type or None,
+                notification_channel=notification_channel or None,
+                notification_chat_id=notification_chat_id or None,
             )
         except Exception as e:
             return f"## ❌ 入队失败\n\n{str(e)}"
@@ -837,8 +887,14 @@ class SlashCommandHandler:
         except Exception as e:
             logger.debug(f"Could not read archived session messages: {e}")
 
-        # Fallback to conversation.json (legacy path)
-        log_path = Path(self.config.user_home_base) / self.exec_user / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        # Fallback to conversation.json using task metadata first, then legacy session layouts
+        log_dir, resolved_session_id, used_legacy_fallback = self._resolve_task_session_directory(task)
+        if used_legacy_fallback:
+            logger.info(
+                "Resolved chat history log via legacy session fallback",
+                extra={"task_id": task.id, "resolved_session_id": resolved_session_id},
+            )
+        log_path = log_dir / ".claude" / "conversation.json"
 
         if log_path.exists():
             try:
@@ -1427,12 +1483,9 @@ class SlashCommandHandler:
             if actual_exec_dir:
                 return f"## 📂 Current Workspace\n\n`{actual_exec_dir}`\n(Overridden by /workspace -t)"
             else:
-                # Default: show the session directory (even if not yet created)
-                base = Path(self.config.user_home_base)
-                if str(base).strip() == "/home":
-                    base = Path.home()
+                # Default: show the real session directory (even if not yet created)
                 if current_session_id:
-                    session_dir = base / ".nexus" / "sessions" / current_session_id
+                    session_dir = self._resolve_session_directory(current_session_id)
                     # Always show the session directory path, regardless of existence
                     # The directory will be created when Claude CLI executes
                     return f"## 📂 Current Workspace\n\n`{session_dir}`"
@@ -1450,39 +1503,19 @@ class SlashCommandHandler:
 
             if task.workspace:
                 target_path = task.workspace
-                found_session_id = task.session_id  # Use task's session_id if workspace is set
+                found_session_id = task.session_id or f"task_{task.id}"  # Preserve legacy fallback for history restore
             else:
-                # Fallback logic to find session directory
-                # 1. Determine correct base (handle misconfigured user_home_base)
-                base = Path(self.config.user_home_base)
-                if str(base).strip() == "/home":
-                    base = Path.home()  # e.g. /home/ubuntu
-
-                sessions_dir = base / ".nexus" / "sessions"
-                found = None
-
-                # 2. Try task.session_id (best match)
-                if task.session_id:
-                    p = sessions_dir / task.session_id
-                    if p.exists():
-                        found = p
-                        found_session_id = task.session_id
-
-                # 3. Search for directory ending in _{task_id} (e.g. uuid_taskid)
-                if not found and sessions_dir.exists():
-                    suffix = f"_{task.id}"
-                    for child in sessions_dir.iterdir():
-                        if child.is_dir() and child.name.endswith(suffix):
-                            found = child
-                            found_session_id = child.name  # Use actual directory name as session_id
-                            break
-
-                # 4. Fallback to standard naming
-                if not found:
-                    found = sessions_dir / f"task_{task.id}"
-                    found_session_id = f"task_{task.id}"
-
-                target_path = str(found)
+                resolved_dir, found_session_id, used_legacy_fallback = self._resolve_task_session_directory(task)
+                if used_legacy_fallback:
+                    logger.info(
+                        "Resolved task workspace via legacy session fallback",
+                        extra={
+                            "task_id": task.id,
+                            "exec_user": getattr(task, "exec_user", None) or self.exec_user,
+                            "resolved_session_id": found_session_id,
+                        },
+                    )
+                target_path = str(resolved_dir)
 
         # Resolve explicit path (overrides task if both provided? or error? prioritizing path)
         if path_arg:
@@ -1589,9 +1622,8 @@ class SlashCommandHandler:
             except Exception as e:
                 logger.warning(f"Failed to clear target_session_id/workspace_provider/workspace_alias: {e}")
 
-            # Return to session directory (the correct "home" for this session)
-            base = self.startup_cwd
-            session_dir = base / ".nexus" / "sessions" / current_session_id
+            # Return to the current session's real directory (respect session exec_user override)
+            session_dir = self._resolve_session_directory(current_session_id)
             # Always use session directory - create it if it doesn't exist
             if not session_dir.exists():
                 try:
@@ -1624,66 +1656,61 @@ class SlashCommandHandler:
         provider: Optional[str] = None,
         alias: Optional[str] = None,
         model: Optional[str] = None,
+        exec_user: Optional[str] = None,
         auto_summary: bool = False,
         context_mode: str = "full",
         summary: Optional[str] = None,
         current_session_id: Optional[str] = None,
+        callback_user: Optional[str] = None,
     ) -> str:
-        """Handle /switch command - switch provider/model with optional context.
+        """Handle `/switch` for provider/model/exec_user switching.
 
         Usage:
-            /switch                      # Show current provider & model
-            /switch -m <model>           # Switch model only (keep current provider)
-            /switch -r <provider>        # Direct switch provider (no context)
-            /switch -l <alias>           # Switch by alias (no context)
-            /switch -r <provider> -m <model>  # Switch provider with model override
-            /switch -r <provider> -a     # Auto-generate context and switch (default full)
-            /switch -l <alias> -a -x windowed  # Auto-generate windowed context and switch by alias
+            /switch                             # Show current provider / alias / exec_user
+            /switch -m <model>                  # Switch model only (keep current provider)
+            /switch -u <exec_user>              # Switch exec_user for current session
+            /switch -r <provider>               # Direct switch provider (no context)
+            /switch -l <alias>                  # Switch by alias (no context)
+            /switch -r <provider> -u <user>     # Switch provider and exec_user together
+            /switch -r <provider> -a            # Auto-generate context and switch (default full)
+            /switch -l <alias> -a -x windowed   # Auto-generate windowed context and switch by alias
             /switch -r <provider> -- <summary>  # Manual summary and switch
-
-        Args:
-            provider: Target provider to switch to
-            alias: Target alias to switch to (alternative to provider)
-            model: LLM model name to use after switching
-            auto_summary: Whether to auto-generate context from current Agent
-            context_mode: Context mode for auto switch, "full" or "windowed"
-            summary: Manual summary text (after --)
-            current_session_id: Current session ID
-
-        Returns:
-            Markdown response, or special JSON for auto-summary trigger
         """
-        import json
-
         effective_model = (model or "").strip() or None
+        effective_exec_user = (exec_user or "").strip() or None
 
-        # Model-only switch: -m <model> without -r or -l
-        if effective_model and not provider and not alias:
-            if not current_session_id:
-                return "## ❌ 无法切换\n\n需要 session_id 才能切换模型。"
+        storage = get_session_storage() if current_session_id else None
+        user_cfg = self._user_config_store.get_all(callback_user) if callback_user else {}
+        session_meta = storage.get_session_meta(current_session_id) if storage and current_session_id else None
 
-            storage = get_session_storage()
-            # Persist model override so ALL subsequent requests use the new model
-            storage.set_model_override(current_session_id, effective_model)
+        default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+        default_alias = (getattr(self.config, "default_alias", None) or "").strip()
+        default_exec_user = (getattr(self.config, "default_exec_user", None) or "").strip()
 
-            user_cfg = self._user_config_store.get_all(current_session_id) if current_session_id else {}
-            default_provider = (getattr(self.config, "default_provider", None) or "").strip()
+        current_provider = (session_meta.provider or "").strip() if session_meta else ""
+        if not current_provider:
             current_provider = (user_cfg.get("provider") or "").strip() or default_provider or "codebuddy"
 
-            # Check if there's an active handoff/switch provider override
+        current_alias = (session_meta.alias or "").strip() if session_meta else ""
+        if not current_alias:
+            current_alias = (user_cfg.get("alias") or "").strip() or default_alias or current_provider
+
+        current_exec_user = ""
+        if storage and current_session_id:
+            current_exec_user = storage.get_session_exec_user(current_session_id) or ""
+        if not current_exec_user and session_meta:
+            current_exec_user = (session_meta.exec_user or session_meta.username or "").strip()
+        if not current_exec_user:
+            current_exec_user = (user_cfg.get("exec_user") or "").strip() or default_exec_user or self.exec_user or ""
+
+        if storage and current_session_id:
             switch_prov = storage.get_handoff_provider(current_session_id)
             if switch_prov:
-                current_provider, _ = switch_prov
-
-            response = "## ✅ 切换模型\n\n"
-            response += f"- **当前 Provider**: `{current_provider}`\n"
-            response += f"- **新 Model**: `{effective_model}`\n\n"
-            response += f"后续对话将使用模型 `{effective_model}`。"
-            return response
+                current_provider, current_alias = switch_prov
 
         # Resolve provider from alias if specified
         target_alias = None
-        target_provider = provider
+        target_provider = (provider or "").strip() or None
 
         if alias:
             from ...stores.alias_registry import get_alias_registry
@@ -1701,66 +1728,99 @@ class SlashCommandHandler:
                     f"**可用别名**: {alias_list}"
                 )
 
-        # No provider/alias/model specified - show current provider and switch status
-        if not target_provider:
-            user_cfg = self._user_config_store.get_all(current_session_id) if current_session_id else {}
-            default_provider = (getattr(self.config, "default_provider", None) or "").strip()
-            current_provider = (user_cfg.get("provider") or "").strip() or default_provider or "codebuddy"
-            current_alias = (user_cfg.get("alias") or "").strip() or current_provider
-
-            response = "## 🔄 当前 Provider\n\n"
-            response += f"| 项 | 值 |\n"
-            response += f"|---|---|\n"
+        # Show current effective switch state
+        if not target_provider and not effective_model and not effective_exec_user:
+            response = "## 🔄 当前会话配置\n\n"
+            response += "| 项 | 值 |\n"
+            response += "|---|---|\n"
             response += f"| Provider | `{current_provider}` |\n"
             response += f"| Alias | `{current_alias}` |\n"
+            response += f"| Exec User | `{current_exec_user or '未设置'}` |\n"
 
-            # Check switch status
-            if current_session_id:
-                storage = get_session_storage()
-                
-                # Check pending summary
+            if current_session_id and storage:
                 pending_target = storage.get_handoff_pending_summary(current_session_id)
                 if pending_target:
-                    response += f"\n### ⏳ 切换状态：等待生成摘要\n\n"
+                    response += "\n### ⏳ 切换状态：等待生成摘要\n\n"
                     response += f"- **目标**: `{pending_target}`\n"
-                    response += f"- **状态**: 待生成摘要\n"
-                    response += f"- **下一步**: 发送任意消息触发摘要生成\n"
+                    response += "- **状态**: 待生成摘要\n"
+                    response += "- **下一步**: 发送任意消息触发摘要生成\n"
                 else:
-                    # Check switch context
                     switch_result = storage.get_handoff_context(current_session_id)
                     if switch_result:
                         ctx, target = switch_result
                         if ctx:
-                            response += f"\n### ✅ 切换状态：已就绪\n\n"
+                            response += "\n### ✅ 切换状态：已就绪\n\n"
                             response += f"- **目标**: `{target}`\n"
-                            response += f"- **状态**: 摘要已生成，等待切换\n"
+                            response += "- **状态**: 摘要已生成，等待切换\n"
                             response += f"- **下一步**: 发送任意消息将切换到 `{target}`\n"
-                            if len(ctx) > 100:
-                                response += f"- **摘要预览**: {ctx[:100]}...\n"
-                            else:
-                                response += f"- **摘要内容**: {ctx}\n"
+                            response += f"- **摘要预览**: {(ctx[:100] + '...') if len(ctx) > 100 else ctx}\n"
                         else:
-                            response += f"\n### 🔄 切换状态：待切换\n\n"
+                            response += "\n### 🔄 切换状态：待切换\n\n"
                             response += f"- **目标**: `{target}`\n"
-                            response += f"- **状态**: 无摘要，直接切换\n"
+                            response += "- **状态**: 无摘要，直接切换\n"
                             response += f"- **下一步**: 发送任意消息将切换到 `{target}`\n"
 
             response += "\n**切换示例：**\n"
+            response += "- `/switch -u tswitch` — 切换当前会话的执行用户\n"
             response += "- `/switch -m claude-opus-4.6` — 仅切换模型\n"
             response += "- `/switch -r codex` — 直接切换 Provider\n"
             response += "- `/switch -l gemini-internal` — 通过别名切换\n"
-            response += "- `/switch -r codex -m gemini-2.5-pro` — 切换 Provider 并指定模型\n"
+            response += "- `/switch -r codex -u tswitch` — 同时切换 Provider 与执行用户\n"
             response += "- `/switch -r codex -a` — 自动生成全量上下文后切换（默认）\n"
             response += "- `/switch -r codex -a -x windowed` — 使用窗口截断上下文后切换\n"
             response += "- `/switch -r codex -- 手动摘要内容` — 手动摘要切换\n"
             return response
+
+        # Model-only switch: -m <model> without provider/alias/exec_user
+        if effective_model and not target_provider and not effective_exec_user:
+            if not current_session_id or not storage:
+                return "## ❌ 无法切换\n\n需要 session_id 才能切换模型。"
+
+            storage.set_model_override(current_session_id, effective_model)
+
+            response = "## ✅ 切换模型\n\n"
+            response += f"- **当前 Provider**: `{current_provider}`\n"
+            response += f"- **新 Model**: `{effective_model}`\n\n"
+            response += f"后续对话将使用模型 `{effective_model}`。"
+            return response
+
+        if effective_exec_user and (auto_summary or summary) and not target_provider:
+            return "## ❌ 参数错误\n\n仅切换 `exec_user` 时，不支持 `-a/--auto` 或手动摘要；请直接使用 `/switch -u <exec_user>`。"
+
+        exec_user_changed = False
+        if effective_exec_user:
+            if not current_session_id or not storage:
+                return "## ❌ 无法切换\n\n需要 session_id 才能切换执行用户。"
+            if effective_exec_user != current_exec_user:
+                if not storage.set_session_exec_user(
+                    current_session_id,
+                    effective_exec_user,
+                    user_home_base=getattr(self.config, "user_home_base", None),
+                ):
+                    return "## ❌ 切换失败\n\n无法保存新的执行用户，请稍后重试。"
+                storage.clear_cli_session_id(current_session_id)
+                storage.set_exec_user_switched(current_session_id)
+                exec_user_changed = True
+            current_exec_user = effective_exec_user
+
+            if not target_provider and not effective_model:
+                response = "## ✅ 切换执行用户\n\n"
+                response += f"- **Exec User**: `{current_exec_user}`\n"
+                response += "- **本地会话**: 下次对话会在新用户下重建，并自动补入最近上下文\n\n"
+                if exec_user_changed:
+                    response += f"下一次对话将使用执行用户 `{current_exec_user}`。"
+                else:
+                    response += f"当前会话已经在使用执行用户 `{current_exec_user}`。"
+                return response
+
+        if not target_provider:
+            return "## ❌ 参数错误\n\n请至少指定 `-r/--provider`、`-l/--alias`、`-m/--model` 或 `-u/--exec-user` 之一。"
 
         # Validate provider
         from ...stores.alias_registry import get_alias_registry
         alias_registry = get_alias_registry()
         resolved = alias_registry.resolve(target_provider)
         if not resolved:
-            # Check if it's a valid provider name directly
             valid_providers = ["claude", "codex", "gemini", "codebuddy"]
             if target_provider.lower() not in valid_providers:
                 all_aliases = alias_registry.list_all()
@@ -1773,21 +1833,32 @@ class SlashCommandHandler:
                 )
 
         normalized_context_mode = (context_mode or "full").strip().lower()
-        # Backward compat: treat legacy "summary" as "windowed"
         if normalized_context_mode == "summary":
             normalized_context_mode = "windowed"
         if normalized_context_mode not in ("full", "windowed"):
             return "## ❌ 参数错误\n\n`-x/--context-mode` 仅支持 `full` 或 `windowed`。"
 
-        # Auto-summary mode: set pending state, next message will trigger summary generation
+        effective_alias = target_alias or target_provider.lower()
+
+        def _build_switch_target_lines() -> str:
+            lines = [f"- **目标 Provider**: `{target_provider}`"]
+            if target_alias:
+                lines.append(f"- **目标 Alias**: `{target_alias}`")
+            if effective_model:
+                lines.append(f"- **Model**: `{effective_model}`")
+            if effective_exec_user:
+                lines.append(f"- **Exec User**: `{effective_exec_user}`")
+            return "\n".join(lines)
+
+        def _append_switch_exec_user(text: str) -> str:
+            if not effective_exec_user:
+                return text
+            return f"{text}，并使用执行用户 `{effective_exec_user}`"
+
         if auto_summary:
-            if not current_session_id:
+            if not current_session_id or not storage:
                 return "## ❌ 无法切换\n\n需要 session_id 才能自动生成摘要。"
 
-            # Store pending switch target (empty context means summary pending)
-            storage = get_session_storage()
-            effective_alias = target_alias or target_provider.lower()
-            # Switching provider resets model_override (model is bound to provider)
             storage.clear_model_override(current_session_id)
             storage.set_handoff_pending_summary(
                 current_session_id,
@@ -1796,58 +1867,43 @@ class SlashCommandHandler:
                 context_mode=normalized_context_mode,
             )
 
-            # Return markdown message
-            response = f"## 🔄 准备切换 Provider\n\n"
-            response += f"- **目标 Provider**: `{target_provider}`\n"
-            if target_alias:
-                response += f"- **目标 Alias**: `{target_alias}`\n"
-            if effective_model:
-                response += f"- **Model**: `{effective_model}`\n"
-            response += f"- **上下文模式**: `{normalized_context_mode}`\n"
-            response += f"- **状态**: 等待生成上下文\n\n"
+            response = "## 🔄 准备切换 Provider\n\n"
+            response += _build_switch_target_lines()
+            response += f"\n- **上下文模式**: `{normalized_context_mode}`\n"
+            response += "- **状态**: 等待生成上下文\n\n"
             if normalized_context_mode == "full":
-                response += f"请发送任意消息，当前 Agent 会先生成**全量上下文**，然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
+                followup = f"请发送任意消息，当前 Agent 会先生成**全量上下文**，然后自动切换到 `{effective_alias}`"
             else:
-                response += f"请发送任意消息，当前 Agent 会先生成**窗口截断上下文**（最近50条），然后自动切换到 `{effective_alias}` 并继续处理您的消息。"
-
+                followup = f"请发送任意消息，当前 Agent 会先生成**窗口截断上下文**（最近50条），然后自动切换到 `{effective_alias}`"
+            response += _append_switch_exec_user(followup)
+            response += " 继续处理您的消息。"
             return response
 
-        # Direct switch or manual summary
-        if current_session_id:
-            storage = get_session_storage()
-            effective_alias = target_alias or target_provider.lower()
-            # Switching provider resets model_override (model is bound to provider)
+        if current_session_id and storage:
             storage.clear_model_override(current_session_id)
 
             if summary:
-                # Manual summary provided
                 storage.set_handoff_context(current_session_id, summary, effective_alias, model=effective_model)
-                response = f"## ✅ 准备切换\n\n"
-                response += f"- **目标 Provider**: `{target_provider}`\n"
-                if target_alias:
-                    response += f"- **目标 Alias**: `{target_alias}`\n"
-                if effective_model:
-                    response += f"- **Model**: `{effective_model}`\n"
-                response += f"- **上下文摘要**: 已保存\n\n"
-                response += f"下一次对话将自动切换到 `{effective_alias}` 并注入摘要上下文。"
+                response = "## ✅ 准备切换\n\n"
+                response += _build_switch_target_lines()
+                response += "\n- **上下文摘要**: 已保存\n\n"
+                response += _append_switch_exec_user(f"下一次对话将自动切换到 `{effective_alias}`")
+                response += "，同时注入摘要上下文。"
             else:
-                # Direct switch (no context) — store model via handoff_context with empty context
-                if effective_model:
-                    storage.set_handoff_context(current_session_id, "", effective_alias, model=effective_model)
-                else:
-                    storage.clear_handoff_context(current_session_id)
-                response = f"## ✅ 切换 Provider\n\n"
-                response += f"- **目标 Provider**: `{target_provider}`\n"
-                if target_alias:
-                    response += f"- **目标 Alias**: `{target_alias}`\n"
-                if effective_model:
-                    response += f"- **Model**: `{effective_model}`\n"
-                response += f"- **上下文传递**: 无\n\n"
-                response += f"下一次对话将使用 `{effective_alias}`。"
+                storage.set_handoff_context(current_session_id, "", effective_alias, model=effective_model)
+                response = "## ✅ 切换 Provider\n\n"
+                response += _build_switch_target_lines()
+                response += "\n- **上下文传递**: 无\n\n"
+                response += _append_switch_exec_user(f"下一次对话将使用 `{effective_alias}`")
+                response += "。"
 
             return response
 
-        return f"## ✅ 切换 Provider\n\n目标 Provider: `{target_provider}`"
+        response = "## ✅ 切换 Provider\n\n"
+        response += f"目标 Provider: `{target_provider}`"
+        if effective_exec_user:
+            response += f"\n\n目标 Exec User: `{effective_exec_user}`"
+        return response
 
     # ==================== /history handlers ====================
 
@@ -2583,8 +2639,14 @@ class SlashCommandHandler:
         except Exception as e:
             logger.debug(f"Could not read archived session messages: {e}")
 
-        # 回退：尝试读取任务执行日志（旧链路）
-        log_path = Path(self.config.user_home_base) / self.exec_user / ".nexus" / "sessions" / f"task_{task.id}" / ".claude" / "conversation.json"
+        # 回退：按任务元数据优先解析 conversation 文件，并兼容旧目录
+        log_dir, resolved_session_id, used_legacy_fallback = self._resolve_task_session_directory(task)
+        if used_legacy_fallback:
+            logger.info(
+                "Resolved task report log via legacy session fallback",
+                extra={"task_id": task.id, "resolved_session_id": resolved_session_id},
+            )
+        log_path = log_dir / ".claude" / "conversation.json"
         
         if log_path.exists():
             try:

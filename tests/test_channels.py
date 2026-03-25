@@ -565,11 +565,12 @@ class TestChannelService:
         summary = ChannelService._format_tool_summary("wecom_bot", "Bash: 显示目录信息")
         assert summary == "🔧 Bash: 显示目录信息"
 
-    def test_resolve_cli_timeout_uses_wecom_bot_override(self, monkeypatch):
+    def test_resolve_cli_timeout_uses_wecom_channel_overrides(self, monkeypatch):
         monkeypatch.setattr(settings, "cli_timeout", 120)
+        monkeypatch.setattr(settings, "wecom_cli_timeout", 1800)
         monkeypatch.setattr(settings, "wecom_bot_cli_timeout", 300)
+        assert ChannelService._resolve_cli_timeout("wecom") == 1800
         assert ChannelService._resolve_cli_timeout("wecom_bot") == 300
-        assert ChannelService._resolve_cli_timeout("wecom") == 120
 
     # ---------- Channel-level provider/alias/exec_user overrides ----------
 
@@ -684,6 +685,87 @@ class TestChannelService:
         # The global exec_user directory should NOT have been created
         global_dir = tmp_path / "ubuntu" / ".nexus" / "sessions" / "sess-exec-override"
         assert not global_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_build_request_session_exec_user_override_beats_channel(self, monkeypatch, tmp_path):
+        """Session-level exec_user should take priority over channel-level config."""
+        service = ChannelService()
+        monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot", exec_user="channel-user")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}, "get_channel": lambda self, name: None})()
+        service.manager = fake_mgr
+
+        class _SessionExecUserStorage(_BuildRequestStorage):
+            def get_session_exec_user(self, session_id):
+                return "tswitch"
+
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _SessionExecUserStorage())
+
+        message = InboundMessage(
+            channel="wecom_bot",
+            sender_id="u1",
+            chat_id="c1",
+            content="hello",
+        )
+
+        await service._build_request(message, "sess-exec-session-override")
+
+        expected_dir = tmp_path / "tswitch" / ".nexus" / "sessions" / "sess-exec-session-override"
+        channel_dir = tmp_path / "channel-user" / ".nexus" / "sessions" / "sess-exec-session-override"
+        assert expected_dir.exists()
+        assert not channel_dir.exists()
+
+    @pytest.mark.asyncio
+    async def test_consume_executor_events_session_exec_user_override_beats_channel(self, monkeypatch):
+        service = ChannelService()
+        monkeypatch.setattr(settings, "exec_user", "ubuntu")
+        cfg = ChannelConfig(type="wecom_bot", name="wecom_bot", exec_user="channel-user")
+        fake_mgr = type("M", (), {"configs": {"wecom_bot": cfg}, "get_channel": lambda self, name: None})()
+        service.manager = fake_mgr
+
+        class _SessionExecUserStorage(_BuildRequestStorage):
+            def get_session_exec_user(self, session_id):
+                return "tswitch"
+
+            def append_agui_event(self, session_id, event):
+                return True
+
+            def update_session_status(self, session_id, status):
+                return True
+
+            def add_session_message(self, session_id, message):
+                return True
+
+            def save_tool_call(self, session_id, tool_call):
+                return True
+
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: _SessionExecUserStorage())
+
+        class _CaptureExecutor:
+            def __init__(self):
+                self.calls = []
+
+            async def execute(self, *args, **kwargs):
+                self.calls.append({"args": args, "kwargs": kwargs})
+                if False:
+                    yield ""
+
+            def kill_process(self):
+                return None
+
+        capture = _CaptureExecutor()
+        monkeypatch.setattr(settings, "cli_timeout", 30)
+        _patch_asyncio_timeout(monkeypatch)
+        message = InboundMessage(channel="wecom_bot", sender_id="u1", chat_id="c1", content="whoami")
+
+        with patch("src.server.services.CLIExecutor", return_value=capture):
+            await service._consume_executor_events(message, "sess-exec-runtime", object())
+
+        assert capture.calls
+        assert capture.calls[0]["kwargs"]["exec_user"] == "tswitch"
+        assert capture.calls[0]["kwargs"]["output_format"] == "raw"
 
     @pytest.mark.asyncio
     async def test_build_request_adds_wecom_bot_followup_instruction(self, monkeypatch, tmp_path):
@@ -828,7 +910,7 @@ class TestWeComStreamFinalization:
 
         async def _fake_consume(message, session_id, request, *, on_text_delta=None, on_tool_summary=None):
             if on_tool_summary:
-                await on_tool_summary("🔧 `Bash: List current directory files`")
+                await on_tool_summary("tool-1", "🔧 `Bash: List current directory files`")
             if on_text_delta:
                 await on_text_delta("后续正文")
             return _FakeExecResult(final_content="")
@@ -1017,7 +1099,7 @@ class TestProcessWithAiToolCalls:
         async def _fake_consume(*args, **kwargs):
             on_tool_summary = kwargs.get("on_tool_summary")
             if on_tool_summary:
-                await on_tool_summary("🔧 Bash: 显示当前工作目录")
+                await on_tool_summary("tool-1", "🔧 Bash: 显示当前工作目录")
             return _FakeExecResult(final_content="")
 
         monkeypatch.setattr(service, "_build_request", _fake_build_request)
@@ -1158,6 +1240,51 @@ class TestProcessWithAiToolCalls:
         assert result.endswith("已完成检查")
 
     @pytest.mark.asyncio
+    async def test_async_task_handoff_is_not_mistaken_for_final_conclusion(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        events = [
+            _make_stream_event({"type": "TOOL_CALL_START", "toolCallId": "task_123", "toolCallName": "task"}),
+            _make_stream_event({
+                "type": "TOOL_CALL_ARGS",
+                "toolCallId": "task_123",
+                "delta": '{"subagent_name":"analyst","description":"端口诊断与系统日志专家分析"}',
+            }),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "task_123"}),
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "task_123",
+                            "content": "Spawned successfully.\nagent_id: analyst-3\nThe agent is now running and will receive instructions via mailbox.",
+                            "is_error": False,
+                        }
+                    ],
+                },
+            }),
+            json.dumps({
+                "type": "result",
+                "content": "等待专家通过 SendMessage 推送结论。当前环境专家以后台任务方式运行，系统将自动推送结果。\n\n（等待 SendMessage 到达中……）",
+            }),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        _patch_asyncio_timeout(monkeypatch)
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess1", target, handler)
+
+        assert "`Task: analyst - 端口诊断与系统日志专家分析`" in result
+        assert "Spawned successfully" not in result
+        assert "mailbox" not in result.lower()
+        assert "等待 SendMessage 到达中" not in result
+        assert "当前这条消息先结束，不代表结论已经产出" in result
+
+    @pytest.mark.asyncio
     async def test_agui_multiple_tool_calls(
         self, service, inbound, target, handler, monkeypatch
     ):
@@ -1176,8 +1303,8 @@ class TestProcessWithAiToolCalls:
             monkeypatch.setattr(settings, "exec_user", "ubuntu")
             result = await service._process_with_ai(inbound, "sess1", target, handler)
 
-        assert "`read_file`" in result
-        assert "`write_to_file`" in result
+        assert "`Read: 读取文件`" in result
+        assert "`Write: 写入文件`" in result
         assert "middle" in result
 
     # --- Legacy Claude format ---
@@ -1224,7 +1351,7 @@ class TestProcessWithAiToolCalls:
             monkeypatch.setattr(settings, "exec_user", "ubuntu")
             result = await service._process_with_ai(inbound, "sess1", target, handler)
 
-        assert "`Grep: /src`" in result
+        assert "`Grep: `TODO` in /src`" in result
 
     # --- result event takes precedence ---
 
@@ -1334,8 +1461,8 @@ class TestProcessWithAiToolCalls:
             monkeypatch.setattr(settings, "exec_user", "ubuntu")
             result = await service._process_with_ai(inbound, "sess1", target, handler)
 
-        assert "`read_file`" in result
-        assert "`write_to_file`" in result
+        assert "`Read: 读取文件`" in result
+        assert "`Write: 写入文件`" in result
         assert "done" in result
 
     # --- malformed JSON in tool args is silently skipped ---

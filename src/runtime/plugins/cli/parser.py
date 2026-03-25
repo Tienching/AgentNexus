@@ -22,6 +22,7 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 示例:
   anexus onboard                 # 一站式配置向导（推荐首次使用）
+  anexus login wechat            # 微信个人号扫码登录
   anexus init                    # 初始化项目配置
   anexus start                   # 前台启动服务
   anexus start --daemon          # 后台启动服务
@@ -50,6 +51,7 @@ def create_parser() -> argparse.ArgumentParser:
     
     # 注册各子命令
     _add_onboard_parser(subparsers)
+    _add_login_parser(subparsers)
     _add_init_parser(subparsers)
     _add_start_parser(subparsers)
     _add_stop_parser(subparsers)
@@ -57,7 +59,7 @@ def create_parser() -> argparse.ArgumentParser:
     _add_config_parser(subparsers)
     _add_install_parser(subparsers)
     _add_list_parser(subparsers)
-    
+
     return parser
 
 
@@ -87,6 +89,35 @@ def _add_onboard_parser(subparsers) -> None:
         "--no-interactive",
         action="store_true",
         help="非交互模式（目前不支持）",
+    )
+
+
+def _add_login_parser(subparsers) -> None:
+    """添加 login 命令解析器"""
+    parser = subparsers.add_parser(
+        "login",
+        help="登录消息渠道 — 通过扫码等方式获取 Bot Token",
+        description="通过扫码等方式获取 Bot Token 并自动保存到 .env 文件。",
+    )
+
+    login_subparsers = parser.add_subparsers(
+        dest="platform",
+        title="平台",
+        description="支持的登录平台",
+        metavar="PLATFORM",
+    )
+
+    # login wechat
+    wechat_parser = login_subparsers.add_parser(
+        "wechat",
+        help="微信个人号扫码登录",
+        description="通过扫描二维码登录微信个人号，自动获取并保存 Bot Token。",
+    )
+    wechat_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="自定义 iLink API Base URL (默认: https://ilinkai.weixin.qq.com)",
     )
 
 

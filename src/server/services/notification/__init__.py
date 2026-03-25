@@ -14,6 +14,7 @@ from .feishu_sink import FeishuSink
 from .slack_sink import SlackSink
 from .wecom_sink import WeComSink
 from .wecom_bot_sink import WeComBotSink
+from .wechat_sink import WeChatSink
 from .unified_handler import UnifiedNotificationHandler, get_notification_handler
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "SlackSink",
     "WeComSink",
     "WeComBotSink",
+    "WeChatSink",
     "UnifiedNotificationHandler",
     "get_notification_handler",
 ]

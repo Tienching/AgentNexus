@@ -4,6 +4,7 @@ anexus CLI - Agent Nexus 命令行工具
 
 提供以下命令：
     anexus onboard   - 一站式配置向导（推荐首次使用）
+    anexus login     - 登录消息渠道（扫码获取 Bot Token）
     anexus init      - 初始化项目配置
     anexus start     - 启动服务
     anexus stop      - 停止服务
@@ -28,6 +29,7 @@ from .commands import (
     InstallCommand,
     ListCommand,
     OnboardCommand,
+    LoginCommand,
 )
 
 __version__ = "0.1.0"
@@ -35,6 +37,7 @@ __version__ = "0.1.0"
 # 命令注册表
 COMMANDS = {
     "onboard": OnboardCommand(),
+    "login": LoginCommand(),
     "init": InitCommand(),
     "start": StartCommand(),
     "stop": StopCommand(),

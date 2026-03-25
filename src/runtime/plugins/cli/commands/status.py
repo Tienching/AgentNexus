@@ -161,8 +161,12 @@ class StatusCommand(BaseCommand):
             "telegram": bool(env_vars.get("TELEGRAM_BOT_TOKEN")),
             "slack": bool(env_vars.get("SLACK_BOT_TOKEN")),
             "discord": bool(env_vars.get("DISCORD_BOT_TOKEN")),
+            "feishu": bool(env_vars.get("FEISHU_APP_ID")),
             "whatsapp": bool(env_vars.get("WHATSAPP_BRIDGE_URL")),
             "signal": bool(env_vars.get("SIGNAL_PHONE_NUMBER")),
+            "wechat": bool(env_vars.get("WECHAT_BOT_TOKEN")),
+            "wecom": bool(env_vars.get("WECOM_TOKEN")),
+            "wecom_bot": bool(env_vars.get("WECOM_BOT_TOKEN")),
         }
         
         return channels

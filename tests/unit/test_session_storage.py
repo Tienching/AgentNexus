@@ -295,6 +295,61 @@ class TestSessionMetadataOperations:
         assert saved.get("id") == "sess1"
         assert saved.get("thread_id") == "sess1"
 
+    def test_save_session_meta_moves_user_index_when_username_changes(self, session_storage, mock_redis):
+        first = SessionMeta(
+            id="session-move",
+            thread_id="thread-move",
+            username="ubuntu",
+            exec_user="ubuntu",
+            title="Move Session",
+            updated_at=1704067200000,
+        )
+        second = SessionMeta(
+            id="session-move",
+            thread_id="thread-move",
+            username="tswitch",
+            exec_user="tswitch",
+            title="Move Session",
+            updated_at=1704067205000,
+        )
+
+        session_storage.save_session_meta(first)
+        session_storage.save_session_meta(second)
+
+        old_user_key = mock_redis._key("user:ubuntu:sessions")
+        new_user_key = mock_redis._key("user:tswitch:sessions")
+        assert "session-move" not in mock_redis._sorted_sets.get(old_user_key, {})
+        assert "session-move" in mock_redis._sorted_sets.get(new_user_key, {})
+
+    def test_set_session_exec_user_updates_meta_and_switch_flag(self, session_storage):
+        meta = SessionMeta(
+            id="session-exec",
+            thread_id="thread-exec",
+            username="ubuntu",
+            exec_user="ubuntu",
+            title="Exec Session",
+            exec_dir="/home/ubuntu/.nexus/sessions/session-exec",
+        )
+        session_storage.save_session_meta(meta)
+
+        ok = session_storage.set_session_exec_user(
+            "session-exec",
+            "tswitch",
+            user_home_base="/home",
+        )
+
+        assert ok is True
+        updated = session_storage.get_session_meta("session-exec")
+        assert updated is not None
+        assert updated.username == "tswitch"
+        assert updated.exec_user == "tswitch"
+        assert updated.exec_dir == "/home/tswitch/.nexus/sessions/session-exec"
+        assert session_storage.get_session_exec_user("session-exec") == "tswitch"
+
+        assert session_storage.set_exec_user_switched("session-exec") is True
+        assert session_storage.consume_exec_user_switched("session-exec") is True
+        assert session_storage.consume_exec_user_switched("session-exec") is False
+
     def test_get_user_sessions(self, session_storage):
         """Test getting user's sessions"""
         # Create multiple sessions

@@ -214,6 +214,33 @@ class TestOnRunStarted:
         assert session.status == SessionStatus.RUNNING
 
     @pytest.mark.asyncio
+    async def test_on_run_started_existing_session_updates_exec_user(self, archiver, mock_storage):
+        existing = SessionMeta(
+            id="session-123",
+            thread_id="thread-123",
+            username="ubuntu",
+            exec_user="ubuntu",
+            provider="claude",
+            alias="claude",
+            status=SessionStatus.COMPLETED,
+        )
+        mock_storage.save_session_meta(existing)
+
+        archiver.username = "tswitch"
+        archiver.exec_user = "tswitch"
+        archiver.provider = "codex"
+        archiver.alias = "codex"
+
+        await archiver.on_run_started()
+
+        session = mock_storage.get_session_meta("session-123")
+        assert session is not None
+        assert session.username == "tswitch"
+        assert session.exec_user == "tswitch"
+        assert session.provider == "codex"
+        assert session.alias == "codex"
+
+    @pytest.mark.asyncio
     async def test_on_run_started_no_messages(self, archiver, mock_storage):
         """Test starting without initial messages"""
         await archiver.on_run_started()
@@ -481,6 +508,59 @@ class TestArchiveEvent:
         # Should not raise error, just be ignored
         messages = mock_storage.get_session_messages("session-123")
         assert len(messages) == 0
+
+
+class TestAguiSegmentCoalescing:
+    """Test AG-UI text segment coalescing and ordering"""
+
+    @pytest.mark.asyncio
+    async def test_agui_text_deltas_are_coalesced_into_one_segment(self, archiver, mock_storage):
+        await archiver.on_run_started()
+
+        await archiver.archive_event({"type": "TEXT_MESSAGE_START", "messageId": "msg-123"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-123", "delta": "你"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-123", "delta": "刚刚"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-123", "delta": "问我的问题"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_END", "messageId": "msg-123"})
+
+        messages = mock_storage.get_session_messages("session-123")
+        assert len(messages) == 1
+        assert messages[0].content == "你刚刚问我的问题"
+        assert messages[0].content_segments is not None
+        assert len(messages[0].content_segments) == 1
+        assert messages[0].content_segments[0].type == "text"
+        assert messages[0].content_segments[0].content == "你刚刚问我的问题"
+
+    @pytest.mark.asyncio
+    async def test_agui_text_and_tool_segments_keep_order(self, archiver, mock_storage):
+        await archiver.on_run_started()
+
+        await archiver.archive_event({"type": "TEXT_MESSAGE_START", "messageId": "msg-456"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-456", "delta": "先读文件，"})
+        await archiver.archive_event({
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-read",
+            "toolCallName": "read_file",
+            "parentMessageId": "msg-456",
+        })
+        await archiver.archive_event({
+            "type": "TOOL_CALL_RESULT",
+            "messageId": "msg-456",
+            "toolCallId": "tool-read",
+            "content": "hello",
+        })
+        await archiver.archive_event({"type": "TEXT_MESSAGE_CONTENT", "messageId": "msg-456", "delta": "再总结结果。"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_END", "messageId": "msg-456"})
+
+        messages = mock_storage.get_session_messages("session-123")
+        assert len(messages) == 1
+        assert messages[0].content == "先读文件，再总结结果。"
+        assert messages[0].tool_call_ids == ["tool-read"]
+        assert messages[0].content_segments is not None
+        assert [segment.type for segment in messages[0].content_segments] == ["text", "tool_call", "text"]
+        assert messages[0].content_segments[0].content == "先读文件，"
+        assert messages[0].content_segments[1].tool_call_id == "tool-read"
+        assert messages[0].content_segments[2].content == "再总结结果。"
 
 
 class TestFinalizeCurrentMessage:

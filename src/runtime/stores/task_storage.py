@@ -49,43 +49,50 @@ class TaskQueue:
         self._redis: RedisClient = redis_client or get_redis_client()
         logger.info(f"TaskQueue initialized for exec_user: {exec_user}")
 
-    def _task_key(self, task_id: str) -> str:
+    def _task_key(self, task_id: str, exec_user: Optional[str] = None) -> str:
         """Get Redis key for task data"""
-        return f"task:{self.exec_user}:{task_id}"
+        eu = exec_user or self.exec_user
+        return f"task:{eu}:{task_id}"
     
-    def _all_tasks_key(self) -> str:
+    def _all_tasks_key(self, exec_user: Optional[str] = None) -> str:
         """Get Redis key for all tasks sorted set"""
-        return f"tasks:{self.exec_user}:all"
+        eu = exec_user or self.exec_user
+        return f"tasks:{eu}:all"
     
-    def _status_key(self, status: TaskStatus) -> str:
+    def _status_key(self, status: TaskStatus, exec_user: Optional[str] = None) -> str:
         """Get Redis key for tasks by status"""
-        return f"tasks:{self.exec_user}:by_status:{status.value}"
+        eu = exec_user or self.exec_user
+        return f"tasks:{eu}:by_status:{status.value}"
     
-    def _project_key(self, project_id: str) -> str:
+    def _project_key(self, project_id: str, exec_user: Optional[str] = None) -> str:
         """Get Redis key for tasks by project"""
-        return f"tasks:{self.exec_user}:by_project:{project_id}"
+        eu = exec_user or self.exec_user
+        return f"tasks:{eu}:by_project:{project_id}"
     
-    def _workspace_key(self, workspace: str) -> str:
+    def _workspace_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
         """Get Redis key for tasks by workspace"""
+        eu = exec_user or self.exec_user
         # Use stable hash for shorter keys
         import hashlib
         ws_str = (workspace or "default").encode("utf-8")
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"tasks:{self.exec_user}:by_workspace:{workspace_hash}"
+        return f"tasks:{eu}:by_workspace:{workspace_hash}"
 
-    def _queue_key(self, workspace: str) -> str:
+    def _queue_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
         """Get Redis key for workspace TODO queue"""
+        eu = exec_user or self.exec_user
         import hashlib
         ws_str = (workspace or "default").encode("utf-8")
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"queue:{self.exec_user}:{workspace_hash}:todo"
+        return f"queue:{eu}:{workspace_hash}:todo"
 
-    def _executing_key(self, workspace: str) -> str:
+    def _executing_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
         """Get Redis key for executing tasks set"""
+        eu = exec_user or self.exec_user
         import hashlib
         ws_str = (workspace or "default").encode("utf-8")
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"executing:{self.exec_user}:{workspace_hash}"
+        return f"executing:{eu}:{workspace_hash}"
 
     def add_task(
         self,
@@ -105,6 +112,10 @@ class TaskQueue:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        # Unified notification target (for non-webhook channels like WeCom WS)
+        notification_sink_type: Optional[str] = None,
+        notification_channel: Optional[str] = None,
+        notification_chat_id: Optional[str] = None,
         # Ralph Loop
         loop_enabled: bool = False,
         loop_max_iterations: int = 1,
@@ -121,6 +132,10 @@ class TaskQueue:
             response_url: Optional callback URL for task completion notification.
             callback_msg_id: Optional message ID to pass back in callback.
             callback_user: Optional user identifier for callback.
+            notification_sink_type: Unified notification sink type (e.g. "wecom", "telegram").
+                                    Takes priority over response_url when set.
+            notification_channel: Channel name for unified notification.
+            notification_chat_id: Chat/channel ID for unified notification.
         """
         # Generate task_id first if not provided
         actual_task_id = str(task_id) if task_id else str(uuid.uuid4())[:8]
@@ -155,34 +170,37 @@ class TaskQueue:
             response_url=response_url,
             callback_msg_id=callback_msg_id,
             callback_user=callback_user,
+            notification_sink_type=notification_sink_type or None,
+            notification_channel=notification_channel or None,
+            notification_chat_id=notification_chat_id or None,
             loop_enabled=loop_enabled,
             loop_max_iterations=loop_max_iterations,
             loop_keywords=loop_keywords or [],
         )
         
         # Store task data
-        self._redis.hset(self._task_key(task.id), task.to_redis_hash())
+        self._redis.hset(self._task_key(task.id, effective_exec_user), task.to_redis_hash())
         
         # Add to all tasks sorted set (score = timestamp for ordering)
         timestamp = task.created_at.timestamp()
-        self._redis.zadd(self._all_tasks_key(), {task.id: timestamp})
+        self._redis.zadd(self._all_tasks_key(effective_exec_user), {task.id: timestamp})
         
         # Add to status index
-        self._redis.sadd(self._status_key(TaskStatus.TODO), task.id)
+        self._redis.sadd(self._status_key(TaskStatus.TODO, effective_exec_user), task.id)
         
         # Add to project index if applicable
         if project_id:
-            self._redis.sadd(self._project_key(project_id), task.id)
+            self._redis.sadd(self._project_key(project_id, effective_exec_user), task.id)
         
         # Add to workspace index
-        self._redis.sadd(self._workspace_key(workspace), task.id)
+        self._redis.sadd(self._workspace_key(workspace, effective_exec_user), task.id)
         
         # Add to TODO queue for execution
         # Priority: PROJECT tasks go to front, others to back
         if priority == TaskPriority.PROJECT:
-            self._redis.lpush(self._queue_key(workspace), task.id)
+            self._redis.lpush(self._queue_key(workspace, effective_exec_user), task.id)
         else:
-            self._redis.rpush(self._queue_key(workspace), task.id)
+            self._redis.rpush(self._queue_key(workspace, effective_exec_user), task.id)
         
         project_info = f" [Project: {project_name}]" if project_name else ""
         workspace_info = f" [Workspace: {workspace}]" if workspace else ""
@@ -198,6 +216,9 @@ class TaskQueue:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        notification_sink_type: Optional[str] = None,
+        notification_channel: Optional[str] = None,
+        notification_chat_id: Optional[str] = None,
     ) -> Optional[Task]:
         """Re-enqueue an existing task as a background chat-continue run.
 
@@ -247,6 +268,15 @@ class TaskQueue:
         if callback_user:
             task.callback_user = callback_user
             updates["callback_user"] = callback_user
+        if notification_sink_type:
+            task.notification_sink_type = notification_sink_type
+            updates["notification_sink_type"] = notification_sink_type
+        if notification_channel:
+            task.notification_channel = notification_channel
+            updates["notification_channel"] = notification_channel
+        if notification_chat_id:
+            task.notification_chat_id = notification_chat_id
+            updates["notification_chat_id"] = notification_chat_id
 
         # Update model if specified (allows switching model on continue)
         effective_model = (model or "").strip()
@@ -254,7 +284,7 @@ class TaskQueue:
             task.model = effective_model
             updates["model"] = effective_model
 
-        self._redis.hset(self._task_key(task.id), updates)
+        self._redis.hset(self._task_key(task.id, task.exec_user), updates)
 
         # Move status to TODO (from DONE/FAILED/etc.)
         try:
@@ -265,15 +295,15 @@ class TaskQueue:
 
         # Ensure task appears only once in the queue
         try:
-            self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
+            self._redis.lrem(self._queue_key(task.workspace, task.exec_user), 0, task.id)
         except Exception:
             pass
 
         try:
             if task.priority == TaskPriority.SERIOUS:
-                self._redis.lpush(self._queue_key(task.workspace), task.id)
+                self._redis.lpush(self._queue_key(task.workspace, task.exec_user), task.id)
             else:
-                self._redis.rpush(self._queue_key(task.workspace), task.id)
+                self._redis.rpush(self._queue_key(task.workspace, task.exec_user), task.id)
             logger.info(f"Enqueued chat_continue for task {task.id}", extra={
                 "task_id": task.id,
                 "workspace": task.workspace,
@@ -351,13 +381,14 @@ class TaskQueue:
 
     def _update_task_status(self, task: Task, new_status: TaskStatus) -> None:
         """Update task status and related indexes"""
+        eu = getattr(task, "exec_user", None)
         old_status = TaskStatus(task.status) if isinstance(task.status, str) else task.status
         
         # Remove from old status set
-        self._redis.srem(self._status_key(old_status), task.id)
+        self._redis.srem(self._status_key(old_status, eu), task.id)
         
         # Add to new status set
-        self._redis.sadd(self._status_key(new_status), task.id)
+        self._redis.sadd(self._status_key(new_status, eu), task.id)
         
         # Update task data
         task.status = new_status
@@ -376,7 +407,7 @@ class TaskQueue:
             if not task.deleted_at:
                 task.deleted_at = now
         
-        self._redis.hset(self._task_key(task.id), task.to_redis_hash())
+        self._redis.hset(self._task_key(task.id, eu), task.to_redis_hash())
 
     def cancel_task(self, task_id: str) -> Optional[Task]:
         """Cancel TODO task (soft delete)"""
@@ -386,18 +417,19 @@ class TaskQueue:
             return None
         
         if task.status == TaskStatus.TODO.value or task.status == TaskStatus.TODO:
+            eu = getattr(task, "exec_user", None)
             # Remove from TODO queue
-            self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
-            
+            self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
+
             # Update status
             self._update_task_status(task, TaskStatus.CANCELLED)
             logger.info(f"Task {task_id} cancelled and moved to trash")
-        
+
         return task
 
     def update_task_status(self, task_id: str, new_status: TaskStatus) -> Optional[Task]:
         """Manually update task status.
-        
+
         Used to unblock dependent tasks or change task state manually.
         Handles queue membership changes based on status transitions.
         """
@@ -409,19 +441,20 @@ class TaskQueue:
         old_status_val = task.status if isinstance(task.status, str) else task.status.value
         old_status = TaskStatus(old_status_val)
         
+        eu = getattr(task, "exec_user", None)
         # Handle queue transitions
         if old_status == TaskStatus.TODO and new_status != TaskStatus.TODO:
             # Remove from TODO queue if leaving TODO
-            self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
+            self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
         elif old_status != TaskStatus.TODO and new_status == TaskStatus.TODO:
             # Add back to TODO queue if returning to TODO
-            self._redis.rpush(self._queue_key(task.workspace), task.id)
+            self._redis.rpush(self._queue_key(task.workspace, eu), task.id)
         
         # Handle executing set
         if old_status == TaskStatus.DOING and new_status != TaskStatus.DOING:
-            self._redis.srem(self._executing_key(task.workspace), task.id)
+            self._redis.srem(self._executing_key(task.workspace, eu), task.id)
         elif old_status != TaskStatus.DOING and new_status == TaskStatus.DOING:
-            self._redis.sadd(self._executing_key(task.workspace), task.id)
+            self._redis.sadd(self._executing_key(task.workspace, eu), task.id)
         
         self._update_task_status(task, new_status)
         logger.info(f"Task {task_id} status manually updated: {old_status_val} -> {new_status.value}")
@@ -665,8 +698,9 @@ class TaskQueue:
         for task_id in task_ids:
             task = self.get_task(task_id)
             if task and (task.status == TaskStatus.TODO.value or task.status == TaskStatus.TODO):
+                eu = getattr(task, "exec_user", None)
                 # Remove from TODO queue
-                self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
+                self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
                 # Update status
                 self._update_task_status(task, TaskStatus.CANCELLED)
                 count += 1
@@ -702,12 +736,13 @@ class TaskQueue:
                 continue
 
             # Best-effort: ensure it is not in execution queues
+            eu = getattr(task, "exec_user", None)
             try:
-                self._redis.lrem(self._queue_key(task.workspace), 0, task.id)
+                self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
             except Exception:
                 pass
             try:
-                self._redis.srem(self._executing_key(task.workspace), task.id)
+                self._redis.srem(self._executing_key(task.workspace, eu), task.id)
             except Exception:
                 pass
 

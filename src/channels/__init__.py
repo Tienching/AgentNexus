@@ -32,6 +32,7 @@ from .config import (
     FeishuConfig,
     WeComConfig,
     WeComBotConfig,
+    WeChatConfig,
 )
 from .manager import ChannelManager
 from .registry import ChannelRegistry
@@ -56,6 +57,7 @@ __all__ = [
     "FeishuConfig",
     "WeComConfig",
     "WeComBotConfig",
+    "WeChatConfig",
     # 管理类
     "ChannelManager",
     "ChannelRegistry",
@@ -93,3 +95,7 @@ def _get_wecom():
 def _get_wecom_bot():
     from .wecom_bot import WeComBotChannel
     return WeComBotChannel
+
+def _get_wechat():
+    from .wechat import WeChatChannel
+    return WeChatChannel

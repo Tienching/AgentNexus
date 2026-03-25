@@ -47,6 +47,47 @@ def sanitize_wecom_markdown_content(content: str) -> str:
     return text.strip()
 
 
+def split_wecom_message_chunks(content: str, max_len: int) -> List[str]:
+    """Split content into UTF-8-safe chunks that fit WeCom limits."""
+    text = str(content or "")
+    if not text:
+        return []
+
+    if len(text.encode("utf-8")) <= max_len:
+        return [text]
+
+    chunks: List[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining.encode("utf-8")) <= max_len:
+            chunks.append(remaining)
+            break
+
+        low, high = 1, len(remaining)
+        best = 1
+        while low <= high:
+            mid = (low + high) // 2
+            if len(remaining[:mid].encode("utf-8")) <= max_len:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        split_pos = remaining.rfind("\n", 0, best)
+        if split_pos <= 0:
+            split_pos = best
+
+        chunk = remaining[:split_pos].rstrip("\n")
+        if not chunk:
+            chunk = remaining[:best]
+            split_pos = best
+
+        chunks.append(chunk)
+        remaining = remaining[split_pos:].lstrip("\n")
+
+    return chunks
+
+
 # Maximum stream duration before falling back to response_url (seconds)
 STREAM_MAX_DURATION = 360  # 6 minutes
 
@@ -329,6 +370,8 @@ class WeComChannel(BaseChannel):
         self._latest_msg_ids: Dict[str, str] = {}
         # chat_id -> latest req_id 映射，便于 WebSocket 模式下回复关联
         self._latest_req_ids: Dict[str, str] = {}
+        # req_id -> ack waiter，避免同一个 req_id 的连续回包在企微侧产生并发冲突
+        self._ws_ack_waiters: Dict[str, asyncio.Future] = {}
         # 流式回复缓冲区: stream_id -> StreamBuffer
         self._stream_buffers: Dict[str, StreamBuffer] = {}
         # chat_id -> active stream_id 映射
@@ -448,6 +491,10 @@ class WeComChannel(BaseChannel):
         self._response_urls.clear()
         self._latest_msg_ids.clear()
         self._latest_req_ids.clear()
+        for waiter in self._ws_ack_waiters.values():
+            if not waiter.done():
+                waiter.cancel()
+        self._ws_ack_waiters.clear()
         self._stream_buffers.clear()
         self._chat_stream_ids.clear()
 
@@ -586,6 +633,27 @@ class WeComChannel(BaseChannel):
         """提取 WebSocket 消息头。"""
         headers = data.get("headers")
         return headers if isinstance(headers, dict) else {}
+
+    def _resolve_ws_ack(
+        self,
+        req_id: str,
+        *,
+        command: str = "",
+        errcode: int = 0,
+        errmsg: str = "",
+    ) -> bool:
+        """Resolve a pending WS ack waiter for the given req_id."""
+        if not req_id:
+            return False
+        waiter = self._ws_ack_waiters.pop(req_id, None)
+        if not waiter or waiter.done():
+            return False
+        waiter.set_result({
+            "command": command,
+            "errcode": int(errcode or 0),
+            "errmsg": errmsg or "",
+        })
+        return True
 
     @classmethod
     def _extract_ws_payload(cls, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -828,6 +896,8 @@ class WeComChannel(BaseChannel):
                 "bot_id": self.config.bot_id,
                 "secret": self.config.secret,
             },
+            wait_ack=True,
+            ack_timeout=10.0,
         )
         self._ws_heartbeat_task = asyncio.create_task(self._ws_heartbeat_loop())
         self._ws_reconnect_attempts = 0
@@ -872,13 +942,15 @@ class WeComChannel(BaseChannel):
                 req_id = self._get_ws_req_id(data, payload)
                 event_type = self._get_ws_event_type(payload, data)
 
-                # 检查订阅确认/错误响应
-                if command in {"aibot_subscribe_ack", "subscribed", "subscribe"} or (
-                    not command and "errcode" in data
-                ):
-                    errcode = data.get("errcode") or payload.get("errcode") or 0
+                errcode_raw = data.get("errcode")
+                if errcode_raw is None:
+                    errcode_raw = payload.get("errcode")
+                errcode = int(errcode_raw or 0) if errcode_raw is not None else None
+                errmsg = data.get("errmsg") or payload.get("errmsg") or ""
+
+                # 订阅确认/错误响应
+                if command in {"aibot_subscribe_ack", "subscribed", "subscribe"}:
                     if errcode:
-                        errmsg = data.get("errmsg") or payload.get("errmsg") or ""
                         logger.error(
                             f"[{self.name}] WS subscribe failed: "
                             f"errcode={errcode}, errmsg={errmsg}"
@@ -886,6 +958,25 @@ class WeComChannel(BaseChannel):
                     else:
                         logger.info(
                             f"[{self.name}] WS subscribe confirmed: command={command or 'ack'}, req_id={req_id}"
+                        )
+                    self._resolve_ws_ack(req_id, command=command or "ack", errcode=errcode or 0, errmsg=errmsg)
+                    continue
+
+                # 通用命令 ack/err：用于 aibot_respond_msg 等回包串行化，避免同一 req_id 并发冲突
+                if req_id and (command in {"ack", "aibot_respond_msg_ack", "aibot_send_msg_ack", "aibot_respond_welcome_msg_ack"} or errcode is not None):
+                    resolved = self._resolve_ws_ack(req_id, command=command or "ack", errcode=errcode or 0, errmsg=errmsg)
+                    if errcode:
+                        logger.error(
+                            f"[{self.name}] WS command failed: command={command or 'ack'}, req_id={req_id}, "
+                            f"errcode={errcode}, errmsg={errmsg}"
+                        )
+                    elif resolved:
+                        logger.info(
+                            f"[{self.name}] WS command ack: command={command or 'ack'}, req_id={req_id}"
+                        )
+                    else:
+                        logger.debug(
+                            f"[{self.name}] WS unsolicited ack: command={command or 'ack'}, req_id={req_id}"
                         )
                     continue
 
@@ -971,6 +1062,8 @@ class WeComChannel(BaseChannel):
         body: Optional[Dict[str, Any]] = None,
         *,
         req_id: Optional[str] = None,
+        wait_ack: bool = False,
+        ack_timeout: float = 5.0,
     ) -> bool:
         """通过 WebSocket 发送 JSON 命令。"""
         if not self._ws:
@@ -987,8 +1080,41 @@ class WeComChannel(BaseChannel):
         if body is not None:
             message["body"] = body
 
-        async with self._ws_send_lock:
-            await self._ws.send(json.dumps(message, ensure_ascii=False))
+        waiter: Optional[asyncio.Future] = None
+        if wait_ack:
+            loop = asyncio.get_running_loop()
+            waiter = loop.create_future()
+            previous = self._ws_ack_waiters.pop(effective_req_id, None)
+            if previous and not previous.done():
+                previous.cancel()
+            self._ws_ack_waiters[effective_req_id] = waiter
+
+        try:
+            async with self._ws_send_lock:
+                await self._ws.send(json.dumps(message, ensure_ascii=False))
+        except Exception:
+            if wait_ack:
+                self._ws_ack_waiters.pop(effective_req_id, None)
+            raise
+
+        if not wait_ack or waiter is None:
+            return True
+
+        try:
+            ack = await asyncio.wait_for(waiter, timeout=ack_timeout)
+        except asyncio.TimeoutError:
+            self._ws_ack_waiters.pop(effective_req_id, None)
+            logger.warning(
+                f"[{self.name}] WS command ack timeout: command={command}, req_id={effective_req_id}"
+            )
+            return False
+        except Exception:
+            self._ws_ack_waiters.pop(effective_req_id, None)
+            raise
+
+        ack_errcode = int((ack or {}).get("errcode") or 0)
+        if ack_errcode:
+            return False
         return True
 
     async def _handle_event(
@@ -1301,7 +1427,10 @@ class WeComChannel(BaseChannel):
         if not req_id:
             return False
         return await self._send_via_websocket(
-            "aibot_respond_msg", self._build_ws_msg_body(content, msgtype), req_id=req_id
+            "aibot_respond_msg",
+            self._build_ws_msg_body(content, msgtype),
+            req_id=req_id,
+            wait_ack=True,
         )
 
     async def _ws_respond_welcome_msg(self, req_id: str, content: str) -> bool:
@@ -1315,6 +1444,7 @@ class WeComChannel(BaseChannel):
                 "text": {"content": content[:WECOM_MAX_LENGTH]},
             },
             req_id=req_id,
+            wait_ack=True,
         )
 
     async def send_ws_stream_update(
@@ -1339,18 +1469,69 @@ class WeComChannel(BaseChannel):
                 },
             },
             req_id=req_id,
+            wait_ack=True,
         )
 
     async def send_ws_stream_finish(self, req_id: str, stream_id: str, content: str) -> bool:
         """结束 WebSocket 流式消息。"""
         return await self.send_ws_stream_update(req_id, stream_id, content, finish=True)
 
-    async def send_ws_msg(self, chatid: str, content: str, *, msgtype: str = "markdown") -> bool:
+    async def send_ws_active_message(
+        self,
+        chatid: str,
+        content: str,
+        *,
+        msgtype: str = "markdown",
+        chat_type: Optional[Any] = None,
+    ) -> bool:
+        """通过 WebSocket 主动推送完整消息，自动处理清洗与分片。"""
+        if not chatid:
+            return False
+
+        prepared = (
+            sanitize_wecom_markdown_content(content)
+            if msgtype == "markdown"
+            else str(content or "")
+        )
+        chunks = split_wecom_message_chunks(prepared, WECOM_MAX_LENGTH)
+        if not chunks:
+            return False
+
+        for idx, chunk in enumerate(chunks, start=1):
+            ok = await self.send_ws_msg(
+                chatid,
+                chunk,
+                msgtype=msgtype,
+                chat_type=chat_type,
+            )
+            if not ok:
+                logger.warning(
+                    f"[{self.name}] WS active push failed: chatid={chatid}, "
+                    f"chunk={idx}/{len(chunks)}"
+                )
+                return False
+
+        logger.info(
+            f"[{self.name}] WS active push sent: chatid={chatid}, chunks={len(chunks)}"
+        )
+        return True
+
+    async def send_ws_msg(
+        self,
+        chatid: str,
+        content: str,
+        *,
+        msgtype: str = "markdown",
+        chat_type: Optional[Any] = None,
+    ) -> bool:
         """通过 WebSocket 主动推送消息。"""
         if not chatid:
             return False
+        extra: Dict[str, Any] = {"chatid": chatid}
+        if chat_type is not None:
+            extra["chat_type"] = chat_type
         return await self._send_via_websocket(
-            "aibot_send_msg", self._build_ws_msg_body(content, msgtype, chatid=chatid)
+            "aibot_send_msg", self._build_ws_msg_body(content, msgtype, **extra)
         )
 
     async def send_passive_reply(

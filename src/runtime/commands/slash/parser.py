@@ -259,6 +259,7 @@ SPECS: List[CommandSpec] = [
             OptionDef(short="r", long="provider", type="string", required=False),
             OptionDef(short="l", long="alias", type="string", required=False),
             OptionDef(short="m", long="model", type="string", required=False),
+            OptionDef(short="u", long="exec-user", type="string", required=False),
             OptionDef(short="a", long="auto", type="boolean", required=False, default=False),
             OptionDef(short="x", long="context-mode", type="string", required=False, default="full"),  # full | windowed
         ),

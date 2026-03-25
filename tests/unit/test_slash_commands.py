@@ -192,6 +192,9 @@ class TestSlashCommandHandler:
         """Create mock config"""
         config = Mock()
         config.user_home_base = temp_dir
+        config.default_provider = ""
+        config.default_alias = ""
+        config.default_exec_user = ""
         return config
 
     @pytest.fixture
@@ -464,6 +467,7 @@ class TestSlashCommandHandler:
         task_mock = Mock()
         task_mock.id = "123"
         task_mock.workspace = str(target)
+        task_mock.session_id = "sess-task-ws"
 
         handler.task_queue.get_task = Mock(return_value=task_mock)
 
@@ -473,6 +477,67 @@ class TestSlashCommandHandler:
             mock_chdir.assert_called_with(target.resolve())
             assert "Workspace Changed" in response
             assert "task #123" in response
+
+    def test_workspace_command_no_args_uses_session_exec_user_directory(self, handler, temp_dir):
+        """Test /workspace shows the current session directory using the session exec_user."""
+        class FakeStorage:
+            def get_exec_dir_override(self, session_id):
+                return None
+
+            def get_session_exec_user(self, session_id):
+                return "alice"
+
+        with patch('src.runtime.commands.slash.handler.get_session_storage', return_value=FakeStorage()), \
+             patch('os.geteuid', return_value=0):
+            response = handler.handle_command("/workspace", source_session_id="sess-1")
+
+        expected = Path(temp_dir) / "alice" / ".nexus" / "sessions" / "sess-1"
+        assert "Current Workspace" in response
+        assert str(expected) in response
+
+    def test_workspace_command_task_session_dir_uses_task_exec_user(self, handler, temp_dir):
+        """Test /workspace -t resolves session dir from task.exec_user + task.session_id."""
+        target = Path(temp_dir) / "alice" / ".nexus" / "sessions" / "sess-123"
+        target.mkdir(parents=True)
+
+        task_mock = Mock()
+        task_mock.id = "123"
+        task_mock.workspace = None
+        task_mock.session_id = "sess-123"
+        task_mock.exec_user = "alice"
+
+        handler.task_queue.get_task = Mock(return_value=task_mock)
+
+        with patch('os.geteuid', return_value=0), \
+             patch('os.chdir') as mock_chdir, \
+             patch('os.getcwd', return_value=str(target)):
+            response = handler.handle_command("/workspace -t 123")
+
+        mock_chdir.assert_called_with(target.resolve())
+        assert "Workspace Changed" in response
+        assert "task #123" in response
+
+    def test_workspace_command_task_session_dir_legacy_fallback(self, handler, temp_dir):
+        """Test /workspace -t falls back to legacy task_<id> directory when needed."""
+        target = Path(temp_dir) / "alice" / ".nexus" / "sessions" / "task_123"
+        target.mkdir(parents=True)
+
+        task_mock = Mock()
+        task_mock.id = "123"
+        task_mock.workspace = None
+        task_mock.session_id = "sess-missing"
+        task_mock.exec_user = "alice"
+
+        handler.task_queue.get_task = Mock(return_value=task_mock)
+
+        with patch('os.geteuid', return_value=0), \
+             patch('os.chdir') as mock_chdir, \
+             patch('os.getcwd', return_value=str(target)):
+            response = handler.handle_command("/workspace -t 123")
+
+        mock_chdir.assert_called_with(target.resolve())
+        assert "Workspace Changed" in response
+        assert "task #123" in response
 
     def test_workspace_command_positional_fails(self, handler):
         """Test /workspace <path> fails (not supported)"""
@@ -531,6 +596,89 @@ class TestSlashCommandHandler:
 
             mock_chdir.assert_not_called()
             assert "Already at Home" in response
+
+    def test_switch_exec_user_requires_session(self, handler):
+        response = handler.handle_command("/switch -u tswitch")
+        assert "需要 session_id" in response
+
+    def test_switch_exec_user_persists_session_override(self, handler, temp_dir):
+        class FakeStorage:
+            def __init__(self):
+                self.calls = []
+
+            def get_session_meta(self, session_id):
+                return None
+
+            def get_session_exec_user(self, session_id):
+                return None
+
+            def get_handoff_provider(self, session_id):
+                return None
+
+            def set_session_exec_user(self, session_id, exec_user, user_home_base=None):
+                self.calls.append(("set_session_exec_user", session_id, exec_user, user_home_base))
+                return True
+
+            def clear_cli_session_id(self, session_id):
+                self.calls.append(("clear_cli_session_id", session_id))
+                return True
+
+            def set_exec_user_switched(self, session_id):
+                self.calls.append(("set_exec_user_switched", session_id))
+                return True
+
+        fake = FakeStorage()
+        with patch('src.runtime.commands.slash.handler.get_session_storage', return_value=fake):
+            response = handler.handle_command("/switch -u tswitch", source_session_id="sess-1")
+
+        assert "切换执行用户" in response
+        assert "`tswitch`" in response
+        assert ("set_session_exec_user", "sess-1", "tswitch", temp_dir) in fake.calls
+        assert ("clear_cli_session_id", "sess-1") in fake.calls
+        assert ("set_exec_user_switched", "sess-1") in fake.calls
+
+    def test_switch_provider_and_exec_user_sets_handoff(self, handler, temp_dir):
+        class FakeStorage:
+            def __init__(self):
+                self.calls = []
+
+            def get_session_meta(self, session_id):
+                return None
+
+            def get_session_exec_user(self, session_id):
+                return None
+
+            def get_handoff_provider(self, session_id):
+                return None
+
+            def set_session_exec_user(self, session_id, exec_user, user_home_base=None):
+                self.calls.append(("set_session_exec_user", session_id, exec_user, user_home_base))
+                return True
+
+            def clear_cli_session_id(self, session_id):
+                self.calls.append(("clear_cli_session_id", session_id))
+                return True
+
+            def set_exec_user_switched(self, session_id):
+                self.calls.append(("set_exec_user_switched", session_id))
+                return True
+
+            def clear_model_override(self, session_id):
+                self.calls.append(("clear_model_override", session_id))
+                return True
+
+            def set_handoff_context(self, session_id, context, target, model=None):
+                self.calls.append(("set_handoff_context", session_id, context, target, model))
+                return True
+
+        fake = FakeStorage()
+        with patch('src.runtime.commands.slash.handler.get_session_storage', return_value=fake):
+            response = handler.handle_command("/switch -r codex -u tswitch", source_session_id="sess-2")
+
+        assert "切换 Provider" in response
+        assert "`codex`" in response
+        assert "`tswitch`" in response
+        assert ("set_handoff_context", "sess-2", "", "codex", None) in fake.calls
 
 
 class TestSlashCommandsConstant:

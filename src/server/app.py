@@ -86,7 +86,7 @@ async def task_handler(task: Task) -> Optional[str]:
     if provider == "gemini":
         executor = GeminiExecutor(config=settings)
     elif provider == "codex":
-        executor = CodexCLIExecutor()
+        executor = CodexCLIExecutor(config=settings)
     else:
         executor = CLIExecutor(config=settings)
 

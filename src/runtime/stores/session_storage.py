@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..models.session import (
@@ -58,6 +59,9 @@ class SessionStorage:
                 meta.thread_id = session_id
 
             key = f"session:{session_id}:meta"
+            existing_data = self._redis.hgetall(key) or {}
+            old_username = (existing_data.get("username") or "").strip()
+
             self._redis.hset(key, meta.to_redis_hash())
             
             # Set TTL
@@ -67,6 +71,10 @@ class SessionStorage:
             global_key = "sessions:all"
             self._redis.zadd(global_key, {meta.id: meta.updated_at})
             
+            # If username changed, remove stale user index entry first
+            if old_username and old_username != meta.username:
+                self._redis.zrem(f"user:{old_username}:sessions", meta.id)
+
             # Also add to user's session index if username provided
             if meta.username:
                 user_key = f"user:{meta.username}:sessions"
@@ -311,6 +319,105 @@ class SessionStorage:
             return True
         except Exception as e:
             logger.error(f"Failed to clear exec_dir override: {e}")
+            return False
+
+    def get_session_exec_user(self, session_id: str) -> Optional[str]:
+        """Get the session-level exec_user override if set."""
+        try:
+            key = f"session:{session_id}:meta"
+            exec_user = self._redis.hget(key, "session_exec_user") or self._redis.hget(key, "exec_user")
+            return (exec_user or "").strip() or None
+        except Exception as e:
+            logger.error(f"Failed to get session exec_user: {e}")
+            return None
+
+    def _build_default_session_exec_dir(self, user_home_base: str, exec_user: str, session_id: str) -> str:
+        """Build the default session directory for the given exec_user."""
+        return str(Path(user_home_base) / exec_user / ".nexus" / "sessions" / session_id)
+
+    def set_session_exec_user(self, session_id: str, exec_user: str, user_home_base: Optional[str] = None) -> bool:
+        """Persist a session-level exec_user override.
+
+        Also updates session metadata so UI/user filters follow the new exec_user.
+        If the current exec_dir matches the default per-user session directory,
+        it will be moved to the new user's default session directory path.
+        """
+        normalized_exec_user = (exec_user or "").strip()
+        if not normalized_exec_user:
+            return False
+
+        try:
+            key = f"session:{session_id}:meta"
+            existing = self.get_session_meta(session_id)
+            old_user = (existing.exec_user or existing.username or "").strip() if existing else ""
+            current_exec_dir = (existing.exec_dir or "").strip() if existing else ""
+
+            updated_at = int(time.time() * 1000)
+            mapping = {
+                "session_exec_user": normalized_exec_user,
+                "exec_user": normalized_exec_user,
+                "username": normalized_exec_user,
+                "updated_at": str(updated_at),
+            }
+
+            if user_home_base:
+                default_new_dir = self._build_default_session_exec_dir(
+                    user_home_base,
+                    normalized_exec_user,
+                    session_id,
+                )
+                should_update_exec_dir = not current_exec_dir
+                if not should_update_exec_dir and old_user:
+                    default_old_dir = self._build_default_session_exec_dir(
+                        user_home_base,
+                        old_user,
+                        session_id,
+                    )
+                    should_update_exec_dir = current_exec_dir == default_old_dir
+                if should_update_exec_dir:
+                    mapping["exec_dir"] = default_new_dir
+
+            self._redis.hset(key, mapping)
+            self._redis.client.expire(self._redis._key(key), SESSION_TTL)
+            self._redis.zadd("sessions:all", {session_id: updated_at})
+
+            if old_user and old_user != normalized_exec_user:
+                self._redis.zrem(f"user:{old_user}:sessions", session_id)
+            self._redis.zadd(f"user:{normalized_exec_user}:sessions", {session_id: updated_at})
+
+            logger.info(f"Set session exec_user: {session_id} -> {normalized_exec_user}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set session exec_user: {e}")
+            return False
+
+    def set_exec_user_switched(self, session_id: str) -> bool:
+        """Mark session as having switched exec_user.
+
+        The next CLI invocation should start a fresh local session and inject
+        recent conversation context so continuity is preserved across users.
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"exec_user_switched": "1"})
+            logger.info(f"Set exec_user_switched flag: {session_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set exec_user_switched flag: {e}")
+            return False
+
+    def consume_exec_user_switched(self, session_id: str) -> bool:
+        """Consume the exec_user_switched flag if present."""
+        try:
+            key = f"session:{session_id}:meta"
+            val = self._redis.hget(key, "exec_user_switched")
+            if val:
+                self._redis.hdel(key, "exec_user_switched")
+                logger.info(f"Consumed exec_user_switched flag: {session_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to consume exec_user_switched flag: {e}")
             return False
 
     def set_target_session_id(self, session_id: str, target_session_id: str) -> bool:

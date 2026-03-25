@@ -95,6 +95,17 @@ CHANNEL_REGISTRY: Dict[str, Dict] = {
         ],
         "doc_url": "https://github.com/bbernhard/signal-cli-rest-api",
     },
+    "wechat": {
+        "display": "微信个人号 (WeChat Personal)",
+        "extra": None,  # 无需额外依赖，httpx 和 qrcode 已是核心依赖
+        "env_keys": [
+            ("WECHAT_BOT_TOKEN", "WeChat Bot Token", True,
+             "通过扫码登录获取，运行 'anexus login wechat'"),
+        ],
+        "optional_keys": [],
+        "doc_url": "",
+        "login_action": "wechat",  # 标记：使用交互式扫码登录而非手动输入 Token
+    },
 }
 
 # 必要目录
@@ -345,6 +356,31 @@ class OnboardCommand(BaseCommand):
             self.printer.print(f"📖 创建指南: {ch['doc_url']}")
             self.printer.print()
 
+        # ── 特殊处理：交互式扫码登录 ──
+        login_action = ch.get("login_action")
+        if login_action == "wechat":
+            # 检查是否已有 Token
+            current_token = env_vars.get("WECHAT_BOT_TOKEN", "")
+            if current_token:
+                self.printer.print(f"当前 Token: {self._mask_token(current_token)}", color="dim")
+                if not self.printer.confirm("是否重新扫码登录（覆盖现有 Token）？", default=False):
+                    self.printer.success(f"{ch['display']} 保持现有配置 ✓")
+                    return
+
+            if self.printer.confirm("是否现在进行微信扫码登录？", default=True):
+                success = self._wechat_qr_login()
+                if success:
+                    self.printer.success(f"{ch['display']} 配置完成 ✓")
+                    return
+                else:
+                    self.printer.warning("扫码登录未成功，你可以稍后运行 'anexus login wechat' 重试")
+                    return
+            else:
+                self.printer.info("跳过扫码登录。稍后可运行 'anexus login wechat' 获取 Token")
+                return
+
+        # ── 常规流程：手动输入 Token ──
+
         # 必填项
         for key, description, required, hint in ch["env_keys"]:
             current = env_vars.get(key, "")
@@ -377,6 +413,64 @@ class OnboardCommand(BaseCommand):
                         self.env_manager.set_value(key, new_val)
 
         self.printer.success(f"{ch['display']} 配置完成 ✓")
+
+    def _wechat_qr_login(self) -> bool:
+        """在 onboard 流程中执行微信扫码登录
+
+        Returns:
+            True 如果登录成功，False 如果失败或取消
+        """
+        try:
+            from channels.wechat_login import (
+                LoginError,
+                LoginTimeoutError,
+                QRCodeExpiredError,
+                WeChatQRLogin,
+            )
+        except ImportError:
+            self.printer.error("无法导入微信登录模块")
+            return False
+
+        login_client = WeChatQRLogin()
+
+        def on_qr(qr_text: str) -> None:
+            self.printer.print()
+            self.printer.print(qr_text)
+            self.printer.print()
+
+        def on_status(status: str, message: str) -> None:
+            status_icons = {
+                "fetching_qr": "🔄",
+                "wait": "⏳",
+                "scaned": "📱",
+                "confirmed": "✅",
+                "expired": "⏰",
+                "success": "🎉",
+            }
+            icon = status_icons.get(status, "ℹ️")
+            self.printer.print(f"  {icon} {message}")
+
+        try:
+            result = login_client.login(on_qr=on_qr, on_status=on_status)
+        except (LoginTimeoutError, QRCodeExpiredError, LoginError) as e:
+            self.printer.error(str(e))
+            return False
+        except KeyboardInterrupt:
+            self.printer.warning("登录已取消")
+            return False
+        except Exception as e:
+            self.printer.error(f"未知错误: {e}")
+            return False
+
+        # 保存 Token
+        self.env_manager.set_value("WECHAT_BOT_TOKEN", result.bot_token)
+        self.printer.success("WECHAT_BOT_TOKEN 已保存到 .env")
+
+        if result.base_url and result.base_url != "https://ilinkai.weixin.qq.com":
+            self.env_manager.set_value("WECHAT_BASE_URL", result.base_url)
+            self.printer.success(f"WECHAT_BASE_URL 已保存: {result.base_url}")
+
+        return True
 
     # ─── Step 4: 安装依赖 ──────────────────────────────────────────────
 

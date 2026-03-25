@@ -178,6 +178,10 @@ class CLIExecutor:
                 response_url = getattr(request, "response_url", None)
                 callback_msg_id = getattr(request, "msg_id", None)
                 callback_user = getattr(request, "user", None)
+                # Unified notification target (e.g. for WeCom WebSocket mode)
+                notification_sink_type = getattr(request, "notification_sink_type", None)
+                notification_channel = getattr(request, "notification_channel", None)
+                notification_chat_id = getattr(request, "notification_chat_id", None)
                 async for output in self._handle_slash_command(
                     cleaned_content,
                     exec_user,
@@ -186,6 +190,9 @@ class CLIExecutor:
                     response_url=response_url,
                     callback_msg_id=callback_msg_id,
                     callback_user=callback_user,
+                    notification_sink_type=notification_sink_type,
+                    notification_channel=notification_channel,
+                    notification_chat_id=notification_chat_id,
                 ):
                     yield output
                 return
@@ -266,23 +273,30 @@ class CLIExecutor:
         is_chat_continue = run_kind == "chat_continue"
         model_changed = getattr(request, "model_changed", False)
 
-        # Check if /clear was executed — consume the one-shot flag
+        # Check one-shot flags that force a fresh local CLI session.
         session_cleared = False
+        exec_user_switched = False
         try:
             if storage and session_id:
                 session_cleared = storage.consume_session_cleared(session_id)
                 if session_cleared:
                     logger.info(f"Session was recently cleared, will skip resume/continue for session {session_id}")
+                exec_user_switched = storage.consume_exec_user_switched(session_id)
+                if exec_user_switched:
+                    logger.info(f"Session exec_user changed, will rebuild local CLI session for {session_id}")
         except Exception as e:
-            logger.warning(f"Failed to check session_cleared flag: {e}")
+            logger.warning(f"Failed to check session transition flags: {e}")
 
         # 简化逻辑：exec_dir_override 模式下总是使用 -c 来恢复上下文
         if session_cleared:
             use_continue = False
             logger.info("Skipping -c (continue) due to /clear, will start new CLI session")
-        elif model_changed:
+        elif exec_user_switched or model_changed:
             use_continue = False
-            logger.info("Skipping -c (continue) due to model change, will start new CLI session")
+            reason_label = "执行用户切换" if exec_user_switched and not model_changed else "模型切换"
+            if exec_user_switched and model_changed:
+                reason_label = "执行用户/模型切换"
+            logger.info(f"Skipping -c (continue) due to {reason_label}, will start new CLI session")
             # Inject conversation history so the new session has context
             # (without -c, the CLI starts fresh and loses all prior context).
             if session_id:
@@ -293,15 +307,15 @@ class CLIExecutor:
                     history_text = self._build_model_switch_context(storage, session_id)
                     if history_text:
                         cleaned_content = (
-                            f"[模型切换 - 以下是之前对话的上下文]\n\n"
+                            f"[{reason_label} - 以下是之前对话的上下文]\n\n"
                             f"{history_text}\n\n"
                             f"---\n\n"
                             f"请基于以上上下文继续对话。用户的当前请求：\n"
                             f"{cleaned_content}"
                         )
-                        logger.info(f"Injected conversation context for model switch ({len(history_text)} chars)")
+                        logger.info(f"Injected conversation context for {reason_label} ({len(history_text)} chars)")
                 except Exception as e:
-                    logger.warning(f"Failed to inject model switch context: {e}")
+                    logger.warning(f"Failed to inject {reason_label} context: {e}")
         elif exec_dir_override:
             use_continue = True  # 切换到任务目录后，使用 -c 恢复该目录的上下文
         else:
@@ -335,10 +349,17 @@ class CLIExecutor:
                 if not storage:
                     from ...runtime.stores.session_storage import get_session_storage
                     storage = get_session_storage()
-                stored_cli_sid = storage.get_cli_session_id(session_id)
+
+                lookup_session_id = session_id
+                if exec_dir_override:
+                    target_sid = storage.get_target_session_id(session_id)
+                    if target_sid:
+                        lookup_session_id = target_sid
+
+                stored_cli_sid = storage.get_cli_session_id(lookup_session_id)
                 if stored_cli_sid:
                     request_cli_session_id = stored_cli_sid
-                    logger.info(f"Loaded cli_session_id from session storage: {stored_cli_sid}")
+                    logger.info(f"Loaded cli_session_id from session storage for {lookup_session_id}: {stored_cli_sid}")
             except Exception as e:
                 logger.warning(f"Failed to load cli_session_id from storage: {e}")
         logger.info(f"CLI command decision: request.alias={getattr(request, 'alias', None)}, workspace_alias={workspace_alias}, request_alias={request_alias}, agent_type={agent_type}, model={request_model_name}, cli_session_id={request_cli_session_id}")
@@ -447,6 +468,9 @@ class CLIExecutor:
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
+        notification_sink_type: Optional[str] = None,
+        notification_channel: Optional[str] = None,
+        notification_chat_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Handle slash commands and yield formatted response
 
@@ -458,6 +482,10 @@ class CLIExecutor:
             response_url: Callback URL for async task completion notification
             callback_msg_id: Message ID to pass back in callback
             callback_user: User identifier for callback
+            notification_sink_type: Unified sink type for task completion (e.g. "wecom").
+                                    Takes priority over response_url when set.
+            notification_channel: Channel name for unified notification.
+            notification_chat_id: Chat/channel ID for unified notification.
 
         Yields:
             Formatted response strings
@@ -472,6 +500,9 @@ class CLIExecutor:
                 response_url=response_url,
                 callback_msg_id=callback_msg_id,
                 callback_user=callback_user,
+                notification_sink_type=notification_sink_type,
+                notification_channel=notification_channel,
+                notification_chat_id=notification_chat_id,
             )
             
             logger.info(f"Slash command handled", extra={
