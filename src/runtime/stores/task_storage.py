@@ -78,6 +78,11 @@ class TaskQueue:
         workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
         return f"tasks:{eu}:by_workspace:{workspace_hash}"
 
+    def _session_index_key(self, session_id: str, exec_user: Optional[str] = None) -> str:
+        """Get Redis key for session_id → task_id index (O(1) lookup)"""
+        eu = exec_user or self.exec_user
+        return f"tasks:{eu}:by_session:{session_id}"
+
     def _queue_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
         """Get Redis key for workspace TODO queue"""
         eu = exec_user or self.exec_user
@@ -194,7 +199,14 @@ class TaskQueue:
         
         # Add to workspace index
         self._redis.sadd(self._workspace_key(workspace, effective_exec_user), task.id)
-        
+
+        # Add to session_id → task_id index for O(1) lookup
+        if session_id:
+            self._redis.set(
+                self._session_index_key(session_id, effective_exec_user),
+                task.id,
+            )
+
         # Add to TODO queue for execution
         # Priority: PROJECT tasks go to front, others to back
         if priority == TaskPriority.PROJECT:
@@ -330,21 +342,39 @@ class TaskQueue:
     def find_task_by_session_id(self, session_id: str) -> Optional[Task]:
         """Find a task whose session_id matches the given value.
 
-        Searches all tasks for a matching ``session_id`` field.
+        Uses an O(1) Redis index (``tasks:{eu}:by_session:{session_id}``).
+        Falls back to a full scan for backward compatibility with tasks
+        created before the index existed, and lazily backfills the index.
 
         Returns:
             The matching Task, or None.
         """
-        # Scan all tasks and match session_id field
+        if not session_id:
+            return None
+
+        # 1. O(1) index lookup
+        task_id = self._redis.get(self._session_index_key(session_id))
+        if task_id:
+            task = self.get_task(task_id)
+            if task and (
+                (task.session_id if isinstance(task.session_id, str) else None)
+                == session_id
+            ):
+                return task
+            # Stale index entry — clean up
+            self._redis.delete(self._session_index_key(session_id))
+
+        # 2. Fallback: full scan (backward compat for pre-index tasks)
         all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
-        for task_id in all_task_ids:
+        for tid in all_task_ids:
             try:
-                # Quick check via Redis hash field to avoid full deserialization
-                stored_sid = self._redis.hget(self._task_key(task_id), "session_id")
+                stored_sid = self._redis.hget(self._task_key(tid), "session_id")
                 if stored_sid == session_id:
-                    task = self.get_task(task_id)
-                    if task:
-                        return task
+                    # Backfill index for future O(1) lookups
+                    self._redis.set(
+                        self._session_index_key(session_id), tid
+                    )
+                    return self.get_task(tid)
             except Exception:
                 continue
         return None
@@ -488,7 +518,8 @@ class TaskQueue:
         """Update task data in Redis.
 
         This saves all task fields including claude_session_id.
-        Does not change queue membership or status indices.
+        Also maintains the session_id → task_id index when session_id
+        changes.  Does not change queue membership or status indices.
 
         Args:
             task: Task object with updated fields
@@ -499,6 +530,18 @@ class TaskQueue:
         if not self._redis.exists(self._task_key(task.id)):
             logger.warning(f"Task {task.id} not found for update")
             return False
+
+        # Maintain session_id index when session_id changes
+        try:
+            old_session_id = self._redis.hget(self._task_key(task.id), "session_id")
+            new_session_id = task.session_id if isinstance(task.session_id, str) else None
+            if new_session_id != old_session_id:
+                if old_session_id:
+                    self._redis.delete(self._session_index_key(old_session_id))
+                if new_session_id:
+                    self._redis.set(self._session_index_key(new_session_id), task.id)
+        except Exception as e:
+            logger.warning(f"Failed to update session index for task {task.id}: {e}")
 
         self._redis.hset(self._task_key(task.id), task.to_redis_hash())
         logger.debug(f"Updated task {task.id}")
@@ -617,64 +660,144 @@ class TaskQueue:
         workspace: Optional[str] = None,
         search: Optional[str] = None,
     ) -> tuple[List[Task], int]:
-        """List tasks with simple filtering and pagination.
+        """List tasks with server-side filtering and pagination.
 
-        Notes:
-            - This implementation favors correctness and minimal dependencies.
-            - Filtering is done by loading task objects; for large datasets this can be optimized.
+        Strategy:
+        - No filter: use ZSET range directly (most efficient path)
+        - Single filter (status/project/workspace): use the corresponding
+          Redis SET index to narrow candidates before loading task data
+        - Multiple non-search filters: intersect the relevant SETs
+        - search filter: requires content inspection (loads candidates)
+
+        Only the tasks for the requested *page* are fully deserialized,
+        avoiding the old O(n × hgetall) cost.
 
         Returns:
-            (tasks, total)
+            (tasks_for_page, total_matching_count)
         """
         if page < 1:
             page = 1
         if page_size < 1:
             page_size = 20
 
-        # Fetch all task IDs, most recent first
-        all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
-        all_task_ids = list(reversed(all_task_ids))
-
         status_norm = status.lower().strip() if status else None
         project_norm = project_id.strip() if project_id else None
         workspace_norm = workspace.strip() if workspace else None
         search_norm = search.lower().strip() if search else None
 
-        filtered: List[Task] = []
-        for task_id in all_task_ids:
-            task = self.get_task(task_id)
-            if not task:
-                continue
+        # ── Step 1: Determine candidate task IDs via indexes ──
+        candidate_ids = self._resolve_candidate_ids(
+            status_norm=status_norm,
+            project_id=project_norm,
+            workspace=workspace_norm,
+        )
 
-            task_status = task.status if isinstance(task.status, str) else task.status.value
-            if status_norm and task_status != status_norm:
-                continue
+        # ── Step 2: Order candidates by creation time (newest first) ──
+        if candidate_ids is not None:
+            ordered = self._order_by_creation(candidate_ids)
+        else:
+            # No structural filter — use full ZSET directly (already ordered)
+            ordered = list(reversed(
+                self._redis.zrange(self._all_tasks_key(), 0, -1)
+            ))
 
-            if project_norm and (task.project_id or "") != project_norm:
-                continue
+        # ── Step 3: Search filter (requires loading task data) ──
+        if search_norm:
+            filtered = []
+            for tid in ordered:
+                task = self.get_task(tid)
+                if task and self._matches_search(task, search_norm):
+                    filtered.append(tid)
+            ordered = filtered
 
-            if workspace_norm and (task.workspace or "") != workspace_norm:
-                continue
-
-            if search_norm:
-                hay = " ".join([
-                    task.id or "",
-                    task.description or "",
-                    task.project_id or "",
-                    task.project_name or "",
-                    task.workspace or "",
-                    task_status or "",
-                ]).lower()
-                if search_norm not in hay:
-                    continue
-
-            filtered.append(task)
-
-        total = len(filtered)
-
+        # ── Step 4: Paginate ──
+        total = len(ordered)
         start = (page - 1) * page_size
-        end = start + page_size
-        return filtered[start:end], total
+        page_ids = ordered[start:start + page_size]
+
+        # ── Step 5: Load only the page's tasks ──
+        tasks = []
+        for tid in page_ids:
+            task = self.get_task(tid)
+            if task:
+                tasks.append(task)
+
+        return tasks, total
+
+    # ── list_tasks helpers ────────────────────────────────────────────
+
+    def _resolve_candidate_ids(
+        self,
+        status_norm: Optional[str] = None,
+        project_id: Optional[str] = None,
+        workspace: Optional[str] = None,
+    ) -> Optional[set]:
+        """Use existing Redis SET indexes to narrow candidate task IDs.
+
+        Returns ``None`` when no structural filter is applied (caller should
+        use the full sorted set instead).
+        """
+        sets_to_intersect: List[set] = []
+
+        if status_norm:
+            try:
+                st = TaskStatus(status_norm)
+                members = self._redis.smembers(self._status_key(st))
+                sets_to_intersect.append(set(members))
+            except ValueError:
+                # Unknown status → no matches
+                return set()
+
+        if project_id:
+            members = self._redis.smembers(self._project_key(project_id))
+            sets_to_intersect.append(set(members))
+
+        if workspace:
+            members = self._redis.smembers(self._workspace_key(workspace))
+            sets_to_intersect.append(set(members))
+
+        if not sets_to_intersect:
+            return None  # No structural filter
+
+        # Intersect all sets
+        result = sets_to_intersect[0]
+        for s in sets_to_intersect[1:]:
+            result = result & s
+        return result
+
+    def _order_by_creation(self, candidate_ids: set) -> list:
+        """Order a set of task IDs by creation time (newest first).
+
+        Uses the 'all tasks' sorted set scores (timestamps) to determine
+        ordering without loading full task objects.
+        """
+        if not candidate_ids:
+            return []
+
+        # Get all members with scores from the sorted set
+        all_scored = self._redis.zrange(self._all_tasks_key(), 0, -1, withscores=True)
+
+        # Filter to candidates and sort by score descending
+        scored = [
+            (tid, score) for tid, score in all_scored
+            if tid in candidate_ids
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [tid for tid, _ in scored]
+
+    @staticmethod
+    def _matches_search(task: Task, search_norm: str) -> bool:
+        """Check if task matches search text."""
+        task_status = task.status if isinstance(task.status, str) else task.status.value
+        hay = " ".join(filter(None, [
+            task.id or "",
+            task.description or "",
+            task.project_id or "",
+            task.project_name or "",
+            task.workspace or "",
+            task_status or "",
+        ])).lower()
+        return search_norm in hay
 
     def get_failed_tasks(self, limit: int = 10) -> List[Task]:
         """Get the most recent failed tasks"""
@@ -832,6 +955,7 @@ class TaskQueue:
         - task hash
         - all tasks zset
         - status/project/workspace indexes
+        - session_id index
         - todo queue / executing set (best effort)
 
         The operation is idempotent.
@@ -843,6 +967,15 @@ class TaskQueue:
 
         task = self.get_task(task_id)
         if task:
+            # Remove from session_id index
+            if task.session_id:
+                try:
+                    self._redis.delete(
+                        self._session_index_key(task.session_id)
+                    )
+                except Exception:
+                    pass
+
             # Remove from status index
             try:
                 status_val = task.status if isinstance(task.status, str) else task.status.value

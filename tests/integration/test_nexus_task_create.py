@@ -26,6 +26,7 @@ class MockTaskQueue:
         source_session_id=None,
         exec_user=None,
         depends_on=None,
+        **kwargs,
     ) -> Task:
         t = Task(
             description=description,
@@ -48,7 +49,7 @@ class TestNexusCreateTask:
     @pytest.mark.asyncio
     async def test_create_task_success(self, client):
         q = MockTaskQueue()
-        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
                 params={"exec_user": "ubuntu"},
@@ -71,7 +72,7 @@ class TestNexusCreateTask:
     @pytest.mark.parametrize("provider", ["claude", "gemini", "codex", "codebuddy"])
     async def test_create_task_valid_providers_success(self, client, provider):
         q = MockTaskQueue()
-        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
                 params={"exec_user": "ubuntu"},
@@ -90,7 +91,7 @@ class TestNexusCreateTask:
     @pytest.mark.asyncio
     async def test_create_task_alias_uses_base_provider_success(self, client):
         q = MockTaskQueue()
-        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
                 params={"exec_user": "ubuntu"},
@@ -113,7 +114,7 @@ class TestNexusCreateTask:
     async def test_create_task_internal_aliases_rejected_as_provider(self, client, alias):
         """Aliases like -internal are not valid provider names and should be rejected."""
         q = MockTaskQueue()
-        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
                 params={"exec_user": "ubuntu"},
@@ -130,7 +131,7 @@ class TestNexusCreateTask:
     @pytest.mark.asyncio
     async def test_create_task_invalid_provider(self, client):
         q = MockTaskQueue()
-        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
                 params={"exec_user": "ubuntu"},
@@ -145,7 +146,7 @@ class TestNexusCreateTask:
     @pytest.mark.asyncio
     async def test_create_task_missing_description(self, client):
         q = MockTaskQueue()
-        with patch("src.server.routers.nexus._get_task_queue", return_value=q):
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
                 params={"exec_user": "ubuntu"},
