@@ -3,7 +3,7 @@
 
 from src.providers.codex import CodexCLIExecutor
 from src.server.config import settings
-from src.server.routers.nexus import _resolve_session_stale_timeout_seconds
+from src.server.routers.nexus_streaming import resolve_session_stale_timeout_seconds as _resolve_session_stale_timeout_seconds
 from src.server.services.channel_service import ChannelService
 
 

@@ -27,6 +27,16 @@ class NexusAPI {
     // ============ Auth API ============
 
     /**
+     * Return auth headers for API requests.
+     * Authentication is handled via HttpOnly cookies (automatically sent by browser),
+     * so no explicit Authorization header is needed for same-origin requests.
+     * @returns {Object} Headers object
+     */
+    static _authHeaders() {
+        return {};
+    }
+
+    /**
      * Check authentication status
      * @returns {Promise<Object>} Auth status response
      */

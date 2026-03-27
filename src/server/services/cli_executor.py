@@ -15,6 +15,7 @@ import re
 import uuid
 import os
 import pwd
+import tempfile
 from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 
@@ -38,7 +39,9 @@ logger = get_logger(__name__)
 
 # Debug模式：将完整的stream-json输出保存到文件
 DEBUG_STREAM = os.environ.get("DEBUG_STREAM", "0") == "1"
-DEBUG_STREAM_FILE = os.environ.get("DEBUG_STREAM_FILE", "/tmp/debug_stream.jsonl")
+# 安全修复: 不使用世界可读的 /tmp，改用 log 目录或环境变量指定的安全路径
+_debug_stream_default = os.path.join(settings.log_dir, "debug_stream.jsonl")
+DEBUG_STREAM_FILE = os.environ.get("DEBUG_STREAM_FILE", _debug_stream_default)
 
 
 class CLIExecutor:
@@ -543,7 +546,10 @@ class CLIExecutor:
         debug_file = None
         if DEBUG_STREAM:
             try:
-                debug_file = open(DEBUG_STREAM_FILE, "a", encoding="utf-8")
+                # 确保目标目录存在，使用安全权限打开文件（仅 owner 可读写）
+                os.makedirs(os.path.dirname(DEBUG_STREAM_FILE), exist_ok=True)
+                fd = os.open(DEBUG_STREAM_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                debug_file = os.fdopen(fd, "a", encoding="utf-8")
                 debug_file.write(f"\n\n=== New Stream Session: {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
             except Exception as e:
                 logger.warning(f"Failed to open debug stream file: {e}")

@@ -165,8 +165,14 @@ async def chat_stream(request: Request, exec_user: str):
             detail="Failed to read request body",
         )
 
-    # 记录完整请求信息
-    logger.info(f"REQUEST BODY: {body_str if body_str else '(empty)'}")
+    # 仅记录请求元数据，不记录完整请求体（避免 PII/凭证泄露）
+    logger.info(
+        "Received chat request",
+        extra={
+            "exec_user": exec_user,
+            "body_length": len(body_str) if body_str else 0,
+        },
+    )
 
     # 检查是否是测试连接请求（空body或仅包含{}）
     if not body_str or body_str.strip() in ["", "{}"]:

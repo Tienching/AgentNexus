@@ -183,31 +183,34 @@ async def auth_status(request: Request):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest, response: Response):
+async def login(request: LoginRequest, response: Response, http_request: Request):
     """Login to Nexus UI.
-    
+
     If NEXUS_PASSWORD is not set, always succeeds.
     """
     if not _is_auth_required():
         return LoginResponse(success=True, message="Authentication not required")
-    
+
     if not _verify_password(request.password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid password",
         )
-    
+
     # Generate and store session token
     token = _generate_token()
     _create_session(token)
-    
-    # Set cookie
+
+    # Set cookie — only mark Secure when behind HTTPS to avoid
+    # silent cookie rejection on plain-HTTP deployments.
+    _is_https = http_request.url.scheme == "https"
     response.set_cookie(
         key="nexus_token",
         value=token,
         max_age=settings.nexus_session_ttl,
         httponly=True,
         samesite="lax",
+        secure=_is_https,
     )
     
     logger.info("Nexus login successful")

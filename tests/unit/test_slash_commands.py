@@ -33,9 +33,33 @@ class MockRedisClient:
         self._sets = {}
         self._sorted_sets = {}
         self._lists = {}
+        self._strings = {}
 
     def _key(self, key: str) -> str:
         return key
+
+    # String operations
+    def set(self, name: str, value):
+        self._strings[name] = str(value) if value is not None else None
+        return True
+
+    def get(self, name: str):
+        return self._strings.get(name)
+
+    def delete(self, *names: str):
+        removed = 0
+        for name in names:
+            for store in (self._strings, self._hashes, self._sets, self._sorted_sets, self._lists):
+                if name in store:
+                    del store[name]
+                    removed += 1
+        return removed
+
+    def exists(self, name: str) -> int:
+        for store in (self._strings, self._hashes, self._sets, self._sorted_sets, self._lists):
+            if name in store:
+                return 1
+        return 0
 
     # Hash operations
     def hset(self, name: str, mapping: dict):
@@ -154,7 +178,13 @@ class MockRedisClient:
     def scan_iter(self, match: str, count: int = 100):
         # Minimal implementation for patterns used by code
         needle = match.replace("*", "")
-        for key in list(self._sets.keys()) + list(self._lists.keys()) + list(self._hashes.keys()):
+        all_keys = (
+            list(self._sets.keys())
+            + list(self._lists.keys())
+            + list(self._hashes.keys())
+            + list(self._strings.keys())
+        )
+        for key in all_keys:
             if needle in key:
                 yield key
 

@@ -29,6 +29,9 @@ class ServerSettings(BaseSettings):
     # 环境
     environment: str = "development"
 
+    # CORS 允许的域名列表（逗号分隔，默认为 * 表示全部允许）
+    cors_origins: str = "*"
+
     # 用户目录配置
     user_home_base: str = "/home"
     auto_create_user_dir: bool = True
