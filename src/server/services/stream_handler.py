@@ -16,21 +16,18 @@ from pydantic import ValidationError
 
 from ..models import RequestModel
 from src.runtime.events.agui import AGUIRequest
-from ..adapters import ProtocolType, get_router
 from ..config import settings
 from ..logger import get_logger
 from ..providers import get_provider_registry
 from ..utils.ids import resolve_session_id
-from .cli_executor import CLIExecutor
 from .callback_handler import CallbackHandler
 from .stream_archiver import create_archiver
 from .session_storage import get_session_storage
-from src.providers.gemini import GeminiExecutor
-from src.providers.codex import CodexCLIExecutor
-from src.providers.codebuddy import CodebuddyCLIExecutor
-from src.runtime.adapters.gemini import GeminiAGUIAdapter
-from src.runtime.adapters.codex import CodexCLIAGUIAdapter
-from src.runtime.adapters.codebuddy import CodebuddyAGUIAdapter
+from src.providers.dispatcher import (
+    normalize_provider,
+    create_all_executors,
+    create_adapter,
+)
 from src.runtime.streaming import StreamOrchestrator
 
 logger = get_logger(__name__)
@@ -40,10 +37,7 @@ class StreamHandler:
     """流式处理器 - 统一使用 AG-UI 协议"""
 
     def __init__(self):
-        self._cli_executor = CLIExecutor(config=settings)
-        self._gemini_executor = GeminiExecutor(config=settings)
-        self._codex_executor = CodexCLIExecutor(config=settings)
-        self._codebuddy_executor = CodebuddyCLIExecutor(config=settings)
+        self._executors = create_all_executors()
         self.callback_handler = CallbackHandler()
 
     def _get_provider(self, request: Request, body_dict: Dict[str, Any]) -> str:
@@ -55,9 +49,8 @@ class StreamHandler:
     def _get_executor(self, provider: str, request_model: RequestModel | None = None):
         """Select executor for this request.
 
-        Notes:
-        - Backward compat: unknown provider still uses Claude backend.
-        - Slash commands are local operations; always route them to CLIExecutor.
+        Uses the centralized :mod:`src.providers.dispatcher` for provider
+        normalization.  Slash commands always route to the *claude* executor.
         """
         try:
             content = (getattr(request_model, "content", "") or "").strip()
@@ -65,26 +58,14 @@ class StreamHandler:
             content = ""
 
         if content.startswith("/"):
-            return self._cli_executor
+            return self._executors["claude"]
 
-        provider_lower = (provider or "").strip().lower()
-        if provider_lower == "gemini":
-            return self._gemini_executor
-        elif provider_lower == "codex":
-            return self._codex_executor
-        elif provider_lower == "codebuddy":
-            return self._codebuddy_executor
-        return self._cli_executor
+        key = normalize_provider(provider)
+        return self._executors.get(key, self._executors["claude"])
 
     def _get_agui_adapter(self, provider: str):
-        provider_lower = (provider or "").strip().lower()
-        if provider_lower == "gemini":
-            return GeminiAGUIAdapter()
-        elif provider_lower == "codex":
-            return CodexCLIAGUIAdapter()
-        elif provider_lower == "codebuddy":
-            return CodebuddyAGUIAdapter()
-        return get_router().get_adapter(ProtocolType.AGUI)
+        """Create a fresh AG-UI adapter via the centralized dispatcher."""
+        return create_adapter(provider)
 
     def _build_conversation_history_text(
         self,

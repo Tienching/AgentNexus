@@ -80,10 +80,10 @@ class TestProviderRouting:
             raise AssertionError("CLIExecutor.execute should not be used when provider=gemini")
 
         with patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-gem", "r-gem", provider="gemini")
@@ -108,13 +108,13 @@ class TestProviderRouting:
             raise AssertionError("CodexCLIExecutor.execute should not be used when provider=gemini")
 
         with patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ), patch(
-            "src.server.services.stream_handler.CodexCLIExecutor.execute",
+            "src.providers.codex.CodexCLIExecutor.execute",
             new=codex_execute,
         ):
             body = _agui_body("t-gem-int", "r-gem-int", provider="gemini")
@@ -135,10 +135,10 @@ class TestProviderRouting:
             raise AssertionError("CLIExecutor.execute should not be used when query provider=gemini")
 
         with patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-query-gem", "r-query-gem", provider="claude")
@@ -163,13 +163,13 @@ class TestProviderRouting:
             raise AssertionError("CodexCLIExecutor.execute should not be used when query alias=gemini-internal")
 
         with patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ), patch(
-            "src.server.services.stream_handler.CodexCLIExecutor.execute",
+            "src.providers.codex.CodexCLIExecutor.execute",
             new=codex_execute,
         ):
             body = _agui_body("t-query-alias", "r-query-alias")
@@ -196,13 +196,13 @@ class TestProviderRouting:
             raise AssertionError("GeminiExecutor.execute should not be used when provider=codex")
 
         with patch(
-            "src.server.services.stream_handler.CodexCLIExecutor.execute",
+            "src.providers.codex.CodexCLIExecutor.execute",
             new=codex_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ), patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ):
             body = _agui_body("t-codex-int", "r-codex-int", provider="codex")
@@ -223,10 +223,10 @@ class TestProviderRouting:
             raise AssertionError("CLIExecutor.execute should not be used when provider=codebuddy")
 
         with patch(
-            "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
+            "src.providers.codebuddy.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cb", "r-cb", provider="codebuddy")
@@ -257,10 +257,10 @@ class TestProviderRouting:
             yield json.dumps({"type": "stream_event", "event": {"type": "message_stop"}})
 
         with patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cla", "r-cla", provider=None)
@@ -295,13 +295,13 @@ class TestProviderRouting:
             yield json.dumps({"type": "stream_event", "event": {"type": "message_stop"}})
 
         with patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CodexCLIExecutor.execute",
+            "src.providers.codex.CodexCLIExecutor.execute",
             new=codex_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-cla-int", "r-cla-int", provider="claude")
@@ -334,10 +334,10 @@ class TestProviderRouting:
             "src.server.providers.registry.get_session_storage",
             return_value=_Storage(),
         ), patch(
-            "src.server.services.stream_handler.GeminiExecutor.execute",
+            "src.providers.gemini.GeminiExecutor.execute",
             new=gemini_execute,
         ), patch(
-            "src.server.services.stream_handler.CLIExecutor.execute",
+            "src.server.services.cli_executor.CLIExecutor.execute",
             new=claude_execute,
         ):
             body = _agui_body("t-meta", "r-meta", provider=None)
@@ -370,7 +370,7 @@ class TestCodebuddyProvider:
             })
 
         with patch(
-            "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
+            "src.providers.codebuddy.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ):
             body = _agui_body("t-cb-init", "r-cb-init", provider="codebuddy")
@@ -421,7 +421,7 @@ class TestCodebuddyProvider:
             })
 
         with patch(
-            "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
+            "src.providers.codebuddy.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ):
             body = _agui_body("t-cb-tool", "r-cb-tool", provider="codebuddy")
@@ -457,7 +457,7 @@ class TestCodebuddyProvider:
             })
 
         with patch(
-            "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
+            "src.providers.codebuddy.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ):
             body = _agui_body("t-cb-err", "r-cb-err", provider="codebuddy")
@@ -495,7 +495,7 @@ class TestCodebuddyProvider:
             })
 
         with patch(
-            "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
+            "src.providers.codebuddy.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ):
             body = _agui_body("t-cb-mix", "r-cb-mix", provider="codebuddy")
@@ -525,7 +525,7 @@ class TestCodebuddyProvider:
             })
 
         with patch(
-            "src.server.services.stream_handler.CodebuddyCLIExecutor.execute",
+            "src.providers.codebuddy.CodebuddyCLIExecutor.execute",
             new=codebuddy_execute,
         ):
             body = _agui_body("t-cb-slash", "r-cb-slash", provider="codebuddy")

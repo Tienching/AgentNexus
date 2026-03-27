@@ -137,12 +137,12 @@ class CodebuddyAGUIAdapter(BaseAdapter):
             if not isinstance(contents, list):
                 return None
             results = []
-            
+
             # Separate text and tool_use items to handle them properly
             text_items = [item for item in contents if isinstance(item, dict) and item.get("type") == "text"]
             tool_use_items = [item for item in contents if isinstance(item, dict) and item.get("type") == "tool_use"]
             tool_result_items = [item for item in contents if isinstance(item, dict) and item.get("type") == "tool_result"]
-            
+
             # Process text items first
             for item in text_items:
                 text = item.get("text", "")
@@ -164,7 +164,24 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                     ).to_sse()
                 )
                 self._has_streamed_text_content = True
-            
+
+            # Close text message before tool calls if no tool_use items follow.
+            # If tool_use items follow, keep message open so tool calls can
+            # reference the current parentMessageId; the result event or
+            # create_end_event() will close it later.
+            if (
+                not tool_use_items
+                and not tool_result_items
+                and self.state.message_started
+                and self.state.current_message_id
+            ):
+                results.append(
+                    TextMessageEndEvent(
+                        messageId=self.state.current_message_id
+                    ).to_sse()
+                )
+                self.state.message_started = False
+
             # Process tool_use items - these are part of the same message
             for item in tool_use_items:
                 tool_id = item.get("id") or item.get("tool_use_id")
@@ -246,6 +263,14 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                     delta=content,
                 ).to_sse()
             )
+            self._has_streamed_text_content = True
+            # Close the message — "message" events deliver complete content
+            results.append(
+                TextMessageEndEvent(
+                    messageId=self.state.current_message_id
+                ).to_sse()
+            )
+            self.state.message_started = False
             return "".join(results)
 
         if event_type == "tool_use":

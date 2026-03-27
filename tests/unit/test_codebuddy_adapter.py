@@ -99,23 +99,26 @@ class TestAssistantTextEvent:
         return adapter
 
     def test_convert_assistant_text(self, adapter):
-        """验证 assistant text 转换为 TEXT_MESSAGE_START + CONTENT"""
+        """验证 assistant text 转换为 TEXT_MESSAGE_START + CONTENT + END"""
         event = load_fixture("assistant_text")
         result = adapter.convert(event)
-        
+
         assert result is not None
         events = parse_sse_events(result)
-        
-        # 应该有 TEXT_MESSAGE_START 和 TEXT_MESSAGE_CONTENT
-        assert len(events) == 2
+
+        # 应该有 TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END
+        assert len(events) == 3
         assert events[0]["type"] == "TEXT_MESSAGE_START"
         assert events[0]["role"] == "assistant"
         assert "messageId" in events[0]
         assert events[0]["messageId"].startswith("codebuddy-msg-")
-        
+
         assert events[1]["type"] == "TEXT_MESSAGE_CONTENT"
         assert "delta" in events[1]
         assert "AI 智能编程助手" in events[1]["delta"]
+
+        assert events[2]["type"] == "TEXT_MESSAGE_END"
+        assert events[2]["messageId"] == events[0]["messageId"]
 
     def test_empty_text_ignored(self, adapter):
         """验证空文本被忽略"""
@@ -422,13 +425,16 @@ class TestLegacyMessageFormat:
             "content": "Hello, world!"
         }
         result = adapter.convert(event)
-        
+
         assert result is not None
         events = parse_sse_events(result)
-        assert len(events) == 2
+        # 应该有 TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END
+        assert len(events) == 3
         assert events[0]["type"] == "TEXT_MESSAGE_START"
         assert events[1]["type"] == "TEXT_MESSAGE_CONTENT"
         assert events[1]["delta"] == "Hello, world!"
+        assert events[2]["type"] == "TEXT_MESSAGE_END"
+        assert events[2]["messageId"] == events[0]["messageId"]
 
     def test_legacy_message_user_ignored(self, adapter):
         """测试旧版 user 消息被忽略"""
