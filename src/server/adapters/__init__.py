@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Adapters - protocol routing and detection for HTTP layer"""
+"""Adapters — protocol detection helpers for the HTTP layer."""
 
-# Re-export from src.runtime
+# Re-export core adapter types from src.runtime
 from src.runtime.adapters import (
     BaseAdapter,
     AdapterState,
@@ -9,25 +9,21 @@ from src.runtime.adapters import (
     AGUIAdapter,
     ParsedToolCall,
 )
+
+# Protocol detection utilities
 from .protocol_router import (
-    ProtocolRouter,
-    get_router,
-    reset_router,
     detect_protocol,
     detect_protocol_from_body,
 )
 
 __all__ = [
-    # From src.runtime
+    # Core adapter types
     "BaseAdapter",
     "AdapterState",
     "ProtocolType",
     "AGUIAdapter",
     "ParsedToolCall",
-    # Local
-    "ProtocolRouter",
-    "get_router",
-    "reset_router",
+    # Protocol detection
     "detect_protocol",
     "detect_protocol_from_body",
 ]

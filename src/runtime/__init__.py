@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Agent Runtime Core Package (Legacy alias)
+Agent Runtime Core Package
 
-This module is now an alias to src.core for backward compatibility.
-New code should import from src.core directly.
-
-Migration path:
-  - src.runtime.events -> src.core.events
-  - src.runtime.models -> src.core.models
-  - src.runtime.stores -> src.core.stores
-  - src.runtime.streaming -> src.core.streaming
-  - src.runtime.adapters -> src.protocols
-  - src.runtime.executors -> src.providers.{claude,gemini}.executor
+Single source of truth for:
+  - src.runtime.events      — event types (base + AG-UI protocol)
+  - src.runtime.models       — session / task data models
+  - src.runtime.stores       — Redis client, session & task storage
+  - src.runtime.streaming    — SSE stream orchestrator
+  - src.runtime.adapters     — AG-UI protocol adapters (Claude/Gemini/Codex/Codebuddy)
+  - src.runtime.execution    — task executor, workspace queue
+  - src.runtime.commands     — slash commands
+  - src.runtime.archiving    — stream archiver
 """
 
 from .events import Event, EventType, TokenEvent, ToolCallStartEvent, ErrorEvent

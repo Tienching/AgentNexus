@@ -95,6 +95,6 @@ def create_adapter(provider: str):
         from src.runtime.adapters.codebuddy import CodebuddyAGUIAdapter
         return CodebuddyAGUIAdapter()
 
-    # Default: Claude — uses the generic protocol router
-    from src.server.adapters import ProtocolType, get_router
-    return get_router().get_adapter(ProtocolType.AGUI)
+    # Default: Claude
+    from src.runtime.adapters.claude import AGUIAdapter
+    return AGUIAdapter()

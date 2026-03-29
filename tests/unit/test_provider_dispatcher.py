@@ -143,23 +143,19 @@ class TestCreateAdapter:
             result = create_adapter("codebuddy")
             MockAdapter.assert_called_once()
 
-    def test_claude_uses_protocol_router(self):
-        mock_adapter = MagicMock(name="ProtocolAdapter_instance")
-        mock_router = MagicMock()
-        mock_router.get_adapter.return_value = mock_adapter
-        with patch("src.server.adapters.get_router", return_value=mock_router):
+    def test_claude_creates_agui_adapter(self):
+        with patch("src.runtime.adapters.claude.AGUIAdapter") as MockAdapter:
+            MockAdapter.return_value = MagicMock(name="AGUIAdapter_instance")
             from src.providers.dispatcher import create_adapter
             result = create_adapter("claude")
-            mock_router.get_adapter.assert_called_once()
+            MockAdapter.assert_called_once()
 
     def test_unknown_provider_uses_claude_adapter(self):
-        mock_adapter = MagicMock(name="ProtocolAdapter_instance")
-        mock_router = MagicMock()
-        mock_router.get_adapter.return_value = mock_adapter
-        with patch("src.server.adapters.get_router", return_value=mock_router):
+        with patch("src.runtime.adapters.claude.AGUIAdapter") as MockAdapter:
+            MockAdapter.return_value = MagicMock(name="AGUIAdapter_instance")
             from src.providers.dispatcher import create_adapter
             result = create_adapter("unknown")
-            mock_router.get_adapter.assert_called_once()
+            MockAdapter.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
