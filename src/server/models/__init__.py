@@ -10,6 +10,7 @@ from .legacy import (
     Document,
     GlobalOutput,
     StreamResponse,
+    HealthCheck,
     HealthResponse,
     MetricsResponse,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "Document",
     "GlobalOutput",
     "StreamResponse",
+    "HealthCheck",
     "HealthResponse",
     "MetricsResponse",
     # Task Models

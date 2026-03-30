@@ -51,12 +51,30 @@ class StreamResponse(BaseModel):
     global_output: GlobalOutput = Field(..., description="全局输出信息")
 
 
+class HealthCheck(BaseModel):
+    """Single subsystem health check result.
+
+    Ported from mission-control performHealthCheck (commits 4eda03a / afa8e9d).
+    """
+    name: str
+    status: str  # "healthy" | "warning" | "degraded" | "unhealthy" | "error"
+    message: str = ""
+    detail: Optional[dict] = None
+
+
 class HealthResponse(BaseModel):
-    """健康检查响应"""
+    """健康检查响应 — enhanced with structured checks.
+
+    Ported from mission-control performHealthCheck (commits 4eda03a / afa8e9d):
+    - checks: list of per-subsystem health results
+    - overall status degrades to worst check status
+    """
 
     status: str = Field(..., description="服务状态")
     service: str = Field(..., description="服务名称")
     version: str = Field(..., description="服务版本")
+    uptime_seconds: Optional[float] = Field(None, description="Process uptime in seconds")
+    checks: List[HealthCheck] = Field(default_factory=list, description="Per-subsystem health checks")
 
 
 class MetricsResponse(BaseModel):
