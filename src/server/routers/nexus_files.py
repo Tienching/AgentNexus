@@ -36,6 +36,70 @@ router = APIRouter(
 )
 
 
+# ---------------------------------------------------------------------------
+# Path safety helpers
+# Ported from mission-control src/lib/memory-path.ts (commit dd15409):
+#   - Use is_relative_to() instead of str.startswith() to avoid the
+#     "/tmp/sess" matches "/tmp/sess-evil" false-positive.
+#   - Reject symlinks (lstat check) to prevent symlink escape attacks.
+# ---------------------------------------------------------------------------
+
+def _is_within_base(base: Path, candidate: Path) -> bool:
+    """Return True iff candidate is the same as or a descendant of base.
+
+    Uses Path.is_relative_to() (Python ≥3.9) which is separator-aware and
+    avoids the classical startswith() false-positive where a base of
+    '/tmp/session' would wrongly accept '/tmp/session-evil'.
+    """
+    try:
+        return candidate == base or candidate.is_relative_to(base)
+    except ValueError:
+        return False
+
+
+def _resolve_safe_path(base_dir: Path, relative_path: str) -> Path:
+    """Resolve *relative_path* against *base_dir* with full containment checks.
+
+    Raises HTTPException(400) if:
+    - The resolved path escapes base_dir (directory traversal / symlink escape)
+    - The target is a symbolic link (symlink-escape attack)
+
+    Raises HTTPException(404) if the target does not exist.
+
+    Ported from mission-control resolveSafeMemoryPath (commit dd15409).
+    """
+    # Resolve the base to its real (symlink-free) location
+    base_real = base_dir.resolve()
+
+    target = base_dir / relative_path
+
+    # For paths that already exist: check for symlinks and containment
+    if target.exists() or target.is_symlink():
+        # lstat: does NOT follow symlinks — detects the symlink itself
+        st = target.lstat()
+        import stat as stat_module
+        if stat_module.S_ISLNK(st.st_mode):
+            raise HTTPException(status_code=400, detail="Symbolic links are not allowed")
+        real_target = target.resolve()
+        if not _is_within_base(base_real, real_target):
+            raise HTTPException(status_code=400, detail="Path escapes base directory")
+        return real_target
+
+    # For non-existent paths: walk up to the nearest existing ancestor and
+    # verify containment, matching MC's parent-walk logic
+    current = target.parent
+    while True:
+        if current.exists():
+            real_parent = current.resolve()
+            if not _is_within_base(base_real, real_parent):
+                raise HTTPException(status_code=400, detail="Path escapes base directory")
+            return base_real / target.relative_to(base_dir)
+        parent = current.parent
+        if parent == current:
+            raise HTTPException(status_code=400, detail="Invalid path: no valid ancestor")
+        current = parent
+
+
 def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     """Resolve the folder path for a session.
 
@@ -83,15 +147,13 @@ async def list_session_files(
     # Handle subpath
     target_path = folder
     if subpath:
-        # Prevent directory traversal attacks
-        safe_subpath = Path(subpath).as_posix()
-        if ".." in safe_subpath:
+        # Reject obvious traversal early (fast path)
+        if ".." in Path(subpath).as_posix():
             raise HTTPException(status_code=400, detail="Invalid path")
-        target_path = folder / safe_subpath
+        # Full containment + symlink check (ported from MC memory-path audit)
+        target_path = _resolve_safe_path(folder, subpath)
         if not target_path.exists():
             raise HTTPException(status_code=404, detail=f"Path not found: {subpath}")
-        if not str(target_path.resolve()).startswith(str(folder.resolve())):
-            raise HTTPException(status_code=400, detail="Invalid path")
 
     files: List[FileItem] = []
 
@@ -116,6 +178,8 @@ async def list_session_files(
             ))
     except PermissionError:
         raise HTTPException(status_code=403, detail="Permission denied")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to list session files: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list files")
@@ -147,16 +211,12 @@ async def download_session_file(
             detail=f"Session folder not found for: {session_id}"
         )
 
-    # Prevent directory traversal attacks
-    safe_path = Path(file_path).as_posix()
-    if ".." in safe_path:
+    # Reject obvious traversal early (fast path)
+    if ".." in Path(file_path).as_posix():
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    target_file = folder / safe_path
-
-    # Verify the file is within the session folder
-    if not str(target_file.resolve()).startswith(str(folder.resolve())):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    # Full containment + symlink check (ported from MC memory-path audit)
+    target_file = _resolve_safe_path(folder, file_path)
 
     if not target_file.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
