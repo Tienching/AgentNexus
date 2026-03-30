@@ -77,15 +77,29 @@ class CallbackHandler:
                             }
                         )
                         return True
-                    else:
-                        logger.warning(
-                            "Callback failed with status code",
+
+                    # 4xx client errors are permanent — retrying will not help.
+                    # Ported from mission-control fetchSetupStatusWithRetry design:
+                    # only retry on transient failures (network errors, timeouts, 5xx).
+                    if 400 <= response.status_code < 500:
+                        logger.error(
+                            "Callback failed with non-retryable client error",
                             extra={
                                 "response_url": response_url[:100],
                                 "status_code": response.status_code,
                                 "attempt": attempt + 1,
                             }
                         )
+                        return False
+
+                    logger.warning(
+                        "Callback failed with status code, will retry",
+                        extra={
+                            "response_url": response_url[:100],
+                            "status_code": response.status_code,
+                            "attempt": attempt + 1,
+                        }
+                    )
 
             except httpx.TimeoutException as e:
                 logger.warning(f"Callback timeout on attempt {attempt + 1}", extra={"error": str(e)})
