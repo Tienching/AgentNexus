@@ -103,6 +103,10 @@ class TaskItem(BaseModel):
     loop_max_iterations: int = 1
     loop_keywords: List[str] = Field(default_factory=list)
     loop_keyword_found: bool = False
+    # Derived overlay — not stored; computed from description keywords.
+    # "waiting_for_owner" signals that the task is blocked on human action.
+    # Ported from mission-control detectAwaitingOwner (commit fc4384b).
+    effective_status: Optional[str] = None
 
 
 class TaskListResponse(BaseModel):
@@ -266,12 +270,52 @@ def task_updated_at(task) -> Optional[datetime]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# awaiting-owner detection
+# Ported from mission-control task-board-panel.tsx detectAwaitingOwner (commit fc4384b).
+# When a TODO or DOING task's description contains any of these phrases, it means
+# the agent is blocked waiting for human action — surfaced as effective_status.
+# ---------------------------------------------------------------------------
+
+_WAITING_FOR_OWNER_KEYWORDS = [
+    "waiting for",
+    "waiting on",
+    "needs human",
+    "manual action",
+    "account creation",
+    "browser login",
+    "approval needed",
+    "owner action",
+    "human required",
+    "blocked on owner",
+    "awaiting owner",
+    "awaiting human",
+    "needs owner",
+]
+
+_ACTIVE_STATUSES = {"todo", "doing"}
+
+
+def detect_waiting_for_owner(task) -> bool:
+    """Return True when the task appears to be blocked waiting for human action.
+
+    Only triggers for active tasks (TODO/DOING) — completed/failed/cancelled
+    tasks are not flagged regardless of description content.
+    """
+    raw_status = task.status if isinstance(task.status, str) else task.status.value
+    if raw_status not in _ACTIVE_STATUSES:
+        return False
+    text = (getattr(task, "description", "") or "").lower()
+    return any(kw in text for kw in _WAITING_FOR_OWNER_KEYWORDS)
+
+
 def task_to_item(task) -> TaskItem:
     """Convert a storage Task to a TaskItem response model."""
     status_val = task.status if isinstance(task.status, str) else task.status.value
     priority_val = task.priority if isinstance(task.priority, str) else task.priority.value
     session_id = getattr(task, "session_id", None) or f"task_{task.id}"
     depends_on = getattr(task, "depends_on", None) or []
+    effective_status = "waiting_for_owner" if detect_waiting_for_owner(task) else None
     return TaskItem(
         id=str(task.id),
         description=task.description,
@@ -296,4 +340,5 @@ def task_to_item(task) -> TaskItem:
         loop_max_iterations=getattr(task, "loop_max_iterations", 1),
         loop_keywords=getattr(task, "loop_keywords", []) or [],
         loop_keyword_found=getattr(task, "loop_keyword_found", False),
+        effective_status=effective_status,
     )
