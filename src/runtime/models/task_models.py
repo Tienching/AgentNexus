@@ -90,6 +90,13 @@ class Task(BaseModel):
     # Execution details
     attempt_count: int = 0
     error_message: Optional[str] = None
+
+    # Outcome tracking — ported from mission-control commit 6cf4256
+    # outcome: final result category set when task transitions to DONE/FAILED
+    outcome: Optional[str] = None          # "success" | "failed" | "partial" | "abandoned"
+    resolution: Optional[str] = None      # free-text resolution notes
+    feedback_rating: Optional[int] = None  # 1-5 human rating
+    feedback_notes: Optional[str] = None   # human feedback text
     
     # Metadata
     context: Optional[Dict[str, Any]] = None
@@ -184,8 +191,11 @@ class Task(BaseModel):
                 parsed[key] = json.loads(value) if value else None
             elif key == "depends_on":
                 parsed[key] = json.loads(value) if value else []
-            elif key == "attempt_count":
-                parsed[key] = int(value)
+            elif key in ("attempt_count", "feedback_rating"):
+                try:
+                    parsed[key] = int(value) if value not in ("", "None", "null") else None
+                except (ValueError, TypeError):
+                    parsed[key] = None
             elif key in ("loop_iteration", "loop_max_iterations"):
                 parsed[key] = int(value)
             elif key in ("loop_enabled", "loop_keyword_found"):
