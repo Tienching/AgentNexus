@@ -457,7 +457,7 @@ async def get_tmux_command(session_id: str):
     cli_session_id = storage.get_cli_session_id(session_id)
 
     cli_parts = [alias]
-    if provider in ("claude", "codebuddy"):
+    if provider in ("claude", "codebuddy", "claude-internal"):
         if cli_session_id:
             cli_parts += ["--resume", cli_session_id]
         else:

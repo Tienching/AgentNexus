@@ -506,7 +506,8 @@ class CLIExecutor:
             self._current_process = process
 
             # 处理流式输出
-            async for output in self._process_stream(process, request, output_format):
+            async for output in self._process_stream(process, request, output_format,
+                                                      session_id=session_id, storage=storage):
                 yield output
 
             # 等待进程结束
@@ -609,10 +610,12 @@ class CLIExecutor:
                 yield json.dumps({"type": "error", "message": error_msg})
 
     async def _process_stream(
-        self, 
-        process: asyncio.subprocess.Process, 
+        self,
+        process: asyncio.subprocess.Process,
         request: RequestModel,
-        output_format: str = "raw"
+        output_format: str = "raw",
+        session_id: Optional[str] = None,
+        storage=None,
     ) -> AsyncGenerator[str, None]:
         """处理子进程的流式输出"""
         line_count = 0
@@ -659,6 +662,20 @@ class CLIExecutor:
                     if debug_file:
                         debug_file.write(f"[{line_count}] {line_str}\n")
                         debug_file.flush()
+
+                    # Extract and persist CLI session ID from result events (subprocess path)
+                    try:
+                        _data = json.loads(line_str)
+                        if _data.get("type") == "result":
+                            _cli_sid = _data.get("session_id")
+                            if _cli_sid and session_id and storage:
+                                try:
+                                    storage.set_cli_session_id(session_id, _cli_sid)
+                                    logger.debug(f"Saved cli_session_id from subprocess result: {_cli_sid}")
+                                except Exception:
+                                    pass
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
                     # 原始JSON行模式
                     if output_format == "raw":

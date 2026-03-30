@@ -61,14 +61,16 @@ def _build_tmux_command(session_meta, storage) -> dict:
     """
     session_id = session_meta.id
 
+    # Resolve exec_user — use explicit exec_user or fall back to settings.
+    # NOTE: session_meta.username is the *web login* name (e.g. "jonaszchen"),
+    # NOT necessarily a valid Linux user.  Only use exec_user or settings default.
+    exec_user = session_meta.exec_user or settings.exec_user
+
     # Resolve working directory
     exec_dir = session_meta.exec_dir or storage.get_exec_dir_override(session_id)
     if not exec_dir:
         home_base = settings.user_home_base
-        exec_user = session_meta.exec_user or session_meta.username or settings.exec_user
         exec_dir = str(Path(home_base) / exec_user)
-
-    exec_user = session_meta.exec_user or session_meta.username or settings.exec_user
 
     # Resolve provider / alias
     provider = session_meta.provider or "claude"
@@ -78,7 +80,7 @@ def _build_tmux_command(session_meta, storage) -> dict:
     cli_session_id = storage.get_cli_session_id(session_id)
 
     cli_parts = [alias]
-    if provider in ("claude", "codebuddy"):
+    if provider in ("claude", "codebuddy", "claude-internal"):
         if cli_session_id:
             cli_parts += ["--resume", cli_session_id]
         else:
