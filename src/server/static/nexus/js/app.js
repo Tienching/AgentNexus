@@ -1060,15 +1060,9 @@ class ChatView {
                     </div>
                     <div class="message-content">
                         <div class="thinking-indicator">
-                            <span class="thinking-status-icon" aria-hidden="true">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v2m0 12v2m8-8h-2M6 12H4m13.657 5.657l-1.414-1.414M7.757 7.757 6.343 6.343m11.314 0-1.414 1.414M7.757 16.243l-1.414 1.414"/>
-                                </svg>
-                            </span>
                             <span class="thinking-dot"></span>
                             <span class="thinking-dot"></span>
                             <span class="thinking-dot"></span>
-                            <span class="thinking-text">运行中...</span>
                         </div>
                     </div>
                 </div>
@@ -1625,7 +1619,7 @@ class ChatView {
         const statusConfig = {
             pending: { icon: '⏳', color: 'var(--text-muted)' },
             executing: { icon: '▶️', color: 'var(--primary-500)' },
-            completed: { icon: '✓', color: 'var(--success)' },
+            completed: { icon: '✓', color: 'var(--text-muted)' },
             failed: { icon: '✗', color: 'var(--error)' }
         };
         const cfg = statusConfig[status] || statusConfig.executing;
@@ -2718,15 +2712,9 @@ class ChatView {
                 <div class="message-avatar">A</div>
                 <div class="message-content">
                     <div class="thinking-indicator">
-                        <span class="thinking-status-icon" aria-hidden="true">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="14" height="14">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v2m0 12v2m8-8h-2M6 12H4m13.657 5.657l-1.414-1.414M7.757 7.757 6.343 6.343m11.314 0-1.414 1.414M7.757 16.243l-1.414 1.414"/>
-                            </svg>
-                        </span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
-                        <span class="thinking-text">运行中...</span>
                     </div>
                 </div>
             </div>
@@ -2951,7 +2939,7 @@ class ChatView {
         const statusConfig = {
             pending: { icon: '⏳', color: 'var(--text-muted)', bgColor: 'rgba(148, 163, 184, 0.1)', label: 'Pending' },
             executing: { icon: '▶️', color: 'var(--primary-500)', bgColor: 'rgba(59, 130, 246, 0.1)', label: 'Executing' },
-            completed: { icon: '✓', color: 'var(--success)', bgColor: 'rgba(16, 185, 129, 0.1)', label: 'Completed' },
+            completed: { icon: '✓', color: 'var(--text-muted)', bgColor: 'rgba(113, 113, 122, 0.1)', label: 'Completed' },
             failed: { icon: '✗', color: 'var(--error)', bgColor: 'rgba(239, 68, 68, 0.1)', label: 'Failed' }
         };
         const cfg = statusConfig[status] || statusConfig.pending;
