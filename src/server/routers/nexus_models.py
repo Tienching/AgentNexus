@@ -94,6 +94,11 @@ class TaskItem(BaseModel):
     updated_at: Optional[datetime] = None
     attempt_count: int = 0
     error_message: Optional[str] = None
+    # Outcome tracking — ported from mission-control commit 6cf4256
+    outcome: Optional[str] = None
+    resolution: Optional[str] = None
+    feedback_rating: Optional[int] = None
+    feedback_notes: Optional[str] = None
     exec_user: Optional[str] = None
     session_id: Optional[str] = None
     depends_on: List[str] = Field(default_factory=list)
@@ -169,6 +174,54 @@ class BulkCreateTaskResponse(BaseModel):
 
 class UpdateTaskStatusRequest(BaseModel):
     status: str = Field(..., description="New task status (todo/doing/done/failed/cancelled/archived)")
+
+
+class UpdateTaskOutcomeRequest(BaseModel):
+    """Set or update the outcome of a completed task.
+
+    Ported from mission-control commit 6cf4256.
+    outcome: success | failed | partial | abandoned
+    feedback_rating: 1-5 (optional human rating)
+    """
+    outcome: str = Field(..., description="Outcome: success | failed | partial | abandoned")
+    resolution: Optional[str] = Field(None, description="Free-text resolution notes")
+    feedback_rating: Optional[int] = Field(None, ge=1, le=5, description="Human rating 1-5")
+    feedback_notes: Optional[str] = Field(None, description="Human feedback text")
+
+
+class OutcomeBuckets(BaseModel):
+    success: int = 0
+    failed: int = 0
+    partial: int = 0
+    abandoned: int = 0
+    unknown: int = 0
+
+
+class OutcomesByDimension(OutcomeBuckets):
+    total: int = 0
+    success_rate: float = 0.0
+
+
+class TaskOutcomeSummary(BaseModel):
+    total_done: int = 0
+    with_outcome: int = 0
+    by_outcome: OutcomeBuckets = Field(default_factory=OutcomeBuckets)
+    avg_attempt_count: float = 0.0
+    avg_time_to_resolution_seconds: float = 0.0
+    success_rate: float = 0.0
+
+
+class TaskOutcomesResponse(BaseModel):
+    """Analytics response for GET /api/nexus/tasks/outcomes.
+
+    Ported from mission-control commit 6cf4256.
+    """
+    timeframe: str = "all"
+    summary: TaskOutcomeSummary = Field(default_factory=TaskOutcomeSummary)
+    by_provider: Dict[str, Any] = Field(default_factory=dict)
+    by_priority: Dict[str, Any] = Field(default_factory=dict)
+    common_errors: List[Dict[str, Any]] = Field(default_factory=list)
+    record_count: int = 0
 
 
 class ChatContinueRequest(BaseModel):
@@ -309,6 +362,16 @@ def detect_waiting_for_owner(task) -> bool:
     return any(kw in text for kw in _WAITING_FOR_OWNER_KEYWORDS)
 
 
+def _str_or_none(val) -> Optional[str]:
+    """Return val if it is a str, else None.  Protects TaskItem from MagicMock attrs in tests."""
+    return val if isinstance(val, str) else None
+
+
+def _int_or_none(val) -> Optional[int]:
+    """Return val if it is an int, else None.  Protects TaskItem from MagicMock attrs in tests."""
+    return val if isinstance(val, int) else None
+
+
 def task_to_item(task) -> TaskItem:
     """Convert a storage Task to a TaskItem response model."""
     status_val = task.status if isinstance(task.status, str) else task.status.value
@@ -332,6 +395,10 @@ def task_to_item(task) -> TaskItem:
         updated_at=task_updated_at(task),
         attempt_count=int(task.attempt_count or 0),
         error_message=task.error_message,
+        outcome=_str_or_none(getattr(task, "outcome", None)),
+        resolution=_str_or_none(getattr(task, "resolution", None)),
+        feedback_rating=_int_or_none(getattr(task, "feedback_rating", None)),
+        feedback_notes=_str_or_none(getattr(task, "feedback_notes", None)),
         exec_user=task.exec_user,
         session_id=session_id,
         depends_on=depends_on,

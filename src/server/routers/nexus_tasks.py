@@ -45,6 +45,11 @@ from .nexus_models import (
     BulkCreateTaskRequest,
     BulkCreateTaskResponse,
     UpdateTaskStatusRequest,
+    UpdateTaskOutcomeRequest,
+    TaskOutcomesResponse,
+    TaskOutcomeSummary,
+    OutcomeBuckets,
+    OutcomesByDimension,
     ChatContinueRequest,
     get_task_queue,
     normalize_task_status,
@@ -422,6 +427,170 @@ async def update_task_status(
         raise HTTPException(status_code=500, detail="Failed to update task status")
 
     return task_to_item(updated_task)
+
+
+# ============ Task Outcome API ============
+
+_VALID_OUTCOMES = {"success", "failed", "partial", "abandoned"}
+
+
+@router.patch("/tasks/{task_id}/outcome", response_model=TaskItem)
+async def update_task_outcome(
+    task_id: str,
+    request: UpdateTaskOutcomeRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Set or update the outcome of a completed task.
+
+    Ported from mission-control commit 6cf4256.
+    Outcome must be one of: success | failed | partial | abandoned.
+    """
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    outcome_val = (request.outcome or "").strip().lower()
+    if outcome_val not in _VALID_OUTCOMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid outcome '{outcome_val}'. Must be one of: {sorted(_VALID_OUTCOMES)}",
+        )
+
+    # Persist outcome fields on the task Redis hash
+    updates: dict = {"outcome": outcome_val}
+    if request.resolution is not None:
+        updates["resolution"] = request.resolution
+    if request.feedback_rating is not None:
+        updates["feedback_rating"] = str(request.feedback_rating)
+    if request.feedback_notes is not None:
+        updates["feedback_notes"] = request.feedback_notes
+
+    task_key = queue._task_key(task_id, task.exec_user)
+    queue._redis.hset(task_key, updates)
+
+    # Refresh from storage and return
+    updated_task = queue.get_task(task_id)
+    if not updated_task:
+        raise HTTPException(status_code=500, detail="Failed to retrieve updated task")
+
+    return task_to_item(updated_task)
+
+
+def _resolve_since(timeframe: str) -> Optional[datetime]:
+    """Return a UTC datetime cutoff for the given timeframe string."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    tf = timeframe.strip().lower()
+    if tf == "day":
+        return now - timedelta(days=1)
+    if tf == "week":
+        return now - timedelta(weeks=1)
+    if tf == "month":
+        return now - timedelta(days=30)
+    return None  # "all"
+
+
+@router.get("/tasks/outcomes", response_model=TaskOutcomesResponse)
+async def get_task_outcomes(
+    timeframe: str = Query("all", description="Timeframe: day | week | month | all"),
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Return outcome analytics for completed tasks.
+
+    Aggregates success/failed/partial/abandoned counts for done tasks, broken
+    down by provider and priority.  Ported from mission-control commit 6cf4256.
+    """
+    queue = get_task_queue(exec_user)
+
+    since = _resolve_since(timeframe)
+
+    # Collect all done tasks
+    done_ids = queue._redis.smembers(queue._status_key(TaskStatus.DONE))
+    rows = []
+    for tid in done_ids:
+        t = queue.get_task(tid)
+        if not t:
+            continue
+        if since:
+            ts = t.completed_at or t.created_at
+            if ts is not None:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if ts < since:
+                    continue
+        rows.append(t)
+
+    def _empty_dim() -> dict:
+        return {"success": 0, "failed": 0, "partial": 0, "abandoned": 0, "unknown": 0, "total": 0, "success_rate": 0.0}
+
+    summary = TaskOutcomeSummary()
+    by_provider: Dict[str, Any] = {}
+    by_priority: Dict[str, Any] = {}
+    error_map: Dict[str, int] = {}
+    total_attempts = 0
+    total_resolution_secs = 0.0
+    resolution_count = 0
+
+    for task in rows:
+        outcome = (getattr(task, "outcome", None) or "unknown").lower()
+        provider = getattr(task, "provider", None) or "unknown"
+        priority = task.priority if isinstance(task.priority, str) else task.priority.value
+        attempts = int(task.attempt_count or 0)
+
+        summary.total_done += 1
+        if outcome != "unknown":
+            summary.with_outcome += 1
+
+        bucket_field = outcome if outcome in ("success", "failed", "partial", "abandoned") else "unknown"
+        setattr(summary.by_outcome, bucket_field, getattr(summary.by_outcome, bucket_field) + 1)
+
+        for dim_map, dim_key in ((by_provider, provider), (by_priority, priority)):
+            if dim_key not in dim_map:
+                dim_map[dim_key] = _empty_dim()
+            dim_map[dim_key]["total"] += 1
+            dim_map[dim_key][bucket_field] += 1
+
+        total_attempts += attempts
+
+        if task.completed_at and task.created_at:
+            ca = task.completed_at
+            cr = task.created_at
+            if ca.tzinfo is None:
+                ca = ca.replace(tzinfo=timezone.utc)
+            if cr.tzinfo is None:
+                cr = cr.replace(tzinfo=timezone.utc)
+            secs = (ca - cr).total_seconds()
+            if secs >= 0:
+                total_resolution_secs += secs
+                resolution_count += 1
+
+        err = (task.error_message or "").strip()
+        if err:
+            error_map[err] = error_map.get(err, 0) + 1
+
+    n = summary.total_done
+    summary.avg_attempt_count = total_attempts / n if n else 0.0
+    summary.avg_time_to_resolution_seconds = total_resolution_secs / resolution_count if resolution_count else 0.0
+    wo = summary.with_outcome
+    summary.success_rate = summary.by_outcome.success / wo if wo else 0.0
+
+    for dim_map in (by_provider, by_priority):
+        for entry in dim_map.values():
+            total = entry["total"]
+            with_outcome = total - entry["unknown"]
+            entry["success_rate"] = entry["success"] / with_outcome if with_outcome else 0.0
+
+    common_errors = sorted(error_map.items(), key=lambda x: -x[1])[:10]
+
+    return TaskOutcomesResponse(
+        timeframe=timeframe,
+        summary=summary,
+        by_provider=by_provider,
+        by_priority=by_priority,
+        common_errors=[{"error_message": e, "count": c} for e, c in common_errors],
+        record_count=len(rows),
+    )
 
 
 # ============ Chat Continue API ============
