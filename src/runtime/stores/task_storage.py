@@ -1127,34 +1127,93 @@ class TaskQueue:
             workspaces.append(workspace_hash)
         return workspaces
     
+    # Maximum number of times a stuck/stale task may be requeued before it is
+    # permanently moved to FAILED.  Prevents infinite retry loops when the
+    # underlying problem (crashed executor, bad workspace, etc.) is permanent.
+    # Ported from mission-control src/lib/task-dispatch.ts (commit 2d171ad).
+    MAX_DISPATCH_RETRIES: int = 5
+
     def requeue_stuck_tasks(self, timeout_seconds: int = 3600) -> int:
-        """Requeue tasks that have been DOING for too long
-        
-        Returns count of requeued tasks
+        """Requeue tasks that have been DOING for too long.
+
+        Tasks whose ``attempt_count`` has already reached
+        :attr:`MAX_DISPATCH_RETRIES` are moved to FAILED instead of being
+        requeued, preventing infinite retry loops.
+
+        Ported from mission-control ``requeueStaleTasks()`` (commit 2d171ad):
+        - Respect a max-retry cap (5 attempts) before permanently failing.
+        - Persist a human-readable ``error_message`` on the task so operators
+          can understand why it was failed without digging through logs.
+
+        Returns:
+            Total number of tasks acted on (requeued + failed).
         """
         doing_task_ids = self._redis.smembers(self._status_key(TaskStatus.DOING))
-        count = 0
+        requeued = 0
+        failed = 0
         now = datetime.now(timezone.utc)
-        
+
         for task_id in doing_task_ids:
             task = self.get_task(task_id)
-            if task and task.started_at:
-                started_at = task.started_at
-                if started_at.tzinfo is None:
-                    started_at = started_at.replace(tzinfo=timezone.utc)
-                
-                elapsed = (now - started_at).total_seconds()
-                if elapsed > timeout_seconds:
-                    # Remove from executing set
-                    self._redis.srem(self._executing_key(task.workspace), task.id)
-                    
-                    # Update status back to TODO
-                    self._update_task_status(task, TaskStatus.TODO)
-                    
-                    # Re-add to queue
-                    self._redis.rpush(self._queue_key(task.workspace), task.id)
-                    
-                    logger.warning(f"Task {task_id} requeued after {elapsed:.0f}s timeout")
-                    count += 1
-        
-        return count
+            if not (task and task.started_at):
+                continue
+
+            started_at = task.started_at
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+
+            elapsed = (now - started_at).total_seconds()
+            if elapsed <= timeout_seconds:
+                continue
+
+            # Remove from executing set regardless of what we do next.
+            self._redis.srem(self._executing_key(task.workspace), task.id)
+
+            new_attempts = (task.attempt_count or 0) + 1
+
+            if new_attempts >= self.MAX_DISPATCH_RETRIES:
+                # Too many retries — give up and fail the task permanently.
+                error_msg = (
+                    f"Task stuck in DOING for {elapsed:.0f}s and has been requeued "
+                    f"{new_attempts} time(s) — permanently failing after "
+                    f"{self.MAX_DISPATCH_RETRIES} attempts."
+                )
+                task.attempt_count = new_attempts
+                task.error_message = error_msg
+                self._redis.hset(
+                    self._task_key(task.id),
+                    {"attempt_count": str(new_attempts), "error_message": error_msg},
+                )
+                self._update_task_status(task, TaskStatus.FAILED)
+                logger.error(
+                    f"Task {task_id} permanently failed after {new_attempts} stuck-requeue attempts "
+                    f"({elapsed:.0f}s elapsed)"
+                )
+                failed += 1
+            else:
+                # Still within retry budget — put it back in the queue.
+                error_msg = (
+                    f"Task requeued (attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}): "
+                    f"was stuck in DOING for {elapsed:.0f}s."
+                )
+                task.attempt_count = new_attempts
+                task.error_message = error_msg
+                self._redis.hset(
+                    self._task_key(task.id),
+                    {"attempt_count": str(new_attempts), "error_message": error_msg},
+                )
+                self._update_task_status(task, TaskStatus.TODO)
+                self._redis.rpush(self._queue_key(task.workspace), task.id)
+                logger.warning(
+                    f"Task {task_id} requeued (attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}) "
+                    f"after {elapsed:.0f}s timeout"
+                )
+                requeued += 1
+
+        total = requeued + failed
+        if total:
+            logger.info(
+                f"requeue_stuck_tasks: requeued={requeued}, failed={failed} "
+                f"of {total} stuck task(s)"
+            )
+        return total
