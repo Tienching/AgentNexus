@@ -34,6 +34,7 @@ from ..logger import get_logger
 from .user_directory import UserDirectoryManager
 from src.runtime.commands.slash.handler import SlashCommandHandler, SLASH_COMMANDS
 from src.runtime.commands.slash.parser import SlashCommandParseError, parse_slash_command
+from src.providers.persistent import PersistentProcessManager
 
 logger = get_logger(__name__)
 
@@ -52,6 +53,10 @@ class CLIExecutor:
         self.user_dir_manager = UserDirectoryManager(config)
         self._slash_handlers: Dict[str, SlashCommandHandler] = {}
         self._current_process: Optional[asyncio.subprocess.Process] = None
+        # Persistent process manager (lazy-init on first use when enabled)
+        self._persistent_manager: Optional[PersistentProcessManager] = None
+        if getattr(self.config, "persistent_enabled", False):
+            self._persistent_manager = PersistentProcessManager(self.config)
 
     def kill_process(self) -> None:
         """Kill the currently running subprocess if any.
@@ -161,11 +166,20 @@ class CLIExecutor:
                     _clear_storage = get_session_storage()
                     _clear_storage.clear_cli_session_id(session_id)
                     _clear_storage.set_session_cleared(session_id)
+                    _clear_storage.clear_persistent_mode(session_id)
                     # Clear active_model to avoid false model_changed detection
                     _clear_storage._redis.hdel(f"session:{session_id}:meta", "active_model")
                     logger.info(f"/clear: cleared Redis resume state for session {session_id}")
                 except Exception as e:
                     logger.warning(f"/clear: failed to clear Redis resume state: {e}")
+
+                # Destroy persistent process for this session if one exists
+                if self._persistent_manager:
+                    try:
+                        await self._persistent_manager.destroy(session_id)
+                        logger.info(f"/clear: destroyed persistent process for session {session_id}")
+                    except Exception as e:
+                        logger.warning(f"/clear: failed to destroy persistent process: {e}")
 
                 yield _format_slash_result(
                     "## 🔄 Session Cleared\n\nYour session has been cleared. A fresh workspace has been created.",
@@ -264,19 +278,11 @@ class CLIExecutor:
             }
         )
 
-        # 构建命令 - 决定是否使用 -c (continue) 选项
-        # - session_cleared：/clear 后的第一次执行，不恢复旧会话
-        # - exec_dir_override 模式（/workspace -t）：总是使用 -c，恢复该目录的上下文
-        # - inplace 模式的首次执行：不使用 -c，避免恢复到其他目录的会话
-        # - inplace 模式的续聊（chat_continue）：使用 -c，继续当前目录的会话
-        # - 非 inplace 模式：总是使用 -c
-        # - model_changed：模型发生切换时，不使用 -c，因为 CLI 工具在
-        #   continue 模式下会锁定原会话的模型，忽略 --model 参数
+        # ── Check session transition flags (needed by both persistent & subprocess) ──
         run_kind = getattr(request, "run_kind", "") or ""
         is_chat_continue = run_kind == "chat_continue"
         model_changed = getattr(request, "model_changed", False)
 
-        # Check one-shot flags that force a fresh local CLI session.
         session_cleared = False
         exec_user_switched = False
         try:
@@ -289,6 +295,75 @@ class CLIExecutor:
                     logger.info(f"Session exec_user changed, will rebuild local CLI session for {session_id}")
         except Exception as e:
             logger.warning(f"Failed to check session transition flags: {e}")
+
+        # If a transition occurred, destroy any existing persistent process so
+        # a fresh one is created (or we fall through to the subprocess path).
+        if (session_cleared or exec_user_switched or model_changed) and self._persistent_manager:
+            try:
+                await self._persistent_manager.destroy(session_id)
+                if storage:
+                    storage.clear_persistent_mode(session_id)
+                reason = []
+                if session_cleared:
+                    reason.append("session_cleared")
+                if exec_user_switched:
+                    reason.append("exec_user_switched")
+                if model_changed:
+                    reason.append("model_changed")
+                logger.info(
+                    f"Destroyed persistent process due to transition: {', '.join(reason)}",
+                    extra={"session_id": session_id},
+                )
+            except Exception as e:
+                logger.warning(f"Failed to destroy persistent process on transition: {e}")
+
+        # ── Persistent process routing ────────────────────────────────────
+        # If persistent mode is enabled and the provider supports it, route
+        # through PersistentProcessManager instead of spawning a new subprocess.
+        # Skip persistent path if a transition just occurred — the subprocess
+        # path handles context injection for model/user switches.
+        if (
+            not session_cleared
+            and not exec_user_switched
+            and not model_changed
+            and self._should_use_persistent(request, session_id, storage)
+        ):
+            agent_type = getattr(request, "agent_type", None) or getattr(request, "provider", None)
+            request_alias = getattr(request, "alias", None) or None
+            request_model_name = getattr(request, "model", None) or None
+            provider = (agent_type or "").strip().lower()
+
+            try:
+                async for output in self._execute_via_persistent(
+                    session_id=session_id,
+                    exec_user=exec_user,
+                    provider=provider,
+                    exec_dir=exec_dir,
+                    content=cleaned_content,
+                    model=request_model_name,
+                    alias=request_alias,
+                    output_format=output_format,
+                    request=request,
+                    storage=storage,
+                ):
+                    yield output
+                return
+            except Exception as e:
+                logger.warning(
+                    f"Persistent process failed, falling back to subprocess: {e}",
+                    extra={"session_id": session_id},
+                    exc_info=True,
+                )
+                # Fall through to normal subprocess path
+
+        # 构建命令 - 决定是否使用 -c (continue) 选项
+        # - session_cleared：/clear 后的第一次执行，不恢复旧会话
+        # - exec_dir_override 模式（/workspace -t）：总是使用 -c，恢复该目录的上下文
+        # - inplace 模式的首次执行：不使用 -c，避免恢复到其他目录的会话
+        # - inplace 模式的续聊（chat_continue）：使用 -c，继续当前目录的会话
+        # - 非 inplace 模式：总是使用 -c
+        # - model_changed：模型发生切换时，不使用 -c，因为 CLI 工具在
+        #   continue 模式下会锁定原会话的模型，忽略 --model 参数
 
         # 简化逻辑：exec_dir_override 模式下总是使用 -c 来恢复上下文
         if session_cleared:
@@ -803,6 +878,202 @@ class CLIExecutor:
             return cleaned_content, model_value
         
         return content, None
+
+    def _should_use_persistent(
+        self,
+        request: RequestModel,
+        session_id: str,
+        storage=None,
+    ) -> bool:
+        """Decide whether to route this request through the persistent process path.
+
+        Decision logic (in priority order):
+            1. Global toggle ``persistent_enabled`` must be True.
+            2. Per-request override: ``request.use_persistent`` (True/False) wins.
+            3. Session stickiness: if the session previously used persistent mode
+               (stored in Redis), continue using it.
+            4. Provider must support ``--input-format stream-json``
+               (currently claude, codebuddy).
+            5. Default: False (keep subprocess behaviour).
+        """
+        # 1. Global toggle
+        if not self._persistent_manager:
+            return False
+
+        # 2. Per-request override
+        req_persistent = getattr(request, "use_persistent", None)
+        if req_persistent is True:
+            return True
+        if req_persistent is False:
+            return False
+
+        # 3. Session stickiness
+        if storage and session_id:
+            try:
+                if storage.get_persistent_mode(session_id):
+                    return True
+            except Exception:
+                pass
+
+        # 4. Provider check — only activate for supported providers
+        provider = (
+            getattr(request, "agent_type", None)
+            or getattr(request, "provider", None)
+            or ""
+        )
+        if not PersistentProcessManager.supports_persistent(provider):
+            return False
+
+        # 5. Default off
+        return False
+
+    async def _execute_via_persistent(
+        self,
+        session_id: str,
+        exec_user: str,
+        provider: str,
+        exec_dir: Path,
+        content: str,
+        model: Optional[str] = None,
+        alias: Optional[str] = None,
+        output_format: str = "raw",
+        request: Optional[RequestModel] = None,
+        storage=None,
+    ) -> AsyncGenerator[str, None]:
+        """Execute a user message through the persistent CLI process.
+
+        Creates or reuses a long-lived CLI subprocess and sends the message
+        via stdin pipe (stream-json).  Yields output lines compatible with
+        ``_process_stream()`` / raw JSON mode.
+
+        On failure, raises an exception so the caller can fall back to the
+        normal subprocess path.
+        """
+        assert self._persistent_manager is not None
+
+        start_time = time.time()
+
+        logger.info(
+            "Routing through persistent process",
+            extra={
+                "session_id": session_id,
+                "provider": provider,
+                "exec_dir": str(exec_dir),
+            },
+        )
+
+        proc = await self._persistent_manager.get_or_create(
+            session_id=session_id,
+            exec_user=exec_user,
+            provider=provider,
+            exec_dir=exec_dir,
+            model=model,
+            alias=alias,
+        )
+
+        # Mark session as using persistent mode for stickiness
+        if storage:
+            try:
+                storage.set_persistent_mode(session_id, True)
+            except Exception:
+                pass
+
+        # Send the user message
+        await proc.send_message(content)
+
+        # Read output and yield lines
+        turn_timeout = float(getattr(self.config, "cli_timeout", 600))
+        quiescence = float(getattr(self.config, "persistent_quiescence_timeout", 3.0))
+
+        line_count = 0
+        debug_file = None
+        if DEBUG_STREAM:
+            try:
+                os.makedirs(os.path.dirname(DEBUG_STREAM_FILE), exist_ok=True)
+                fd = os.open(DEBUG_STREAM_FILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                debug_file = os.fdopen(fd, "a", encoding="utf-8")
+                debug_file.write(f"\n\n=== Persistent Stream: {time.strftime('%Y-%m-%d %H:%M:%S')} session={session_id} ===\n")
+            except Exception:
+                pass
+
+        try:
+            async for raw_line in proc.stream_output(
+                timeout=turn_timeout,
+                quiescence_timeout=quiescence,
+            ):
+                line_count += 1
+
+                if debug_file:
+                    try:
+                        debug_file.write(f"[{line_count}] {raw_line}\n")
+                        debug_file.flush()
+                    except Exception:
+                        pass
+
+                # Extract and persist CLI session ID from result events
+                try:
+                    data = json.loads(raw_line)
+                    if data.get("type") == "result":
+                        cli_sid = data.get("session_id")
+                        if cli_sid and storage:
+                            storage.set_cli_session_id(session_id, cli_sid)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                if output_format == "raw":
+                    yield raw_line
+                else:
+                    # Legacy format
+                    try:
+                        data = json.loads(raw_line)
+                        event_type = data.get("type")
+                        for sse in self._process_legacy_event(data, event_type, {}):
+                            yield sse
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        finally:
+            if debug_file:
+                debug_file.write(f"\n=== Persistent Stream End: {line_count} lines ===\n")
+                debug_file.close()
+
+        # Also persist CLI session ID if the detector found one
+        if proc.cli_session_id and storage:
+            try:
+                storage.set_cli_session_id(session_id, proc.cli_session_id)
+            except Exception:
+                pass
+
+        # Persist exec_dir into session meta
+        if session_id and storage:
+            try:
+                meta = storage.get_session_meta(session_id)
+                if meta and not meta.exec_dir:
+                    meta.exec_dir = str(exec_dir)
+                    storage.save_session_meta(meta)
+                if model:
+                    storage.set_active_model(session_id, model)
+            except Exception:
+                pass
+
+        # Invalidate history caches
+        try:
+            from ...runtime.history import HistoryService
+            from ...server.routers.nexus_history import _get_history_service
+            svc = _get_history_service()
+            svc.invalidate_project_caches()
+        except Exception:
+            pass
+
+        duration = time.time() - start_time
+        logger.info(
+            "Persistent process turn completed",
+            extra={
+                "session_id": session_id,
+                "lines": line_count,
+                "duration_ms": int(duration * 1000),
+            },
+        )
 
     def _build_command(
         self,

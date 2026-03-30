@@ -418,3 +418,74 @@ async def cancel_session(session_id: str):
         return CancelResponse(success=True, cancelled=True)
 
     return CancelResponse(success=True, cancelled=False)
+
+
+# ============ Tmux Command API ============
+
+@router.get("/sessions/{session_id}/tmux-command")
+async def get_tmux_command(session_id: str):
+    """Get a tmux command to attach to this session's CLI conversation.
+
+    Returns a shell command that:
+      1. Creates (or attaches to) a tmux session named ``nexus-<short_id>``
+      2. Runs the appropriate CLI tool (e.g. ``claude -c``) inside the session's
+         working directory so the user can continue the conversation interactively.
+
+    - **session_id**: The session ID to generate the tmux command for
+    """
+    storage = get_session_storage()
+
+    session = storage.get_session_meta(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session not found: {session_id}",
+        )
+
+    # Resolve working directory
+    exec_dir = session.exec_dir or storage.get_exec_dir_override(session_id)
+    if not exec_dir:
+        home_base = settings.user_home_base
+        exec_user = session.exec_user or session.username or settings.exec_user
+        exec_dir = str(Path(home_base) / exec_user)
+
+    # Resolve provider / alias
+    provider = session.provider or "claude"
+    alias = session.alias or provider
+
+    # Build CLI continue command based on provider
+    cli_session_id = storage.get_cli_session_id(session_id)
+
+    cli_parts = [alias]
+    if provider in ("claude", "codebuddy"):
+        if cli_session_id:
+            cli_parts += ["--resume", cli_session_id]
+        else:
+            cli_parts.append("-c")
+    elif provider == "gemini":
+        cli_parts.append("--resume latest")
+    elif provider == "codex":
+        cli_parts += ["resume", "--last"]
+
+    cli_cmd = " ".join(cli_parts)
+
+    # Build tmux session name (short, unique per session)
+    short_id = session_id[:12]
+    tmux_name = f"nexus-{short_id}"
+
+    # Full tmux command: create new session or attach to existing
+    tmux_cmd = (
+        f"tmux new-session -A -s {tmux_name} "
+        f"-c {exec_dir} "
+        f"'{cli_cmd}'"
+    )
+
+    return {
+        "success": True,
+        "tmux_command": tmux_cmd,
+        "tmux_session_name": tmux_name,
+        "cli_command": cli_cmd,
+        "exec_dir": exec_dir,
+        "provider": provider,
+        "cli_session_id": cli_session_id,
+    }

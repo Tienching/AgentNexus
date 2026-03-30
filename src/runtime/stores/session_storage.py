@@ -1603,6 +1603,46 @@ class SessionStorage:
             logger.error(f"Failed to delete streaming content: {e}")
             return False
 
+    # ============ Persistent Process State ============
+
+    def set_persistent_mode(self, session_id: str, enabled: bool = True) -> bool:
+        """Mark a session as using persistent CLI process mode.
+
+        When enabled, the CLIExecutor routes messages through
+        ``PersistentProcessManager`` instead of spawning a new subprocess.
+
+        Args:
+            session_id: Session ID
+            enabled: Whether persistent mode is active
+        """
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hset(key, {"persistent_mode": "1" if enabled else "0"})
+            logger.info(f"Set persistent mode: {session_id} -> {enabled}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set persistent mode: {e}")
+            return False
+
+    def get_persistent_mode(self, session_id: str) -> bool:
+        """Check if a session is using persistent CLI process mode."""
+        try:
+            key = f"session:{session_id}:meta"
+            val = self._redis.hget(key, "persistent_mode")
+            return val == "1"
+        except Exception:
+            return False
+
+    def clear_persistent_mode(self, session_id: str) -> bool:
+        """Clear persistent mode flag (e.g. after /clear or provider switch)."""
+        try:
+            key = f"session:{session_id}:meta"
+            self._redis.hdel(key, "persistent_mode")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear persistent mode: {e}")
+            return False
+
     # ============ AGUI Event Log Operations ============
 
     def append_agui_event(self, session_id: str, event: Dict[str, Any], max_len: int = 5000) -> bool:

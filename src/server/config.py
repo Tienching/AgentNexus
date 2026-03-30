@@ -54,6 +54,15 @@ class ServerSettings(BaseSettings):
     executor_retry_delay: float = 5.0
     executor_task_timeout: float = 3600.0
 
+    # Persistent CLI process configuration
+    # When enabled, the CLI process stays alive across messages for a session,
+    # using --input-format stream-json for multi-turn conversation via stdin.
+    persistent_enabled: bool = False                     # Global toggle (default off)
+    persistent_idle_timeout: float = 1800.0              # Kill idle sessions after N seconds (default 30 min)
+    persistent_quiescence_timeout: float = 3.0           # Silence threshold to detect turn completion (seconds)
+    persistent_max_sessions_per_user: int = 5            # Max concurrent persistent processes per user
+    persistent_init_timeout: float = 60.0                # Max seconds to wait for CLI init event
+
     # Scheduler configuration
     scheduler_enabled: bool = True
     scheduler_poll_interval: float = 15.0  # seconds between schedule checks

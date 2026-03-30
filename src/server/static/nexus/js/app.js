@@ -2447,6 +2447,11 @@ class ChatView {
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/>
                         </svg>
                     </button>
+                    <button class="action-btn" data-action="tmux-open" data-session-id="${sessionId}" title="Open in tmux">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                        </svg>
+                    </button>
                     <button class="action-btn" data-action="delete-session" data-session-id="${sessionId}" title="Delete">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -2500,6 +2505,14 @@ class ChatView {
         if (filesBtn) {
             filesBtn.addEventListener('click', () => {
                 this.showFilesModal(sessionId);
+            });
+        }
+
+        // Bind tmux-open action
+        const tmuxBtn = detail.querySelector('[data-action="tmux-open"]');
+        if (tmuxBtn) {
+            tmuxBtn.addEventListener('click', () => {
+                this.openInTmux(sessionId);
             });
         }
 
@@ -3150,7 +3163,207 @@ class ChatView {
         });
     }
 
-    async deleteSession(paneId, sessionId) {
+    async openInTmux(sessionId) {
+        try {
+            // Remove existing terminal modal if any
+            document.getElementById('terminalModal')?.remove();
+
+            // Create modal overlay with terminal container
+            const modal = document.createElement('div');
+            modal.className = 'terminal-modal-overlay';
+            modal.id = 'terminalModal';
+            modal.innerHTML = `
+                <div class="terminal-modal">
+                    <div class="terminal-header">
+                        <div class="terminal-header-title">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                            </svg>
+                            <span>Terminal — ${this.escapeHtml(sessionId.substring(0, 16))}</span>
+                        </div>
+                        <div class="terminal-header-actions">
+                            <button class="terminal-header-btn close-btn" data-action="close-terminal" title="Close terminal">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="terminal-container" id="terminalContainer"></div>
+                    <div class="terminal-status">
+                        <span class="terminal-status-dot" id="terminalStatusDot"></span>
+                        <span id="terminalStatusText">Connecting...</span>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+
+            // Get terminal container
+            const container = document.getElementById('terminalContainer');
+            const statusDot = document.getElementById('terminalStatusDot');
+            const statusText = document.getElementById('terminalStatusText');
+
+            // Initialize xterm.js
+            const term = new Terminal({
+                cursorBlink: true,
+                fontSize: 14,
+                fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+                theme: {
+                    background: '#1e1e1e',
+                    foreground: '#d4d4d4',
+                    cursor: '#aeafad',
+                    selectionBackground: 'rgba(255, 255, 255, 0.2)',
+                    black: '#000000',
+                    red: '#cd3131',
+                    green: '#0dbc79',
+                    yellow: '#e5e510',
+                    blue: '#2472c8',
+                    magenta: '#bc3fbc',
+                    cyan: '#11a8cd',
+                    white: '#e5e5e5',
+                    brightBlack: '#666666',
+                    brightRed: '#f14c4c',
+                    brightGreen: '#23d18b',
+                    brightYellow: '#f5f543',
+                    brightBlue: '#3b8eea',
+                    brightMagenta: '#d670d6',
+                    brightCyan: '#29b8db',
+                    brightWhite: '#ffffff',
+                },
+                scrollback: 5000,
+                convertEol: true,
+            });
+
+            const fitAddon = new FitAddon.FitAddon();
+            term.loadAddon(fitAddon);
+            term.open(container);
+
+            // Small delay to ensure the container is laid out before fitting
+            await new Promise(r => setTimeout(r, 50));
+            fitAddon.fit();
+
+            // Build WebSocket URL (same-origin, cookies sent automatically)
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/api/nexus/terminal/${encodeURIComponent(sessionId)}`;
+
+            const ws = new WebSocket(wsUrl);
+            let connected = false;
+
+            ws.onopen = () => {
+                // Send initial resize
+                ws.send(JSON.stringify({
+                    type: 'resize',
+                    cols: term.cols,
+                    rows: term.rows,
+                }));
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    if (msg.type === 'output') {
+                        // Decode base64 → Uint8Array (preserves UTF-8 multi-byte sequences)
+                        const binaryStr = atob(msg.data);
+                        const bytes = new Uint8Array(binaryStr.length);
+                        for (let i = 0; i < binaryStr.length; i++) {
+                            bytes[i] = binaryStr.charCodeAt(i);
+                        }
+                        term.write(bytes);
+                    } else if (msg.type === 'connected') {
+                        connected = true;
+                        statusDot.className = 'terminal-status-dot';
+                        statusText.textContent = 'Connected';
+                    } else if (msg.type === 'disconnected') {
+                        connected = false;
+                        statusDot.className = 'terminal-status-dot disconnected';
+                        statusText.textContent = 'Process ended';
+                    } else if (msg.type === 'error') {
+                        term.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
+                        statusDot.className = 'terminal-status-dot disconnected';
+                        statusText.textContent = 'Error';
+                    }
+                } catch (e) {
+                    console.error('Terminal message parse error:', e);
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('Terminal WebSocket error:', error);
+                statusDot.className = 'terminal-status-dot disconnected';
+                statusText.textContent = 'Connection error';
+            };
+
+            ws.onclose = () => {
+                connected = false;
+                statusDot.className = 'terminal-status-dot disconnected';
+                statusText.textContent = 'Disconnected';
+            };
+
+            // Forward keyboard input to WebSocket
+            term.onData((data) => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'input', data: data }));
+                }
+            });
+
+            // Handle terminal resize
+            const resizeObserver = new ResizeObserver(() => {
+                fitAddon.fit();
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'resize',
+                        cols: term.cols,
+                        rows: term.rows,
+                    }));
+                }
+            });
+            resizeObserver.observe(container);
+
+            // Keepalive ping every 30s
+            const pingInterval = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'ping' }));
+                }
+            }, 30000);
+
+            // Cleanup function
+            const cleanup = () => {
+                clearInterval(pingInterval);
+                resizeObserver.disconnect();
+                if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                    ws.close();
+                }
+                term.dispose();
+                modal.remove();
+            };
+
+            // Close button
+            modal.querySelector('[data-action="close-terminal"]').addEventListener('click', cleanup);
+
+            // Escape key to close
+            const escHandler = (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    document.removeEventListener('keydown', escHandler);
+                }
+            };
+            document.addEventListener('keydown', escHandler);
+
+            // Click backdrop to close
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) cleanup();
+            });
+
+            // Focus terminal
+            term.focus();
+
+        } catch (error) {
+            console.error('Failed to open terminal:', error);
+            this.app.showToast(error.message || 'Failed to open terminal', 'error');
+        }
+    }
+
+        async deleteSession(paneId, sessionId) {
         try {
             await NexusAPI.deleteSession(sessionId);
             this.app.showToast('Session deleted', 'success');

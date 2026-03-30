@@ -783,6 +783,23 @@ class NexusAPI {
         return `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/files/download?${params}`;
     }
 
+    // ==================== Tmux Command API ====================
+
+    /**
+     * Get tmux command for opening a session in tmux
+     * @param {string} sessionId - Session ID
+     * @returns {Promise<Object>} Object with tmux_command, cli_command, exec_dir etc.
+     */
+    static async getTmuxCommand(sessionId) {
+        const response = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/tmux-command`, {
+            headers: this._authHeaders(),
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to get tmux command: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
     // ==================== Schedule API ====================
 
     /**

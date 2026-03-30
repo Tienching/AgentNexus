@@ -18,6 +18,7 @@ from .routers.nexus import router as nexus_router
 from .routers.nexus_auth import router as nexus_auth_router
 from .routers.nexus_history import router as nexus_history_router
 from .routers.nexus_schedules import router as nexus_schedules_router
+from .routers.nexus_terminal import router as nexus_terminal_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -138,9 +139,28 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to start channel service: {e}")
 
+    # 初始化 Terminal Manager (Web Terminal via tmux)
+    terminal_manager = None
+    try:
+        from .services.terminal_manager import TerminalManager
+        from .routers.nexus_terminal import set_terminal_manager
+        terminal_manager = TerminalManager()
+        set_terminal_manager(terminal_manager)
+        logger.info("Terminal manager initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize terminal manager: {e}")
+
     yield
 
     # 关闭时
+    # 停止 Terminal Manager
+    if terminal_manager:
+        try:
+            terminal_manager.cleanup_all()
+            logger.info("Terminal manager stopped")
+        except Exception as e:
+            logger.error(f"Error stopping terminal manager: {e}")
+
     # 停止 Channel 服务
     if channel_service:
         try:
@@ -199,6 +219,7 @@ app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
 app.include_router(nexus_history_router)
 app.include_router(nexus_schedules_router)
+app.include_router(nexus_terminal_router)
 
 # Mount static files for NexusHub Web UI (with cache-control middleware)
 static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
