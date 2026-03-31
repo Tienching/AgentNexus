@@ -17,6 +17,7 @@ from .routers import chat_router, health_router, channels_router
 from .routers.nexus import router as nexus_router
 from .routers.nexus_auth import router as nexus_auth_router
 from .routers.nexus_history import router as nexus_history_router
+from .routers.nexus_ops import router as nexus_ops_router
 from .routers.nexus_schedules import router as nexus_schedules_router
 from .routers.nexus_security import router as nexus_security_router
 from .routers.nexus_system import router as nexus_system_router
@@ -221,6 +222,7 @@ app.include_router(channels_router)
 app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
 app.include_router(nexus_history_router)
+app.include_router(nexus_ops_router)
 app.include_router(nexus_schedules_router)
 app.include_router(nexus_security_router)
 app.include_router(nexus_system_router)
