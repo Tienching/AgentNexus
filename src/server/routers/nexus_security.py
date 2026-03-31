@@ -383,10 +383,10 @@ def _scan_redis() -> SecurityCategory:
 
     try:
         from ..services.redis_client import get_redis_client
-        r = get_redis_client()
+        rc = get_redis_client()
 
         # 1. Redis reachable
-        pong = r.ping()
+        pong = rc.ping()
         checks.append(SecurityCheck(
             id="redis_reachable",
             name="Redis reachable",
@@ -395,6 +395,9 @@ def _scan_redis() -> SecurityCategory:
             fix="" if pong else "Check Redis service: redis-cli ping",
             severity="critical",
         ))
+
+        # Access the underlying redis.Redis client for info/config
+        r = rc.client
 
         # 2. Redis version
         info = r.info("server")
