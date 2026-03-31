@@ -27,6 +27,24 @@ _redis = get_redis_client()
 _session_key_prefix = "nexus:session:"
 _memory_sessions: dict[str, float] = {}  # token -> expiry_timestamp
 
+# Cap the fallback in-memory session map at this many entries to prevent
+# unbounded memory growth under repeated failed-Redis / unauthenticated scenarios.
+# Ported from mission-control rate-limit.ts maxEntries eviction (commit e7aa7e6).
+_MEMORY_SESSIONS_MAX_ENTRIES: int = 10_000
+
+
+def _evict_oldest_session() -> None:
+    """Evict the session with the earliest (smallest) expiry timestamp.
+
+    Called when the fallback store is at capacity before inserting a new entry.
+    Mirrors MC's evictOldest() for rate-limiter maps: find the entry with the
+    smallest resetAt (here: expiry timestamp) and delete it.
+    """
+    if not _memory_sessions:
+        return
+    oldest_token = min(_memory_sessions, key=lambda t: _memory_sessions[t])
+    _memory_sessions.pop(oldest_token, None)
+
 
 class LoginRequest(BaseModel):
     password: str
@@ -86,6 +104,10 @@ def _create_session(token: str) -> None:
             logger.warning(f"Redis session set failed, fallback to memory: {e}")
 
     expiry = time.time() + ttl
+    # Evict oldest before inserting when at capacity (MC e7aa7e6 pattern).
+    # Only evict when this token is genuinely new — no eviction on refresh.
+    if token not in _memory_sessions and len(_memory_sessions) >= _MEMORY_SESSIONS_MAX_ENTRIES:
+        _evict_oldest_session()
     _memory_sessions[token] = expiry
     _cleanup_expired_sessions()
 
