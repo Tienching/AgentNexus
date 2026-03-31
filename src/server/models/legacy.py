@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """易事厅格式数据模型定义"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 
@@ -20,9 +20,7 @@ class RequestModel(BaseModel):
     file_paths: Optional[List[str]] = Field(default_factory=list, description="本地文件路径列表（由 media_downloader 下载后填充）")
     content_parts: Optional[list] = Field(default_factory=list, description="有序内容部件列表，保留图文交错顺序。每项为 {'type':'text','content':'...'} 或 {'type':'image','path':'...'}")
 
-    # 允许额外字段
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class Document(BaseModel):
