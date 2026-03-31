@@ -69,10 +69,10 @@ class _NanobotPool:
     async def _create_loop(cls, workspace: str, model: str | None) -> Any:
         """Construct a fresh AgentLoop."""
         try:
-            from nanobot.config.loader import load_config
-            from nanobot.providers.factory import create_provider
-            from nanobot.bus.queue import MessageBus
-            from nanobot.agent.loop import AgentLoop
+            from src.nanobot.config.loader import load_config
+            from src.nanobot.providers.factory import create_provider
+            from src.nanobot.bus.queue import MessageBus
+            from src.nanobot.agent.loop import AgentLoop
 
             config = load_config(Path(workspace))
             provider = create_provider(config.provider)
@@ -94,9 +94,11 @@ class _NanobotPool:
                 timezone=config.timezone,
             )
 
-            # Inject agent-nexus skills (orchestrator, mission) into the
-            # nanobot workspace so ContextBuilder discovers them automatically.
-            cls._inject_nexus_skills(workspace)
+            # Inject agent-nexus skills (orchestrator, mission) via SkillsLoader
+            nexus_skills_dir = Path(__file__).resolve().parents[3] / "prompts" / "skills"
+            if nexus_skills_dir.exists():
+                loop.context.skills.extra_skills_dirs = [nexus_skills_dir]
+                logger.info("Injected nexus skills from %s", nexus_skills_dir)
 
             logger.info("Created AgentLoop for workspace=%s model=%s", workspace, effective_model)
             return loop
@@ -104,42 +106,6 @@ class _NanobotPool:
         except Exception:
             logger.exception("Failed to create AgentLoop for workspace=%s", workspace)
             raise
-
-    @staticmethod
-    def _inject_nexus_skills(workspace: str) -> None:
-        """Create symlinks from {workspace}/skills/ to agent-nexus prompt skills.
-
-        This makes the orchestrator and mission skills available to nanobot's
-        SkillsLoader, which scans ``{workspace}/skills/{name}/SKILL.md``.
-        """
-        # Resolve agent-nexus project root (4 levels up from this file:
-        # src/providers/nanobot/executor.py → project root)
-        nexus_root = Path(__file__).resolve().parent.parent.parent.parent
-        skills_source_dir = nexus_root / "prompts" / "skills"
-
-        ws_skills_dir = Path(workspace) / "skills"
-
-        for skill_name in ("orchestrator", "mission"):
-            source = skills_source_dir / skill_name
-            target = ws_skills_dir / skill_name
-
-            if not source.exists():
-                logger.debug("Nexus skill source not found: %s", source)
-                continue
-
-            if target.exists():
-                # Already exists (symlink or real dir) — skip
-                continue
-
-            try:
-                ws_skills_dir.mkdir(parents=True, exist_ok=True)
-                target.symlink_to(source)
-                logger.info("Injected nexus skill: %s → %s", target, source)
-            except OSError:
-                logger.warning(
-                    "Failed to create skill symlink %s → %s", target, source,
-                    exc_info=True,
-                )
 
     @classmethod
     async def close_all(cls) -> None:
@@ -191,18 +157,24 @@ class NanobotExecutor(BaseExecutor):
 
     async def execute(
         self,
-        context: RequestContext,
+        request: Any,
+        exec_user: str = "default",
         output_format: str = "raw",
     ) -> AsyncGenerator[str, None]:
         """Execute a user message through nanobot's AgentLoop.
 
         Yields one JSON-encoded :class:`NanobotEvent` per line.
         """
+        content = getattr(request, 'content', '') or ''
+        session_id = getattr(request, 'session_id', 'default') or 'default'
+        cwd = getattr(request, 'cwd', None)
+        model_override = getattr(request, 'model', None)
+
         # Resolve workspace (request may override)
-        workspace = context.cwd or self._workspace or str(Path.home() / "Projects")
+        workspace = cwd or self._workspace or str(Path.home() / "Projects")
 
         try:
-            agent_loop = await _NanobotPool.get_or_create(workspace, self._model)
+            agent_loop = await _NanobotPool.get_or_create(workspace, model_override or self._model)
         except Exception as e:
             err = ErrorEvent(message=f"Failed to initialise nanobot: {e}")
             yield json.dumps({"type": err.type, "message": err.message})
@@ -210,8 +182,8 @@ class NanobotExecutor(BaseExecutor):
 
         queue: asyncio.Queue[NanobotEvent | object] = asyncio.Queue(maxsize=512)
 
-        session_key = to_nanobot_session_key(context.session_id)
-        channel, chat_id = to_nanobot_channel_and_chat(context.session_id)
+        session_key = to_nanobot_session_key(session_id)
+        channel, chat_id = to_nanobot_channel_and_chat(session_id)
 
         # ── Build callbacks ───────────────────────────────────────────
         message_id = f"msg_{uuid.uuid4().hex[:12]}"
@@ -248,7 +220,7 @@ class NanobotExecutor(BaseExecutor):
         async def _run() -> None:
             try:
                 await agent_loop.process_direct(
-                    content=context.content,
+                    content=content,
                     session_key=session_key,
                     channel=channel,
                     chat_id=chat_id,

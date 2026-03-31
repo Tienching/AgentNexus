@@ -93,9 +93,13 @@ class TestNanobotExecutorExecute:
             _NanobotPool, "get_or_create",
             side_effect=RuntimeError("nanobot not installed"),
         ):
-            ctx = RequestContext(content="hello", session_id="s1")
+            mock_request = MagicMock()
+            mock_request.content = "hello"
+            mock_request.session_id = "s1"
+            mock_request.cwd = None
+            mock_request.model = None
             lines = []
-            async for line in executor.execute(ctx):
+            async for line in executor.execute(mock_request, exec_user="ubuntu"):
                 lines.append(line)
 
         assert len(lines) == 1
@@ -120,9 +124,13 @@ class TestNanobotExecutorExecute:
 
         with patch.object(_NanobotPool, "get_or_create", return_value=mock_loop):
             executor = NanobotExecutor()
-            ctx = RequestContext(content="hi", session_id="s2")
+            mock_request = MagicMock()
+            mock_request.content = "hi"
+            mock_request.session_id = "s2"
+            mock_request.cwd = None
+            mock_request.model = None
             lines = []
-            async for line in executor.execute(ctx):
+            async for line in executor.execute(mock_request, exec_user="ubuntu"):
                 lines.append(json.loads(line))
 
         types = [l["type"] for l in lines]
@@ -153,9 +161,13 @@ class TestNanobotExecutorExecute:
 
         with patch.object(_NanobotPool, "get_or_create", return_value=mock_loop):
             executor = NanobotExecutor()
-            ctx = RequestContext(content="read file", session_id="s3")
+            mock_request = MagicMock()
+            mock_request.content = "read file"
+            mock_request.session_id = "s3"
+            mock_request.cwd = None
+            mock_request.model = None
             lines = []
-            async for line in executor.execute(ctx):
+            async for line in executor.execute(mock_request, exec_user="ubuntu"):
                 lines.append(json.loads(line))
 
         types = [l["type"] for l in lines]
