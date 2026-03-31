@@ -192,6 +192,86 @@ class TestParallelImplementation:
         assert results[0].merge_status == "failed"
 
     @pytest.mark.asyncio
+    async def test_conflict_triggers_auto_resolve(self, engine, git_repo):
+        """When clean merge fails, should try -X theirs auto-resolve."""
+        session = _make_session(engine)
+        task = _make_task("t-001", "Conflict task")
+
+        # Create conflicting commits in worktree and main branch
+        wt_path = git_repo / ".evolve" / "session-conflict-test"
+        branch = "evolve/conflict-test"
+        engine._create_worktree(branch, wt_path)
+
+        # Make conflicting change in main
+        (git_repo / "conflict.txt").write_text("main version\n")
+        subprocess.run(["git", "add", "."], cwd=str(git_repo), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "main change"], cwd=str(git_repo), capture_output=True)
+
+        # Make different change in worktree
+        (wt_path / "conflict.txt").write_text("worktree version\n")
+        subprocess.run(["git", "add", "."], cwd=str(wt_path), capture_output=True)
+        subprocess.run(["git", "commit", "-m", "worktree change"], cwd=str(wt_path), capture_output=True)
+
+        results = [WorktreeTaskResult(
+            task=task,
+            success=True,
+            branch_name=branch,
+            worktree_path=str(wt_path),
+            files_changed=["conflict.txt"],
+        )]
+
+        # Mock codebuddy to not get called (auto-resolve via -X theirs should handle it)
+        with patch.object(engine._executor, "execute", new_callable=AsyncMock) as mock_exec:
+            await engine._merge_worktree_results(results, session, day=2)
+
+        # Should be merged (either clean or via -X theirs)
+        assert results[0].merge_status == "merged"
+        # codebuddy should NOT have been called (auto-resolve handled it)
+        mock_exec.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_conflict_resolution_flow(self, engine):
+        """Three-attempt escalation: clean → -X theirs → codebuddy → give up."""
+        session = _make_session(engine)
+        task = _make_task("t-001", "Conflict task")
+
+        r = WorktreeTaskResult(
+            task=task,
+            success=True,
+            branch_name="evolve/fake-branch",
+            worktree_path="/nonexistent",
+            files_changed=["src/file.py"],
+        )
+
+        def failing_shell(cmd, timeout=30):
+            if "merge --no-ff" in cmd and "-X theirs" not in cmd and "--no-commit" not in cmd:
+                return 1, "", "conflict"  # attempt 1 fails
+            if "-X theirs" in cmd:
+                return 1, "", "conflict"  # attempt 2 fails
+            if "merge --abort" in cmd:
+                return 0, "", ""
+            if "--no-commit" in cmd:
+                return 1, "", "conflict"
+            if "diff --name-only --diff-filter=U" in cmd:
+                return 0, "src/file.py\n", ""
+            if "log --oneline" in cmd:
+                return 0, "abc123 some other commit\n", ""  # no match → not resolved
+            if 'grep -r "<<<<<<' in cmd:
+                return 1, "src/file.py:<<<<<<\n", ""  # still has markers
+            return 0, "", ""
+
+        with patch.object(engine, "_run_shell", side_effect=failing_shell), \
+             patch.object(engine._executor, "execute", new_callable=AsyncMock,
+                          return_value=MagicMock(success=False)) as mock_exec, \
+             patch.object(engine, "_remove_worktree"):
+            await engine._merge_worktree_results([r], session, day=2)
+
+        # codebuddy should have been called as attempt 3
+        mock_exec.assert_called_once()
+        # Final status should be conflict (codebuddy also failed in this mock)
+        assert r.merge_status == "conflict"
+
+    @pytest.mark.asyncio
     async def test_metrics_updated_after_parallel(self, engine, git_repo):
         """Metrics should reflect parallel task outcomes."""
         session = _make_session(engine)
