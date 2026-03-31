@@ -43,6 +43,7 @@ class PageManager {
         this.chatView = document.getElementById('chatView');
         this.taskView = document.getElementById('taskView');
         this.configView = document.getElementById('configView');
+        this.adminView = document.getElementById('adminView');
         this.projectHeaderCenter = document.getElementById('projectHeaderCenter');
         this.projectHeaderRight = document.getElementById('projectHeaderRight');
         this.bindEvents();
@@ -73,6 +74,11 @@ class PageManager {
             this.app.configView.refresh();
         }
 
+        // Refresh admin view when switching to admin page
+        if (page === 'admin' && this.app.adminView) {
+            this.app.adminView.refresh();
+        }
+
         // Refresh task view when switching to task page
         if (page === 'task' && this.app.taskView) {
             this.app.taskView.renderFullPage();
@@ -100,6 +106,9 @@ class PageManager {
         }
         if (this.configView) {
             this.configView.classList.toggle('active', this.currentPage === 'config');
+        }
+        if (this.adminView) {
+            this.adminView.classList.toggle('active', this.currentPage === 'admin');
         }
 
         // Show/hide chat-specific header elements (layout switcher, user filter, etc.)
@@ -853,7 +862,7 @@ class ChatView {
             const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
             // Merge with custom providers (use getCustomProviderNames for new format)
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -975,7 +984,7 @@ class ChatView {
             const agents = this.getAvailableAgents(user);
             const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -6208,6 +6217,218 @@ class ConfigView {
 }
 
 // ============================================================
+// Admin View
+// ============================================================
+class AdminView {
+    constructor(app) {
+        this.app = app;
+        this.activeTab = 'overview';
+        this.container = document.getElementById('adminContent');
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        document.querySelectorAll('.admin-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                this.switchTab(tab.dataset.adminTab);
+            });
+        });
+    }
+
+    switchTab(tabName) {
+        this.activeTab = tabName;
+        document.querySelectorAll('.admin-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.adminTab === tabName);
+        });
+        this.renderActiveTab();
+    }
+
+    refresh() { this.renderActiveTab(); }
+
+    renderActiveTab() {
+        if (!this.container) return;
+        const renderers = {
+            overview: () => this.renderOverview(),
+            security: () => this.renderSecurity(),
+            runtimes: () => this.renderRuntimes(),
+            search: () => this.renderSearch(),
+            audit: () => this.renderAudit(),
+            cleanup: () => this.renderCleanup(),
+            tools: () => this.renderTools(),
+        };
+        (renderers[this.activeTab] || renderers.overview)();
+    }
+
+    _esc(str) { return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    _showLoading() { this.container.innerHTML = '<div class="admin-loading">Loading...</div>'; }
+    _showError(msg) { this.container.innerHTML = `<div class="admin-error">${this._esc(msg)}</div>`; }
+    _fmtBytes(b) { if(!b)return'0 B';const u=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(1024));return(b/Math.pow(1024,i)).toFixed(1)+' '+u[i]; }
+
+    // ── Overview Tab ──
+    async renderOverview() {
+        this._showLoading();
+        try {
+            const [diag, workload] = await Promise.all([
+                NexusAPI.getDiagnostics().catch(() => null),
+                NexusAPI.getWorkload().catch(() => null),
+            ]);
+            if (!diag) { this._showError('Failed to load diagnostics'); return; }
+            const sys = diag.system || {}, redis = diag.redis || {}, tasks = diag.tasks || {}, sessions = diag.sessions || {}, wl = workload || {};
+            const sig = (wl.recommendation||'normal').toLowerCase().replace(/[^a-z-]/g,'');
+            this.container.innerHTML = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">System Overview</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">System Info</span></div><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Python</span><span class="admin-metric-value">${this._esc(sys.python_version||'N/A')}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Platform</span><span class="admin-metric-value">${this._esc(sys.platform||'N/A')}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Memory</span><span class="admin-metric-value">${this._fmtBytes(sys.memory_usage_bytes)}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Uptime</span><span class="admin-metric-value">${sys.uptime_seconds?Math.floor(sys.uptime_seconds/3600)+'h':'N/A'}</span></div>
+                        </div></div>
+                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Redis</span><span class="admin-badge ${redis.connected?'pass':'fail'}">${redis.connected?'Connected':'Down'}</span></div><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Version</span><span class="admin-metric-value">${this._esc(redis.version||'N/A')}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Memory</span><span class="admin-metric-value">${this._esc(redis.memory_human||'N/A')}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Keys</span><span class="admin-metric-value">${redis.total_keys??'N/A'}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Clients</span><span class="admin-metric-value">${redis.connected_clients??'N/A'}</span></div>
+                        </div></div>
+                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Tasks</span></div><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${tasks.total??0}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Todo</span><span class="admin-metric-value">${tasks.by_status?.todo??0}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Doing</span><span class="admin-metric-value">${tasks.by_status?.doing??0}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Done</span><span class="admin-metric-value">${tasks.by_status?.done??0}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Failed</span><span class="admin-metric-value">${tasks.by_status?.failed??0}</span></div>
+                        </div></div>
+                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Sessions</span></div><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${sessions.total??0}</span></div>
+                        </div></div>
+                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Workload</span><span class="admin-badge ${sig}">${this._esc(wl.recommendation||'N/A')}</span></div><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Active Tasks</span><span class="admin-metric-value">${wl.active_tasks??'N/A'}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Queue Depth</span><span class="admin-metric-value">${wl.queue_depth??'N/A'}</span></div>
+                        </div></div>
+                    </div>
+                    <div class="admin-actions">
+                        <button class="action-btn primary" id="adminRefreshBtn">Refresh</button>
+                        <button class="action-btn" id="adminExportTasksBtn">Export Tasks</button>
+                    </div>
+                </div>`;
+            document.getElementById('adminRefreshBtn')?.addEventListener('click', () => this.renderOverview());
+            document.getElementById('adminExportTasksBtn')?.addEventListener('click', async () => {
+                try { const d=await NexusAPI.exportData('tasks','json');const b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='tasks_export.json';a.click();URL.revokeObjectURL(u); } catch(e){alert('Export failed: '+e.message);}
+            });
+        } catch(e) { this._showError('Failed to load overview: '+e.message); }
+    }
+
+    // ── Security Tab ──
+    async renderSecurity() {
+        this._showLoading();
+        try {
+            const data = await NexusAPI.getSecurityScan();
+            if (!data) { this._showError('Failed to load security scan'); return; }
+            const grade = (data.overall||'unknown').toLowerCase().replace(/[^a-z-]/g,'');
+            const ico = (s) => s==='pass'||s===true?'&#x2705;':s==='warn'||s==='warning'?'&#x26A0;&#xFE0F;':'&#x274C;';
+            let cats = '';
+            for (const [n, cd] of Object.entries(data.categories||{})) {
+                const cks = (cd.checks||[]).map(c=>`<div class="security-check"><span class="security-check-icon">${ico(c.status)}</span><div class="security-check-info"><div class="security-check-name">${this._esc(c.name||c.check||'')}</div>${c.detail?`<div class="security-check-detail">${this._esc(c.detail)}</div>`:''}${c.fix?`<div class="security-check-fix">Fix: ${this._esc(c.fix)}</div>`:''}</div></div>`).join('');
+                cats += `<div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">${this._esc(n)}</span><span class="admin-badge ${(cd.status||'').toLowerCase()}">${cd.score??''}/100</span></div><div class="security-checks">${cks||'<div class="admin-metric-label">No checks</div>'}</div></div>`;
+            }
+            this.container.innerHTML = `<div class="admin-section"><div style="display:flex;align-items:center;gap:var(--spacing-md);margin-bottom:var(--spacing-lg);"><h3 class="admin-section-title" style="margin-bottom:0">Security Scan</h3><span class="admin-badge ${grade}" style="font-size:var(--text-sm);padding:4px 16px;">${data.score}/100 — ${this._esc(data.overall||'Unknown')}</span></div><div class="admin-cards">${cats}</div><div class="admin-actions"><button class="action-btn primary" id="adminRescanBtn">Re-scan</button></div></div>`;
+            document.getElementById('adminRescanBtn')?.addEventListener('click', () => this.renderSecurity());
+        } catch(e) { this._showError('Failed to load security scan: '+e.message); }
+    }
+
+    // ── Runtimes Tab ──
+    async renderRuntimes() {
+        this._showLoading();
+        try {
+            const data = await NexusAPI.getAgentRuntimes();
+            const runtimes = data.runtimes || [];
+            let cards = runtimes.map(r => `
+                <div class="admin-card">
+                    <div class="admin-card-header">
+                        <span class="admin-card-title">${this._esc(r.name)}</span>
+                        <span class="admin-badge ${r.installed ? 'pass' : 'fail'}">${r.installed ? 'Installed' : 'Not Found'}</span>
+                    </div>
+                    <div class="admin-card-body">
+                        <div class="admin-metric"><span class="admin-metric-label">ID</span><span class="admin-metric-value">${this._esc(r.id)}</span></div>
+                        <div class="admin-metric"><span class="admin-metric-label">Version</span><span class="admin-metric-value">${this._esc(r.version || 'N/A')}</span></div>
+                        <div class="admin-metric"><span class="admin-metric-label">Binary</span><span class="admin-metric-value" style="font-size:var(--text-xs)">${this._esc(r.binary_path || 'N/A')}</span></div>
+                        <div class="admin-metric"><span class="admin-metric-label">Auth</span><span class="admin-metric-value">${r.auth_required ? (r.authenticated ? '&#x2705; Authenticated' : '&#x274C; Not authenticated') : '&#x2796; Not required'}</span></div>
+                        ${r.auth_hint && !r.authenticated ? `<div style="font-size:var(--text-xs);color:var(--primary-400);margin-top:4px;">${this._esc(r.auth_hint)}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+            this.container.innerHTML = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Agent Runtimes</h3>
+                    <p class="admin-section-desc">${data.installed_count} of ${data.total} runtimes installed</p>
+                    <div class="admin-cards">${cards}</div>
+                    <div class="admin-actions"><button class="action-btn primary" id="adminRuntimeRefreshBtn">Re-detect</button></div>
+                </div>`;
+            document.getElementById('adminRuntimeRefreshBtn')?.addEventListener('click', () => this.renderRuntimes());
+        } catch(e) { this._showError('Failed to detect runtimes: '+e.message); }
+    }
+
+    // ── Search Tab ──
+    renderSearch() {
+        this.container.innerHTML = `<div class="admin-section"><h3 class="admin-section-title">Global Search</h3><div class="admin-search-box"><input type="text" class="form-input" id="adminSearchInput" placeholder="Search tasks, sessions..." autofocus><select class="form-input form-select" id="adminSearchType" style="width:140px;"><option value="all">All</option><option value="task">Tasks</option><option value="session">Sessions</option></select><button class="action-btn primary" id="adminSearchBtn">Search</button></div><div id="adminSearchResults" class="search-results"><div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-xl);">Enter a search query above</div></div></div>`;
+        const doSearch = async () => {
+            const q=document.getElementById('adminSearchInput')?.value?.trim(); if(!q)return;
+            const type=document.getElementById('adminSearchType')?.value||'all';
+            const res=document.getElementById('adminSearchResults');
+            res.innerHTML='<div class="admin-loading">Searching...</div>';
+            try {
+                const data=await NexusAPI.globalSearch(q,type); const items=data.results||[];
+                if(!items.length){res.innerHTML='<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-xl);">No results found</div>';return;}
+                res.innerHTML=items.map(i=>`<div class="search-result-item"><span class="search-result-type"><span class="admin-badge info">${this._esc(i.type||'item')}</span></span><div class="search-result-info"><div class="search-result-title">${this._esc(i.title||i.id||'')}</div>${i.subtitle?`<div class="search-result-subtitle">${this._esc(i.subtitle)}</div>`:''}${i.excerpt?`<div class="search-result-excerpt">${this._esc(i.excerpt)}</div>`:''}</div></div>`).join('');
+            } catch(e){res.innerHTML=`<div class="admin-error">Search failed: ${this._esc(e.message)}</div>`;}
+        };
+        document.getElementById('adminSearchBtn')?.addEventListener('click',doSearch);
+        document.getElementById('adminSearchInput')?.addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();});
+    }
+
+    // ── Audit Tab ──
+    async renderAudit(params={}) {
+        this._showLoading();
+        try {
+            const data=await NexusAPI.getAuditLog({limit:params.limit||100,action:params.action||''});
+            const events=data.events||data.entries||[];
+            let tbl='';
+            if(!events.length){tbl='<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-xl);">No audit events found</div>';}
+            else{const rows=events.map(e=>`<tr><td style="font-family:'JetBrains Mono',monospace;font-size:var(--text-xs);">${this._esc(e.id||e.event_id||'-')}</td><td><span class="admin-badge info">${this._esc(e.action||'')}</span></td><td>${this._esc(e.actor||e.user||'-')}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${this._esc(e.detail||e.details||'-')}</td><td style="white-space:nowrap;">${this._esc(e.timestamp||e.created_at||'-')}</td></tr>`).join('');
+                tbl=`<div class="audit-table-wrapper"><table class="audit-table"><thead><tr><th>ID</th><th>Action</th><th>Actor</th><th>Detail</th><th>Timestamp</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+            this.container.innerHTML=`<div class="admin-section"><h3 class="admin-section-title">Audit Log</h3><div class="admin-filter-row"><select class="form-input form-select" id="auditActionFilter"><option value="">All Actions</option><option value="task.create">task.create</option><option value="task.update">task.update</option><option value="task.delete">task.delete</option><option value="session.create">session.create</option><option value="session.delete">session.delete</option></select><button class="action-btn primary" id="auditFilterBtn">Filter</button><button class="action-btn" id="auditRefreshBtn">Refresh</button></div>${tbl}</div>`;
+            document.getElementById('auditFilterBtn')?.addEventListener('click',()=>{this.renderAudit({action:document.getElementById('auditActionFilter')?.value||''});});
+            document.getElementById('auditRefreshBtn')?.addEventListener('click',()=>this.renderAudit(params));
+        } catch(e){this._showError('Failed to load audit log: '+e.message);}
+    }
+
+    // ── Cleanup Tab ──
+    async renderCleanup() {
+        this._showLoading();
+        try {
+            const data=await NexusAPI.getCleanupPreview();const policy=data.retention_policy||data.policy||{};const preview=data.preview||data.expired||[];
+            let pol='';for(const[k,d]of Object.entries(policy)){pol+=`<div class="cleanup-policy-card"><div class="cleanup-policy-label">${this._esc(k)}</div><div class="cleanup-policy-value">${d}<span class="cleanup-policy-unit"> days</span></div></div>`;}
+            let prev='';
+            if(Array.isArray(preview)&&preview.length>0){const rows=preview.map(p=>`<tr><td>${this._esc(p.category||p.type||'-')}</td><td>${p.retention_days??'-'}</td><td>${this._esc(p.cutoff_date||'-')}</td><td><strong>${p.expired_count??p.count??0}</strong></td></tr>`).join('');prev=`<div class="audit-table-wrapper"><table class="audit-table"><thead><tr><th>Category</th><th>Retention (days)</th><th>Cutoff Date</th><th>Expired Count</th></tr></thead><tbody>${rows}</tbody></table></div>`;}
+            else{prev='<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No expired data found</div>';}
+            this.container.innerHTML=`<div class="admin-section"><h3 class="admin-section-title">Data Retention & Cleanup</h3><p class="admin-section-desc">Review retention policies and clean up expired data.</p>${pol?`<div class="cleanup-policy-cards">${pol}</div>`:''}<h4 style="font-weight:600;color:var(--text-primary);margin-bottom:var(--spacing-sm);">Expired Data Preview</h4>${prev}<div class="admin-actions" style="margin-top:var(--spacing-lg);"><button class="action-btn" id="adminDryRunBtn">Dry Run</button><button class="action-btn primary" id="adminExecuteCleanupBtn" style="background:var(--error);border-color:var(--error);">Execute Cleanup</button><button class="action-btn" id="adminCleanupRefreshBtn">Refresh</button></div><div id="cleanupResultArea"></div></div>`;
+            document.getElementById('adminDryRunBtn')?.addEventListener('click',async()=>{const a=document.getElementById('cleanupResultArea');a.innerHTML='<div class="admin-loading">Running dry run...</div>';try{const r=await NexusAPI.executeCleanup(true);a.innerHTML=`<div class="admin-tool-result">${JSON.stringify(r,null,2)}</div>`;}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
+            document.getElementById('adminExecuteCleanupBtn')?.addEventListener('click',async()=>{if(!confirm('Are you sure you want to execute cleanup?'))return;const a=document.getElementById('cleanupResultArea');a.innerHTML='<div class="admin-loading">Executing cleanup...</div>';try{const r=await NexusAPI.executeCleanup(false);a.innerHTML=`<div class="admin-tool-result">${JSON.stringify(r,null,2)}</div>`;setTimeout(()=>this.renderCleanup(),1500);}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
+            document.getElementById('adminCleanupRefreshBtn')?.addEventListener('click',()=>this.renderCleanup());
+        } catch(e){this._showError('Failed to load cleanup data: '+e.message);}
+    }
+
+    // ── Tools Tab ──
+    renderTools() {
+        this.container.innerHTML=`<div class="admin-section"><h3 class="admin-section-title">Tools</h3><div class="admin-tool-section"><div class="admin-tool-title">Schedule Parser</div><div class="admin-tool-desc">Parse natural language into a cron expression.</div><div style="display:flex;gap:var(--spacing-sm);"><input type="text" class="form-input" id="scheduleParseInput" placeholder="e.g., every weekday at 9am" style="flex:1;"><button class="action-btn primary" id="scheduleParseBtn">Parse</button></div><div id="scheduleParseResult"></div></div><div class="admin-tool-section"><div class="admin-tool-title">Data Export</div><div class="admin-tool-desc">Export tasks or sessions data.</div><div style="display:flex;gap:var(--spacing-sm);align-items:center;flex-wrap:wrap;"><select class="form-input form-select" id="exportType" style="width:160px;"><option value="tasks">Tasks</option><option value="sessions">Sessions</option></select><select class="form-input form-select" id="exportFormat" style="width:120px;"><option value="json">JSON</option><option value="csv">CSV</option></select><button class="action-btn primary" id="exportBtn">Download</button></div><div id="exportResult"></div></div><div class="admin-tool-section"><div class="admin-tool-title">Standup Report</div><div class="admin-tool-desc">Generate a summary report of recent task activity.</div><button class="action-btn primary" id="standupBtn">Generate Report</button><div id="standupResult"></div></div></div>`;
+        document.getElementById('scheduleParseBtn')?.addEventListener('click',async()=>{const i=document.getElementById('scheduleParseInput')?.value?.trim();if(!i)return;const a=document.getElementById('scheduleParseResult');a.innerHTML='<div class="admin-loading">Parsing...</div>';try{const d=await NexusAPI.parseSchedule(i);a.innerHTML=`<div class="admin-tool-result">${JSON.stringify(d,null,2)}</div>`;}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
+        document.getElementById('scheduleParseInput')?.addEventListener('keydown',e=>{if(e.key==='Enter')document.getElementById('scheduleParseBtn')?.click();});
+        document.getElementById('exportBtn')?.addEventListener('click',async()=>{const t=document.getElementById('exportType')?.value||'tasks';const f=document.getElementById('exportFormat')?.value||'json';const a=document.getElementById('exportResult');a.innerHTML='<div class="admin-loading">Exporting...</div>';try{const d=await NexusAPI.exportData(t,f);const blob=new Blob([f==='csv'?d:JSON.stringify(d,null,2)],{type:f==='csv'?'text/csv':'application/json'});const u=URL.createObjectURL(blob);const l=document.createElement('a');l.href=u;l.download=`${t}_export.${f}`;l.click();URL.revokeObjectURL(u);a.innerHTML=`<div style="color:#22c55e;padding:var(--spacing-sm);">Downloaded ${f.toUpperCase()} file</div>`;}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
+        document.getElementById('standupBtn')?.addEventListener('click',async()=>{const a=document.getElementById('standupResult');a.innerHTML='<div class="admin-loading">Generating report...</div>';try{const d=await NexusAPI.getStandup();a.innerHTML=`<div class="admin-tool-result">${JSON.stringify(d,null,2)}</div>`;}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
+    }
+}
+
+// ============================================================
 // Main Application
 // ============================================================
 class NexusApp {
@@ -6218,6 +6439,7 @@ class NexusApp {
         this.tabManager = new TabManager(this);
         this.layoutManager = new LayoutManager(this);
         this.configView = new ConfigView(this);
+        this.adminView = new AdminView(this);
         this.pageManager = new PageManager(this);
         this.availableAgents = [];
         this.customProviders = this.loadCustomProviders();
@@ -6267,7 +6489,7 @@ class NexusApp {
         const trimmed = name.trim();
         if (!trimmed) return false;
 
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
         
         if (defaultProviders.includes(trimmed.toLowerCase()) || 
             this.customProviders.some(p => p.name.toLowerCase() === trimmed.toLowerCase())) {
@@ -6325,7 +6547,7 @@ class NexusApp {
     getProviderDefaultModel(providerOrAlias) {
         if (!providerOrAlias) return '';
         const name = providerOrAlias.trim().toLowerCase();
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
         const models = this._loadProviderModels();
         if (defaultProviders.includes(name)) {
             return models[name] || '';
@@ -6343,7 +6565,7 @@ class NexusApp {
         if (!providerOrAlias) return;
         const name = providerOrAlias.trim().toLowerCase();
         const val = (model || '').trim();
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
         if (defaultProviders.includes(name)) {
             const models = this._loadProviderModels();
             if (val) { models[name] = val; } else { delete models[name]; }
@@ -6361,7 +6583,7 @@ class NexusApp {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim().toLowerCase();
         
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
         if (defaultProviders.includes(trimmed)) {
             return false;
         }
@@ -6403,7 +6625,7 @@ class NexusApp {
     }
 
     getDefaultProviders() {
-        return ['claude', 'gemini', 'codex', 'codebuddy'];
+        return ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
     }
 
     getAllProviders() {
@@ -6488,6 +6710,8 @@ class NexusApp {
             this.taskView.renderFullPage();
         } else if (currentPage === 'config' && this.configView) {
             this.configView.refresh();
+        } else if (currentPage === 'admin' && this.adminView) {
+            this.adminView.refresh();
         }
 
         // Start auto-refresh for session list and active messages
@@ -6735,7 +6959,7 @@ class NexusApp {
             const agents = this.chatView.getAvailableAgents(user);
             const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
             const customProviderNames = this.getCustomProviderNames ? this.getCustomProviderNames() : [];
-            const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -6846,7 +7070,7 @@ class NexusApp {
             const agents = this.chatView.getAvailableAgents(user);
             const agentModels = [...new Set(agents.map(agent => agent.agent_type))];
             const customProviderNames = this.getCustomProviderNames ? this.getCustomProviderNames() : [];
-            const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -6919,7 +7143,7 @@ class NexusApp {
 
     resolveProviderSelection(providerSelection) {
         const normalizedSelection = (providerSelection || this.getDefaultProvider() || 'codebuddy').trim().toLowerCase();
-        const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = this.getDefaultProviders ? this.getDefaultProviders() : ['nanobot', 'claude', 'gemini', 'codex', 'codebuddy'];
         const baseProvider = defaultProviders.includes(normalizedSelection)
             ? normalizedSelection
             : ((this.getBaseProvider && this.getBaseProvider(normalizedSelection))

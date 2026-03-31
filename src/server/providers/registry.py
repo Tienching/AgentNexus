@@ -119,16 +119,20 @@ class ProviderRegistry:
             session_meta={"provider": session_provider} if session_provider else None,
         )
 
-        name = resolved.provider_name if resolved.provider_name else "claude"
+        name = resolved.provider_name if resolved.provider_name else "nanobot"
         # Map backend based on provider name
-        if name == "gemini":
+        if name == "nanobot":
+            backend = "nanobot"
+        elif name == "gemini":
             backend = "gemini"
         elif name == "codex":
             backend = "codex"
         elif name == "codebuddy":
             backend = "codebuddy"
-        else:
+        elif name == "claude":
             backend = "claude"
+        else:
+            backend = "nanobot"
         return ProviderResolution(name=name, backend=backend)
 
 
