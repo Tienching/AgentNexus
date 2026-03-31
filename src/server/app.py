@@ -26,6 +26,7 @@ from .routers.nexus_terminal import router as nexus_terminal_router
 from .routers.nexus_utils import router as nexus_utils_router
 from .routers.nexus_runs import router as nexus_runs_router
 from .routers.nexus_runtimes import router as nexus_runtimes_router
+from .routers.nexus_missions import router as nexus_missions_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -234,6 +235,7 @@ app.include_router(nexus_terminal_router)
 app.include_router(nexus_utils_router)
 app.include_router(nexus_runs_router)
 app.include_router(nexus_runtimes_router)
+app.include_router(nexus_missions_router)
 
 # Mount static files for NexusHub Web UI (with cache-control middleware)
 static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
