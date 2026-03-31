@@ -14,6 +14,7 @@ import re
 import subprocess
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Coroutine, Any
@@ -41,8 +42,19 @@ def _load_prompt_template(name: str, base_dir: str) -> str:
     path = Path(base_dir) / "prompts" / "evolve" / name
     if path.exists():
         return path.read_text(encoding="utf-8")
-    # Fallback: inline defaults are used in the engine methods
     return ""
+
+
+@dataclass
+class WorktreeTaskResult:
+    """Result from running a task in a git worktree."""
+    task: EvolutionTask
+    success: bool = False
+    branch_name: str = ""
+    worktree_path: str = ""
+    files_changed: list[str] = field(default_factory=list)
+    error: str | None = None
+    merge_status: str = "pending"  # pending | merged | conflict | failed
 
 
 class EvolutionEngine:
@@ -114,6 +126,47 @@ class EvolutionEngine:
         """Get current HEAD SHA."""
         _, stdout, _ = self._run_shell("git rev-parse HEAD")
         return stdout.strip()
+
+    # ─────────────── Worktree helpers ───────────────────────────
+
+    def _worktree_base(self) -> Path:
+        return self._working_dir / self.config.worktree_base_dir
+
+    def _cleanup_stale_worktrees(self) -> None:
+        """Remove any leftover worktrees from crashed previous sessions."""
+        base = self._worktree_base()
+        if not base.exists():
+            return
+        for wt_dir in base.iterdir():
+            if wt_dir.is_dir() and wt_dir.name.startswith("session-"):
+                logger.warning("Evolution: removing stale worktree {}", wt_dir)
+                self._run_shell(f"git worktree remove {wt_dir} --force")
+                # Best-effort branch delete
+                branch = f"evolve/{wt_dir.name}"
+                self._run_shell(f"git branch -D {branch}")
+
+    def _create_worktree(self, branch_name: str, worktree_path: Path) -> bool:
+        """Create a git worktree on a new branch. Returns True on success."""
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+        code, _, err = self._run_shell(
+            f"git worktree add {worktree_path} -b {branch_name}"
+        )
+        if code != 0:
+            logger.error("Evolution: failed to create worktree {}: {}", worktree_path, err)
+            return False
+        return True
+
+    def _remove_worktree(self, branch_name: str, worktree_path: Path) -> None:
+        """Remove a worktree and its branch (best-effort)."""
+        self._run_shell(f"git worktree remove {worktree_path} --force")
+        self._run_shell(f"git branch -D {branch_name}")
+
+    def _get_worktree_commits(self, branch_name: str, base_sha: str) -> list[str]:
+        """Get commits on branch since base_sha."""
+        _, stdout, _ = self._run_shell(
+            f"git log --oneline {base_sha}..{branch_name}"
+        )
+        return [l.strip() for l in stdout.splitlines() if l.strip()]
 
     # ─────────────────── Phase A1: Assessment ───────────────────
 
@@ -252,13 +305,19 @@ TASK SIZING RULES:
 - If a task was tried before and failed, make it SMALLER
 - Prefer tasks verifiable with: python -m pytest tests/ -x -q
 
+PARALLEL EXECUTION RULES (CRITICAL):
+- Tasks run in PARALLEL in isolated git worktrees — each task is independent
+- NO two tasks may modify the same file. If multiple tasks need the same file, merge them into one task or pick the most important
+- Each task's "Files:" list must be UNIQUE across all tasks in this session
+- Before finalizing, review all task Files: fields and resolve any overlaps
+
 For EACH task, create a file: session_plan/task_01.md, session_plan/task_02.md, etc.
 Maximum {self.config.max_tasks_per_session} tasks.
 
 Each task file format:
 ```
 Title: [short task title]
-Files: [comma-separated list of files to modify]
+Files: [comma-separated list of files to modify — must not overlap with other tasks]
 Issue: none
 
 [Detailed description of what to change and why.
@@ -345,8 +404,207 @@ Then STOP. Do not implement anything. Your job is planning only.
     # ─────────────────── Phase B: Implementation ───────────────────
 
     async def run_implementation(self, session: EvolutionSession) -> None:
-        """Phase B: Execute each task with CodeBuddy."""
-        await self._log("Phase B: Implementation starting...", session)
+        """Phase B: Execute tasks, either in parallel worktrees or serially."""
+        if self.config.use_worktree and self.config.parallel_tasks:
+            await self._run_implementation_parallel(session)
+        else:
+            await self._run_implementation_serial(session)
+
+    async def _run_implementation_parallel(self, session: EvolutionSession) -> None:
+        """Run tasks in parallel, each in its own git worktree."""
+        await self._log("Phase B: Parallel worktree implementation starting...", session)
+        session.phase = "implementation"
+
+        tasks = session.tasks
+        if not tasks:
+            await self._log("No tasks to implement", session)
+            return
+
+        # Cleanup any stale worktrees from previous crashed sessions
+        self._cleanup_stale_worktrees()
+
+        context = self._build_context()
+        day = session.day
+        base_sha = self._get_current_sha()
+        max_tasks = min(len(tasks), self.config.max_tasks_per_session)
+        active_tasks = tasks[:max_tasks]
+
+        await self._log(f"  Spawning {len(active_tasks)} worktrees in parallel...", session)
+
+        # Build worktree info for each task
+        worktree_infos = []
+        for i, task in enumerate(active_tasks):
+            branch_name = f"evolve/{session.id}-{task.id}"
+            worktree_path = self._worktree_base() / f"session-{session.id}-{task.id}"
+            worktree_infos.append((task, branch_name, worktree_path))
+
+        # Run all tasks in parallel
+        results: list[WorktreeTaskResult] = await asyncio.gather(
+            *[
+                self._run_task_in_worktree(task, session, context, day, base_sha, branch, wt_path)
+                for task, branch, wt_path in worktree_infos
+            ]
+        )
+
+        # Serial merge phase
+        await self._merge_worktree_results(results, session, day)
+
+        # Update metrics
+        for r in results:
+            if r.merge_status == "merged":
+                session.metrics.tasks_completed += 1
+                session.metrics.files_changed += len(r.files_changed)
+                r.task.status = "completed"
+            elif r.merge_status in ("conflict", "failed"):
+                session.metrics.tasks_failed += 1
+                r.task.status = "failed"
+                r.task.error = r.error or f"Merge status: {r.merge_status}"
+            else:
+                session.metrics.tasks_failed += 1
+                r.task.status = "failed"
+                r.task.error = r.error or "Unknown error"
+
+    async def _run_task_in_worktree(
+        self,
+        task: EvolutionTask,
+        session: EvolutionSession,
+        context: str,
+        day: int,
+        base_sha: str,
+        branch_name: str,
+        worktree_path: Path,
+    ) -> WorktreeTaskResult:
+        """Execute a single task in an isolated git worktree."""
+        result = WorktreeTaskResult(
+            task=task,
+            branch_name=branch_name,
+            worktree_path=str(worktree_path),
+        )
+
+        # Create the worktree
+        if not self._create_worktree(branch_name, worktree_path):
+            result.error = f"Failed to create worktree {worktree_path}"
+            return result
+
+        task.status = "running"
+        await self._log(f"  [WT] {task.id}: {task.title}", session)
+
+        # The venv lives in the main working dir — use absolute path for pytest
+        venv_python = self._working_dir / ".venv" / "bin" / "python"
+        pytest_cmd = (
+            f"{venv_python} -m pytest tests/ -x -q --tb=short 2>&1 | head -30"
+            if venv_python.exists()
+            else "python -m pytest tests/ -x -q --tb=short 2>&1 | head -30"
+        )
+
+        prompt = f"""You are agent-nexus, a self-evolving AI orchestration system. Day {day}.
+
+{context}
+
+Your ONLY job: implement this single task and commit.
+
+Title: {task.title}
+Files: {', '.join(task.files) if task.files else 'src/'}
+
+{task.description}
+
+IMPORTANT — you are working in an ISOLATED GIT WORKTREE:
+- This is a separate directory from the main repo, on branch: {branch_name}
+- The .venv is shared with the main repo at: {self._working_dir}/.venv
+- Run tests with: {pytest_cmd}
+- The main src/ code is in this directory — edit it normally
+
+Follow these rules:
+- Write or update a test first if possible
+- Make focused, surgical changes
+- After each change run: {pytest_cmd}
+- If tests fail, read the error and fix it. Try up to 3 times.
+- Only if stuck after 3 attempts: revert with git checkout -- .
+- After all tests pass, commit:
+  git add -A && git commit -m "Day {day}: {task.title}"
+- Do NOT modify: {', '.join(self.config.protected_files)}
+- Do NOT work on anything else.
+"""
+
+        exec_result = await self._executor.execute(
+            prompt=prompt,
+            tools="Read,Write,Edit,MultiEdit,Bash,Grep,Glob",
+            timeout=self.config.codebuddy_timeout,
+            working_dir=str(worktree_path),
+        )
+
+        if not exec_result.success:
+            result.error = exec_result.error or "CodeBuddy execution failed"
+            await self._log(f"  [WT] {task.id} FAILED: {result.error}", session)
+            return result
+
+        # Check if any commits were made
+        commits = self._get_worktree_commits(branch_name, base_sha)
+        if not commits:
+            result.error = "No commits produced"
+            await self._log(f"  [WT] {task.id}: no commits — skipping", session)
+            return result
+
+        # Check protected files
+        _, stdout, _ = self._run_shell(
+            f"git diff --name-only {base_sha}..{branch_name} -- "
+            + " ".join(self.config.protected_files)
+        )
+        if stdout.strip():
+            result.error = f"Modified protected files: {stdout.strip()}"
+            await self._log(f"  [WT] {task.id} BLOCKED: {result.error}", session)
+            return result
+
+        # Get list of changed files
+        _, diff_out, _ = self._run_shell(
+            f"git diff --name-only {base_sha}..{branch_name}"
+        )
+        result.files_changed = [f.strip() for f in diff_out.splitlines() if f.strip()]
+        result.success = True
+        await self._log(
+            f"  [WT] {task.id} ✓ ready ({len(commits)} commit(s), {len(result.files_changed)} file(s))",
+            session
+        )
+        return result
+
+    async def _merge_worktree_results(
+        self,
+        results: list[WorktreeTaskResult],
+        session: EvolutionSession,
+        day: int,
+    ) -> None:
+        """Sequentially merge successful worktree results into main branch."""
+        await self._log("  Merging worktrees into main branch...", session)
+
+        for r in results:
+            try:
+                if r.success:
+                    merge_code, _, merge_err = self._run_shell(
+                        f'git merge --no-ff {r.branch_name} '
+                        f'-m "Day {day}: {r.task.title} [worktree]"',
+                        timeout=30,
+                    )
+                    if merge_code == 0:
+                        r.merge_status = "merged"
+                        await self._log(f"  ✓ Merged: {r.task.title}", session)
+                    else:
+                        # Abort the merge and move on
+                        self._run_shell("git merge --abort")
+                        r.merge_status = "conflict"
+                        r.error = f"Merge conflict: {merge_err[:200]}"
+                        await self._log(
+                            f"  ✗ Conflict: {r.task.title} — will retry next session",
+                            session
+                        )
+                else:
+                    r.merge_status = "failed"
+            finally:
+                # Always clean up worktree
+                self._remove_worktree(r.branch_name, Path(r.worktree_path))
+
+    async def _run_implementation_serial(self, session: EvolutionSession) -> None:
+        """Fallback: run tasks serially in the main working directory."""
+        await self._log("Phase B: Serial implementation starting...", session)
         session.phase = "implementation"
 
         tasks = session.tasks
@@ -400,7 +658,6 @@ Follow these rules:
 
             if not is_valid:
                 await self._log(f"    BLOCKED: modified protected files {violations}", session)
-                # Revert
                 self._run_shell(f"git reset --hard {pre_sha}")
                 task.status = "failed"
                 task.error = f"Modified protected files: {violations}"
@@ -412,11 +669,9 @@ Follow these rules:
                 "python -m pytest tests/ -x -q --tb=short 2>&1 | head -50",
                 timeout=120,
             )
-            test_output = stdout + stderr
 
             if code != 0 and not result.success:
                 await self._log(f"    FAILED: {result.error or 'tests failed'}", session)
-                # Revert to pre-task state
                 self._run_shell(f"git reset --hard {pre_sha}")
                 task.status = "failed"
                 task.error = result.error or "Tests failed after implementation"
@@ -516,6 +771,10 @@ Follow these rules:
         try:
             # Ensure session_plan directory exists
             (self._working_dir / "session_plan").mkdir(parents=True, exist_ok=True)
+
+            # Clean up any stale worktrees from previous crashed sessions
+            if self.config.use_worktree:
+                self._cleanup_stale_worktrees()
 
             # Phase A1: Assessment
             await self.run_assessment(session)
