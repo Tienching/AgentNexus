@@ -210,7 +210,6 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
-    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
 
     @property
     def workspace_path(self) -> Path:

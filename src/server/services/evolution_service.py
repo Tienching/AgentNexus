@@ -213,32 +213,51 @@ class EvolutionService:
 
 
 def _load_evolution_config() -> EvolutionConfig:
-    """Load EvolutionConfig from environment variables (NANOBOT_EVOLUTION__*).
+    """Load EvolutionConfig from EVOLUTION_* environment variables.
 
-    Uses Config() directly (BaseSettings) so env vars are read properly.
+    Reads directly from server settings (src/server/config.py EvolutionSettings).
     Falls back to defaults if loading fails.
     """
     try:
-        from src.nanobot.config.schema import Config
-        # Instantiate Config() directly — this reads env vars via BaseSettings
-        cfg = Config()
-        return cfg.evolution.to_engine_config()
+        from src.server.config import settings
+        return EvolutionConfig(
+            enabled=settings.evolution_enabled,
+            cron_expr=settings.evolution_cron_expr,
+            interval_hours=settings.evolution_interval_hours,
+            memory_path=settings.evolution_memory_path,
+            journal_path=settings.evolution_journal_path,
+            identity_file=settings.evolution_identity_file,
+            personality_file=settings.evolution_personality_file,
+            max_tasks_per_session=settings.evolution_max_tasks_per_session,
+            codebuddy_path=settings.evolution_codebuddy_path,
+            codebuddy_model=settings.evolution_codebuddy_model,
+            codebuddy_timeout=settings.evolution_codebuddy_timeout,
+            working_dir=settings.evolution_working_dir,
+            use_worktree=settings.evolution_use_worktree,
+            parallel_tasks=settings.evolution_parallel_tasks,
+            worktree_base_dir=settings.evolution_worktree_base_dir,
+        )
     except Exception as e:
-        logger.warning("EvolutionService: failed to load nanobot config, using defaults: {}", e)
+        logger.warning("EvolutionService: failed to load settings, using defaults: {}", e)
         return EvolutionConfig()
 
 
 class _SchemaEvolutionConfigAdapter:
     """Thin adapter to pass EvolutionConfig to register_evolution_jobs which expects schema config."""
-    def __init__(self, config: EvolutionConfig):
+    def __init__(self, config: EvolutionConfig, memory_synthesis_cron: str = "0 12 * * *"):
         self.enabled = config.enabled
         self.cron_expr = config.cron_expr
         self.interval_hours = config.interval_hours
-        self.memory_synthesis_cron = "0 12 * * *"
+        self.memory_synthesis_cron = memory_synthesis_cron
 
 
 def _to_schema_config(config: EvolutionConfig) -> _SchemaEvolutionConfigAdapter:
-    return _SchemaEvolutionConfigAdapter(config)
+    try:
+        from src.server.config import settings
+        synth_cron = settings.evolution_memory_synthesis_cron
+    except Exception:
+        synth_cron = "0 12 * * *"
+    return _SchemaEvolutionConfigAdapter(config, synth_cron)
 
 
 def _session_summary(session: EvolutionSession | None) -> dict | None:
