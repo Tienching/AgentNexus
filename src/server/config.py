@@ -71,7 +71,7 @@ class ServerSettings(BaseSettings):
     channels_enabled: bool = True
 
     # Nanobot Mission System
-    nanobot_model: str = "gpt-4o"
+    nanobot_model: str = ""  # Empty = use ~/.nanobot/config.json setting
     nanobot_workspace: str = ""  # Default: ~/Projects
     nanobot_missions_enabled: bool = True
 

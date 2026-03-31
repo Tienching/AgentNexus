@@ -70,28 +70,30 @@ class _NanobotPool:
         """Construct a fresh AgentLoop."""
         try:
             from src.nanobot.config.loader import load_config
-            from src.nanobot.providers.factory import create_provider
             from src.nanobot.bus.queue import MessageBus
             from src.nanobot.agent.loop import AgentLoop
 
-            config = load_config(Path(workspace))
-            provider = create_provider(config.provider)
+            # load_config() uses ~/.nanobot/config.json by default
+            config = load_config()
+            # model priority: explicit override > nanobot config > provider default
+            effective_model = model or config.agents.defaults.model
+            provider = cls._make_provider(config, effective_model)
             bus = MessageBus()
 
-            effective_model = model or config.agent.model or provider.get_default_model()
+            effective_model = effective_model or provider.get_default_model()
 
             loop = AgentLoop(
                 bus=bus,
                 provider=provider,
                 workspace=Path(workspace),
                 model=effective_model,
-                max_iterations=config.agent.max_iterations,
-                web_search_config=config.web_search,
-                web_proxy=config.web_proxy,
-                exec_config=config.exec,
-                restrict_to_workspace=config.agent.restrict_to_workspace,
-                mcp_servers=config.mcp_servers or {},
-                timezone=config.timezone,
+                max_iterations=config.agents.defaults.max_tool_iterations,
+                web_search_config=config.tools.web.search,
+                web_proxy=config.tools.web.proxy,
+                exec_config=config.tools.exec,
+                restrict_to_workspace=config.tools.restrict_to_workspace,
+                mcp_servers=config.tools.mcp_servers or {},
+                timezone=config.agents.defaults.timezone,
             )
 
             # Inject agent-nexus skills (orchestrator, mission) via SkillsLoader
@@ -106,6 +108,58 @@ class _NanobotPool:
         except Exception:
             logger.exception("Failed to create AgentLoop for workspace=%s", workspace)
             raise
+
+    @staticmethod
+    def _make_provider(config: Any, model_override: str | None = None) -> Any:
+        """Create the appropriate LLM provider from nanobot config.
+
+        Extracted from nanobot/cli/commands.py::_make_provider — we need this
+        because cli/ was excluded from the source merge.
+        """
+        from src.nanobot.providers.base import GenerationSettings
+        from src.nanobot.providers.registry import find_by_name
+
+        model = model_override or config.agents.defaults.model
+        provider_name = config.get_provider_name(model)
+        p = config.get_provider(model)
+        spec = find_by_name(provider_name) if provider_name else None
+        backend = spec.backend if spec else "openai_compat"
+
+        if backend == "openai_codex":
+            from src.nanobot.providers.openai_codex_provider import OpenAICodexProvider
+            provider = OpenAICodexProvider(default_model=model)
+        elif backend == "azure_openai":
+            from src.nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+            provider = AzureOpenAIProvider(
+                api_key=p.api_key if p else None,
+                api_base=p.api_base if p else None,
+                default_model=model,
+            )
+        elif backend == "anthropic":
+            from src.nanobot.providers.anthropic_provider import AnthropicProvider
+            provider = AnthropicProvider(
+                api_key=p.api_key if p else None,
+                api_base=config.get_api_base(model),
+                default_model=model,
+                extra_headers=p.extra_headers if p else None,
+            )
+        else:
+            from src.nanobot.providers.openai_compat_provider import OpenAICompatProvider
+            provider = OpenAICompatProvider(
+                api_key=p.api_key if p else None,
+                api_base=config.get_api_base(model),
+                default_model=model,
+                extra_headers=p.extra_headers if p else None,
+                spec=spec,
+            )
+
+        defaults = config.agents.defaults
+        provider.generation = GenerationSettings(
+            temperature=defaults.temperature,
+            max_tokens=defaults.max_tokens,
+            reasoning_effort=defaults.reasoning_effort,
+        )
+        return provider
 
     @classmethod
     async def close_all(cls) -> None:
