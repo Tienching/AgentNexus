@@ -274,15 +274,20 @@ def _scan_runtime() -> SecurityCategory:
     ))
 
     # 3. Executor isolation
+    #
+    # Ported fix from mission-control 14e605f: don't penalize when the
+    # executor is the expected running mode (standalone / no gateway).
+    # In agent-nexus, the executor is the *primary* way tasks run — warning
+    # about it being enabled is counter-productive.
     executor_enabled = getattr(settings, "executor_enabled", True)
     if executor_enabled:
         checks.append(SecurityCheck(
             id="executor_enabled",
             name="Executor enabled",
-            status="warn",
-            detail="Task executor is enabled — ensure CLI commands are trusted",
-            fix="Set EXECUTOR_ENABLED=false if not needed",
-            severity="medium",
+            status="pass",
+            detail="Task executor is enabled — normal for standalone mode",
+            fix="",
+            severity="low",
         ))
     else:
         checks.append(SecurityCheck(
@@ -291,7 +296,7 @@ def _scan_runtime() -> SecurityCategory:
             status="pass",
             detail="Task executor is disabled",
             fix="",
-            severity="medium",
+            severity="low",
         ))
 
     # 4. Log level
