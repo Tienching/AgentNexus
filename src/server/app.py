@@ -15,6 +15,7 @@ from .config import settings
 from .middleware import CorrelationMiddleware
 from .routers import chat_router, health_router, channels_router
 from .routers.nexus import router as nexus_router
+from .routers.nexus_admin import router as nexus_admin_router
 from .routers.nexus_auth import router as nexus_auth_router
 from .routers.nexus_history import router as nexus_history_router
 from .routers.nexus_ops import router as nexus_ops_router
@@ -220,6 +221,7 @@ app.add_middleware(CorrelationMiddleware, metrics=metrics)
 app.include_router(health_router)
 app.include_router(chat_router)
 app.include_router(channels_router)
+app.include_router(nexus_admin_router)
 app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
 app.include_router(nexus_history_router)
