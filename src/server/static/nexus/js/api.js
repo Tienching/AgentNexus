@@ -934,6 +934,22 @@ class NexusAPI {
         if (!response.ok) throw new Error(`Failed to fetch schedule history: ${response.statusText}`);
         return response.json();
     }
+
+    // ============ Agent Runtimes API ============
+
+    /**
+     * Detect installed agent runtimes (claude, codex, gemini, codebuddy, nanobot)
+     * @param {string} [runtimeId] - Optional: detect a specific runtime only
+     * @returns {Promise<Object>} Runtimes detection result
+     */
+    static async getAgentRuntimes(runtimeId) {
+        const params = new URLSearchParams();
+        if (runtimeId) params.set('runtime_id', runtimeId);
+        const query = params.toString();
+        const response = await fetch(`${API_BASE}/agent-runtimes${query ? '?' + query : ''}`);
+        if (!response.ok) throw new Error(`Failed to detect runtimes: ${response.statusText}`);
+        return response.json();
+    }
 }
 
 // Export for use in other scripts
