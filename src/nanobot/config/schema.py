@@ -154,8 +154,8 @@ class EvolutionConfig(Base):
     """Configuration for the self-evolution system."""
 
     enabled: bool = Field(default=False)
-    interval_hours: int = Field(default=8, ge=1)
-    cron_expr: str = Field(default="0 */8 * * *")
+    interval_hours: int = Field(default=1, ge=1)
+    cron_expr: str = Field(default="0 * * * *")
     memory_path: str = Field(default="./memory")
     journal_path: str = Field(default="./JOURNAL.md")
     identity_file: str = Field(default="./IDENTITY.md")
@@ -172,6 +172,10 @@ class EvolutionConfig(Base):
     codebuddy_timeout: int = Field(default=600, ge=30)
     working_dir: str = Field(default=".")
     memory_synthesis_cron: str = Field(default="0 12 * * *")
+    # Worktree parallel execution
+    use_worktree: bool = Field(default=True)
+    worktree_base_dir: str = Field(default=".evolve")
+    parallel_tasks: bool = Field(default=True)
 
     def to_engine_config(self) -> "EvolutionConfig":
         """Convert to the engine-level EvolutionConfig dataclass."""
@@ -192,6 +196,9 @@ class EvolutionConfig(Base):
             codebuddy_model=self.codebuddy_model,
             codebuddy_timeout=self.codebuddy_timeout,
             working_dir=self.working_dir,
+            use_worktree=self.use_worktree,
+            worktree_base_dir=self.worktree_base_dir,
+            parallel_tasks=self.parallel_tasks,
         )
 
 

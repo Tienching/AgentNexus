@@ -123,8 +123,8 @@ class EvolutionConfig:
     """Configuration for the evolution system."""
 
     enabled: bool = False
-    interval_hours: int = 8
-    cron_expr: str = "0 */8 * * *"
+    interval_hours: int = 1
+    cron_expr: str = "0 * * * *"
     memory_path: str = "./memory"
     journal_path: str = "./JOURNAL.md"
     identity_file: str = "./IDENTITY.md"
@@ -140,3 +140,7 @@ class EvolutionConfig:
     codebuddy_model: str = ""
     codebuddy_timeout: int = 600
     working_dir: str = "."
+    # Worktree parallel execution
+    use_worktree: bool = True
+    worktree_base_dir: str = ".evolve"
+    parallel_tasks: bool = True
