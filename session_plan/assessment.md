@@ -1,102 +1,74 @@
-# Assessment — Day 1 (2026-03-31)
+# Assessment — Day 2
 
 ## Build/Test Status
 
-**13 failed, 1605 passed** out of 1618 total tests (99.2% pass rate).
+**2 FAILED, 1629 passed** — test suite runs in 38.59s on Python 3.14.0.
 
-Two failure clusters:
+Failing tests:
+- `tests/unit/test_nexus_admin.py::TestAuditLog::test_record_and_query`
+- `tests/unit/test_nexus_admin.py::TestAuditLog::test_diagnostics_creates_audit_event`
 
-1. **`tests/test_channels.py::TestProcessWithAiToolCalls` — 11 failures**
-   - Root cause: `asyncio.timeout()` does not exist in Python 3.10. It was added in Python 3.11.
-   - The runtime is Python 3.10.12, but `src/server/services/channel_service.py:733` uses `async with asyncio.timeout(timeout):` unconditionally.
-   - All 11 failures share the same traceback: `AttributeError: module 'asyncio' has no attribute 'timeout'`
+Root cause: Both `record_audit_event()` and `get_audit_log()` in `src/server/routers/nexus_admin.py` hard-depend on Redis (localhost:6379). When Redis is unavailable, `record_audit_event` silently swallows the error (line 91-92), and `get_audit_log` returns `total=0` (line 143-145). Tests record an event then query for it — the event was never stored, so `total` is always 0 in a Redis-free test environment.
 
-2. **`tests/unit/test_nexus_admin.py::TestAuditLog` — 2 failures**
-   - Root cause: Redis is not running (connection refused on `localhost:6379`).
-   - The audit log reads/writes go directly to Redis with no in-process fallback. Without Redis, queries silently return empty results, causing the assertions `assert d["total"] >= 1` to fail.
-   - This is an environment issue compounded by missing test isolation (the tests should mock Redis or use an in-memory store).
-
-**3 warnings:**
-- `PydanticDeprecatedSince20`: `src/server/models/legacy.py:8` uses class-based config (Pydantic V1 style).
-- `DeprecationWarning` in `src/server/routers/chat.py:199`: `HTTP_422_UNPROCESSABLE_ENTITY` renamed.
-- `RuntimeWarning` coroutine never awaited in `src/providers/codebuddy/cli_executor.py:124`.
-
----
+Warnings:
+- `src/server/models/legacy.py:8` — Pydantic V2 class-based `config` deprecation (will break on Pydantic V3)
+- `src/server/routers/chat.py:199` — `HTTP_422_UNPROCESSABLE_ENTITY` deprecated in favor of `HTTP_422_UNPROCESSABLE_CONTENT`
+- `src/providers/codebuddy/cli_executor.py:124` — unawaited coroutine `process.kill()` in mock (test-only, RuntimeWarning)
 
 ## Recent Changes (last 3 commits)
 
-1. `a7da13b` — Merge feature-evolve: complete self-evolution integration
-2. `6177b4c` — feat(evolve): integrate EvolutionService into app lifecycle
-3. `c339d59` — Merge feature-evolve: self-evolution system with CodeBuddy executor
+1. `3a66fc2` — Merge feature-evolve: rename NANOBOT_EVOLUTION__* → EVOLUTION_*
+2. `8ecf1c6` — refactor(evolve): rename env vars NANOBOT_EVOLUTION__* → EVOLUTION_*
+3. `0db53e2` — Merge feature-evolve: parallel worktree evolution + hourly cron
 
-The most recent work added the self-evolution system (EvolutionService, cron-based evolution jobs, CodeBuddy executor). This is now live in the app lifecycle.
-
----
+Day 1 work: `asyncio.timeout` Python 3.10 compatibility fix in channel_service.py, plus evolution system wiring (parallel worktree execution, hourly cron, env var cleanup).
 
 ## Codebase Size
 
-- **68,151 total lines** across all Python files in `src/`
-- **265 Python modules** in `src/`
-- **70+ test files**, **1618 tests**
-
-### Module breakdown (key areas):
-| Path | Purpose |
-|------|---------|
-| `src/nanobot/mission/` | Mission/task orchestration |
-| `src/nanobot/cron/` | Cron scheduler |
-| `src/nanobot/agent/` | Agent loop and tool registry |
-| `src/nanobot/evolve/` | Self-evolution engine (new) |
-| `src/runtime/` | Core execution, history, streaming |
-| `src/server/` | FastAPI app, routers, services |
-| `src/providers/` | Provider adapters (Claude, CodeBuddy, Gemini, Codex) |
-| `src/channels/` | Channel integrations (Slack, Telegram, WeChat, etc.) |
-
----
+- **265 Python files**, **68,463 total lines**
+- Modules: `src/channels/` (15 files), `src/providers/` (20 files), `src/runtime/` (50+ files), `src/server/` (40+ files), `src/nanobot/` (remainder)
 
 ## Self-Test Results
 
-- **Evolve subsystem**: 59 tests, all pass. The new self-evolution system is well-tested.
-- **Integration tests**: 103 tests, all pass.
-- **Providers/nanobot**: 35 tests, all pass.
-- **Unit tests**: ~1200+ tests, all pass except 2 Redis-dependent audit log tests.
-- **Channel tests**: 11 of 15 `TestProcessWithAiToolCalls` tests fail due to `asyncio.timeout` Python version issue.
+1629/1631 tests pass. The 2 failures are both in the same class (`TestAuditLog`) and share one root cause: audit log has no in-memory fallback when Redis is unavailable.
 
----
+Other test areas are healthy: evolve engine (55 tests), integration API (70 tests), channel tests (79 tests), unit tests (850+ tests) all pass.
 
 ## Capability Gaps
 
-1. **Python version compatibility**: Code uses `asyncio.timeout()` (Python 3.11+) but the runtime is Python 3.10. This silently breaks channel message processing for tool calls.
+1. **Audit log: no in-memory fallback** — `record_audit_event` and `get_audit_log` fail silently without Redis. In production this means audit events are silently dropped whenever Redis is down or not configured. This is a data-loss bug, not just a test failure.
 
-2. **Redis dependency without graceful degradation**: Audit log and some session storage features hard-depend on Redis. Tests that touch these paths fail in Redis-free environments. The audit log has no in-memory fallback.
+2. **Installer stub** — `src/runtime/plugins/installer.py:136` has `# TODO: 实际调用 pip/uv 安装`. Skill package installation is completely unimplemented — provider install silently skips the actual package install step.
 
-3. **Incomplete installer**: `src/runtime/plugins/installer.py:136` has `# TODO: 实际调用 pip/uv 安装` — skill package installation is stubbed.
+3. **Pydantic V2 legacy model** — `src/server/models/legacy.py` uses deprecated class-based config. Will break on Pydantic V3 upgrade.
 
-4. **Pydantic V1 legacy model**: `src/server/models/legacy.py` uses deprecated class-based config. Will break on Pydantic V3.
+4. **`process.kill()` not awaited** — `src/providers/codebuddy/cli_executor.py:124` calls `process.kill()` without `await` on an async subprocess. This is a real bug (not just test noise) — the kill never executes in async context.
 
-5. **Test coverage for evolve engine**: The evolution engine (`src/nanobot/evolve/engine.py`) contains template text with TODO placeholders (it's a prompt template, not a code gap — but worth noting the engine is prompt-driven with no dry-run mode).
-
----
+5. **Evolution engine is prompt-driven with no dry-run mode** — the evolve engine (`src/nanobot/evolve/engine.py`) relies entirely on prompt templates. No dry-run or simulation mode exists for testing evolution runs without actually invoking a subprocess.
 
 ## Known Issues
 
 | File | Issue |
 |------|-------|
-| `src/server/services/channel_service.py:733` | `asyncio.timeout()` requires Python ≥3.11; breaks on 3.10 |
-| `src/runtime/plugins/installer.py:136` | Skill package install is a stub (`# TODO: 实際調用 pip/uv`) |
-| `src/server/models/legacy.py:8` | Pydantic V1 class-based config (deprecation warning) |
-| `src/server/routers/chat.py:199` | `HTTP_422_UNPROCESSABLE_ENTITY` deprecation warning |
-| `src/providers/codebuddy/cli_executor.py:124` | Coroutine never awaited (RuntimeWarning) |
-| Redis-dependent tests | No test isolation — audit log tests require live Redis |
-
----
+| `src/server/routers/nexus_admin.py:63-92` | `record_audit_event` silently drops events when Redis unavailable |
+| `src/server/routers/nexus_admin.py:110-145` | `get_audit_log` returns empty on Redis failure — no in-memory fallback |
+| `src/runtime/plugins/installer.py:136` | Provider package install is a no-op stub |
+| `src/server/models/legacy.py:8` | Pydantic V2 deprecation warning → future V3 break |
+| `src/providers/codebuddy/cli_executor.py:124` | `process.kill()` missing `await` |
 
 ## Recommended Focus
 
-### 1. Fix `asyncio.timeout` Python 3.10 compatibility (HIGH — breaks 11 tests + real channel behavior)
-Replace `async with asyncio.timeout(timeout):` in `channel_service.py` with a Python 3.10-compatible equivalent using `asyncio.wait_for()`. This is a one-line fix that unblocks 11 failing tests and fixes real runtime behavior for all channel integrations using tool calls.
+**Priority 1 (fixes failing tests + real bug): Add in-memory fallback to audit log**
+- `record_audit_event` and `get_audit_log` should use a module-level in-memory deque when Redis is unavailable.
+- This fixes both failing tests and prevents silent data loss in production.
+- Surgical change — ~30 lines in `src/server/routers/nexus_admin.py`.
 
-### 2. Fix audit log test isolation (MEDIUM — 2 flaky tests)
-The `TestAuditLog` tests in `test_nexus_admin.py` should mock Redis or use an in-memory store. The tests are testing logic that works — they just fail because Redis isn't available. Either add a mock or make the audit log fall back gracefully in test environments.
+**Priority 2 (real async bug): Fix `process.kill()` missing `await`**
+- `src/providers/codebuddy/cli_executor.py:124` — subprocess kill never fires in async context.
+- Risk: leaked processes when tasks are cancelled or timed out.
+- Small fix, high correctness value.
 
-### 3. Fix the `asyncio.timeout` issue first — it's the most impactful single change
-It affects 11 tests, is a clear Python version regression introduced by assuming 3.11+, and the fix is mechanical. The audit log isolation is lower priority but worth addressing to get to a clean green suite.
+**Priority 3 (future-proofing): Migrate legacy.py to Pydantic ConfigDict**
+- One-line fix for `src/server/models/legacy.py:8`.
+- Eliminates deprecation warning and prevents V3 breakage.
+- Zero risk, zero behavior change.
