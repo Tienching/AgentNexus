@@ -75,12 +75,6 @@ class ServerSettings(BaseSettings):
     nanobot_workspace: str = ""  # Default: ~/Projects
     nanobot_missions_enabled: bool = True
 
-    # Self-Evolution System
-    # Reads NANOBOT_EVOLUTION__ENABLED from .env via nanobot config loader.
-    # This flag is a quick server-level toggle; the full config lives in
-    # src/nanobot/config/schema.py (EvolutionConfig).
-    evolution_enabled: bool = False
-
     # Default chat provider (can be overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
     default_chat_provider: str = "claude"  # "claude", "nanobot", "gemini", etc.
     
@@ -199,6 +193,34 @@ class ProviderSettings(BaseSettings):
     }
 
 
+class EvolutionSettings(BaseSettings):
+    """Self-evolution system configuration (EVOLUTION_* env vars)."""
+
+    evolution_enabled: bool = False
+    evolution_cron_expr: str = "0 * * * *"       # Every hour by default
+    evolution_interval_hours: int = 1
+    evolution_memory_path: str = "./memory"
+    evolution_journal_path: str = "./JOURNAL.md"
+    evolution_identity_file: str = "./IDENTITY.md"
+    evolution_personality_file: str = "./PERSONALITY.md"
+    evolution_max_tasks_per_session: int = 3
+    evolution_codebuddy_path: str = "codebuddy"
+    evolution_codebuddy_model: str = ""
+    evolution_codebuddy_timeout: int = 600
+    evolution_working_dir: str = "."
+    evolution_use_worktree: bool = True
+    evolution_parallel_tasks: bool = True
+    evolution_worktree_base_dir: str = ".evolve"
+    evolution_memory_synthesis_cron: str = "0 12 * * *"
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",
+    }
+
+
 class NexusSettings(BaseSettings):
     """Nexus 控制台配置"""
     
@@ -216,8 +238,8 @@ class NexusSettings(BaseSettings):
 
 
 # 合并配置
-class Settings(ServerSettings, ProviderSettings, NexusSettings):
-    """完整配置（包含服务器和 Provider 配置）"""
+class Settings(ServerSettings, ProviderSettings, NexusSettings, EvolutionSettings):
+    """完整配置（包含服务器、Provider 和进化配置）"""
 
     model_config = {
         "env_file": ".env",
