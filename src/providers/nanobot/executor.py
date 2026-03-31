@@ -1,0 +1,274 @@
+# -*- coding: utf-8 -*-
+"""NanobotExecutor — runs nanobot AgentLoop in-process.
+
+The key challenge is bridging nanobot's *callback-based* streaming with
+agent-nexus's *AsyncGenerator-based* streaming.  We use an
+``asyncio.Queue`` as a unidirectional pipe:
+
+    AgentLoop callbacks  ──push──▶  asyncio.Queue  ──pull──▶  yield
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import uuid
+from pathlib import Path
+from typing import Any, AsyncGenerator, Optional
+
+from src.providers.base import BaseExecutor, RequestContext
+from src.providers.nanobot.event_schema import (
+    DoneEvent,
+    ErrorEvent,
+    NanobotEvent,
+    TextDeltaEvent,
+    TextEndEvent,
+    TextStartEvent,
+    ToolEndEvent,
+    ToolResultEvent,
+    ToolStartEvent,
+)
+from src.providers.nanobot.session_bridge import (
+    to_nanobot_channel_and_chat,
+    to_nanobot_session_key,
+)
+
+logger = logging.getLogger(__name__)
+
+# Sentinel object to signal "no more events"
+_SENTINEL = object()
+
+
+# ---------------------------------------------------------------------------
+# AgentLoop pool – keeps one loop instance per workspace
+# ---------------------------------------------------------------------------
+
+class _NanobotPool:
+    """Process-level pool of AgentLoop instances, keyed by workspace."""
+
+    _instances: dict[str, Any] = {}  # workspace_str -> AgentLoop
+    _lock = asyncio.Lock() if hasattr(asyncio, "Lock") else None
+
+    @classmethod
+    async def get_or_create(cls, workspace: str, model: str | None = None) -> Any:
+        """Return (or lazily create) an AgentLoop for *workspace*."""
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+
+        async with cls._lock:
+            if workspace in cls._instances:
+                return cls._instances[workspace]
+
+            loop = await cls._create_loop(workspace, model)
+            cls._instances[workspace] = loop
+            return loop
+
+    @classmethod
+    async def _create_loop(cls, workspace: str, model: str | None) -> Any:
+        """Construct a fresh AgentLoop."""
+        try:
+            from src.nanobot.config.loader import load_config
+            from src.nanobot.providers.factory import create_provider
+            from src.nanobot.bus.queue import MessageBus
+            from src.nanobot.agent.loop import AgentLoop
+
+            config = load_config(Path(workspace))
+            provider = create_provider(config.provider)
+            bus = MessageBus()
+
+            effective_model = model or config.agent.model or provider.get_default_model()
+
+            loop = AgentLoop(
+                bus=bus,
+                provider=provider,
+                workspace=Path(workspace),
+                model=effective_model,
+                max_iterations=config.agent.max_iterations,
+                web_search_config=config.web_search,
+                web_proxy=config.web_proxy,
+                exec_config=config.exec,
+                restrict_to_workspace=config.agent.restrict_to_workspace,
+                mcp_servers=config.mcp_servers or {},
+                timezone=config.timezone,
+            )
+
+            # Inject agent-nexus skills (orchestrator, mission) via SkillsLoader
+            nexus_skills_dir = Path(__file__).resolve().parents[3] / "prompts" / "skills"
+            if nexus_skills_dir.exists():
+                loop.context.skills.extra_skills_dirs = [nexus_skills_dir]
+                logger.info("Injected nexus skills from %s", nexus_skills_dir)
+
+            logger.info("Created AgentLoop for workspace=%s model=%s", workspace, effective_model)
+            return loop
+
+        except Exception:
+            logger.exception("Failed to create AgentLoop for workspace=%s", workspace)
+            raise
+
+    @classmethod
+    async def close_all(cls) -> None:
+        """Shutdown all loops (call on app teardown)."""
+        for ws, loop in list(cls._instances.items()):
+            try:
+                await loop.close_mcp()
+            except Exception:
+                logger.warning("Error closing AgentLoop for %s", ws, exc_info=True)
+        cls._instances.clear()
+
+
+# ---------------------------------------------------------------------------
+# NanobotExecutor
+# ---------------------------------------------------------------------------
+
+class NanobotExecutor(BaseExecutor):
+    """In-process executor backed by nanobot's AgentLoop.
+
+    Each ``execute()`` call:
+    1.  Obtains (or creates) an AgentLoop from the pool.
+    2.  Wires callback functions that push events into an ``asyncio.Queue``.
+    3.  Spawns ``AgentLoop.process_direct()`` as a background task.
+    4.  Yields serialised :class:`NanobotEvent` JSON lines from the queue.
+    """
+
+    def __init__(self, *, config: Any = None):
+        super().__init__(config=config)
+        self._workspace: str | None = None
+        self._model: str | None = None
+
+        # Resolve workspace from config
+        if config and hasattr(config, "nanobot_workspace") and config.nanobot_workspace:
+            self._workspace = config.nanobot_workspace
+        if not self._workspace:
+            self._workspace = os.environ.get(
+                "NANOBOT_WORKSPACE",
+                str(Path.home() / "Projects"),
+            )
+
+        if config and hasattr(config, "nanobot_model"):
+            self._model = config.nanobot_model
+
+    # ── BaseExecutor interface ────────────────────────────────────────
+
+    def _build_command(self, context: RequestContext) -> list[str]:
+        """Not used — we run in-process, not via subprocess."""
+        return []
+
+    async def execute(
+        self,
+        request: Any,
+        exec_user: str = "default",
+        output_format: str = "raw",
+    ) -> AsyncGenerator[str, None]:
+        """Execute a user message through nanobot's AgentLoop.
+
+        Yields one JSON-encoded :class:`NanobotEvent` per line.
+        """
+        content = getattr(request, 'content', '') or ''
+        session_id = getattr(request, 'session_id', 'default') or 'default'
+        cwd = getattr(request, 'cwd', None)
+        model_override = getattr(request, 'model', None)
+
+        # Resolve workspace (request may override)
+        workspace = cwd or self._workspace or str(Path.home() / "Projects")
+
+        try:
+            agent_loop = await _NanobotPool.get_or_create(workspace, model_override or self._model)
+        except Exception as e:
+            err = ErrorEvent(message=f"Failed to initialise nanobot: {e}")
+            yield json.dumps({"type": err.type, "message": err.message})
+            return
+
+        queue: asyncio.Queue[NanobotEvent | object] = asyncio.Queue(maxsize=512)
+
+        session_key = to_nanobot_session_key(session_id)
+        channel, chat_id = to_nanobot_channel_and_chat(session_id)
+
+        # ── Build callbacks ───────────────────────────────────────────
+        message_id = f"msg_{uuid.uuid4().hex[:12]}"
+        _text_started = False
+
+        async def _on_stream(delta: str) -> None:
+            nonlocal _text_started
+            if not _text_started:
+                _text_started = True
+                await queue.put(TextStartEvent(message_id=message_id))
+            await queue.put(TextDeltaEvent(message_id=message_id, delta=delta))
+
+        async def _on_stream_end(*, resuming: bool = False) -> None:
+            nonlocal _text_started
+            if _text_started:
+                await queue.put(TextEndEvent(message_id=message_id))
+                _text_started = False
+
+        async def _on_tool_start(name: str, tool_call_id: str, arguments: dict) -> None:
+            await queue.put(ToolStartEvent(
+                tool_call_id=tool_call_id,
+                name=name,
+                arguments=arguments,
+            ))
+
+        async def _on_tool_end(tool_call_id: str, result_text: str) -> None:
+            await queue.put(ToolResultEvent(
+                tool_call_id=tool_call_id,
+                content=result_text[:4000],
+            ))
+            await queue.put(ToolEndEvent(tool_call_id=tool_call_id))
+
+        # ── Background task ───────────────────────────────────────────
+        async def _run() -> None:
+            try:
+                await agent_loop.process_direct(
+                    content=content,
+                    session_key=session_key,
+                    channel=channel,
+                    chat_id=chat_id,
+                    on_stream=_on_stream,
+                    on_stream_end=_on_stream_end,
+                    on_tool_start=_on_tool_start,
+                    on_tool_end=_on_tool_end,
+                )
+            except asyncio.CancelledError:
+                await queue.put(ErrorEvent(message="Request cancelled"))
+            except Exception as exc:
+                logger.exception("AgentLoop.process_direct failed")
+                await queue.put(ErrorEvent(message=str(exc)))
+            finally:
+                await queue.put(_SENTINEL)
+
+        task = asyncio.create_task(_run())
+
+        # ── Drain queue ───────────────────────────────────────────────
+        try:
+            while True:
+                item = await queue.get()
+                if item is _SENTINEL:
+                    break
+                # Serialise event to JSON line
+                if isinstance(item, NanobotEvent):
+                    yield _serialise_event(item)
+        except (asyncio.CancelledError, GeneratorExit):
+            task.cancel()
+            raise
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _serialise_event(event: NanobotEvent) -> str:
+    """Serialise a NanobotEvent dataclass to a JSON string (one line)."""
+    d: dict[str, Any] = {"type": event.type}
+    # Copy all public attributes except 'type'
+    for attr in event.__dataclass_fields__:
+        if attr != "type":
+            d[attr] = getattr(event, attr)
+    return json.dumps(d, ensure_ascii=False)
