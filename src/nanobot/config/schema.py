@@ -150,6 +150,51 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class EvolutionConfig(Base):
+    """Configuration for the self-evolution system."""
+
+    enabled: bool = Field(default=False)
+    interval_hours: int = Field(default=8, ge=1)
+    cron_expr: str = Field(default="0 */8 * * *")
+    memory_path: str = Field(default="./memory")
+    journal_path: str = Field(default="./JOURNAL.md")
+    identity_file: str = Field(default="./IDENTITY.md")
+    personality_file: str = Field(default="./PERSONALITY.md")
+    max_session_duration_seconds: int = Field(default=3600)
+    max_tasks_per_session: int = Field(default=3, ge=1, le=10)
+    max_fix_attempts: int = Field(default=10, ge=1)
+    protected_files: list[str] = Field(default_factory=lambda: [
+        "IDENTITY.md",
+        "PERSONALITY.md",
+    ])
+    codebuddy_path: str = Field(default="codebuddy")
+    codebuddy_model: str = Field(default="")
+    codebuddy_timeout: int = Field(default=600, ge=30)
+    working_dir: str = Field(default=".")
+    memory_synthesis_cron: str = Field(default="0 12 * * *")
+
+    def to_engine_config(self) -> "EvolutionConfig":
+        """Convert to the engine-level EvolutionConfig dataclass."""
+        from src.nanobot.evolve.models import EvolutionConfig as EngineConfig
+        return EngineConfig(
+            enabled=self.enabled,
+            interval_hours=self.interval_hours,
+            cron_expr=self.cron_expr,
+            memory_path=self.memory_path,
+            journal_path=self.journal_path,
+            identity_file=self.identity_file,
+            personality_file=self.personality_file,
+            max_session_duration_seconds=self.max_session_duration_seconds,
+            max_tasks_per_session=self.max_tasks_per_session,
+            max_fix_attempts=self.max_fix_attempts,
+            protected_files=list(self.protected_files),
+            codebuddy_path=self.codebuddy_path,
+            codebuddy_model=self.codebuddy_model,
+            codebuddy_timeout=self.codebuddy_timeout,
+            working_dir=self.working_dir,
+        )
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -158,6 +203,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    evolution: EvolutionConfig = Field(default_factory=EvolutionConfig)
 
     @property
     def workspace_path(self) -> Path:
