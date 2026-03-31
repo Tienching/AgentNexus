@@ -75,6 +75,12 @@ class ServerSettings(BaseSettings):
     nanobot_workspace: str = ""  # Default: ~/Projects
     nanobot_missions_enabled: bool = True
 
+    # Self-Evolution System
+    # Reads NANOBOT_EVOLUTION__ENABLED from .env via nanobot config loader.
+    # This flag is a quick server-level toggle; the full config lives in
+    # src/nanobot/config/schema.py (EvolutionConfig).
+    evolution_enabled: bool = False
+
     # Default chat provider (can be overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
     default_chat_provider: str = "claude"  # "claude", "nanobot", "gemini", etc.
     
@@ -165,7 +171,8 @@ class ServerSettings(BaseSettings):
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
-        "case_sensitive": False
+        "case_sensitive": False,
+        "extra": "ignore",  # Ignore NANOBOT_* env vars used by nanobot config
     }
 
 
@@ -211,7 +218,13 @@ class NexusSettings(BaseSettings):
 # 合并配置
 class Settings(ServerSettings, ProviderSettings, NexusSettings):
     """完整配置（包含服务器和 Provider 配置）"""
-    pass
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",  # Ignore unknown env vars (e.g. NANOBOT_EVOLUTION__*)
+    }
 
 
 # 全局配置实例
