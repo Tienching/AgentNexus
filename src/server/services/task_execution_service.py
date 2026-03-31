@@ -104,6 +104,99 @@ def classify_task_model(task: "Task") -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Provider affinity scoring
+# Ported from mission-control autoRouteInboxTasks() / scoreAgentForTask()
+# (commit 1acbf8e).
+#
+# MC scores *named agents* (coder/researcher/reviewer/…) for task-text keyword
+# match.  Nexus uses *provider names* (claude/gemini/codex/codebuddy) instead
+# of agent roles.  The same keyword-affinity table and scoring algorithm are
+# preserved; only the role→provider mapping changes.
+#
+# Provider affinity keywords:
+#   claude     → broad reasoning / architecture / security / research
+#   gemini     → code generation / refactor / implement / build
+#   codex      → code / implement / api / function / test / ci / deploy
+#   codebuddy  → quick / simple / format / rename / status / translate
+# ---------------------------------------------------------------------------
+
+_PROVIDER_AFFINITY: dict[str, list[str]] = {
+    "claude": [
+        "research", "investigate", "analyze", "audit", "review", "security",
+        "architect", "design", "diagnos", "root cause", "incident", "explain",
+        "why", "evaluate", "compare", "survey", "benchmark", "strategy",
+        "document", "summarize",
+    ],
+    "gemini": [
+        "code", "implement", "build", "refactor", "feature", "component",
+        "module", "class", "function", "endpoint", "api", "interface",
+        "migrate", "convert", "rewrite", "scaffold",
+    ],
+    "codex": [
+        "code", "implement", "test", "unit test", "fix", "bug", "patch",
+        "ci", "pipeline", "deploy", "endpoint", "function", "class",
+        "module", "integration", "regression", "coverage",
+    ],
+    "codebuddy": [
+        "quick", "simple", "minor", "routine", "format", "rename", "move file",
+        "read file", "update readme", "bump version", "send message", "notify",
+        "translate", "ping", "list ", "fetch ", "status check",
+    ],
+}
+
+
+def score_provider_for_task(provider: str, task_text: str) -> int:
+    """Score *provider* suitability for *task_text* using keyword affinity.
+
+    Ported from mission-control ``scoreAgentForTask()`` (commit 1acbf8e).
+    Returns a non-negative integer; higher is a better fit.  Returns 1 as
+    the minimum non-zero score so any registered provider can serve as a
+    fallback.
+
+    Args:
+        provider:   Lowercase provider name (``"claude"``, ``"gemini"``, etc.)
+        task_text:  Concatenated task description + project name, lower-cased
+                    by the caller.
+
+    Returns:
+        Score ≥ 0.  0 means the provider is unknown / not in affinity table.
+    """
+    keywords = _PROVIDER_AFFINITY.get(provider, [])
+    if not keywords:
+        return 0  # unknown provider — let caller decide
+
+    score = sum(10 for kw in keywords if kw in task_text)
+    return max(score, 1)  # minimum 1 so any registered provider can be a fallback
+
+
+def select_provider_for_task(task_text: str, available_providers: list[str]) -> Optional[str]:
+    """Pick the best provider for *task_text* from *available_providers*.
+
+    Ported from mission-control ``autoRouteInboxTasks()`` scoring loop
+    (commit 1acbf8e).  Returns the highest-scoring provider, or ``None``
+    when *available_providers* is empty.
+
+    If all providers score identically (e.g., no affinity keywords match),
+    the first provider in *available_providers* is returned as the default.
+
+    Args:
+        task_text:           Raw task description (will be lower-cased here).
+        available_providers: Ordered list of provider names to score.
+
+    Returns:
+        Provider name string, or ``None`` if list is empty.
+    """
+    if not available_providers:
+        return None
+
+    text = task_text.lower()
+    scored = [(p, score_provider_for_task(p, text)) for p in available_providers]
+    # Stable sort: ties broken by original order (first registered wins)
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored[0][0]
+
+
 async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
     """Execute a queued task end-to-end.
 
