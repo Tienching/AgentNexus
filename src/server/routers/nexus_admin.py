@@ -16,6 +16,7 @@ import os
 import platform
 import resource
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +43,10 @@ router = APIRouter(
 
 AUDIT_KEY = "nexus:audit:log"
 AUDIT_MAX_ENTRIES = 10000  # Cap to prevent unbounded growth
+
+# In-memory fallback when Redis is unavailable — prevents silent data loss
+_audit_fallback: deque = deque(maxlen=1000)
+_audit_fallback_next_id: int = 0
 
 
 class AuditEvent(BaseModel):
@@ -89,7 +94,18 @@ def record_audit_event(
         # Trim to max entries
         r.ltrim(key, 0, AUDIT_MAX_ENTRIES - 1)
     except Exception as e:
-        logger.debug(f"Failed to record audit event: {e}")
+        logger.debug(f"Failed to record audit event (using fallback): {e}")
+        global _audit_fallback_next_id
+        _audit_fallback_next_id += 1
+        event = {
+            "id": _audit_fallback_next_id,
+            "action": action,
+            "actor": actor,
+            "detail": detail,
+            "ip_address": ip_address,
+            "timestamp": int(time.time()),
+        }
+        _audit_fallback.append(event)
 
 
 @router.get("/audit", response_model=AuditResponse)
@@ -141,8 +157,27 @@ async def get_audit_log(
 
         return AuditResponse(events=page, total=total, limit=limit, offset=offset)
     except Exception as e:
-        logger.warning(f"Audit log query failed: {e}")
-        return AuditResponse(events=[], total=0, limit=limit, offset=offset)
+        logger.warning(f"Audit log query failed, using fallback: {e}")
+        events: List[AuditEvent] = []
+        for data in list(_audit_fallback):
+            try:
+                event = AuditEvent(**data)
+                if action and event.action != action:
+                    continue
+                if actor and event.actor != actor:
+                    continue
+                if since and event.timestamp < since:
+                    continue
+                if until and event.timestamp > until:
+                    continue
+                events.append(event)
+            except Exception:
+                continue
+        # Fallback stores oldest-first; reverse to match Redis newest-first order
+        events.reverse()
+        total = len(events)
+        page = events[offset:offset + limit]
+        return AuditResponse(events=page, total=total, limit=limit, offset=offset)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -365,7 +400,7 @@ def _get_audit_count() -> int:
         prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
         return r.llen(f"{prefix}{AUDIT_KEY}")
     except Exception:
-        return 0
+        return len(_audit_fallback)
 
 
 @router.get("/diagnostics", response_model=DiagnosticsResponse)
