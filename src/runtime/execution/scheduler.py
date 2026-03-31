@@ -17,8 +17,18 @@ from ..models.schedule_models import Schedule, ScheduleStatus
 from ..models.task_models import TaskPriority
 from ..stores.schedule_storage import ScheduleStorage
 from ..stores.task_storage import TaskQueue
+from ...server.services.stale_task_watchdog import (
+    requeue_stale_tasks,
+    STALE_THRESHOLD_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
+
+# How often (seconds) to run the stale-task watchdog.
+# Matches mission-control scheduler tick (TICK_MS = 60_000 → 60s, commit 2d171ad).
+_WATCHDOG_INTERVAL_SECONDS: int = 60
+# Delay before the first watchdog check after startup (25s, matching MC).
+_WATCHDOG_INITIAL_DELAY_SECONDS: int = 25
 
 
 def _extract_loop_config(context: Dict[str, Any]) -> tuple[bool, int, Optional[list[str]]]:
@@ -59,6 +69,11 @@ class TaskScheduler:
         self._main_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
 
+        # Stale-task watchdog state (ported from MC commit 2d171ad).
+        self._watchdog_last_run: Optional[float] = None
+        # First watchdog check runs _WATCHDOG_INITIAL_DELAY_SECONDS after start.
+        self._watchdog_next_run: Optional[float] = None
+
         logger.info(f"TaskScheduler initialized (poll_interval={poll_interval}s)")
 
     @property
@@ -83,6 +98,9 @@ class TaskScheduler:
         self._shutdown_event.clear()
         self._main_task = asyncio.create_task(self._main_loop())
         self._state = SchedulerState.RUNNING
+        # Schedule the first watchdog check 25 s after startup.
+        import time as _time
+        self._watchdog_next_run = _time.monotonic() + _WATCHDOG_INITIAL_DELAY_SECONDS
         logger.info("TaskScheduler started")
 
     async def stop(self, timeout: float = 10.0) -> None:
@@ -108,6 +126,7 @@ class TaskScheduler:
 
     async def _main_loop(self) -> None:
         """Main polling loop."""
+        import time as _time
         logger.info("Scheduler main loop started")
 
         while not self._shutdown_event.is_set():
@@ -115,6 +134,19 @@ class TaskScheduler:
                 await self._check_and_fire()
             except Exception as e:
                 logger.error(f"Scheduler loop error: {e}", exc_info=True)
+
+            # Run stale-task watchdog when due.
+            try:
+                now = _time.monotonic()
+                if (
+                    self._watchdog_next_run is not None
+                    and now >= self._watchdog_next_run
+                ):
+                    await self._run_watchdog()
+                    self._watchdog_last_run = now
+                    self._watchdog_next_run = now + _WATCHDOG_INTERVAL_SECONDS
+            except Exception as e:
+                logger.error(f"Stale-task watchdog error: {e}", exc_info=True)
 
             # Wait for poll_interval or shutdown
             try:
@@ -136,6 +168,19 @@ class TaskScheduler:
                 await self._fire_schedule(schedule)
             except Exception as e:
                 logger.error(f"Failed to fire schedule {schedule.id}: {e}", exc_info=True)
+
+    async def _run_watchdog(self) -> None:
+        """Run the stale-task watchdog — requeue DOING tasks with no active executor.
+
+        Ported from mission-control requeueStaleTasks() (commit 2d171ad).
+        Fires every _WATCHDOG_INTERVAL_SECONDS (60s), first run at 25s after startup.
+        """
+        result = requeue_stale_tasks(
+            self._task_queue,
+            stale_threshold_seconds=STALE_THRESHOLD_SECONDS,
+        )
+        if result.get("requeued", 0) or result.get("failed", 0):
+            logger.info("stale_task_watchdog: %s", result["message"])
 
     async def _fire_schedule(self, schedule: Schedule) -> None:
         """Spawn a child task from the schedule template."""
@@ -200,6 +245,12 @@ class TaskScheduler:
         return {
             "state": self._state.value,
             "poll_interval": self._poll_interval,
+            "watchdog": {
+                "interval_seconds": _WATCHDOG_INTERVAL_SECONDS,
+                "stale_threshold_seconds": STALE_THRESHOLD_SECONDS,
+                "last_run": self._watchdog_last_run,
+                "next_run": self._watchdog_next_run,
+            },
         }
 
 
