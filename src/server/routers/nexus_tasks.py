@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -51,6 +53,9 @@ from .nexus_models import (
     OutcomeBuckets,
     OutcomesByDimension,
     ChatContinueRequest,
+    TaskComment,
+    TaskCommentsResponse,
+    CreateCommentRequest,
     get_task_queue,
     normalize_task_status,
     task_to_item,
@@ -839,3 +844,141 @@ async def get_task_agui_messages(
 
     event = MessagesSnapshotEvent(messages=messages)
     return event.model_dump(exclude_none=True)
+
+
+# ---------------------------------------------------------------------------
+# Task comments
+# Ported from mission-control GET/POST /api/tasks/[id]/comments (commit 4ef91d4).
+#
+# Redis key layout (mirrors task storage namespace conventions):
+#   task_comment:{exec_user}:{task_id}:{comment_id}  → HASH (id, task_id, author,
+#                                                        content, created_at, parent_id)
+#   task_comments:{exec_user}:{task_id}               → ZSET  score=created_at → comment_id
+# ---------------------------------------------------------------------------
+
+
+def _comment_key(exec_user: str, task_id: str, comment_id: str) -> str:
+    return f"task_comment:{exec_user}:{task_id}:{comment_id}"
+
+
+def _comments_index_key(exec_user: str, task_id: str) -> str:
+    return f"task_comments:{exec_user}:{task_id}"
+
+
+def _load_comment(redis, exec_user: str, task_id: str, comment_id: str) -> Optional[TaskComment]:
+    """Load a single TaskComment from Redis. Returns None if missing."""
+    data = redis.hgetall(_comment_key(exec_user, task_id, comment_id))
+    if not data:
+        return None
+    return TaskComment(
+        id=data.get("id", comment_id),
+        task_id=data.get("task_id", task_id),
+        author=data.get("author", "user"),
+        content=data.get("content", ""),
+        created_at=float(data.get("created_at", 0)),
+        parent_id=data.get("parent_id") or None,
+    )
+
+
+def _build_comment_tree(flat: List[TaskComment]) -> List[TaskComment]:
+    """Build threaded tree from flat list (same algorithm as MC). Returns top-level comments."""
+    by_id: Dict[str, TaskComment] = {c.id: c.model_copy(deep=True) for c in flat}
+    roots: List[TaskComment] = []
+    for c in by_id.values():
+        if c.parent_id and c.parent_id in by_id:
+            by_id[c.parent_id].replies.append(c)
+        else:
+            roots.append(c)
+    # Sort roots and replies by created_at ascending (mirrors MC ORDER BY created_at ASC)
+    roots.sort(key=lambda x: x.created_at)
+    for c in by_id.values():
+        c.replies.sort(key=lambda x: x.created_at)
+    return roots
+
+
+@router.get("/tasks/{task_id}/comments", response_model=TaskCommentsResponse)
+async def get_task_comments(
+    task_id: str,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Get all comments for a task, organized into a thread tree.
+
+    Ported from mission-control GET /api/tasks/[id]/comments (commit 4ef91d4).
+    Returns top-level comments with nested replies, ordered by creation time.
+    """
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+    redis = queue._redis
+    index_key = _comments_index_key(exec_user, task_id)
+    comment_ids = redis.zrange(index_key, 0, -1)
+
+    flat: List[TaskComment] = []
+    for cid in comment_ids:
+        comment = _load_comment(redis, exec_user, task_id, cid)
+        if comment:
+            flat.append(comment)
+
+    return TaskCommentsResponse(
+        task_id=task_id,
+        comments=_build_comment_tree(flat),
+        total=len(flat),
+    )
+
+
+@router.post("/tasks/{task_id}/comments", response_model=TaskComment, status_code=201)
+async def create_task_comment(
+    task_id: str,
+    request: CreateCommentRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Add a comment (or reply) to a task.
+
+    Ported from mission-control POST /api/tasks/[id]/comments (commit 4ef91d4).
+    Supply parent_id to create a reply. content must be non-empty.
+    """
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="Comment content must not be empty")
+
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+
+    redis = queue._redis
+
+    # Validate parent exists if provided
+    if request.parent_id:
+        parent = _load_comment(redis, exec_user, task_id, request.parent_id)
+        if not parent:
+            raise HTTPException(status_code=400, detail="Parent comment not found")
+        # Only one level of nesting (MC-compatible: replies cannot have replies)
+        if parent.parent_id:
+            raise HTTPException(status_code=400, detail="Cannot reply to a reply")
+
+    comment_id = str(uuid.uuid4())
+    now = time.time()
+
+    payload: Dict[str, str] = {
+        "id": comment_id,
+        "task_id": task_id,
+        "author": request.author,
+        "content": request.content,
+        "created_at": str(now),
+    }
+    if request.parent_id:
+        payload["parent_id"] = request.parent_id
+
+    redis.hset(_comment_key(exec_user, task_id, comment_id), payload)
+    redis.zadd(_comments_index_key(exec_user, task_id), {comment_id: now})
+
+    return TaskComment(
+        id=comment_id,
+        task_id=task_id,
+        author=request.author,
+        content=request.content,
+        created_at=now,
+        parent_id=request.parent_id,
+    )

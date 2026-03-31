@@ -372,6 +372,35 @@ def _int_or_none(val) -> Optional[int]:
     return val if isinstance(val, int) else None
 
 
+# ---------------------------------------------------------------------------
+# Task comment models
+# Ported from mission-control GET/POST /api/tasks/[id]/comments (commit 4ef91d4).
+# MC stores comments in SQLite; here we use Redis hashes + sorted sets.
+# ---------------------------------------------------------------------------
+
+class TaskComment(BaseModel):
+    """A single comment (or reply) on a task."""
+    id: str
+    task_id: str
+    author: str
+    content: str
+    created_at: float          # POSIX timestamp
+    parent_id: Optional[str] = None
+    replies: List["TaskComment"] = Field(default_factory=list)
+
+
+class TaskCommentsResponse(BaseModel):
+    task_id: str
+    comments: List[TaskComment] = Field(default_factory=list)
+    total: int = 0
+
+
+class CreateCommentRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="Comment text")
+    author: str = Field(default="user", description="Author identifier")
+    parent_id: Optional[str] = Field(None, description="ID of parent comment for replies")
+
+
 def task_to_item(task) -> TaskItem:
     """Convert a storage Task to a TaskItem response model."""
     status_val = task.status if isinstance(task.status, str) else task.status.value
