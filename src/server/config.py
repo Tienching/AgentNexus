@@ -69,6 +69,14 @@ class ServerSettings(BaseSettings):
     
     # Channel 服务配置
     channels_enabled: bool = True
+
+    # Nanobot Mission System
+    nanobot_model: str = "gpt-4o"
+    nanobot_workspace: str = ""  # Default: ~/Projects
+    nanobot_missions_enabled: bool = True
+
+    # Default chat provider (can be overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
+    default_chat_provider: str = "claude"  # "claude", "nanobot", "gemini", etc.
     
     # Telegram 配置
     telegram_bot_token: str | None = None
@@ -173,7 +181,7 @@ class ProviderSettings(BaseSettings):
     gemini_command: str = "gemini"
     
     # 默认 Provider 和 Exec User
-    default_provider: str = "codebuddy"
+    default_provider: str = "nanobot"
     default_alias: str = ""
     default_exec_user: str = ""
 

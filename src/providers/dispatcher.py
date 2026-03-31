@@ -14,12 +14,18 @@ from typing import Optional
 def normalize_provider(name: Optional[str]) -> str:
     """Normalize a provider name to its canonical key.
 
-    Unknown / empty values fall back to ``"claude"``.
+    Unknown / empty values fall back to the default provider.
     """
     n = (name or "").strip().lower()
-    if n in ("gemini", "codex", "codebuddy"):
+    if n in ("gemini", "codex", "codebuddy", "claude", "nanobot"):
         return n
-    return "claude"
+    return _default_provider()
+
+
+def _default_provider() -> str:
+    """Return the default provider key (configurable via env var)."""
+    import os
+    return os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", "claude")
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +46,10 @@ def create_executor(provider: str, *, config=None):
         config = _settings
 
     key = normalize_provider(provider)
+
+    if key == "nanobot":
+        from src.providers.nanobot import NanobotExecutor
+        return NanobotExecutor(config=config)
 
     if key == "gemini":
         from src.providers.gemini import GeminiExecutor
@@ -72,6 +82,7 @@ def create_all_executors(*, config=None) -> dict:
         "gemini":    create_executor("gemini", config=config),
         "codex":     create_executor("codex", config=config),
         "codebuddy": create_executor("codebuddy", config=config),
+        "nanobot":   create_executor("nanobot", config=config),
     }
 
 
@@ -82,6 +93,10 @@ def create_all_executors(*, config=None) -> dict:
 def create_adapter(provider: str):
     """Create a **new** AG-UI adapter instance for *provider*."""
     key = normalize_provider(provider)
+
+    if key == "nanobot":
+        from src.providers.nanobot import NanobotAGUIAdapter
+        return NanobotAGUIAdapter()
 
     if key == "gemini":
         from src.runtime.adapters.gemini import GeminiAGUIAdapter
