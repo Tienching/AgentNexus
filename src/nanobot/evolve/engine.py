@@ -573,34 +573,192 @@ Follow these rules:
         session: EvolutionSession,
         day: int,
     ) -> None:
-        """Sequentially merge successful worktree results into main branch."""
+        """Sequentially merge successful worktree results into main branch.
+
+        Conflict resolution strategy (three attempts):
+          1. Standard merge — succeeds when no conflicts
+          2. Auto-resolve with -X theirs — takes the worktree's version for
+             any conflicted hunks; safe when tasks touch different logical areas
+          3. codebuddy-assisted resolution — for true semantic conflicts,
+             spawn a codebuddy instance to read the conflict markers and fix them
+          4. Give up — abort and log for next session
+        """
         await self._log("  Merging worktrees into main branch...", session)
 
         for r in results:
             try:
-                if r.success:
-                    merge_code, _, merge_err = self._run_shell(
-                        f'git merge --no-ff {r.branch_name} '
-                        f'-m "Day {day}: {r.task.title} [worktree]"',
-                        timeout=30,
-                    )
-                    if merge_code == 0:
-                        r.merge_status = "merged"
-                        await self._log(f"  ✓ Merged: {r.task.title}", session)
-                    else:
-                        # Abort the merge and move on
-                        self._run_shell("git merge --abort")
-                        r.merge_status = "conflict"
-                        r.error = f"Merge conflict: {merge_err[:200]}"
-                        await self._log(
-                            f"  ✗ Conflict: {r.task.title} — will retry next session",
-                            session
-                        )
-                else:
+                if not r.success:
                     r.merge_status = "failed"
+                    continue
+
+                merged = await self._try_merge(r, session, day)
+                if not merged:
+                    r.merge_status = "conflict"
+                    await self._log(
+                        f"  ✗ Could not merge: {r.task.title} — will retry next session",
+                        session,
+                    )
             finally:
-                # Always clean up worktree
+                # Always clean up worktree regardless of merge outcome
                 self._remove_worktree(r.branch_name, Path(r.worktree_path))
+
+    async def _try_merge(
+        self,
+        r: WorktreeTaskResult,
+        session: EvolutionSession,
+        day: int,
+    ) -> bool:
+        """Attempt to merge a worktree branch with escalating conflict resolution.
+
+        Returns True if the merge succeeded (via any strategy).
+        """
+        commit_msg = f"Day {day}: {r.task.title} [worktree]"
+
+        # ── Attempt 1: Clean merge ────────────────────────────────
+        code, _, err = self._run_shell(
+            f'git merge --no-ff {r.branch_name} -m "{commit_msg}"',
+            timeout=30,
+        )
+        if code == 0:
+            r.merge_status = "merged"
+            await self._log(f"  ✓ Merged: {r.task.title}", session)
+            return True
+
+        # Merge failed — check if it left conflict state
+        self._run_shell("git merge --abort")
+
+        # ── Attempt 2: Auto-resolve with -X theirs ────────────────
+        # This is safe when tasks modify different parts of the same file.
+        # "-X theirs" picks the incoming branch's version for conflicted hunks.
+        await self._log(
+            f"  ⚠ Conflict on '{r.task.title}' — trying auto-resolve (-X theirs)...",
+            session,
+        )
+        code2, _, err2 = self._run_shell(
+            f'git merge --no-ff -X theirs {r.branch_name} -m "{commit_msg} [auto-resolved]"',
+            timeout=30,
+        )
+        if code2 == 0:
+            r.merge_status = "merged"
+            await self._log(
+                f"  ✓ Merged with auto-resolve: {r.task.title}",
+                session,
+            )
+            return True
+
+        self._run_shell("git merge --abort")
+
+        # ── Attempt 3: codebuddy-assisted conflict resolution ──────
+        await self._log(
+            f"  ⚠ Auto-resolve failed — asking codebuddy to resolve conflicts...",
+            session,
+        )
+        resolved = await self._codebuddy_resolve_conflict(r, session, day)
+        if resolved:
+            r.merge_status = "merged"
+            await self._log(
+                f"  ✓ Merged with codebuddy resolution: {r.task.title}",
+                session,
+            )
+            return True
+
+        r.error = f"All merge strategies failed: {err[:200]}"
+        return False
+
+    async def _codebuddy_resolve_conflict(
+        self,
+        r: WorktreeTaskResult,
+        session: EvolutionSession,
+        day: int,
+    ) -> bool:
+        """Use codebuddy to resolve merge conflicts interactively.
+
+        Starts the merge (leaving conflict markers), then asks codebuddy
+        to read the conflicted files and produce clean resolutions.
+        Returns True if resolution succeeded and commit was made.
+        """
+        commit_msg = f"Day {day}: {r.task.title} [worktree, conflict-resolved]"
+
+        # Start merge without committing — will leave conflict markers in files
+        code, _, _ = self._run_shell(
+            f"git merge --no-ff --no-commit {r.branch_name}",
+            timeout=30,
+        )
+
+        # Find conflicted files
+        _, conflict_out, _ = self._run_shell("git diff --name-only --diff-filter=U")
+        conflicted = [f.strip() for f in conflict_out.splitlines() if f.strip()]
+
+        if not conflicted:
+            # No actual conflicts — just commit what we have
+            code2, _, _ = self._run_shell(f'git commit -m "{commit_msg}"')
+            if code2 == 0:
+                return True
+            self._run_shell("git merge --abort")
+            return False
+
+        await self._log(
+            f"    Conflicts in: {', '.join(conflicted)} — asking codebuddy...",
+            session,
+        )
+
+        prompt = f"""You are agent-nexus, resolving a git merge conflict.
+
+A worktree branch '{r.branch_name}' was implementing:
+  Task: {r.task.title}
+  Files changed: {', '.join(r.files_changed)}
+
+The merge has conflict markers (<<<<<<, =======, >>>>>>>) in:
+  {chr(10).join(f'  - {f}' for f in conflicted)}
+
+Your job:
+1. Read each conflicted file
+2. Understand both versions (HEAD = current main, incoming = worktree improvement)
+3. Produce a clean merged version that incorporates the worktree's improvement
+   while preserving any changes in HEAD
+4. After resolving ALL conflict markers:
+   git add {' '.join(conflicted)}
+   git commit -m "{commit_msg}"
+
+Rules:
+- Remove ALL conflict markers (<<<<<<, =======, >>>>>>>) — none should remain
+- Prefer the incoming (worktree) changes for the task's intended improvement
+- Preserve unrelated HEAD changes
+- Run: python -m pytest tests/ -x -q --tb=short 2>&1 | head -20 to verify
+- Only commit if tests pass
+- If you cannot resolve cleanly, run: git merge --abort
+"""
+
+        result = await self._executor.execute(
+            prompt=prompt,
+            tools="Read,Write,Edit,Bash,Grep",
+            timeout=self.config.codebuddy_timeout,
+            working_dir=str(self._working_dir),
+        )
+
+        # Check if merge was completed (a new commit was made)
+        _, log_out, _ = self._run_shell(
+            f"git log --oneline -1 --format='%s'"
+        )
+        if commit_msg[:30] in log_out or "conflict-resolved" in log_out:
+            return True
+
+        # Check merge state — if still in conflict, abort
+        _, status_out, _ = self._run_shell("git status --short")
+        if "UU " in status_out or "AA " in status_out:
+            self._run_shell("git merge --abort")
+            return False
+
+        # If no conflict markers remain, try to commit
+        _, grep_out, _ = self._run_shell(
+            'grep -r "<<<<<<" ' + " ".join(conflicted) + ' 2>/dev/null || true'
+        )
+        if not grep_out.strip():
+            code3, _, _ = self._run_shell(f'git commit -m "{commit_msg}"')
+            return code3 == 0
+
+        self._run_shell("git merge --abort")
+        return False
 
     async def _run_implementation_serial(self, session: EvolutionSession) -> None:
         """Fallback: run tasks serially in the main working directory."""
