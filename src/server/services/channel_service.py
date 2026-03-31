@@ -729,178 +729,180 @@ class ChannelService:
                 "toolCallDisplayName": display,
             })
 
-        try:
-            async with asyncio.timeout(timeout):
-                async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
-                    if not output:
+        async def _process_stream():
+            nonlocal has_streamed_text, _agui_text_started
+            async for output in executor.execute(request, exec_user=exec_user, output_format="raw"):
+                if not output:
+                    continue
+                try:
+                    data = json.loads(output)
+                    if not isinstance(data, dict):
                         continue
-                    try:
-                        data = json.loads(output)
-                        if not isinstance(data, dict):
-                            continue
-                    except json.JSONDecodeError:
-                        continue
+                except json.JSONDecodeError:
+                    continue
 
-                    event_type = data.get("type", "")
+                event_type = data.get("type", "")
 
-                    # --- stream_event ---
-                    if event_type == "stream_event":
-                        event = data.get("event", {})
-                        evt_type = event.get("type", "")
+                # --- stream_event ---
+                if event_type == "stream_event":
+                    event = data.get("event", {})
+                    evt_type = event.get("type", "")
 
-                        if evt_type == "content_block_delta":
-                            delta = event.get("delta", {})
-                            delta_type = delta.get("type", "")
-                            if delta_type == "text_delta":
-                                text = delta.get("text", "")
-                                if text:
-                                    result.collected_text_parts.append(text)
+                    if evt_type == "content_block_delta":
+                        delta = event.get("delta", {})
+                        delta_type = delta.get("type", "")
+                        if delta_type == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                result.collected_text_parts.append(text)
+                                has_streamed_text = True
+                                if not _agui_text_started:
+                                    _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
+                                    _agui_text_started = True
+                                _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": text})
+                                if on_text_delta:
+                                    await on_text_delta(text)
+                        elif delta_type == "input_json_delta":
+                            index = event.get("index", 0)
+                            partial = delta.get("partial_json", "")
+                            if partial and index in tool_block_buffer:
+                                tool_block_buffer[index]["json_buf"] += partial
+                                tool_id = tool_block_buffer[index].get("id")
+                                if tool_id:
+                                    _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": partial})
+                                    await _try_update_tool_display(
+                                        tool_id,
+                                        tool_block_buffer[index].get("name", "unknown"),
+                                        tool_block_buffer[index]["json_buf"],
+                                    )
+
+                    # AG-UI tool tracking
+                    elif evt_type == "TOOL_CALL_START":
+                        tool_name = event.get("toolCallName", "unknown")
+                        tool_id = event.get("toolCallId", "")
+                        if tool_id:
+                            agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
+                            await _handle_tool_start(tool_id, tool_name)
+
+                    elif evt_type == "TOOL_CALL_ARGS":
+                        tool_id = event.get("toolCallId", "")
+                        delta_str = event.get("delta", "")
+                        if tool_id and delta_str and tool_id in agui_tool_buffer:
+                            agui_tool_buffer[tool_id]["args"] += delta_str
+                            _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": delta_str})
+                            await _try_update_tool_display(
+                                tool_id,
+                                agui_tool_buffer[tool_id]["name"],
+                                agui_tool_buffer[tool_id]["args"],
+                            )
+
+                    elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
+                        tool_id = event.get("toolCallId", "")
+                        if tool_id and tool_id in agui_tool_buffer:
+                            entry = agui_tool_buffer.pop(tool_id)
+                            tc_result = event.get("result") if evt_type == "TOOL_CALL_END" else event.get("content")
+                            await _handle_tool_end(tool_id, entry["name"], entry["args"], tc_result)
+
+                    # Legacy tool blocks
+                    elif evt_type == "content_block_start":
+                        content_block = event.get("content_block", {})
+                        if content_block.get("type") == "tool_use":
+                            tool_name = content_block.get("name", "unknown")
+                            tool_id = content_block.get("id", f"tool-{uuid.uuid4().hex[:8]}")
+                            index = event.get("index", 0)
+                            tool_block_buffer[index] = {"name": tool_name, "json_buf": "", "id": tool_id}
+                            await _handle_tool_start(tool_id, tool_name)
+
+                    elif evt_type == "content_block_stop":
+                        index = event.get("index", 0)
+                        if index in tool_block_buffer:
+                            entry = tool_block_buffer.pop(index)
+                            await _handle_tool_end(entry["id"], entry["name"], entry["json_buf"])
+
+                # --- assistant event (skip if already streamed) ---
+                elif event_type == "assistant":
+                    if not has_streamed_text:
+                        msg = data.get("message", {})
+                        msg_content = msg.get("content", [])
+                        if isinstance(msg_content, list):
+                            for item in msg_content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    text = item.get("text", "")
+                                    if text:
+                                        result.collected_text_parts.append(text)
+                                        if not _agui_text_started:
+                                            _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
+                                            _agui_text_started = True
+                                        _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": text})
+                                        if on_text_delta:
+                                            await on_text_delta(text)
+
+                # --- user event (tool_result may embed nested subagent tool calls) ---
+                elif event_type == "user":
+                    user_message = data.get("message", {})
+                    user_content = user_message.get("content", [])
+                    if isinstance(user_content, list):
+                        for item in user_content:
+                            if not isinstance(item, dict) or item.get("type") != "tool_result":
+                                continue
+
+                            parent_tool_use_id = item.get("tool_use_id", "")
+                            raw_result = self._extract_tool_result_text(item.get("content"))
+                            nested_calls = self._parse_subagent_tool_calls(raw_result)
+                            for nested in nested_calls:
+                                tool_id = nested["tool_id"]
+                                tool_name = nested["tool_name"]
+                                args_obj = nested.get("arguments") or {}
+                                args_str = json.dumps(args_obj, ensure_ascii=False) if args_obj else ""
+                                await _handle_tool_start(tool_id, tool_name)
+                                if args_str:
+                                    _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": args_str})
+                                await _handle_tool_end(tool_id, tool_name, args_str)
+
+                            # If the tool_result belongs to a "task" (subagent),
+                            # extract the text content (excluding <tool_call> blocks)
+                            # and emit it so channels can display the subagent analysis.
+                            parent_tool_name = _tool_id_to_name.get(parent_tool_use_id, "")
+                            parent_tool_key = parent_tool_name.strip().lower()
+                            # Also handle formatted names like "Task: analyst - ..."
+                            is_task_tool = parent_tool_key == "task" or parent_tool_key.startswith("task:")
+                            if is_task_tool and raw_result:
+                                # Strip <tool_call>...</tool_call> blocks to get pure text
+                                subagent_text = re.sub(
+                                    r'<tool_call>.*?</tool_call>', '', raw_result, flags=re.DOTALL
+                                ).strip()
+                                if subagent_text:
+                                    # Truncate overly long subagent output
+                                    max_subagent_len = CHANNEL_MAX_LENGTH.get(message.channel, 4000)
+                                    if len(subagent_text) > max_subagent_len:
+                                        subagent_text = subagent_text[:max_subagent_len] + "\n\n... (子任务输出被截断)"
+                                    result.collected_text_parts.append(subagent_text)
                                     has_streamed_text = True
                                     if not _agui_text_started:
                                         _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
                                         _agui_text_started = True
-                                    _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": text})
+                                    _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": subagent_text})
                                     if on_text_delta:
-                                        await on_text_delta(text)
-                            elif delta_type == "input_json_delta":
-                                index = event.get("index", 0)
-                                partial = delta.get("partial_json", "")
-                                if partial and index in tool_block_buffer:
-                                    tool_block_buffer[index]["json_buf"] += partial
-                                    tool_id = tool_block_buffer[index].get("id")
-                                    if tool_id:
-                                        _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": partial})
-                                        await _try_update_tool_display(
-                                            tool_id,
-                                            tool_block_buffer[index].get("name", "unknown"),
-                                            tool_block_buffer[index]["json_buf"],
-                                        )
+                                        await on_text_delta(subagent_text)
+                                    logger.debug(
+                                        f"[{message.channel}] Emitted subagent text content "
+                                        f"({len(subagent_text)} chars) from tool {parent_tool_use_id}"
+                                    )
 
-                        # AG-UI tool tracking
-                        elif evt_type == "TOOL_CALL_START":
-                            tool_name = event.get("toolCallName", "unknown")
-                            tool_id = event.get("toolCallId", "")
-                            if tool_id:
-                                agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
-                                await _handle_tool_start(tool_id, tool_name)
+                # --- result event ---
+                elif event_type == "result":
+                    is_error = data.get("is_error", False)
+                    content = data.get("content", "") or data.get("result", "")
+                    if not content and is_error:
+                        errors = data.get("errors", [])
+                        if errors:
+                            content = "❌ " + "; ".join(str(e) for e in errors[:3])
+                    result.final_content = content or ""
+                    result.is_error = is_error
+                    return  # result is terminal
 
-                        elif evt_type == "TOOL_CALL_ARGS":
-                            tool_id = event.get("toolCallId", "")
-                            delta_str = event.get("delta", "")
-                            if tool_id and delta_str and tool_id in agui_tool_buffer:
-                                agui_tool_buffer[tool_id]["args"] += delta_str
-                                _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": delta_str})
-                                await _try_update_tool_display(
-                                    tool_id,
-                                    agui_tool_buffer[tool_id]["name"],
-                                    agui_tool_buffer[tool_id]["args"],
-                                )
-
-                        elif evt_type in ("TOOL_CALL_END", "TOOL_CALL_RESULT"):
-                            tool_id = event.get("toolCallId", "")
-                            if tool_id and tool_id in agui_tool_buffer:
-                                entry = agui_tool_buffer.pop(tool_id)
-                                tc_result = event.get("result") if evt_type == "TOOL_CALL_END" else event.get("content")
-                                await _handle_tool_end(tool_id, entry["name"], entry["args"], tc_result)
-
-                        # Legacy tool blocks
-                        elif evt_type == "content_block_start":
-                            content_block = event.get("content_block", {})
-                            if content_block.get("type") == "tool_use":
-                                tool_name = content_block.get("name", "unknown")
-                                tool_id = content_block.get("id", f"tool-{uuid.uuid4().hex[:8]}")
-                                index = event.get("index", 0)
-                                tool_block_buffer[index] = {"name": tool_name, "json_buf": "", "id": tool_id}
-                                await _handle_tool_start(tool_id, tool_name)
-
-                        elif evt_type == "content_block_stop":
-                            index = event.get("index", 0)
-                            if index in tool_block_buffer:
-                                entry = tool_block_buffer.pop(index)
-                                await _handle_tool_end(entry["id"], entry["name"], entry["json_buf"])
-
-                    # --- assistant event (skip if already streamed) ---
-                    elif event_type == "assistant":
-                        if not has_streamed_text:
-                            msg = data.get("message", {})
-                            msg_content = msg.get("content", [])
-                            if isinstance(msg_content, list):
-                                for item in msg_content:
-                                    if isinstance(item, dict) and item.get("type") == "text":
-                                        text = item.get("text", "")
-                                        if text:
-                                            result.collected_text_parts.append(text)
-                                            if not _agui_text_started:
-                                                _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
-                                                _agui_text_started = True
-                                            _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": text})
-                                            if on_text_delta:
-                                                await on_text_delta(text)
-
-                    # --- user event (tool_result may embed nested subagent tool calls) ---
-                    elif event_type == "user":
-                        user_message = data.get("message", {})
-                        user_content = user_message.get("content", [])
-                        if isinstance(user_content, list):
-                            for item in user_content:
-                                if not isinstance(item, dict) or item.get("type") != "tool_result":
-                                    continue
-
-                                parent_tool_use_id = item.get("tool_use_id", "")
-                                raw_result = self._extract_tool_result_text(item.get("content"))
-                                nested_calls = self._parse_subagent_tool_calls(raw_result)
-                                for nested in nested_calls:
-                                    tool_id = nested["tool_id"]
-                                    tool_name = nested["tool_name"]
-                                    args_obj = nested.get("arguments") or {}
-                                    args_str = json.dumps(args_obj, ensure_ascii=False) if args_obj else ""
-                                    await _handle_tool_start(tool_id, tool_name)
-                                    if args_str:
-                                        _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": args_str})
-                                    await _handle_tool_end(tool_id, tool_name, args_str)
-
-                                # If the tool_result belongs to a "task" (subagent),
-                                # extract the text content (excluding <tool_call> blocks)
-                                # and emit it so channels can display the subagent analysis.
-                                parent_tool_name = _tool_id_to_name.get(parent_tool_use_id, "")
-                                parent_tool_key = parent_tool_name.strip().lower()
-                                # Also handle formatted names like "Task: analyst - ..."
-                                is_task_tool = parent_tool_key == "task" or parent_tool_key.startswith("task:")
-                                if is_task_tool and raw_result:
-                                    # Strip <tool_call>...</tool_call> blocks to get pure text
-                                    subagent_text = re.sub(
-                                        r'<tool_call>.*?</tool_call>', '', raw_result, flags=re.DOTALL
-                                    ).strip()
-                                    if subagent_text:
-                                        # Truncate overly long subagent output
-                                        max_subagent_len = CHANNEL_MAX_LENGTH.get(message.channel, 4000)
-                                        if len(subagent_text) > max_subagent_len:
-                                            subagent_text = subagent_text[:max_subagent_len] + "\n\n... (子任务输出被截断)"
-                                        result.collected_text_parts.append(subagent_text)
-                                        has_streamed_text = True
-                                        if not _agui_text_started:
-                                            _emit_agui({"type": "TEXT_MESSAGE_START", "messageId": _agui_msg_id, "role": "assistant"})
-                                            _agui_text_started = True
-                                        _emit_agui({"type": "TEXT_MESSAGE_CONTENT", "messageId": _agui_msg_id, "delta": subagent_text})
-                                        if on_text_delta:
-                                            await on_text_delta(subagent_text)
-                                        logger.debug(
-                                            f"[{message.channel}] Emitted subagent text content "
-                                            f"({len(subagent_text)} chars) from tool {parent_tool_use_id}"
-                                        )
-
-                    # --- result event ---
-                    elif event_type == "result":
-                        is_error = data.get("is_error", False)
-                        content = data.get("content", "") or data.get("result", "")
-                        if not content and is_error:
-                            errors = data.get("errors", [])
-                            if errors:
-                                content = "❌ " + "; ".join(str(e) for e in errors[:3])
-                        result.final_content = content or ""
-                        result.is_error = is_error
-                        break  # result is terminal
-
+        try:
+            await asyncio.wait_for(_process_stream(), timeout=timeout)
         except TimeoutError:
             logger.error(f"[{message.channel}] AI execution timed out after {timeout}s")
             executor.kill_process()
