@@ -10,7 +10,10 @@ from typing import Any, AsyncGenerator
 
 import httpx
 from loguru import logger
-from oauth_cli_kit import get_token as get_codex_token
+try:
+    from oauth_cli_kit import get_token as get_codex_token
+except ImportError:
+    get_codex_token = None  # oauth_cli_kit not available in this environment
 
 from src.nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 
