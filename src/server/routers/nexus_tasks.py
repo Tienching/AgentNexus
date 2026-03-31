@@ -248,10 +248,22 @@ async def create_task(
 
     default_provider = (settings.default_provider or "").strip().lower() or "codebuddy"
     default_alias = (settings.default_alias or "").strip().lower()
-    provider = (request.provider or "").strip().lower() or default_provider
-    allowed = set(get_provider_registry().list_providers())
-    if provider not in allowed:
-        raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
+    allowed = list(get_provider_registry().list_providers())
+
+    if (request.provider or "").strip():
+        # Caller explicitly chose a provider — validate and use it
+        provider = request.provider.strip().lower()
+        if provider not in set(allowed):
+            raise HTTPException(status_code=400, detail=f"Invalid provider: {provider}")
+    else:
+        # Auto-select: score available providers by task keyword affinity.
+        # Ported from mission-control autoRouteInboxTasks (commit 1acbf8e).
+        from src.server.services.task_execution_service import select_provider_for_task
+        auto = select_provider_for_task(desc, allowed) if allowed else None
+        provider = auto or default_provider
+        if provider not in set(allowed):
+            provider = default_provider  # final safety fallback
+
     alias_value = (request.alias or "").strip() or default_alias or provider
 
     default_exec_user = (settings.default_exec_user or "").strip() or None
