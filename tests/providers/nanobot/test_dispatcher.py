@@ -22,17 +22,16 @@ class TestDispatcherNanobot:
         assert normalize_provider("codebuddy") == "codebuddy"
 
     def test_normalize_default_fallback(self):
-        """Empty/unknown name should fall back to claude (default)."""
+        """Empty/unknown name should fall back to nanobot (default)."""
+        assert normalize_provider(None) == "nanobot"
+        assert normalize_provider("") == "nanobot"
+        assert normalize_provider("unknown") == "nanobot"
+
+    def test_normalize_default_env_override(self):
+        """AGENT_NEXUS_DEFAULT_PROVIDER can override the default."""
         with patch.dict(os.environ, {"AGENT_NEXUS_DEFAULT_PROVIDER": "claude"}, clear=False):
             assert normalize_provider(None) == "claude"
             assert normalize_provider("") == "claude"
-            assert normalize_provider("unknown") == "claude"
-
-    def test_normalize_default_env_override(self):
-        """AGENT_NEXUS_DEFAULT_PROVIDER can change the default."""
-        with patch.dict(os.environ, {"AGENT_NEXUS_DEFAULT_PROVIDER": "nanobot"}, clear=False):
-            assert normalize_provider(None) == "nanobot"
-            assert normalize_provider("") == "nanobot"
 
     def test_create_adapter_nanobot(self):
         from src.providers.nanobot.adapter import NanobotAGUIAdapter

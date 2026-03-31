@@ -25,7 +25,7 @@ def normalize_provider(name: Optional[str]) -> str:
 def _default_provider() -> str:
     """Return the default provider key (configurable via env var)."""
     import os
-    return os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", "claude")
+    return os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", "nanobot")
 
 
 # ---------------------------------------------------------------------------
