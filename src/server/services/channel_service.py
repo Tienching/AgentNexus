@@ -2235,6 +2235,9 @@ class ChannelService:
         if not content:
             if result.is_error:
                 return "抱歉，处理超时，请稍后重试。"
+            # No text content but tools were called — surface tool summaries alone
+            if result.tool_call_count > 0 and result.tool_summaries:
+                return "\n".join(result.tool_summaries)
             return None
 
         content = self._truncate_response(content, message.channel)

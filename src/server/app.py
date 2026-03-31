@@ -18,6 +18,7 @@ from .routers.nexus import router as nexus_router
 from .routers.nexus_auth import router as nexus_auth_router
 from .routers.nexus_history import router as nexus_history_router
 from .routers.nexus_schedules import router as nexus_schedules_router
+from .routers.nexus_system import router as nexus_system_router
 from .routers.nexus_terminal import router as nexus_terminal_router
 from .routers.nexus_runs import router as nexus_runs_router
 from .logger import setup_logger, get_logger
@@ -220,6 +221,7 @@ app.include_router(nexus_auth_router)
 app.include_router(nexus_router)
 app.include_router(nexus_history_router)
 app.include_router(nexus_schedules_router)
+app.include_router(nexus_system_router)
 app.include_router(nexus_terminal_router)
 app.include_router(nexus_runs_router)
 
