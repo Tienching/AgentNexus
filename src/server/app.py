@@ -27,6 +27,7 @@ from .routers.nexus_utils import router as nexus_utils_router
 from .routers.nexus_runs import router as nexus_runs_router
 from .routers.nexus_runtimes import router as nexus_runtimes_router
 from .routers.nexus_missions import router as nexus_missions_router
+from .routers.nexus_evolution import router as nexus_evolution_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -158,9 +159,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to initialize terminal manager: {e}")
 
+    # 启动自我进化系统（如果启用）
+    evolution_service = None
+    if settings.evolution_enabled:
+        try:
+            from .services.evolution_service import EvolutionService
+            evolution_service = EvolutionService.create()
+            await evolution_service.start()
+            logger.info("Evolution service started")
+            # Expose to routers via app state
+            app.state.evolution_service = evolution_service
+        except Exception as e:
+            logger.warning(f"Failed to start evolution service: {e}")
+
     yield
 
     # 关闭时
+    # 停止自我进化系统
+    if evolution_service:
+        try:
+            await evolution_service.stop()
+            logger.info("Evolution service stopped")
+        except Exception as e:
+            logger.error(f"Error stopping evolution service: {e}")
+
     # 停止 Terminal Manager
     if terminal_manager:
         try:
@@ -236,6 +258,7 @@ app.include_router(nexus_utils_router)
 app.include_router(nexus_runs_router)
 app.include_router(nexus_runtimes_router)
 app.include_router(nexus_missions_router)
+app.include_router(nexus_evolution_router)
 
 # Mount static files for NexusHub Web UI (with cache-control middleware)
 static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
