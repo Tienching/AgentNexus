@@ -3,6 +3,7 @@
 import pytest
 import json
 import asyncio
+import warnings
 from unittest.mock import patch, AsyncMock
 from httpx import AsyncClient
 
@@ -198,3 +199,23 @@ class TestStreamResponse:
                     assert "RUN_FINISHED" in types
                     error_events = [e for e in events if e.get("type") == "RUN_ERROR"]
                     assert any("超时" in (e.get("message", "")) for e in error_events)
+
+    @pytest.mark.asyncio
+    async def test_agui_request_missing_content_does_not_emit_422_deprecation_warning(self, client: AsyncClient):
+        """测试 AG-UI 缺少内容时不会触发废弃 422 常量警告"""
+        agui_request = {
+            "threadId": "test-thread",
+            "runId": "test-run",
+            "messages": [],
+        }
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            response = await client.post("/chat/stream/testuser", json=agui_request)
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "Missing required field: content (or messages for AG-UI)"
+        assert not any(
+            "HTTP_422_UNPROCESSABLE_ENTITY" in str(warning.message)
+            for warning in caught
+        )
