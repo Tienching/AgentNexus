@@ -62,7 +62,7 @@ def _upgrade_legacy_request(body_dict: dict[str, Any]) -> dict[str, Any]:
     content = str(body_dict.get("content") or "").strip()
     if not content:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Missing required field: content",
         )
 

@@ -2,7 +2,13 @@
 
 import pytest
 import json
+import warnings
 from httpx import AsyncClient
+from pydantic import ValidationError
+from starlette.requests import Request
+
+from src.server.app import validation_exception_handler
+from src.server.models import RequestModel
 
 
 class TestAPIEndpoints:
@@ -75,8 +81,48 @@ class TestAPIEndpoints:
             # 缺少content字段
         }
 
-        response = await client.post("/chat/stream/testuser", json=invalid_request)
-        assert response.status_code == 422  # Unprocessable Entity
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            response = await client.post("/chat/stream/testuser", json=invalid_request)
+
+        assert response.status_code == 422  # Unprocessable Content
+        assert not any(
+            "HTTP_422_UNPROCESSABLE_ENTITY" in str(warning.message)
+            for warning in caught
+        )
+
+    @pytest.mark.asyncio
+    async def test_validation_exception_handler_uses_non_deprecated_422_constant(self):
+        """测试验证异常处理器不会触发废弃常量警告"""
+        try:
+            RequestModel.model_validate({})
+        except ValidationError as exc:
+            validation_error = exc
+        else:
+            pytest.fail("Expected RequestModel.model_validate({}) to raise ValidationError")
+
+        request = Request({
+            "type": "http",
+            "method": "POST",
+            "path": "/chat/stream/testuser",
+            "headers": [],
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("test", 80),
+            "client": ("testclient", 123),
+        })
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            response = await validation_exception_handler(request, validation_error)
+
+        body = json.loads(response.body)
+        assert response.status_code == 422
+        assert body["status_code"] == 422
+        assert not any(
+            "HTTP_422_UNPROCESSABLE_ENTITY" in str(warning.message)
+            for warning in caught
+        )
 
     @pytest.mark.asyncio
     async def test_correlation_id_header(self, client: AsyncClient):

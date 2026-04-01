@@ -524,7 +524,7 @@ class StreamHandler:
         # For AG-UI, content is required but user is not.
         if not request_model.content:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Missing required field: content (or messages for AG-UI)"
             )
         
