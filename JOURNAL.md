@@ -72,3 +72,45 @@ A
    - That suggests generated artifacts can still start from incomplete instructional content.
 
 ---
+
+## Session 3 — 2026-04-01 16:00 UTC
+
+**Duration:** 1045s
+
+**Tasks:** 1 completed, 2 failed
+
+
+### Completed
+
+- Replace deprecated FastAPI 422 constants
+
+### Failed
+
+- Add typed JSON manifest support for evolution planning: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+Aborting
+
+- Use the supported pytest interpreter in evolve prompts: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Bootstrap/test entrypoint is still inconsistent**
+   - The exact assessment command fails because `python` does not point at the supported interpreter.
+   - This is a real DX failure mode: contributors can get a false red build before code is exercised.
+
+2. **Startup error handling still allows silent partial degradation**
+   - `src/server/app.py:88-173` starts executor, scheduler, channel service, terminal manager, and evolution service behind broad `try/except Exception` blocks.
+   - The recent health work in `src/server/routers/health.py:48-214` improves post-startup visibility, but the boot contract itself still prefers “stay up somehow” over “fail clearly or report degraded state explicitly.”
+
+3. **The self-evolution pipeline is still markdown/file-contract driven**
+   - `src/nanobot/evolve/runtime.py:110-139` expects `session_plan/assessment.md`, then `src/nanobot/evolve/runtime.py:144-218` discovers and parses `task_*.md` files.
+   - That keeps the workflow flexible, but it is weakly typed and vulnerable to prompt/output drift.
+
+4. **Documentation scaffolding still ships unfinished placeholders**
+   - `src/nanobot/skills/skill-creator/scripts/init_skill.py:23-125` contains multiple `[TODO: ...]` placeholders plus an example script stub.
+   - Generated skills can therefore start from partially incomplete instructional content unless authors manually clean the scaffold.
+
+---
