@@ -8,6 +8,7 @@ onboard 命令实现
 """
 
 import argparse
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -120,10 +121,30 @@ CORE_CONFIG = [
 
 # Provider 选择
 PROVIDER_CHOICES = {
-    "codebuddy": {"display": "CodeBuddy (默认)", "command": "codebuddy"},
-    "claude": {"display": "Claude CLI", "command": "claude"},
-    "gemini": {"display": "Gemini CLI", "command": "gemini"},
-    "codex": {"display": "Codex CLI", "command": "codex"},
+    "codebuddy": {
+        "display": "CodeBuddy (默认)",
+        "command": "codebuddy",
+        "install_hint": "请先安装 CodeBuddy CLI，并确保 `codebuddy` 已加入 PATH。",
+        "auth_hint": "如果 CLI 需要认证，请先在当前环境完成登录。",
+    },
+    "claude": {
+        "display": "Claude CLI",
+        "command": "claude",
+        "install_hint": "请先安装 Claude CLI，并确保 `claude` 已加入 PATH。",
+        "auth_hint": "安装后运行 `claude login` 完成认证。",
+    },
+    "gemini": {
+        "display": "Gemini CLI",
+        "command": "gemini",
+        "install_hint": "请先安装 Gemini CLI，并确保 `gemini` 已加入 PATH。",
+        "auth_hint": "安装后先完成 Gemini CLI 的登录或 API 配置。",
+    },
+    "codex": {
+        "display": "Codex CLI",
+        "command": "codex",
+        "install_hint": "请先安装 Codex CLI，并确保 `codex` 已加入 PATH。",
+        "auth_hint": "安装后运行 `codex auth` 完成认证。",
+    },
 }
 
 
