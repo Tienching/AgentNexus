@@ -1,12 +1,12 @@
-Title: Complete provider installer execution path
-Files: src/runtime/plugins/installer.py, src/runtime/plugins/cli/commands/install.py, tests/unit/test_plugin_installer.py
+Title: Replace deprecated FastAPI 422 constants
+Files: src/server/routers/chat.py, src/server/app.py, src/server/services/stream_handler.py
 Issue: none
 
-Finish the real provider install path so `PluginInstaller.install_provider()` does more than write config. Add small, testable helpers inside `PluginInstaller` to choose `uv` vs `pip`, run the install command when a provider declares a package, and return a clean success/failure result without leaving partial state behind. Keep built-in providers such as `claude` and `gemini` on the config-only path.
+Replace the deprecated `status.HTTP_422_UNPROCESSABLE_ENTITY` constant with the supported FastAPI/Starlette 422 constant everywhere it is still used. Update `_upgrade_legacy_request()` in `src/server/routers/chat.py`, `validation_exception_handler()` in `src/server/app.py`, and `StreamHandler.handle_agui_request()` in `src/server/services/stream_handler.py` so the server stops emitting deprecation warnings during normal validation flows.
 
-Update `InstallCommand._install_provider()` to surface installer failures clearly and keep the CLI output aligned with the actual install result. Add focused unit coverage in `tests/unit/test_plugin_installer.py` for three cases: built-in provider config generation, packaged provider install with mocked subprocess success, and packaged provider install failure.
-
-Why: the assessment found a real TODO in the installer, which means provider installation is not end-to-end today.
+Why: Day 3 assessment found the warning in active request paths. This is a small, low-risk cleanup that keeps health/error reporting noise-free and aligns the API layer with current FastAPI behavior.
 
 Verify with:
-`python3 -m pytest tests/unit/test_plugin_installer.py -q`
+`python3 -m pytest tests/integration/test_stream.py -q`
+Then run:
+`python3 -m pytest tests/ -x -q --tb=short`

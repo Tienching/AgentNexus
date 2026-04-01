@@ -1,12 +1,10 @@
-Title: Fix Codebuddy timeout cleanup warning
-Files: src/providers/codebuddy/cli_executor.py, tests/unit/test_codebuddy_executor_timeout.py
+Title: Add typed JSON manifest support for evolution planning
+Files: src/nanobot/evolve/runtime.py, tests/evolve/test_engine.py
 Issue: none
 
-Harden the timeout path in `CodebuddyCLIExecutor._execute_internal()` so subprocess cleanup works with both real processes and async mocks. In particular, make the timeout branch safely handle `kill()` implementations that may be sync or awaitable, and ensure the process is fully waited/drained before returning the JSON timeout event.
+Keep the existing markdown task files, but add an optional machine-readable planning manifest at `session_plan/tasks.json`. Extend `EvolutionEngine.run_planning()` in `src/nanobot/evolve/runtime.py` to load the JSON manifest first when present, validate that each task has a title, non-empty files list, and description, and fall back to parsing `task_*.md` files when the manifest is missing. Add focused tests in `tests/evolve/test_engine.py` for valid manifest loading and markdown fallback.
 
-Add a narrow regression test in `tests/unit/test_codebuddy_executor_timeout.py` that drives the timeout branch with async mocks and asserts the generator yields the timeout error without triggering unawaited-coroutine warnings.
-
-Why: the current timeout cleanup produces a runtime warning during the test suite, which weakens trust in provider executor behavior.
+Why: the Day 3 assessment identified the planning boundary as fragile because it depends entirely on markdown parsing. A small typed layer improves reliability without breaking the current workflow or removing the human-readable task files.
 
 Verify with:
-`python3 -m pytest tests/unit/test_codebuddy_executor_timeout.py -q`
+`python3 -m pytest tests/evolve/test_engine.py -q`

@@ -1,12 +1,10 @@
-Title: Add validated evolution task manifest parsing
-Files: src/nanobot/evolve/runtime.py, src/nanobot/evolve/models.py, tests/evolve/test_engine.py
+Title: Use the supported pytest interpreter in evolve prompts
+Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_prompts.py
 Issue: none
 
-Strengthen the planning contract by adding a typed session-plan manifest alongside the existing markdown parsing. Introduce a small dataclass model in `src/nanobot/evolve/models.py` for a parsed task payload, then update `EvolutionEngine.run_planning()` and `EvolutionEngine._parse_task_file()` to validate required fields, reject empty `files` lists, and fail fast when two planned tasks claim the same file path.
+Update the evolve prompt text and implementation command wiring so self-evolution stops telling itself to run bare `python -m pytest` in environments where `python` points to Python 2. Adjust the prompt builders in `src/nanobot/evolve/prompts.py` and the command selection in `src/nanobot/evolve/implementation.py` so they prefer `.venv/bin/python -m pytest` when available and otherwise fall back to `python3 -m pytest`. Extend `tests/evolve/test_prompts.py` to pin the generated command strings.
 
-Keep markdown task files supported so the planner remains backward compatible, but make the parser enforce the same invariants the worktree executor depends on. Extend `tests/evolve/test_engine.py` with regression coverage for valid tasks, invalid task files, and duplicate file ownership across tasks.
-
-Why: the assessment identified the evolution pipeline as too filesystem-driven and weakly typed; adding validation is the smallest high-value step toward a durable planning contract.
+Why: the Day 3 assessment showed a false-red workflow where the project test suite passes under the supported interpreter but the evolve loop still instructs itself to use the wrong entrypoint. Fixing the command contract makes the self-improvement loop trustable again.
 
 Verify with:
-`python3 -m pytest tests/evolve/test_engine.py -q`
+`python3 -m pytest tests/evolve/test_prompts.py -q`
