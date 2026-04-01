@@ -14,11 +14,22 @@ Covers:
 """
 from __future__ import annotations
 
+import io
+import json
+import urllib.error
+
 import pytest
 from unittest.mock import MagicMock, patch
 
 from src.server.models.legacy import HealthCheck, HealthResponse
-from src.server.routers.health import _worst, _check_redis, _check_process_memory, _check_disk_space, _perform_health_check
+from src.server.routers.health import (
+    _build_health_error_response,
+    _check_disk_space,
+    _check_process_memory,
+    _check_redis,
+    _perform_health_check,
+    _worst,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +158,6 @@ class TestCheckRedis:
 class TestCheckProcessMemory:
     def _run_with_rss(self, rss_bytes: int):
         """Run _check_process_memory with a patched RSS value."""
-        import resource
         fake_usage = MagicMock()
         fake_usage.ru_maxrss = rss_bytes  # Linux: kilobytes
 
@@ -266,6 +276,19 @@ class TestPerformHealthCheck:
 
 
 # ---------------------------------------------------------------------------
+# Structured health route error payloads
+# ---------------------------------------------------------------------------
+
+class TestHealthErrorPayload:
+    def test_build_health_error_response_contains_actionable_hint(self):
+        payload = _build_health_error_response(RuntimeError("redis boot failed"))
+
+        assert payload.status == "error"
+        assert payload.checks[0].detail["hint"]
+        assert payload.checks[0].detail["exception_type"] == "RuntimeError"
+
+
+# ---------------------------------------------------------------------------
 # /health route — async integration
 # ---------------------------------------------------------------------------
 
@@ -273,11 +296,19 @@ class TestHealthRoute:
     @pytest.mark.asyncio
     async def test_health_route_returns_health_response(self):
         from src.server.routers.health import health_check
+
         healthy = HealthCheck(name="X", status="healthy", message="OK")
-        with patch("src.server.routers.health._perform_health_check",
-                   return_value=HealthResponse(status="healthy", service="agent-nexus",
-                                               version="0.1.0", checks=[healthy])):
+        with patch(
+            "src.server.routers.health._perform_health_check",
+            return_value=HealthResponse(
+                status="healthy",
+                service="agent-nexus",
+                version="0.1.0",
+                checks=[healthy],
+            ),
+        ):
             result = await health_check()
+
         assert isinstance(result, HealthResponse)
         assert result.status == "healthy"
         assert len(result.checks) == 1
@@ -285,9 +316,119 @@ class TestHealthRoute:
     @pytest.mark.asyncio
     async def test_health_route_degraded_when_redis_down(self):
         from src.server.routers.health import health_check
+
         bad = HealthCheck(name="Redis", status="unhealthy", message="down")
-        with patch("src.server.routers.health._perform_health_check",
-                   return_value=HealthResponse(status="unhealthy", service="agent-nexus",
-                                               version="0.1.0", checks=[bad])):
+        with patch(
+            "src.server.routers.health._perform_health_check",
+            return_value=HealthResponse(
+                status="unhealthy",
+                service="agent-nexus",
+                version="0.1.0",
+                checks=[bad],
+            ),
+        ):
             result = await health_check()
+
         assert result.status == "unhealthy"
+
+    @pytest.mark.asyncio
+    async def test_health_route_returns_structured_error_response(self):
+        from fastapi.responses import JSONResponse
+        from src.server.routers.health import health_check
+
+        with patch(
+            "src.server.routers.health._perform_health_check",
+            side_effect=RuntimeError("redis boot failed"),
+        ):
+            result = await health_check()
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 503
+        payload = json.loads(result.body)
+        assert payload["status"] == "error"
+        assert payload["checks"][0]["detail"]["hint"]
+
+
+class TestHealthCliStatus:
+    def _build_command(self):
+        from src.runtime.plugins.cli.commands.status import StatusCommand
+
+        command = StatusCommand()
+        command.env_manager.load_env = MagicMock(
+            return_value={"API_HOST": "127.0.0.1", "API_PORT": "8081"}
+        )
+        return command
+
+    def test_get_health_status_reads_structured_success_payload(self):
+        command = self._build_command()
+        payload = {
+            "status": "warning",
+            "checks": [{"name": "Redis", "status": "warning", "message": "Redis slow"}],
+        }
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps(payload).encode()
+        response.status = 200
+
+        with patch("urllib.request.urlopen", return_value=response):
+            health = command._get_health_status()
+
+        assert health["status"] == "warning"
+        assert health["checks"][0]["name"] == "Redis"
+        assert health["code"] == 200
+
+    def test_get_health_status_handles_invalid_json(self):
+        command = self._build_command()
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b"not-json"
+        response.status = 200
+
+        with patch("urllib.request.urlopen", return_value=response):
+            health = command._get_health_status()
+
+        assert health["status"] == "error"
+        assert "invalid JSON" in health["error"]
+        assert health["checks"][0]["detail"]["hint"]
+
+    def test_get_health_status_reads_structured_http_error_payload(self):
+        command = self._build_command()
+        body = json.dumps(
+            {
+                "status": "error",
+                "error": "runtime dependencies unavailable",
+                "checks": [
+                    {
+                        "name": "Health Endpoint",
+                        "status": "error",
+                        "message": "runtime dependencies unavailable",
+                        "detail": {"hint": "restart redis"},
+                    }
+                ],
+            }
+        ).encode()
+        error = urllib.error.HTTPError(
+            url="http://127.0.0.1:8081/health",
+            code=503,
+            msg="Service Unavailable",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=error):
+            health = command._get_health_status()
+
+        assert health["status"] == "error"
+        assert health["code"] == 503
+        assert health["checks"][0]["detail"]["hint"] == "restart redis"
+
+    def test_get_health_status_builds_hint_when_endpoint_unreachable(self):
+        command = self._build_command()
+        unreachable = urllib.error.URLError("connection refused")
+
+        with patch("urllib.request.urlopen", side_effect=unreachable):
+            health = command._get_health_status()
+
+        assert health["status"] == "unhealthy"
+        assert "connection refused" in health["error"]
+        assert health["checks"][0]["detail"]["hint"]

@@ -8,9 +8,8 @@ status 命令实现
 import argparse
 import json
 import time
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from . import BaseCommand
 from ..utils import ProcessManager, EnvManager, Printer
@@ -176,35 +175,144 @@ class StatusCommand(BaseCommand):
         env_vars = self.env_manager.load_env()
         host = env_vars.get("API_HOST", "127.0.0.1")
         port = env_vars.get("API_PORT", "8081")
-        
-        # 如果 host 是 0.0.0.0，使用 localhost 检查
+
         if host == "0.0.0.0":
             host = "127.0.0.1"
-        
+
         url = f"http://{host}:{port}/health"
-        
+
         try:
-            import urllib.request
             import urllib.error
-            
+            import urllib.request
+
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=3) as resp:
-                return {
-                    "status": "healthy",
-                    "code": resp.status,
-                    "url": url,
-                }
-        except urllib.error.URLError as e:
+                raw_body = resp.read().decode("utf-8", errors="replace")
+                if not raw_body:
+                    return {
+                        "status": "error",
+                        "error": f"Health endpoint returned HTTP {resp.status} without a response body.",
+                        "url": url,
+                        "code": resp.status,
+                        "checks": [
+                            {
+                                "name": "Health Endpoint",
+                                "status": "error",
+                                "message": f"Health endpoint returned HTTP {resp.status} without a response body.",
+                                "detail": {
+                                    "hint": "Inspect the server logs and verify the health endpoint still returns structured JSON.",
+                                },
+                            }
+                        ],
+                    }
+
+                try:
+                    payload = json.loads(raw_body)
+                except json.JSONDecodeError:
+                    return {
+                        "status": "error",
+                        "error": f"Health endpoint returned invalid JSON (HTTP {resp.status}).",
+                        "url": url,
+                        "code": resp.status,
+                        "checks": [
+                            {
+                                "name": "Health Endpoint",
+                                "status": "error",
+                                "message": f"Health endpoint returned invalid JSON (HTTP {resp.status}).",
+                                "detail": {
+                                    "hint": "Inspect the server logs and verify the health endpoint still returns structured JSON.",
+                                },
+                            }
+                        ],
+                    }
+
+                if not isinstance(payload, dict):
+                    return {
+                        "status": "error",
+                        "error": f"Health endpoint returned an unexpected payload type: {type(payload).__name__}.",
+                        "url": url,
+                        "code": resp.status,
+                        "checks": [
+                            {
+                                "name": "Health Endpoint",
+                                "status": "error",
+                                "message": f"Health endpoint returned an unexpected payload type: {type(payload).__name__}.",
+                                "detail": {
+                                    "hint": "Inspect the server logs and verify the health endpoint still returns structured JSON.",
+                                },
+                            }
+                        ],
+                    }
+
+                payload["url"] = url
+                payload["code"] = resp.status
+                payload.setdefault("checks", [])
+                payload.setdefault("status", "healthy")
+                return payload
+        except urllib.error.HTTPError as exc:
+            raw_body = exc.read().decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(raw_body) if raw_body else {}
+            except json.JSONDecodeError:
+                payload = {}
+
+            if not isinstance(payload, dict):
+                payload = {}
+
+            status = "error" if exc.code >= 500 else "unhealthy"
+            payload["url"] = url
+            payload["code"] = exc.code
+            payload["status"] = payload.get("status") or status
+            if payload["status"] == "healthy":
+                payload["status"] = status
+            payload.setdefault("error", f"Health endpoint returned HTTP {exc.code}.")
+            payload.setdefault(
+                "checks",
+                [
+                    {
+                        "name": "Health Endpoint",
+                        "status": status,
+                        "message": payload["error"],
+                        "detail": {
+                            "hint": "Inspect the server logs and verify runtime dependencies before retrying.",
+                        },
+                    }
+                ],
+            )
+            return payload
+        except urllib.error.URLError as exc:
+            message = f"Unable to reach health endpoint: {exc.reason}"
             return {
                 "status": "unhealthy",
-                "error": str(e.reason),
+                "error": message,
                 "url": url,
+                "checks": [
+                    {
+                        "name": "Health Endpoint",
+                        "status": "unhealthy",
+                        "message": message,
+                        "detail": {
+                            "hint": "Ensure the API server is running and that API_HOST/API_PORT point to a reachable instance.",
+                        },
+                    }
+                ],
             }
-        except Exception as e:
+        except Exception as exc:
+            message = f"Health check request failed: {exc}"
             return {
-                "status": "unhealthy",
-                "error": str(e),
+                "status": "error",
+                "error": message,
                 "url": url,
+                "checks": [
+                    {
+                        "name": "Health Endpoint",
+                        "status": "error",
+                        "message": message,
+                        "detail": {
+                            "hint": "Inspect the local CLI environment and server logs for request failures.",
+                        },
+                    }
+                ],
             }
     
     def _show_service_status(self) -> None:
@@ -265,10 +373,35 @@ class StatusCommand(BaseCommand):
         self.printer.info("正在检查服务健康状态...")
         
         health = self._get_health_status()
-        
-        if health["status"] == "healthy":
-            self.printer.success(f"服务健康 (HTTP {health['code']})")
+        overall_status = health.get("status", "unknown")
+        checks = health.get("checks") or []
+        code = health.get("code")
+
+        summary = f"服务健康 ({overall_status}"
+        if code is not None:
+            summary += f", HTTP {code}"
+        summary += ")"
+
+        if overall_status == "healthy":
+            self.printer.success(summary)
+        elif overall_status in {"warning", "degraded"}:
+            self.printer.warning(summary)
         else:
-            self.printer.error(f"服务不健康: {health.get('error', '未知错误')}")
-        
+            self.printer.error(summary)
+
         self.printer.key_value("检查地址", health["url"])
+
+        if health.get("error"):
+            self.printer.key_value("错误摘要", health["error"])
+
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            name = check.get("name", "Unknown")
+            status = check.get("status", "unknown")
+            message = check.get("message") or "无详细信息"
+            detail = check.get("detail")
+
+            self.printer.key_value(f"检查项 {name}", f"[{status}] {message}")
+            if isinstance(detail, dict) and detail.get("hint"):
+                self.printer.key_value("建议", detail["hint"], indent=1)
