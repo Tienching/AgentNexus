@@ -1,30 +1,12 @@
-Title: Migrate legacy.py Pydantic config to ConfigDict
-Files: src/server/models/legacy.py
+Title: Add validated evolution task manifest parsing
+Files: src/nanobot/evolve/runtime.py, src/nanobot/evolve/models.py, tests/evolve/test_engine.py
 Issue: none
 
-src/server/models/legacy.py:8 uses the Pydantic V1-style class-based Config inner class, which is
-deprecated in Pydantic V2 and will raise an error on Pydantic V3. The deprecation warning appears
-on every test run, polluting output.
+Strengthen the planning contract by adding a typed session-plan manifest alongside the existing markdown parsing. Introduce a small dataclass model in `src/nanobot/evolve/models.py` for a parsed task payload, then update `EvolutionEngine.run_planning()` and `EvolutionEngine._parse_task_file()` to validate required fields, reject empty `files` lists, and fail fast when two planned tasks claim the same file path.
 
-Fix: replace the inner class Config pattern with model_config = ConfigDict(...).
+Keep markdown task files supported so the planner remains backward compatible, but make the parser enforce the same invariants the worktree executor depends on. Extend `tests/evolve/test_engine.py` with regression coverage for valid tasks, invalid task files, and duplicate file ownership across tasks.
 
-Before:
-  class SomeModel(BaseModel):
-      class Config:
-          orm_mode = True   # or other settings
+Why: the assessment identified the evolution pipeline as too filesystem-driven and weakly typed; adding validation is the smallest high-value step toward a durable planning contract.
 
-After:
-  from pydantic import BaseModel, ConfigDict
-
-  class SomeModel(BaseModel):
-      model_config = ConfigDict(from_attributes=True)  # orm_mode renamed to from_attributes in V2
-
-Read the file first to confirm the exact config keys used, then apply the minimal migration.
-Zero behavior change — this is a forward-compatibility fix only.
-
-Verify:
-  python -m pytest tests/ -x -q 2>&1 | grep -c "PydanticDeprecatedSince20"
-  # Should output 0 (warning eliminated)
-
-Also confirm no new test failures:
-  python -m pytest tests/ -x -q
+Verify with:
+`python3 -m pytest tests/evolve/test_engine.py -q`

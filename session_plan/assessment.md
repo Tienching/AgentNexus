@@ -1,74 +1,96 @@
 # Assessment — Day 2
 
 ## Build/Test Status
-
-**2 FAILED, 1629 passed** — test suite runs in 38.59s on Python 3.14.0.
-
-Failing tests:
-- `tests/unit/test_nexus_admin.py::TestAuditLog::test_record_and_query`
-- `tests/unit/test_nexus_admin.py::TestAuditLog::test_diagnostics_creates_audit_event`
-
-Root cause: Both `record_audit_event()` and `get_audit_log()` in `src/server/routers/nexus_admin.py` hard-depend on Redis (localhost:6379). When Redis is unavailable, `record_audit_event` silently swallows the error (line 91-92), and `get_audit_log` returns `total=0` (line 143-145). Tests record an event then query for it — the event was never stored, so `total` is always 0 in a Redis-free test environment.
-
-Warnings:
-- `src/server/models/legacy.py:8` — Pydantic V2 class-based `config` deprecation (will break on Pydantic V3)
-- `src/server/routers/chat.py:199` — `HTTP_422_UNPROCESSABLE_ENTITY` deprecated in favor of `HTTP_422_UNPROCESSABLE_CONTENT`
-- `src/providers/codebuddy/cli_executor.py:124` — unawaited coroutine `process.kill()` in mock (test-only, RuntimeWarning)
+- **Requested command status:** `python -m pytest tests/ -x -q --tb=short` fails immediately in this environment because `python` resolves to Python 2.7.18 and has no `pytest` installed.
+- **Actual project test status:** running the suite with `python3` succeeds: **1638 passed, 2 warnings in 55.06s**.
+- **Interpreter/tooling state:** `python3` is 3.10.12, while `pyproject.toml` targets **py311** (`pyproject.toml:81`). This repo currently works on 3.10 for the tested paths, but the tooling entrypoint is inconsistent.
+- **Pytest config note:** pytest reports `pytest.ini` is taking precedence and the config in `pyproject.toml` is being ignored.
 
 ## Recent Changes (last 3 commits)
+- `198be39` Merge feature-evolve: 3-tier merge conflict resolution
+- `fec5d80` feat(evolve): 3-tier merge conflict resolution
+- `9dcebb5` Day 2: Migrate legacy.py Pydantic config to ConfigDict [worktree]
 
-1. `3a66fc2` — Merge feature-evolve: rename NANOBOT_EVOLUTION__* → EVOLUTION_*
-2. `8ecf1c6` — refactor(evolve): rename env vars NANOBOT_EVOLUTION__* → EVOLUTION_*
-3. `0db53e2` — Merge feature-evolve: parallel worktree evolution + hourly cron
-
-Day 1 work: `asyncio.timeout` Python 3.10 compatibility fix in channel_service.py, plus evolution system wiring (parallel worktree execution, hourly cron, env var cleanup).
+Recent journal context:
+- Day 1 fixed Python 3.10 compatibility in channel processing and identified Redis fallback, installer completeness, and evolve/testability as gaps.
+- Recent Day 2 commits also added Redis audit-log fallback and continued compatibility cleanup.
 
 ## Codebase Size
+- **Python source size:** **68,641 lines** under `src/`
+- **Python modules:** **268**
+- **Top-level module distribution:**
+  - `src/channels/`: 16 modules
+  - `src/nanobot/`: 70 modules
+  - `src/providers/`: 35 modules
+  - `src/runtime/`: 77 modules
+  - `src/server/`: 70 modules
+- **Key subsystem counts requested for review:**
+  - `src/nanobot/mission/`: 11 modules
+  - `src/nanobot/cron/`: 3 modules
+  - `src/nanobot/agent/`: 17 modules
+  - `src/runtime/`: 77 modules
+- **Test tree:** 72 Python test files; full pytest collection reports **1638 tests**.
 
-- **265 Python files**, **68,463 total lines**
-- Modules: `src/channels/` (15 files), `src/providers/` (20 files), `src/runtime/` (50+ files), `src/server/` (40+ files), `src/nanobot/` (remainder)
+Key entry points:
+- FastAPI app and lifecycle orchestration: `src/server/app.py:65`
+- Mission API/service: `src/nanobot/mission/service.py:24`
+- Mission planning: `src/nanobot/mission/planner.py:115`
+- Mission DAG runner: `src/nanobot/mission/runner.py:22`
+- Cron scheduling service: `src/nanobot/cron/service.py:63`
+- Core agent loop: `src/nanobot/agent/loop.py:39`
+- Runtime task scheduler: `src/runtime/execution/scheduler.py:49`
+- Self-evolution runtime: `src/nanobot/evolve/runtime.py:49`
 
 ## Self-Test Results
-
-1629/1631 tests pass. The 2 failures are both in the same class (`TestAuditLog`) and share one root cause: audit log has no in-memory fallback when Redis is unavailable.
-
-Other test areas are healthy: evolve engine (55 tests), integration API (70 tests), channel tests (79 tests), unit tests (850+ tests) all pass.
+- The codebase is structurally broad and reasonably well covered across:
+  - evolve (`tests/evolve/`)
+  - integration API/routing (`tests/integration/`)
+  - provider bridges (`tests/providers/nanobot/`)
+  - runtime/server/unit behavior (`tests/unit/`)
+- Full `python3 -m pytest tests/ -q --tb=short` result: **1638 passed**.
+- Warnings discovered during the run:
+  1. Deprecated FastAPI status constant in `src/server/routers/chat.py:199` (`HTTP_422_UNPROCESSABLE_ENTITY`).
+  2. Runtime warning from mocked async process cleanup in `src/providers/codebuddy/cli_executor.py:124` (`coroutine ... was never awaited`).
+- The requested `python -m pytest ...` command is not reliable here because `python` points to Python 2.7.18, not the active project interpreter.
 
 ## Capability Gaps
+1. **Tooling/bootstrap inconsistency**
+   - The repo’s test command depends on which Python alias is used. In this environment, `python` is Python 2.7.18, `python3` is 3.10.12, and the project metadata targets 3.11.
+   - This is a real DX/stability gap: contributors can get a false red build before touching code.
 
-1. **Audit log: no in-memory fallback** — `record_audit_event` and `get_audit_log` fail silently without Redis. In production this means audit events are silently dropped whenever Redis is down or not configured. This is a data-loss bug, not just a test failure.
+2. **Startup error handling is tolerant but hides partial degradation**
+   - `src/server/app.py:88` through `src/server/app.py:173` starts executor, scheduler, channel service, terminal manager, and evolution service behind broad `try/except Exception` blocks.
+   - That keeps the API up, but it also allows the system to boot in a degraded state without failing fast or surfacing a strong contract to operators.
 
-2. **Installer stub** — `src/runtime/plugins/installer.py:136` has `# TODO: 实际调用 pip/uv 安装`. Skill package installation is completely unimplemented — provider install silently skips the actual package install step.
+3. **Evolution planning/output contract is filesystem-driven and weakly typed**
+   - `src/nanobot/evolve/runtime.py:110` writes/reads `session_plan/assessment.md` and later parses `task_*.md` files from disk (`src/nanobot/evolve/runtime.py:162`, `src/nanobot/evolve/runtime.py:188`).
+   - This makes the self-improvement pipeline flexible, but fragile: correctness depends on markdown/file naming conventions rather than a durable schema.
 
-3. **Pydantic V2 legacy model** — `src/server/models/legacy.py` uses deprecated class-based config. Will break on Pydantic V3 upgrade.
+4. **Provider/plugin installation flow is incomplete**
+   - `src/runtime/plugins/installer.py:136` still contains a real TODO for actually invoking `pip/uv`.
+   - The config scaffolding exists, but the install path is not end-to-end.
 
-4. **`process.kill()` not awaited** — `src/providers/codebuddy/cli_executor.py:124` calls `process.kill()` without `await` on an async subprocess. This is a real bug (not just test noise) — the kill never executes in async context.
-
-5. **Evolution engine is prompt-driven with no dry-run mode** — the evolve engine (`src/nanobot/evolve/engine.py`) relies entirely on prompt templates. No dry-run or simulation mode exists for testing evolution runs without actually invoking a subprocess.
+5. **Documentation/onboarding quality is uneven**
+   - The repo has substantial docs and journal history, but the skill creator template still ships unresolved placeholders in `src/nanobot/skills/skill-creator/scripts/init_skill.py:25` and related lines.
+   - That suggests generated artifacts can still start from incomplete instructional content.
 
 ## Known Issues
-
-| File | Issue |
-|------|-------|
-| `src/server/routers/nexus_admin.py:63-92` | `record_audit_event` silently drops events when Redis unavailable |
-| `src/server/routers/nexus_admin.py:110-145` | `get_audit_log` returns empty on Redis failure — no in-memory fallback |
-| `src/runtime/plugins/installer.py:136` | Provider package install is a no-op stub |
-| `src/server/models/legacy.py:8` | Pydantic V2 deprecation warning → future V3 break |
-| `src/providers/codebuddy/cli_executor.py:124` | `process.kill()` missing `await` |
+- **Real TODO:** provider installer does not actually install dependencies yet (`src/runtime/plugins/installer.py:136`).
+- **Template TODOs:** skill creator template contains unresolved placeholders by design, but they are still visible in shipped source (`src/nanobot/skills/skill-creator/scripts/init_skill.py:25`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:32`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:62`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:124`).
+- **Warning-level code issues from tests:**
+  - deprecated FastAPI constant in `src/server/routers/chat.py:199`
+  - async cleanup warning in `src/providers/codebuddy/cli_executor.py:124`
+- **Search note:** raw TODO/FIXME/HACK scans also hit many false positives because `TaskStatus.TODO` appears frequently in runtime code; the actionable TODO set is small.
 
 ## Recommended Focus
+1. **Standardize the Python/test entrypoint**
+   - Make the repo consistently use the supported interpreter (`python3`, `uv run`, or equivalent) and align that with documented commands and CI.
+   - Why: it removes false failures and makes the “tests must pass” rule trustworthy.
 
-**Priority 1 (fixes failing tests + real bug): Add in-memory fallback to audit log**
-- `record_audit_event` and `get_audit_log` should use a module-level in-memory deque when Redis is unavailable.
-- This fixes both failing tests and prevents silent data loss in production.
-- Surgical change — ~30 lines in `src/server/routers/nexus_admin.py`.
+2. **Harden evolution I/O contracts**
+   - Keep the markdown artifacts, but add a typed/validated machine-readable layer for assessment and task plans around `src/nanobot/evolve/runtime.py:110` and `src/nanobot/evolve/runtime.py:188`.
+   - Why: self-evolution is mission-critical, and brittle file contracts will become the first scaling bottleneck.
 
-**Priority 2 (real async bug): Fix `process.kill()` missing `await`**
-- `src/providers/codebuddy/cli_executor.py:124` — subprocess kill never fires in async context.
-- Risk: leaked processes when tasks are cancelled or timed out.
-- Small fix, high correctness value.
-
-**Priority 3 (future-proofing): Migrate legacy.py to Pydantic ConfigDict**
-- One-line fix for `src/server/models/legacy.py:8`.
-- Eliminates deprecation warning and prevents V3 breakage.
-- Zero risk, zero behavior change.
+3. **Finish the installer and clean test warnings**
+   - Complete `src/runtime/plugins/installer.py:136`, replace the deprecated FastAPI constant in `src/server/routers/chat.py:199`, and fix the async cleanup warning in `src/providers/codebuddy/cli_executor.py:124`.
+   - Why: these are narrow, high-signal improvements that directly strengthen developer experience and runtime correctness.

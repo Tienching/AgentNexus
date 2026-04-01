@@ -1,25 +1,12 @@
-Title: Fix missing await on process.kill() in cli_executor.py
-Files: src/providers/codebuddy/cli_executor.py
+Title: Fix Codebuddy timeout cleanup warning
+Files: src/providers/codebuddy/cli_executor.py, tests/unit/test_codebuddy_executor_timeout.py
 Issue: none
 
-src/providers/codebuddy/cli_executor.py:124 calls process.kill() without await on an asyncio subprocess.
-asyncio.subprocess.Process.kill() is a synchronous method (it sends SIGKILL), but the surrounding code
-is async and the missing await causes a RuntimeWarning in tests. More importantly, in async context the
-kill may not be properly sequenced with subsequent cleanup (e.g., process.wait()), risking leaked
-subprocess handles when tasks are cancelled or timed out.
+Harden the timeout path in `CodebuddyCLIExecutor._execute_internal()` so subprocess cleanup works with both real processes and async mocks. In particular, make the timeout branch safely handle `kill()` implementations that may be sync or awaitable, and ensure the process is fully waited/drained before returning the JSON timeout event.
 
-Fix: inspect line 124 and surrounding context. If process.kill() is followed by process.wait() or
-communicate(), ensure the kill call is correct for asyncio.subprocess (kill() is sync, but
-process.wait() must be awaited). The likely fix is:
-  - If it reads `process.kill()` followed by `await process.wait()`, the kill() itself is fine
-    (it's sync), but verify the test mock is not an async mock that returns a coroutine.
-  - If the RuntimeWarning comes from a test mock patching kill() with an async function, fix the
-    mock to use a sync MagicMock instead of AsyncMock.
-  - If the source itself has `await process.kill()` where kill() is sync, remove the await.
+Add a narrow regression test in `tests/unit/test_codebuddy_executor_timeout.py` that drives the timeout branch with async mocks and asserts the generator yields the timeout error without triggering unawaited-coroutine warnings.
 
-Verify by reading the file first, then applying the minimal correct fix.
+Why: the current timeout cleanup produces a runtime warning during the test suite, which weakens trust in provider executor behavior.
 
-Verify:
-  python -m pytest tests/ -x -q -k "cli_executor"
-
-No RuntimeWarning about unawaited coroutine. Full suite should remain green.
+Verify with:
+`python3 -m pytest tests/unit/test_codebuddy_executor_timeout.py -q`
