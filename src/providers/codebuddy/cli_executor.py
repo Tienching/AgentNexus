@@ -10,6 +10,7 @@ server layers.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -111,6 +112,8 @@ class CodebuddyCLIExecutor(BaseExecutor):
         cmd = self._build_command(context)
         final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
 
+        process: Optional[asyncio.subprocess.Process] = None
+
         try:
             process = await self.run_subprocess(final_cmd)
 
@@ -120,10 +123,8 @@ class CodebuddyCLIExecutor(BaseExecutor):
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
 
         except asyncio.TimeoutError:
-            try:
-                process.kill()
-            except Exception:
-                pass
+            if process is not None:
+                await self._cleanup_timed_out_process(process)
             yield json.dumps({"type": "error", "message": "处理超时，请重试"})
 
         except Exception as e:
@@ -132,6 +133,28 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
         finally:
             _ = start_time  # keep parity hook for future metrics
+
+    async def _cleanup_timed_out_process(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        """Best-effort timeout cleanup for real processes and async mocks."""
+        try:
+            kill_result = process.kill()
+            if inspect.isawaitable(kill_result):
+                await kill_result
+        except Exception:
+            pass
+
+        try:
+            await asyncio.wait_for(process.wait(), timeout=1.0)
+        except Exception:
+            pass
+
+        try:
+            await self.drain_stderr(process)
+        except Exception:
+            pass
 
     def _build_command(self, context: RequestContext) -> List[str]:
         """Build Codebuddy CLI command."""
