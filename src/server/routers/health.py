@@ -23,13 +23,15 @@ import time
 from typing import List
 
 from fastapi import APIRouter
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..models import HealthCheck, HealthResponse, MetricsResponse
 from ..config import settings
+from ..logger import get_logger
 from ..services.redis_client import get_redis_client
 
 router = APIRouter(tags=["health"])
+logger = get_logger(__name__)
 
 # ─── status ordering (higher index = worse) ─────────────────────────────────
 _STATUS_ORDER = ["healthy", "degraded", "warning", "unhealthy", "error", "critical"]
@@ -60,7 +62,10 @@ def _check_redis() -> HealthCheck:
                 name="Redis",
                 status="warning",
                 message=f"Redis slow ({elapsed_ms:.0f} ms)",
-                detail={"latency_ms": round(elapsed_ms, 1)},
+                detail={
+                    "latency_ms": round(elapsed_ms, 1),
+                    "hint": "Inspect Redis latency and network saturation if this warning persists.",
+                },
             )
         return HealthCheck(
             name="Redis",
@@ -73,6 +78,11 @@ def _check_redis() -> HealthCheck:
             name="Redis",
             status="unhealthy",
             message=f"Redis connectivity failed: {exc}",
+            detail={
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "hint": "Confirm Redis is running and that REDIS_HOST, REDIS_PORT, and REDIS_PASSWORD match the reachable instance.",
+            },
         )
 
 
@@ -103,13 +113,26 @@ def _check_process_memory() -> HealthCheck:
             name="Process Memory",
             status=status,
             message=f"RSS: {rss_mb:.0f} MB",
-            detail={"rss_bytes": rss_bytes, "rss_mb": round(rss_mb, 1)},
+            detail={
+                "rss_bytes": rss_bytes,
+                "rss_mb": round(rss_mb, 1),
+                **(
+                    {"hint": "Inspect recent workload spikes or increase the runtime memory budget if this remains elevated."}
+                    if status != "healthy"
+                    else {}
+                ),
+            },
         )
     except Exception as exc:
         return HealthCheck(
             name="Process Memory",
             status="error",
             message=f"Failed to check process memory: {exc}",
+            detail={
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "hint": "Inspect runtime permissions and process metrics collection on this host.",
+            },
         )
 
 
@@ -143,13 +166,25 @@ def _check_disk_space() -> HealthCheck:
             name="Disk Space",
             status=status,
             message=f"Disk usage: {usage_pct}%",
-            detail={"usage_percent": usage_pct},
+            detail={
+                "usage_percent": usage_pct,
+                **(
+                    {"hint": "Free disk space on the host before the service runs out of writable capacity."}
+                    if status != "healthy"
+                    else {}
+                ),
+            },
         )
     except Exception as exc:
         return HealthCheck(
             name="Disk Space",
             status="error",
             message=f"Failed to check disk space: {exc}",
+            detail={
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "hint": "Verify that the host can execute `df` and that the service user can inspect filesystem usage.",
+            },
         )
 
 
@@ -179,6 +214,29 @@ def _perform_health_check() -> HealthResponse:
     )
 
 
+def _build_health_error_response(exc: Exception) -> HealthResponse:
+    """Return a structured health payload even when the route itself fails."""
+    message = str(exc).strip() or type(exc).__name__
+    return HealthResponse(
+        status="error",
+        service="agent-nexus",
+        version="0.1.0",
+        uptime_seconds=round(time.monotonic() - _START_TIME, 1),
+        checks=[
+            HealthCheck(
+                name="Health Endpoint",
+                status="error",
+                message=f"Health check failed before completion: {message}",
+                detail={
+                    "error": message,
+                    "exception_type": type(exc).__name__,
+                    "hint": "Inspect server logs and verify runtime dependencies such as Redis connectivity before retrying.",
+                },
+            )
+        ],
+    )
+
+
 # ─── routes ──────────────────────────────────────────────────────────────────
 
 @router.get("/health", response_model=HealthResponse)
@@ -189,7 +247,12 @@ async def health_check():
     `checks` array with per-subsystem results.  Ported from mission-control
     performHealthCheck (commits 4eda03a / afa8e9d).
     """
-    return _perform_health_check()
+    try:
+        return _perform_health_check()
+    except Exception as exc:
+        logger.error("Health endpoint failed before completion", exc_info=True)
+        payload = _build_health_error_response(exc)
+        return JSONResponse(status_code=503, content=payload.model_dump())
 
 
 @router.get("/metrics", response_model=MetricsResponse)
