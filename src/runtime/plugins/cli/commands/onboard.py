@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 from . import BaseCommand
 from ..utils import EnvManager, Printer
@@ -190,6 +190,7 @@ class OnboardCommand(BaseCommand):
         self.printer.section("Step 1/6 · 环境检查")
         self._ensure_directories()
         self._ensure_env_file(reset=reset)
+        self._print_environment_checklist()
 
         # ── Step 1: 核心服务配置 ──
         self.printer.section("Step 2/6 · 核心服务配置")
@@ -273,6 +274,15 @@ class OnboardCommand(BaseCommand):
                 self.env_manager.env_file.touch()
                 self.printer.warning(".env.example 不存在，已创建空 .env 文件")
 
+    def _print_environment_checklist(self) -> None:
+        """显示首次启动前需要确认的依赖和恢复提示"""
+        self.printer.print("继续之前，请确认以下项目：")
+        self.printer.list_item("Redis 已启动，或 `.env` 中的 REDIS_HOST / REDIS_PORT 已指向可用实例")
+        self.printer.list_item("默认 Provider CLI 已安装，并且对应命令可在当前 shell 中直接运行")
+        self.printer.list_item("EXEC_USER 是真实存在的 Linux 用户，并且该用户拥有 Provider CLI 的登录态")
+        self.printer.list_item("如需完全重置当前配置，可稍后重新运行 `anexus onboard --reset`")
+        self.printer.print()
+
     # ─── Step 1: 核心服务配置 ──────────────────────────────────────────
 
     def _configure_core(self) -> None:
@@ -306,11 +316,28 @@ class OnboardCommand(BaseCommand):
 
         idx, _ = self.printer.select("选择默认 AI Provider:", provider_displays, default=default_idx)
         chosen_provider = provider_names[idx]
-        chosen_command = PROVIDER_CHOICES[chosen_provider]["command"]
+        provider_meta = PROVIDER_CHOICES[chosen_provider]
+        chosen_command = provider_meta["command"]
 
         self.env_manager.set_value("DEFAULT_PROVIDER", chosen_provider)
         self.env_manager.set_value("CLI_COMMAND", chosen_command)
         self.printer.success(f"已设置默认 Provider: {chosen_provider}")
+        self._show_provider_guidance(chosen_provider, chosen_command)
+
+    def _show_provider_guidance(self, provider_name: str, command: str) -> None:
+        """显示 Provider 安装、认证和排错提示"""
+        provider_meta = PROVIDER_CHOICES[provider_name]
+        command_path = shutil.which(command)
+
+        if command_path:
+            self.printer.list_item(f"已检测到 `{command}`: {command_path}")
+        else:
+            self.printer.warning(f"未在 PATH 中找到 `{command}`，启动后任务执行可能失败")
+            self.printer.list_item(provider_meta["install_hint"])
+            self.printer.list_item("安装完成后可重新运行 `anexus onboard --reset` 或 `anexus config wizard --section providers`")
+
+        self.printer.list_item(provider_meta["auth_hint"])
+        self.printer.list_item("服务启动后运行 `anexus status --health` 验证 API 与 Redis 状态")
 
     # ─── Step 3: Channel 选择与配置 ────────────────────────────────────
 
@@ -340,6 +367,7 @@ class OnboardCommand(BaseCommand):
 
         if not selected_channels:
             self.printer.warning("未选择任何 Channel，稍后可通过 'anexus config wizard --section channels' 配置")
+            self.printer.list_item("如果运行期出现导入错误，可使用 `anexus install channel <name>` 补装依赖")
             return []
 
         selected_names = [channel_names[i] for i in selected_channels]
@@ -420,6 +448,9 @@ class OnboardCommand(BaseCommand):
                 self.env_manager.set_value(key, new_val)
             elif required and not current:
                 self.printer.warning(f"⚠️  {key} 是必填项，Channel 可能无法启动")
+                self.printer.list_item("稍后可运行 `anexus config wizard --section channels` 补全此项")
+                if ch.get("extra"):
+                    self.printer.list_item(f"如果尚未安装依赖，请运行 `anexus install channel {ch['extra']}`")
 
         # 可选项
         if ch.get("optional_keys"):
@@ -516,6 +547,7 @@ class OnboardCommand(BaseCommand):
             self.printer.info("跳过安装。稍后可运行:")
             for extra in extras:
                 self.printer.list_item(f"anexus install channel {extra}")
+            self.printer.list_item("安装完成后运行 `anexus status --health`，确认服务依赖正常")
             return
 
         pkg_mgr = self._detect_package_manager()
@@ -538,8 +570,10 @@ class OnboardCommand(BaseCommand):
                         err_lines = result.stderr.strip().splitlines()[-5:]
                         for line in err_lines:
                             self.printer.print(f"  {line}", color="red")
+                    self.printer.list_item("可修复依赖后重试 `anexus install channel {}`".format(extra))
             except FileNotFoundError:
                 self.printer.error(f"命令未找到: {cmd[0]}")
+                self.printer.list_item("先安装 `uv`，或使用当前 Python 环境直接运行 pip 安装")
 
     # ─── Step 5: 启动服务 ──────────────────────────────────────────────
 
@@ -547,6 +581,7 @@ class OnboardCommand(BaseCommand):
         """询问是否启动服务"""
         if not self.printer.confirm("是否立即启动 Agent Nexus 服务？", default=True):
             self.printer.info("跳过启动。稍后可运行 'anexus start' 启动服务")
+            self.printer.list_item("启动前建议运行 `anexus status --health` 或确认 Redis / Provider CLI 已就绪")
             return False
 
         _, mode = self.printer.select("选择启动方式:", ["前台运行 (推荐调试用)", "后台运行 (daemon)"], default=0)
@@ -627,9 +662,10 @@ class OnboardCommand(BaseCommand):
         if not started:
             self.printer.print(self.printer._colorize("下一步操作:", "bold"))
             self.printer.list_item("运行 'anexus start' 启动服务")
-            self.printer.list_item("运行 'anexus status' 查看服务和 Channel 状态")
+            self.printer.list_item("运行 'anexus status --health' 检查服务、Redis 与 API 是否正常")
             self.printer.list_item("运行 'anexus config show' 查看完整配置")
             self.printer.list_item("运行 'anexus config wizard --section channels' 修改 Channel 配置")
+            self.printer.list_item("如果配置混乱，可重新运行 'anexus onboard --reset'")
             self.printer.print()
 
     # ─── 工具方法 ──────────────────────────────────────────────────────
