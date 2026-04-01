@@ -104,17 +104,18 @@ class InstallCommand(BaseCommand):
             from ...installer import PluginInstaller
             
             installer = PluginInstaller()
-            success = installer.install_provider(name)
-            
-            if success:
-                self.printer.success(f"Provider '{name}' 安装成功！")
-                config_path = installer.get_config_path("provider", name)
-                self.printer.print(f"\n配置文件: {config_path}")
+            result = installer.install_provider(name)
+
+            if result.success:
+                self.printer.success(result.message)
+                if result.config_path:
+                    self.printer.print(f"\n配置文件: {result.config_path}")
                 return 0
-            else:
-                self.printer.error(f"Provider '{name}' 不存在或安装失败")
+
+            self.printer.error(result.message)
+            if name not in installer.list_available_providers():
                 self.printer.print(f"可用 Providers: {', '.join(installer.list_available_providers())}")
-                return 1
+            return 1
                 
         except ImportError:
             self.printer.error("无法加载 PluginInstaller")
