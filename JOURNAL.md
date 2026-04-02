@@ -164,3 +164,43 @@ A
    - The platform has a sizeable API surface, but no clear in-code versioning boundary or compatibility contract.
 
 ---
+
+## Session 5 — 2026-04-02 08:00 UTC
+
+**Duration:** 17s
+
+**Tasks:** 0 completed, 3 failed
+
+
+### Failed
+
+- Align evolve pytest commands with the supported interpreter: No commits produced
+- Emit a typed manifest for planned evolution tasks: No commits produced
+- Surface cron store corruption as degraded service state: No commits produced
+
+### Gaps Identified
+1. **Self-evolution still uses the wrong test command**
+   - The system that evaluates and improves the repo is wired to `python -m pytest`, not the interpreter that actually works here (`src/nanobot/evolve/prompts.py:20`, `src/nanobot/evolve/implementation.py:409`).
+   - This directly undermines autonomous reliability: the platform can misclassify a healthy codebase as failing.
+
+2. **Startup error handling still prefers “stay up” over a strong degraded-state contract**
+   - `src/server/app.py:88` through `src/server/app.py:173` wraps executor, scheduler, channel service, terminal manager, and evolution startup in broad `try/except Exception` blocks.
+   - `src/server/routers/health.py:195` improves visibility after boot, but the process can still come up partially broken without a hard failure or explicit startup-state surface.
+
+3. **Evolution planning/output is still markdown-file driven instead of strongly typed**
+   - `src/nanobot/evolve/runtime.py:110` expects `session_plan/assessment.md`, and `src/nanobot/evolve/runtime.py:144` through `src/nanobot/evolve/runtime.py:218` discovers and parses `task_*.md` files.
+   - This is flexible, but fragile. Correctness depends on prompt format and filename conventions rather than a validated schema.
+
+4. **Cron persistence failure handling is tolerant but lossy**
+   - If cron store loading fails, `src/nanobot/cron/service.py:90` through `src/nanobot/cron/service.py:137` logs a warning and falls back to an empty `CronStore()`.
+   - That keeps the service alive, but it also means malformed or corrupted schedule state can silently collapse into “no jobs loaded.”
+
+5. **Documentation scaffolding still ships unfinished placeholders**
+   - The generated skill template in `src/nanobot/skills/skill-creator/scripts/init_skill.py:25` and `src/nanobot/skills/skill-creator/scripts/init_skill.py:62` still contains multiple `[TODO: ...]` placeholders and example-only content.
+   - That weakens documentation quality at the point new capabilities are created.
+
+6. **API compatibility remains implicit rather than explicit**
+   - The FastAPI app mounts a broad router set directly in `src/server/app.py:244`, while version metadata is repeated as string literals in `src/server/app.py:221` and `src/server/routers/health.py:208`.
+   - The platform has a sizeable API surface, but no clear in-code versioning boundary or compatibility contract.
+
+---
