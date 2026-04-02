@@ -1,10 +1,9 @@
-Title: Use the supported pytest interpreter in evolve prompts
-Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_prompts.py
+Title: Surface cron store corruption as degraded service state
+Files: src/nanobot/cron/service.py, tests/unit/test_cron_service.py
 Issue: none
 
-Update the evolve prompt text and implementation command wiring so self-evolution stops telling itself to run bare `python -m pytest` in environments where `python` points to Python 2. Adjust the prompt builders in `src/nanobot/evolve/prompts.py` and the command selection in `src/nanobot/evolve/implementation.py` so they prefer `.venv/bin/python -m pytest` when available and otherwise fall back to `python3 -m pytest`. Extend `tests/evolve/test_prompts.py` to pin the generated command strings.
+Tighten `CronService._load_store()` so malformed or incompatible store data does not silently collapse into an apparently healthy empty schedule. Preserve the load failure reason on the service, continue with an empty in-memory `CronStore()`, and expose that degraded state from `CronService.status()` so callers can distinguish "no jobs configured" from "jobs could not be loaded".
 
-Why: the Day 3 assessment showed a false-red workflow where the project test suite passes under the supported interpreter but the evolve loop still instructs itself to use the wrong entrypoint. Fixing the command contract makes the self-improvement loop trustable again.
+Why: today a broken cron store only produces a warning log and then looks identical to an empty store. That hides real operator action items and weakens reliability for scheduled missions.
 
-Verify with:
-`python3 -m pytest tests/evolve/test_prompts.py -q`
+Add targeted tests in `tests/unit/test_cron_service.py` for invalid JSON or malformed job payloads, plus recovery after the backing file is repaired. Verify with `python3 -m pytest tests/unit/test_cron_service.py -q`.

@@ -1,10 +1,9 @@
-Title: Add typed JSON manifest support for evolution planning
-Files: src/nanobot/evolve/runtime.py, tests/evolve/test_engine.py
+Title: Emit a typed manifest for planned evolution tasks
+Files: src/nanobot/evolve/runtime.py, src/nanobot/evolve/models.py, tests/evolve/test_engine.py
 Issue: none
 
-Keep the existing markdown task files, but add an optional machine-readable planning manifest at `session_plan/tasks.json`. Extend `EvolutionEngine.run_planning()` in `src/nanobot/evolve/runtime.py` to load the JSON manifest first when present, validate that each task has a title, non-empty files list, and description, and fall back to parsing `task_*.md` files when the manifest is missing. Add focused tests in `tests/evolve/test_engine.py` for valid manifest loading and markdown fallback.
+Keep the markdown task files as the human planning surface, but add a machine-readable manifest beside them after planning completes. Introduce a narrow typed representation in `src/nanobot/evolve/models.py` for the derived planning output, then update `EvolutionEngine.run_planning()` in `src/nanobot/evolve/runtime.py` to serialize the parsed tasks to `session_plan/tasks.json` after reading `task_*.md` files.
 
-Why: the Day 3 assessment identified the planning boundary as fragile because it depends entirely on markdown parsing. A small typed layer improves reliability without breaking the current workflow or removing the human-readable task files.
+Why: the current planning contract depends entirely on markdown filenames and free-form parsing. A derived JSON manifest makes downstream automation more reliable without changing the authoring workflow or requiring the planner to stop writing markdown.
 
-Verify with:
-`python3 -m pytest tests/evolve/test_engine.py -q`
+Extend `tests/evolve/test_engine.py` to assert that planning writes the manifest with the expected task IDs, titles, files, and issue fields, and that fallback planning still produces a valid manifest. Verify with `python3 -m pytest tests/evolve/test_engine.py -q`.
