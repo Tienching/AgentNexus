@@ -73,21 +73,24 @@ class CronService:
         self.store_path = store_path
         self.on_job = on_job
         self._store: CronStore | None = None
-        self._last_mtime: float = 0.0
+        self._last_mtime_ns: int = 0
+        self._last_size: int = -1
+        self._load_error: str | None = None
         self._timer_task: asyncio.Task | None = None
         self._running = False
 
     def _load_store(self) -> CronStore:
         """Load jobs from disk. Reloads automatically if file was modified externally."""
         if self._store and self.store_path.exists():
-            mtime = self.store_path.stat().st_mtime
-            if mtime != self._last_mtime:
+            stat = self.store_path.stat()
+            if stat.st_mtime_ns != self._last_mtime_ns or stat.st_size != self._last_size:
                 logger.info("Cron: jobs.json modified externally, reloading")
                 self._store = None
         if self._store:
             return self._store
 
         if self.store_path.exists():
+            stat = self.store_path.stat()
             try:
                 data = json.loads(self.store_path.read_text(encoding="utf-8"))
                 jobs = []
@@ -130,11 +133,20 @@ class CronService:
                         delete_after_run=j.get("deleteAfterRun", False),
                     ))
                 self._store = CronStore(jobs=jobs)
+                self._last_mtime_ns = stat.st_mtime_ns
+                self._last_size = stat.st_size
+                self._load_error = None
             except Exception as e:
                 logger.warning("Failed to load cron store: {}", e)
                 self._store = CronStore()
+                self._last_mtime_ns = stat.st_mtime_ns
+                self._last_size = stat.st_size
+                self._load_error = str(e)
         else:
             self._store = CronStore()
+            self._last_mtime_ns = 0
+            self._last_size = -1
+            self._load_error = None
 
         return self._store
 
@@ -190,7 +202,10 @@ class CronService:
         }
 
         self.store_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        self._last_mtime = self.store_path.stat().st_mtime
+        stat = self.store_path.stat()
+        self._last_mtime_ns = stat.st_mtime_ns
+        self._last_size = stat.st_size
+        self._load_error = None
     
     async def start(self) -> None:
         """Start the cron service."""
@@ -406,4 +421,6 @@ class CronService:
             "enabled": self._running,
             "jobs": len(store.jobs),
             "next_wake_at_ms": self._get_next_wake_ms(),
+            "degraded": self._load_error is not None,
+            "load_error": self._load_error,
         }
