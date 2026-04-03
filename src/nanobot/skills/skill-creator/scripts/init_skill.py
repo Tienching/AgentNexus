@@ -59,7 +59,7 @@ Patterns can be mixed and matched as needed. Most skills combine patterns (e.g.,
 
 Delete this entire "Structuring This Skill" section when done - it's just guidance.]
 
-## [TODO: Replace with the first main section based on chosen structure]
+## Quick Start
 
 [TODO: Add content here. See examples in existing skills:
 - Code samples for technical skills
@@ -252,6 +252,15 @@ def create_resource_dirs(skill_dir, skill_name, skill_title, resources, include_
                 print("[OK] Created assets/")
 
 
+def format_resource_dirs(resources):
+    resource_dirs = [f"{resource}/" for resource in resources]
+    if len(resource_dirs) == 1:
+        return resource_dirs[0]
+    if len(resource_dirs) == 2:
+        return " and ".join(resource_dirs)
+    return ", ".join(resource_dirs[:-1]) + f", and {resource_dirs[-1]}"
+
+
 def init_skill(skill_name, path, resources, include_examples):
     """
     Initialize a new skill directory with template SKILL.md.
@@ -306,10 +315,11 @@ def init_skill(skill_name, path, resources, include_examples):
     print("\nNext steps:")
     print("1. Edit SKILL.md to complete the TODO items and update the description")
     if resources:
+        selected_resource_dirs = format_resource_dirs(resources)
         if include_examples:
-            print("2. Customize or delete the example files in scripts/, references/, and assets/")
+            print(f"2. Customize or delete the example files in {selected_resource_dirs}")
         else:
-            print("2. Add resources to scripts/, references/, and assets/ as needed")
+            print(f"2. Add resources to {selected_resource_dirs} as needed")
     else:
         print("2. Create resource directories only if needed (scripts/, references/, assets/)")
     print("3. Run the validator when ready to check the skill structure")
