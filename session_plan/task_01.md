@@ -1,9 +1,7 @@
-Title: Make evolve prompts use a working pytest interpreter
+Title: Remove hardcoded pytest interpreter from fallback evolve prompts
 Files: src/nanobot/evolve/prompts.py, tests/evolve/test_prompts.py
 Issue: none
 
-Update the default evolve prompt templates so self-assessment and merge-conflict recovery stop hardcoding `python -m pytest`, which is a false-red command in this environment. Keep the change inside `src/nanobot/evolve/prompts.py`: add a small helper that resolves the prompt-facing pytest command from repo context, preferring `.venv/bin/python` when it exists and otherwise falling back to `python3 -m pytest`.
+Update the default prompt templates in `src/nanobot/evolve/prompts.py` so the assessment, planning, and conflict-resolution fallback prompts stop telling the system to run `python -m pytest` directly. Keep the current workspace prompt file precedence unchanged, but make the built-in fallback text describe the configured pytest command generically instead of hardcoding an interpreter assumption that is wrong in this repo.
 
-Apply that helper in the prompt builders that currently render broken instructions, especially `build_assessment_prompt`, `build_planning_prompt`, and `build_conflict_resolution_prompt`. The goal is for the generated instructions to tell agent-nexus to run a command that actually matches the repo’s supported interpreter contract instead of teaching itself the wrong verification step.
-
-Extend `tests/evolve/test_prompts.py` to assert the rendered prompts include the resolved pytest command and no longer embed the hardcoded `python -m pytest` string. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.
+Touch the prompt-building paths that feed the fallback templates and add focused assertions in `tests/evolve/test_prompts.py` proving the rendered fallback prompts no longer contain the literal `python -m pytest` guidance. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.
