@@ -284,3 +284,53 @@ A
    - The platform has a sizeable API surface, but no clear in-code versioning boundary or compatibility contract.
 
 ---
+
+## Session 8 — 2026-04-03 08:00 UTC
+
+**Duration:** 964s
+
+**Tasks:** 1 completed, 2 failed
+
+
+### Completed
+
+- Make generated skill scaffolds actionable by default
+
+### Failed
+
+- Make evolve prompts use a working pytest interpreter: No commits produced
+- Unify pytest command resolution in serial evolve execution: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+Aborting
+
+
+### Gaps Identified
+1. **Self-evolution verification is still not environment-safe**
+   - Assessment, planning, implementation, and conflict-resolution prompts still embed `python -m pytest` instead of a resolved working interpreter path (`src/nanobot/evolve/prompts.py:20`, `src/nanobot/evolve/prompts.py:21`, `src/nanobot/evolve/prompts.py:23`).
+   - The runtime also hardcodes the same assumption during implementation verification (`src/nanobot/evolve/implementation.py:409`).
+   - This is the highest-impact reliability gap because the platform can misjudge its own health.
+
+2. **Startup error handling still allows partial service boot without a strong contract**
+   - The FastAPI lifespan starts executor, scheduler, channel service, terminal manager, and evolution service behind broad `try/except Exception` blocks (`src/server/app.py:88`, `src/server/app.py:124`, `src/server/app.py:140`, `src/server/app.py:153`, `src/server/app.py:165`).
+   - Health reporting is better than before (`src/server/routers/health.py:195`), but startup can still succeed while important subsystems are missing.
+
+3. **The self-evolution pipeline is still file-and-markdown driven instead of strongly typed**
+   - Assessment success is inferred from `session_plan/assessment.md` (`src/nanobot/evolve/runtime.py:110`-`src/nanobot/evolve/runtime.py:139`).
+   - Planning then discovers `task_*.md` files and parses them line-by-line (`src/nanobot/evolve/runtime.py:144`-`src/nanobot/evolve/runtime.py:218`).
+   - This keeps the workflow flexible, but it is fragile under prompt drift and hard to validate mechanically.
+
+4. **Cron persistence failure handling is explicit now, but still lossy**
+   - If the cron store cannot be parsed, the service logs the error, records degraded state, and falls back to an empty in-memory store (`src/nanobot/cron/service.py:92`-`src/nanobot/cron/service.py:145`).
+   - Status exposes the degradation (`src/nanobot/cron/service.py:417`-`src/nanobot/cron/service.py:425`), but the operational result is still “jobs disappear until repaired.”
+
+5. **API/version compatibility is still implicit**
+   - The service mounts a broad router surface directly in one app module (`src/server/app.py:244`-`src/server/app.py:261`).
+   - Version strings are duplicated across the API and CLI (`src/server/app.py:221`, `src/server/routers/health.py:208`, `src/runtime/plugins/cli/__init__.py:35`).
+   - There is no single compatibility boundary or shared version source for the public surface.
+
+6. **Documentation quality is good at the top level but uneven at generation points**
+   - The repo has real operator docs (`README.md:26`, `README.md:275`), but the skill scaffold still ships unresolved instructional placeholders (`src/nanobot/skills/skill-creator/scripts/init_skill.py:25`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:62`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:124`).
+   - That means new capabilities can still start from incomplete docs/templates.
+
+---
