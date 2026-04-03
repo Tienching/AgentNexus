@@ -1,9 +1,9 @@
-Title: Align evolve pytest commands with the supported interpreter
-Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_prompts.py
+Title: Make evolve prompts use a working pytest interpreter
+Files: src/nanobot/evolve/prompts.py, tests/evolve/test_prompts.py
 Issue: none
 
-Remove the remaining hardcoded `python -m pytest` commands from the evolve flow. Update the default templates in `src/nanobot/evolve/prompts.py` so assessment and conflict-resolution instructions use the same supported test command the repo actually needs in this environment. In `src/nanobot/evolve/implementation.py`, add one small helper that builds the pytest command once (`.venv/bin/python -m pytest ...` when present, otherwise `python3 -m pytest ...`) and reuse it in both worktree and serial execution paths.
+Update the default evolve prompt templates so self-assessment and merge-conflict recovery stop hardcoding `python -m pytest`, which is a false-red command in this environment. Keep the change inside `src/nanobot/evolve/prompts.py`: add a small helper that resolves the prompt-facing pytest command from repo context, preferring `.venv/bin/python` when it exists and otherwise falling back to `python3 -m pytest`.
 
-Why: the self-evolution system currently reports false failures because assessment, conflict resolution, and serial verification still assume `/usr/bin/python` can run pytest. This task fixes the platform's own feedback loop first.
+Apply that helper in the prompt builders that currently render broken instructions, especially `build_assessment_prompt`, `build_planning_prompt`, and `build_conflict_resolution_prompt`. The goal is for the generated instructions to tell agent-nexus to run a command that actually matches the repo’s supported interpreter contract instead of teaching itself the wrong verification step.
 
-Add regression coverage in `tests/evolve/test_prompts.py` that asserts the default prompt text no longer emits bare `python -m pytest` and that the shared command builder chooses the supported interpreter. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.
+Extend `tests/evolve/test_prompts.py` to assert the rendered prompts include the resolved pytest command and no longer embed the hardcoded `python -m pytest` string. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.

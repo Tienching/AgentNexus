@@ -1,9 +1,9 @@
-Title: Emit a typed manifest for planned evolution tasks
-Files: src/nanobot/evolve/runtime.py, src/nanobot/evolve/models.py, tests/evolve/test_engine.py
+Title: Unify pytest command resolution in serial evolve execution
+Files: src/nanobot/evolve/implementation.py, tests/evolve/test_implementation.py
 Issue: none
 
-Keep the markdown task files as the human planning surface, but add a machine-readable manifest beside them after planning completes. Introduce a narrow typed representation in `src/nanobot/evolve/models.py` for the derived planning output, then update `EvolutionEngine.run_planning()` in `src/nanobot/evolve/runtime.py` to serialize the parsed tasks to `session_plan/tasks.json` after reading `task_*.md` files.
+Fix the remaining runtime-side verification bug in `src/nanobot/evolve/implementation.py`. Right now `run_task_in_worktree` has one command selection path, while `run_implementation_serial` still hardcodes `python -m pytest` for both the implementation prompt and the post-change verification step.
 
-Why: the current planning contract depends entirely on markdown filenames and free-form parsing. A derived JSON manifest makes downstream automation more reliable without changing the authoring workflow or requiring the planner to stop writing markdown.
+Add a focused helper in this module that resolves the pytest command once, then use it from both `run_task_in_worktree` and `run_implementation_serial`. Update the serial path so the prompt passed to `build_implementation_prompt` and the final verification shell command both use the same resolved interpreter.
 
-Extend `tests/evolve/test_engine.py` to assert that planning writes the manifest with the expected task IDs, titles, files, and issue fields, and that fallback planning still produces a valid manifest. Verify with `python3 -m pytest tests/evolve/test_engine.py -q`.
+Add a dedicated test module at `tests/evolve/test_implementation.py` covering `.venv/bin/python` preference and `python3` fallback, and assert serial execution calls `_run_shell` with the resolved command instead of the broken default. Verify with `python3 -m pytest tests/evolve/test_implementation.py -q`.
