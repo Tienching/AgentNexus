@@ -334,3 +334,58 @@ Aborting
    - That means new capabilities can still start from incomplete docs/templates.
 
 ---
+
+## Session 9 — 2026-04-03 16:00 UTC
+
+**Duration:** 995s
+
+**Tasks:** 0 completed, 3 failed
+
+
+### Failed
+
+- Remove hardcoded pytest interpreter from fallback evolve prompts: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+- Reuse one resolved pytest command in serial evolve execution: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+Aborting
+
+- Accept a typed session plan manifest before markdown fallback: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+Aborting
+
+
+### Gaps Identified
+1. **Self-evolution verification is still not environment-safe.**
+   - The built-in assessment prompt still tells the system to run `python -m pytest ...` (`src/nanobot/evolve/prompts.py:20-23`).
+   - Serial implementation verification also hardcodes the same command (`src/nanobot/evolve/implementation.py:382-409`).
+   - Result: agent-nexus can falsely mark itself unhealthy even when the real suite is green.
+
+2. **The self-evolution pipeline still depends on markdown side effects instead of typed artifacts.**
+   - Assessment success is inferred from `session_plan/assessment.md` existing (`src/nanobot/evolve/runtime.py:110-139`).
+   - Planning then discovers `task_*.md` files and parses them line-by-line into `EvolutionTask` objects (`src/nanobot/evolve/runtime.py:144-218`).
+   - This is flexible, but it is brittle under prompt drift and hard to validate mechanically.
+
+3. **Public API/runtime compatibility is still implicit and duplicated.**
+   - The server mounts a broad router surface directly in one module (`src/server/app.py:244-261`).
+   - Version strings are repeated across API, health, CLI, parser, and run protocol code (`src/server/app.py:224`, `src/server/routers/health.py:211`, `src/runtime/plugins/cli/__init__.py:35`, `src/runtime/plugins/cli/parser.py:41`, `src/server/services/run_service.py:37`).
+   - There is no clear single compatibility boundary or single source of truth for public version metadata.
+
+4. **Documentation generation is still incomplete at the scaffold boundary.**
+   - `init_skill.py` still emits SKILL.md templates with unresolved TODO placeholders and example text (`src/nanobot/skills/skill-creator/scripts/init_skill.py:23-108`).
+   - The validator explicitly rejects those placeholders later (`src/nanobot/skills/skill-creator/scripts/quick_validate.py:118-129`).
+   - So Day 8 improved the scaffold flow, but new skills still begin from partially unfinished documentation.
+
+5. **Cron corruption handling is visible now, but still lossy.**
+   - On parse failure, `CronService` logs the error, marks degraded state, and falls back to an empty in-memory store (`src/nanobot/cron/service.py:92-145`).
+   - Status exposes the degradation (`src/nanobot/cron/service.py:417-425`), but jobs effectively disappear until the store is repaired.
+
+6. **Coverage tooling exists, but coverage is not part of the default quality gate.**
+   - `pytest-cov` is declared in dev dependencies (`pyproject.toml:35-41`, `pyproject.toml:61-69`) and a coverage source list exists (`pyproject.toml:88-90`).
+   - The default pytest options do not enforce coverage (`pytest.ini:1-11`), so test breadth is strong but minimum coverage is not being checked in the standard workflow.
+
+---

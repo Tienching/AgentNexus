@@ -29,3 +29,10 @@ Completed: Replace deprecated FastAPI 422 constants
 Completed: Surface cron store corruption as degraded service state
 
 **Takeaway:** Session 4 was mixed. 1/3 tasks succeeded.
+
+### Day 8: 1 improvements completed
+*Day 8 — evolution*
+
+Completed: Make generated skill scaffolds actionable by default
+
+**Takeaway:** Session 8 was mixed. 1/3 tasks succeeded.
