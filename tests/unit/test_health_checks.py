@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
 
+from src.runtime import __version__ as RUNTIME_VERSION
 from src.server.models.legacy import HealthCheck, HealthResponse
 from src.server.routers.health import (
     _build_health_error_response,
@@ -58,16 +59,16 @@ class TestHealthCheckModel:
 
 class TestHealthResponseModel:
     def test_checks_defaults_to_empty_list(self):
-        hr = HealthResponse(status="healthy", service="nexus", version="0.1.0")
+        hr = HealthResponse(status="healthy", service="nexus", version=RUNTIME_VERSION)
         assert hr.checks == []
 
     def test_uptime_seconds_defaults_to_none(self):
-        hr = HealthResponse(status="healthy", service="nexus", version="0.1.0")
+        hr = HealthResponse(status="healthy", service="nexus", version=RUNTIME_VERSION)
         assert hr.uptime_seconds is None
 
     def test_checks_field_accepts_list(self):
         hc = HealthCheck(name="Redis", status="healthy", message="OK")
-        hr = HealthResponse(status="healthy", service="nexus", version="0.1.0", checks=[hc])
+        hr = HealthResponse(status="healthy", service="nexus", version=RUNTIME_VERSION, checks=[hc])
         assert len(hr.checks) == 1
 
 
@@ -316,7 +317,7 @@ class TestPerformHealthCheck:
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check()
         assert result.service == "agent-nexus"
-        assert result.version == "0.1.0"
+        assert result.version == RUNTIME_VERSION
 
     def test_uptime_seconds_is_non_negative(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
@@ -357,7 +358,7 @@ class TestHealthRoute:
             return_value=HealthResponse(
                 status="healthy",
                 service="agent-nexus",
-                version="0.1.0",
+                version=RUNTIME_VERSION,
                 checks=[healthy],
             ),
         ):
@@ -378,7 +379,7 @@ class TestHealthRoute:
             return_value=HealthResponse(
                 status="unhealthy",
                 service="agent-nexus",
-                version="0.1.0",
+                version=RUNTIME_VERSION,
                 checks=[bad],
             ),
         ):
