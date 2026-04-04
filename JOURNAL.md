@@ -389,3 +389,51 @@ Aborting
    - The default pytest options do not enforce coverage (`pytest.ini:1-11`), so test breadth is strong but minimum coverage is not being checked in the standard workflow.
 
 ---
+
+## Session 10 — 2026-04-04 00:00 UTC
+
+**Duration:** 839s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Reject invalid milestone dependency graphs
+- Remove remaining scaffold TODO placeholders
+
+### Failed
+
+- Unify pytest command resolution in evolve prompts: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Self-verification still hardcodes the wrong test command.**
+   - The assessment prompt still instructs `python -m pytest ...` (`src/nanobot/evolve/prompts.py:20`).
+   - The implementation flow hardcodes the same command in multiple places (`src/nanobot/evolve/implementation.py:189`, `src/nanobot/evolve/implementation.py:388`, `src/nanobot/evolve/implementation.py:409`).
+   - Because the environment’s bare `python` is not the project’s working interpreter, self-evolution can misdiagnose the repo.
+
+2. **Mission DAG validation stops at the task level.**
+   - `MissionPlanner._validate_plan()` validates task descriptions, intra-milestone task dependencies, and cycles within a single milestone (`src/nanobot/mission/planner.py:211-271`).
+   - I did not see equivalent validation for `Milestone.depends_on` references or cross-milestone cycles, even though milestone dependencies are part of the planner schema (`src/nanobot/mission/planner.py:52-56`, `src/nanobot/mission/planner.py:194-203`).
+   - For an orchestration platform, this is a real scheduling-quality gap.
+
+3. **Service startup error handling favors availability over observability.**
+   - `src/server/app.py` logs and continues if executor, scheduler, channel service, terminal manager, or evolution service startup fails (`src/server/app.py:88-173`).
+   - That is pragmatic, but it means partial boot failure can be easy to miss unless health/status surfaces are checked carefully.
+
+4. **Documentation quality is still weak at the scaffold boundary.**
+   - The skill scaffold generator still contains unresolved TODO placeholders and stub logic (`src/nanobot/skills/skill-creator/scripts/init_skill.py:25`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:32`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:64`, `src/nanobot/skills/skill-creator/scripts/init_skill.py:124`).
+   - Day 8 improved the flow, but the generated artifact still begins from partially unfinished documentation.
+
+5. **Quality gates emphasize breadth, not coverage policy.**
+   - Test breadth is strong, but coverage is not enforced by default: coverage config exists in `pyproject.toml` (`pyproject.toml:88-90`) while the active pytest config in `pytest.ini` does not require coverage thresholds (`pytest.ini:1-11`).
+   - This makes regressions less likely, but leaves “untested enough” undefined.
+
+6. **Version metadata is duplicated across public surfaces.**
+   - `0.1.0` appears in runtime package metadata, CLI version output, FastAPI app metadata, health responses, and run protocol metadata (`src/runtime/__init__.py:18`, `src/runtime/plugins/cli/__init__.py:35`, `src/runtime/plugins/cli/parser.py:41`, `src/server/app.py:224`, `src/server/routers/health.py:211`, `src/server/services/run_service.py:37`).
+   - That increases drift risk as the platform surface grows.
+
+---
