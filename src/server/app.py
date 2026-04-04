@@ -3,7 +3,7 @@
 
 import os
 import time
-from typing import Optional
+from typing import Any, Optional
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +52,38 @@ _task_queue: Optional[TaskQueue] = None
 RALPH_LOOP_RETRY_SIGNAL = "__RALPH_LOOP_RETRY__"
 
 
+STARTUP_SUBSYSTEMS = {
+    "task_executor": "Task Executor",
+    "task_scheduler": "Task Scheduler",
+    "channel_service": "Channel Service",
+    "terminal_manager": "Terminal Manager",
+    "evolution_service": "Evolution Service",
+}
+
+
+def _record_startup_state(
+    app: FastAPI,
+    subsystem: str,
+    *,
+    status: str,
+    message: str,
+    required: bool,
+    detail: Optional[dict[str, Any]] = None,
+) -> None:
+    startup_subsystems = getattr(app.state, "startup_subsystems", None)
+    if startup_subsystems is None:
+        startup_subsystems = {}
+        app.state.startup_subsystems = startup_subsystems
+
+    startup_subsystems[subsystem] = {
+        "name": STARTUP_SUBSYSTEMS[subsystem],
+        "status": status,
+        "message": message,
+        "required": required,
+        "detail": detail or {},
+    }
+
+
 async def task_handler(task: Task) -> Optional[str]:
     """Thin wrapper — delegates to :func:`task_execution_service.execute_task`.
 
@@ -82,15 +114,13 @@ async def lifespan(app: FastAPI):
     )
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"CLI command: {settings.cli_command}")
+    app.state.startup_subsystems = {}
     
     # 启动任务执行器
     executor = None
+    exec_user = os.environ.get("EXEC_USER", "ubuntu")
     if settings.executor_enabled:
         try:
-            import os
-            # 默认使用 ubuntu exec_user（与路由 /chat/stream/ubuntu 对应）
-            exec_user = os.environ.get("EXEC_USER", "ubuntu")
-
             # 初始化任务队列
             _task_queue = TaskQueue(exec_user=exec_user)
 
@@ -115,12 +145,64 @@ async def lifespan(app: FastAPI):
                 config=executor_config,
             )
             logger.info(f"Task executor started for exec_user: {exec_user}")
+            _record_startup_state(
+                app,
+                "task_executor",
+                status="healthy",
+                message=f"Started for exec_user: {exec_user}",
+                required=True,
+                detail={"exec_user": exec_user},
+            )
         except Exception as e:
             logger.error(f"Failed to start task executor: {e}", exc_info=True)
+            _record_startup_state(
+                app,
+                "task_executor",
+                status="unhealthy",
+                message=f"Startup failed: {e}",
+                required=True,
+                detail={"error": str(e), "exception_type": type(e).__name__},
+            )
+    else:
+        _record_startup_state(
+            app,
+            "task_executor",
+            status="disabled",
+            message="Disabled by configuration",
+            required=False,
+            detail={"enabled": False},
+        )
 
     # 启动定时调度器 (Cron Scheduler)
     scheduler = None
-    if settings.scheduler_enabled and settings.executor_enabled and _task_queue:
+    if not settings.scheduler_enabled:
+        _record_startup_state(
+            app,
+            "task_scheduler",
+            status="disabled",
+            message="Disabled by configuration",
+            required=False,
+            detail={"enabled": False},
+        )
+    elif not settings.executor_enabled:
+        _record_startup_state(
+            app,
+            "task_scheduler",
+            status="unhealthy",
+            message="Startup blocked: task executor is disabled",
+            required=True,
+            detail={"dependency": "task_executor", "reason": "executor_disabled"},
+        )
+    elif not _task_queue:
+        _record_startup_state(
+            app,
+            "task_scheduler",
+            status="unhealthy",
+            message="Startup blocked: task executor failed to start",
+            required=True,
+            detail={"dependency": "task_executor", "reason": "executor_startup_failed"},
+        )
+    else:
         try:
             from .services.schedule_storage import ScheduleStorage
             from src.runtime.execution.scheduler import create_and_start_scheduler
@@ -132,8 +214,24 @@ async def lifespan(app: FastAPI):
                 poll_interval=settings.scheduler_poll_interval,
             )
             logger.info(f"Task scheduler started (poll_interval={settings.scheduler_poll_interval}s)")
+            _record_startup_state(
+                app,
+                "task_scheduler",
+                status="healthy",
+                message=f"Started (poll_interval={settings.scheduler_poll_interval}s)",
+                required=True,
+                detail={"poll_interval_seconds": settings.scheduler_poll_interval},
+            )
         except Exception as e:
             logger.error(f"Failed to start task scheduler: {e}", exc_info=True)
+            _record_startup_state(
+                app,
+                "task_scheduler",
+                status="unhealthy",
+                message=f"Startup failed: {e}",
+                required=True,
+                detail={"error": str(e), "exception_type": type(e).__name__},
+            )
 
     # 启动 Channel 服务（Telegram, Slack, Discord 等）
     channel_service = None
@@ -143,10 +241,43 @@ async def lifespan(app: FastAPI):
         if channel_service:
             await channel_service.start()
             logger.info("Channel service started")
+            _record_startup_state(
+                app,
+                "channel_service",
+                status="healthy",
+                message="Started",
+                required=True,
+                detail={"configured": True},
+            )
+        else:
+            _record_startup_state(
+                app,
+                "channel_service",
+                status="disabled",
+                message="No channels configured",
+                required=False,
+                detail={"configured": False},
+            )
     except ImportError as e:
         logger.debug(f"Channel service not available: {e}")
+        _record_startup_state(
+            app,
+            "channel_service",
+            status="unhealthy",
+            message=f"Startup failed: {e}",
+            required=True,
+            detail={"error": str(e), "exception_type": type(e).__name__},
+        )
     except Exception as e:
         logger.warning(f"Failed to start channel service: {e}")
+        _record_startup_state(
+            app,
+            "channel_service",
+            status="unhealthy",
+            message=f"Startup failed: {e}",
+            required=True,
+            detail={"error": str(e), "exception_type": type(e).__name__},
+        )
 
     # 初始化 Terminal Manager (Web Terminal via tmux)
     terminal_manager = None
@@ -156,8 +287,24 @@ async def lifespan(app: FastAPI):
         terminal_manager = TerminalManager()
         set_terminal_manager(terminal_manager)
         logger.info("Terminal manager initialized")
+        _record_startup_state(
+            app,
+            "terminal_manager",
+            status="healthy",
+            message="Initialized",
+            required=True,
+            detail={},
+        )
     except Exception as e:
         logger.warning(f"Failed to initialize terminal manager: {e}")
+        _record_startup_state(
+            app,
+            "terminal_manager",
+            status="unhealthy",
+            message=f"Startup failed: {e}",
+            required=True,
+            detail={"error": str(e), "exception_type": type(e).__name__},
+        )
 
     # 启动自我进化系统（如果启用）
     evolution_service = None
@@ -169,8 +316,33 @@ async def lifespan(app: FastAPI):
             logger.info("Evolution service started")
             # Expose to routers via app state
             app.state.evolution_service = evolution_service
+            _record_startup_state(
+                app,
+                "evolution_service",
+                status="healthy",
+                message="Started",
+                required=True,
+                detail={"enabled": True},
+            )
         except Exception as e:
             logger.warning(f"Failed to start evolution service: {e}")
+            _record_startup_state(
+                app,
+                "evolution_service",
+                status="unhealthy",
+                message=f"Startup failed: {e}",
+                required=True,
+                detail={"error": str(e), "exception_type": type(e).__name__},
+            )
+    else:
+        _record_startup_state(
+            app,
+            "evolution_service",
+            status="disabled",
+            message="Disabled by configuration",
+            required=False,
+            detail={"enabled": False},
+        )
 
     yield
 
