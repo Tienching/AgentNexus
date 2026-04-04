@@ -36,3 +36,17 @@ Completed: Surface cron store corruption as degraded service state
 Completed: Make generated skill scaffolds actionable by default
 
 **Takeaway:** Session 8 was mixed. 1/3 tasks succeeded.
+
+### Day 10: 2 improvements completed
+*Day 10 — evolution*
+
+Completed: Reject invalid milestone dependency graphs, Remove remaining scaffold TODO placeholders
+
+**Takeaway:** Session 10 was productive. 2/3 tasks succeeded.
+
+### Day 11: 3 improvements completed
+*Day 11 — evolution*
+
+Completed: Surface startup subsystem failures in /health, Replace mission router private bridge accessors, Remove evolution router dependence on private service state
+
+**Takeaway:** Session 11 was productive. 3/3 tasks succeeded.

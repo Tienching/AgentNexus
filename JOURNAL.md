@@ -477,3 +477,57 @@ error: The following untracked
    - Result: scaffold output is safer, but still easy to leave half-generic.
 
 ---
+
+## Session 12 — 2026-04-04 16:00 UTC
+
+**Duration:** 790s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Align packaging metadata with the tested source tree
+- Reuse runtime version in API health surfaces
+
+### Failed
+
+- Make evolution pytest command interpreter-safe: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Self-evolution verification is still environment-unsafe.**
+   - The assessment template hardcodes `python -m pytest ...` in `src/nanobot/evolve/prompts.py:20`.
+   - In this environment that command fails before tests start, while `python3 -m pytest ...` passes all 1676 tests.
+   - Result: agent-nexus can still misclassify a healthy repo as failing during autonomous assessment.
+
+2. **Packaging/runtime metadata is out of sync with the source tree.**
+   - `pyproject.toml:6` declares `requires-python = ">=3.11"`, but the passing suite ran on Python 3.10.12.
+   - The wheel target lists `src/core` and `src/protocols` in `pyproject.toml:92`, but those directories do not exist in this checkout.
+   - The same wheel target omits `src/nanobot`, even though `nanobot` is a core package with 70 modules.
+   - This suggests editable/source checkout is healthier than packaged install, which is a real DX and release gap.
+
+3. **Version and public-surface metadata are still duplicated.**
+   - `0.1.0` appears separately in `src/runtime/__init__.py:18`, `src/runtime/plugins/cli/__init__.py:35`, `src/server/app.py:396`, `src/server/routers/health.py:283`, and `src/server/services/run_service.py:37`.
+   - Mission and evolution routers are more strongly typed now (`src/server/routers/nexus_missions.py:26`, `src/server/routers/nexus_evolution.py:20`), which is good progress.
+   - But there is still no single source of truth for versioning or compatibility metadata across API, CLI, and runtime layers.
+
+4. **Quality gates emphasize breadth, not coverage policy or config coherence.**
+   - The suite is large and healthy, which is a strength.
+   - But coverage is only configured in `pyproject.toml:88`; `pytest.ini:1` does not enforce coverage thresholds, and pytest warns that pyproject pytest options are ignored.
+   - That means test breadth is high, but the default quality gate still does not define how much coverage is enough.
+
+5. **Startup error handling is more observable, but still intentionally permissive.**
+   - `src/server/app.py:123`, `src/server/app.py:206`, `src/server/app.py:238`, `src/server/app.py:284`, and `src/server/app.py:312` catch startup failures per subsystem and keep the process alive.
+   - `src/server/routers/health.py:204` and `src/server/routers/health.py:263` now surface startup subsystem state, which is a real improvement over previous days.
+   - But required services can still fail while the API process remains up, so deployment semantics are still “degraded but running,” not “fail fast on broken core subsystems.”
+
+6. **The self-evolution control plane is still file-contract driven.**
+   - `src/nanobot/evolve/runtime.py:110` expects assessment output to land in `session_plan/assessment.md`.
+   - `src/nanobot/evolve/runtime.py:162` then discovers `task_*.md` files and parses them line-by-line.
+   - If planning emits nothing usable, `src/nanobot/evolve/runtime.py:169` falls back to a generic catch-all task.
+   - Flexible, but weakly typed and vulnerable to prompt/output drift.
+
+---
