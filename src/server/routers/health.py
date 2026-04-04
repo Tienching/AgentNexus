@@ -25,6 +25,8 @@ from typing import Any, List, Mapping
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from src.runtime import __version__ as runtime_version
+
 from ..models import HealthCheck, HealthResponse, MetricsResponse
 from ..config import settings
 from ..logger import get_logger
@@ -280,7 +282,7 @@ def _perform_health_check(
     return HealthResponse(
         status=overall,
         service="agent-nexus",
-        version="0.1.0",
+        version=runtime_version,
         uptime_seconds=round(time.monotonic() - _START_TIME, 1),
         checks=checks,
     )
@@ -292,7 +294,7 @@ def _build_health_error_response(exc: Exception) -> HealthResponse:
     return HealthResponse(
         status="error",
         service="agent-nexus",
-        version="0.1.0",
+        version=runtime_version,
         uptime_seconds=round(time.monotonic() - _START_TIME, 1),
         checks=[
             HealthCheck(

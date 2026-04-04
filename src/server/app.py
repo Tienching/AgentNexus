@@ -35,6 +35,7 @@ from .services import (
     create_and_start_executor,
     get_executor,
 )
+from src.runtime import __version__ as runtime_version
 from src.runtime.models.task_models import ExecutorConfig
 from .models import Task
 
@@ -393,7 +394,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Agent Nexus",
     description="Multi-provider CLI wrapper with AG-UI SSE streaming",
-    version="0.1.0",
+    version=runtime_version,
     lifespan=lifespan,
 )
 
