@@ -1,7 +1,7 @@
-Title: Remove hardcoded pytest interpreter from fallback evolve prompts
-Files: src/nanobot/evolve/prompts.py, tests/evolve/test_prompts.py
+Title: Unify pytest command resolution in evolve prompts
+Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_prompts.py
 Issue: none
 
-Update the default prompt templates in `src/nanobot/evolve/prompts.py` so the assessment, planning, and conflict-resolution fallback prompts stop telling the system to run `python -m pytest` directly. Keep the current workspace prompt file precedence unchanged, but make the built-in fallback text describe the configured pytest command generically instead of hardcoding an interpreter assumption that is wrong in this repo.
+Introduce one shared pytest command resolution path for the self-evolution flow so this repo stops instructing itself to run `python -m pytest` on an environment where bare `python` points at Python 2. Update the default prompt templates in `DEFAULT_TEMPLATES`, the rendering path in `build_assessment_prompt()`, `build_implementation_prompt()`, and `build_conflict_resolution_prompt()`, plus the execution entrypoints `run_task_in_worktree()` and `run_implementation_serial()` so assessment, implementation, and conflict resolution all use the same resolved command.
 
-Touch the prompt-building paths that feed the fallback templates and add focused assertions in `tests/evolve/test_prompts.py` proving the rendered fallback prompts no longer contain the literal `python -m pytest` guidance. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.
+Keep the change focused on consistency and operability: the assessment prompt, implementation prompt, and post-change verification should all agree on the same command string. Add regression coverage in `tests/evolve/test_prompts.py` that asserts the generated prompts include the resolved pytest command and no longer hardcode the broken `python -m pytest` fallback in this environment. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.
