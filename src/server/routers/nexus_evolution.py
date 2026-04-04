@@ -9,9 +9,58 @@ Provides:
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/nexus/evolution", tags=["evolution"])
+
+
+class EvolutionSessionResponse(BaseModel):
+    id: str
+    day: int
+    date: str
+    status: str
+    phase: str
+    tasks_planned: int
+    tasks_completed: int
+    tasks_failed: int
+    duration_seconds: float
+    error: str | None = None
+
+
+class EvolutionTriggerResponse(BaseModel):
+    ok: bool
+    session: EvolutionSessionResponse
+
+
+class EvolutionSynthesisResponse(BaseModel):
+    ok: bool
+    message: str
+
+
+class EvolutionStatusResponse(BaseModel):
+    enabled: bool
+    running: bool
+    evolution_in_progress: bool
+    cron_expr: str
+    interval_hours: int
+    working_dir: str
+    memory_path: str
+    codebuddy_path: str
+    current_session: EvolutionSessionResponse | None = None
+    recent_sessions: list[EvolutionSessionResponse] = Field(default_factory=list)
+    cron_jobs: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvolutionMemoryResponse(BaseModel):
+    learnings_count: int
+    social_learnings_count: int
+    active_learnings_exists: bool
+    active_social_learnings_exists: bool
+    active_learnings_preview: str = ""
+    active_social_learnings_preview: str = ""
 
 
 def _get_service(request: Request):
@@ -25,8 +74,23 @@ def _get_service(request: Request):
     return svc
 
 
-@router.post("/trigger")
-async def trigger_evolution(request: Request):
+def _to_session_response(session) -> EvolutionSessionResponse:
+    return EvolutionSessionResponse(
+        id=session.id,
+        day=session.day,
+        date=session.date,
+        status=session.status,
+        phase=session.phase,
+        tasks_planned=session.metrics.tasks_planned,
+        tasks_completed=session.metrics.tasks_completed,
+        tasks_failed=session.metrics.tasks_failed,
+        duration_seconds=round(session.duration_seconds, 1),
+        error=session.error,
+    )
+
+
+@router.post("/trigger", response_model=EvolutionTriggerResponse)
+async def trigger_evolution(request: Request) -> EvolutionTriggerResponse:
     """Trigger a full evolution cycle immediately.
 
     Returns 409 if a session is already in progress.
@@ -34,7 +98,7 @@ async def trigger_evolution(request: Request):
     """
     svc = _get_service(request)
 
-    if svc._lock.locked():
+    if svc.is_evolution_running():
         raise HTTPException(
             status_code=409,
             detail="Evolution session already in progress. Try again later.",
@@ -47,64 +111,31 @@ async def trigger_evolution(request: Request):
             detail="Failed to start evolution session (possibly already running).",
         )
 
-    return {
-        "ok": True,
-        "session": {
-            "id": session.id,
-            "day": session.day,
-            "status": session.status,
-            "tasks_planned": session.metrics.tasks_planned,
-            "tasks_completed": session.metrics.tasks_completed,
-            "tasks_failed": session.metrics.tasks_failed,
-            "duration_seconds": round(session.duration_seconds, 1),
-            "error": session.error,
-        },
-    }
+    return EvolutionTriggerResponse(ok=True, session=_to_session_response(session))
 
 
-@router.post("/synthesis")
-async def trigger_synthesis(request: Request):
+@router.post("/synthesis", response_model=EvolutionSynthesisResponse)
+async def trigger_synthesis(request: Request) -> EvolutionSynthesisResponse:
     """Trigger memory synthesis immediately (archive → active_learnings.md)."""
     svc = _get_service(request)
     await svc.trigger_synthesis()
-    return {"ok": True, "message": "Memory synthesis completed"}
+    return EvolutionSynthesisResponse(ok=True, message="Memory synthesis completed")
 
 
-@router.get("/status")
-async def get_status(request: Request):
+@router.get("/status", response_model=EvolutionStatusResponse)
+async def get_status(request: Request) -> EvolutionStatusResponse:
     """Get current evolution system status."""
     svc = _get_service(request)
-    return svc.get_status()
+    return EvolutionStatusResponse.model_validate(svc.get_status())
 
 
-@router.get("/memory")
-async def get_memory(request: Request):
+@router.get("/memory", response_model=EvolutionMemoryResponse)
+async def get_memory(request: Request) -> EvolutionMemoryResponse:
     """Get memory archive statistics."""
     svc = _get_service(request)
-    stats = svc.get_memory_stats()
-
-    # Also include content of active files if they exist
-    from pathlib import Path
-    memory_path = Path(svc._config.memory_path)
-
-    active_learnings = ""
-    active_social = ""
-    try:
-        al_path = memory_path / "active_learnings.md"
-        if al_path.exists():
-            active_learnings = al_path.read_text(encoding="utf-8")[:4000]
-    except Exception:
-        pass
-
-    try:
-        as_path = memory_path / "active_social_learnings.md"
-        if as_path.exists():
-            active_social = as_path.read_text(encoding="utf-8")[:2000]
-    except Exception:
-        pass
-
-    return {
-        **stats,
-        "active_learnings_preview": active_learnings,
-        "active_social_learnings_preview": active_social,
-    }
+    return EvolutionMemoryResponse.model_validate(
+        {
+            **svc.get_memory_stats(),
+            **svc.get_memory_previews(),
+        }
+    )
