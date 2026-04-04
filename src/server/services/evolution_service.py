@@ -137,12 +137,16 @@ class EvolutionService:
         except Exception as e:
             logger.error("EvolutionService: memory synthesis failed: {}", e)
 
+    def is_evolution_running(self) -> bool:
+        """Return whether an evolution session currently holds the service lock."""
+        return self._lock.locked()
+
     def get_status(self) -> dict[str, Any]:
         """Return current status of the evolution system."""
         return {
             "enabled": self._config.enabled,
             "running": self._running,
-            "evolution_in_progress": self._lock.locked(),
+            "evolution_in_progress": self.is_evolution_running(),
             "cron_expr": self._config.cron_expr,
             "interval_hours": self._config.interval_hours,
             "working_dir": self._config.working_dir,
@@ -159,7 +163,27 @@ class EvolutionService:
             self._engine = EvolutionEngine(self._config)
         return self._engine._memory.get_archive_stats()
 
+    def get_memory_previews(self) -> dict[str, str]:
+        """Return truncated previews of active memory files."""
+        return {
+            "active_learnings_preview": self._read_memory_preview("active_learnings.md", 4000),
+            "active_social_learnings_preview": self._read_memory_preview(
+                "active_social_learnings.md", 2000
+            ),
+        }
+
     # ─── Internal ───────────────────────────────────────────
+
+    def _read_memory_preview(self, filename: str, limit: int) -> str:
+        """Read a memory file preview without surfacing filesystem errors."""
+        path = Path(self._config.memory_path) / filename
+        try:
+            if not path.exists() or not path.is_file():
+                return ""
+            return path.read_text(encoding="utf-8")[:limit]
+        except Exception as e:
+            logger.warning("EvolutionService: failed to read memory preview '{}': {}", filename, e)
+            return ""
 
     async def _on_cron_job(self, job: CronJob) -> str | None:
         """Callback from CronService when a scheduled job fires."""
