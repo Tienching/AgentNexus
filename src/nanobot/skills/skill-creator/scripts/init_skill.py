@@ -22,18 +22,18 @@ ALLOWED_RESOURCES = {"scripts", "references", "assets"}
 
 SKILL_TEMPLATE = """---
 name: {skill_name}
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+description: Starter scaffold for {skill_name}. Replace this line with a short explanation of when to use the skill and what outcome it should produce.
 ---
 
 # {skill_title}
 
 ## Overview
 
-[TODO: 1-2 sentences explaining what this skill enables]
+Use this section to explain the job this skill handles, the inputs it expects, and the result it should produce.
 
 ## Structuring This Skill
 
-[TODO: Choose the structure that best fits this skill's purpose. Common patterns:
+Choose the structure that best fits this skill's purpose. Common patterns:
 
 **1. Workflow-Based** (best for sequential processes)
 - Works well when there are clear step-by-step procedures
@@ -55,17 +55,13 @@ description: [TODO: Complete and informative explanation of what the skill does 
 - Example: Product Management with "Core Capabilities" -> numbered capability list
 - Structure: ## Overview -> ## Core Capabilities -> ### 1. Feature -> ### 2. Feature...
 
-Patterns can be mixed and matched as needed. Most skills combine patterns (e.g., start with task-based, add workflow for complex operations).
+Patterns can be mixed and matched as needed. Most skills combine patterns (for example, start with task-based guidance and add a workflow for complex operations).
 
-Delete this entire "Structuring This Skill" section when done - it's just guidance.]
+Delete this entire "Structuring This Skill" section after you replace it with the sections that fit the finished skill.
 
 ## Quick Start
 
-[TODO: Add content here. See examples in existing skills:
-- Code samples for technical skills
-- Decision trees for complex workflows
-- Concrete examples with realistic user requests
-- References to scripts/templates/references as needed]
+Draft the shortest path through the skill here. Start with the first action, add a small example request, and point to any supporting scripts, references, or assets that the agent should use.
 
 ## Resources (optional)
 
@@ -109,20 +105,19 @@ Files not intended to be loaded into context, but rather used within the output 
 
 EXAMPLE_SCRIPT = '''#!/usr/bin/env python3
 """
-Example helper script for {skill_name}
+Starter helper script for {skill_name}
 
-This is a placeholder script that can be executed directly.
-Replace with actual implementation or delete if not needed.
+Replace main() with the workflow this skill should automate, or delete the file if the skill does not need executable helpers.
 
 Example real scripts from other skills:
 - pdf/scripts/fill_fillable_fields.py - Fills PDF form fields
 - pdf/scripts/convert_pdf_to_images.py - Converts PDF pages to images
 """
 
+
 def main():
-    print("This is an example script for {skill_name}")
-    # TODO: Add actual script logic here
-    # This could be data processing, file conversion, API calls, etc.
+    print("Update this script with the workflow for {skill_name}.")
+
 
 if __name__ == "__main__":
     main()
@@ -130,15 +125,14 @@ if __name__ == "__main__":
 
 EXAMPLE_REFERENCE = """# Reference Documentation for {skill_title}
 
-This is a placeholder for detailed reference documentation.
-Replace with actual reference content or delete if not needed.
+Use this file for longer guidance that does not fit in SKILL.md. Replace these sections with the facts, checklists, or API notes the skill should reference, or delete the file if it is unnecessary.
 
 Example real reference docs from other skills:
 - product-management/references/communication.md - Comprehensive guide for status updates
 - product-management/references/context_building.md - Deep-dive on gathering context
 - bigquery/references/ - API references and query examples
 
-## When Reference Docs Are Useful
+## What To Capture Here
 
 Reference docs are ideal for:
 - Comprehensive API documentation
@@ -147,7 +141,7 @@ Reference docs are ideal for:
 - Information too lengthy for main SKILL.md
 - Content that's only needed for specific use cases
 
-## Structure Suggestions
+## Suggested Outline
 
 ### API Reference Example
 - Overview
@@ -313,11 +307,11 @@ def init_skill(skill_name, path, resources, include_examples):
     # Print next steps
     print(f"\n[OK] Skill '{skill_name}' initialized successfully at {skill_dir}")
     print("\nNext steps:")
-    print("1. Edit SKILL.md to complete the TODO items and update the description")
+    print("1. Edit SKILL.md to describe when this skill should be used and how it should work")
     if resources:
         selected_resource_dirs = format_resource_dirs(resources)
         if include_examples:
-            print(f"2. Customize or delete the example files in {selected_resource_dirs}")
+            print(f"2. Replace or remove the example files in {selected_resource_dirs}")
         else:
             print(f"2. Add resources to {selected_resource_dirs} as needed")
     else:
