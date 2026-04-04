@@ -1,14 +1,5 @@
-Title: Replace mission router private bridge accessors
-Files: src/server/services/mission_bridge.py, src/server/routers/nexus_missions.py, tests/unit/test_nexus_missions.py
+Title: Align packaging metadata with the tested source tree
+Files: pyproject.toml, pytest.ini, tests/unit/test_project_metadata.py
 Issue: none
 
-Add public mission serialization helpers to `MissionBridge` and switch the missions router to explicit response models instead of raw dicts and `_mission_to_dict` access.
-
-Why: `src/server/routers/nexus_missions.py` currently depends on the bridge's private serializer and returns several untyped payloads. That makes the API contract brittle and blocks safe refactors of the mission service layer.
-
-Change:
-- In `src/server/services/mission_bridge.py`, expose public methods for mission detail and mission log/status payloads so the router no longer reaches into private internals.
-- In `src/server/routers/nexus_missions.py`, add response models for mission detail, mission status, mission list, and mission log endpoints, and route all responses through the new public bridge methods.
-- Cover the new payload shapes and 404 behavior with router-focused tests in `tests/unit/test_nexus_missions.py`.
-
-Verify with `python3 -m pytest tests/unit/test_nexus_missions.py -q`.
+Repair the metadata drift called out in the assessment so installs and quality gates describe the code that actually exists. In `pyproject.toml`, align `requires-python` with the supported interpreter floor confirmed by the passing test run, remove nonexistent `src/core` and `src/protocols` entries from the wheel/coverage configuration, and add missing core packages such as `src/nanobot` where appropriate. In `pytest.ini`, keep the active pytest defaults aligned with the authoritative test command so config does not silently live only under ignored pyproject settings. Add `tests/unit/test_project_metadata.py` to assert that configured package/source paths exist and that the declared Python floor matches the supported runtime policy. Verify with `python3 -m pytest tests/unit/test_project_metadata.py -q`.

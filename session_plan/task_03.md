@@ -1,14 +1,5 @@
-Title: Remove evolution router dependence on private service state
-Files: src/server/services/evolution_service.py, src/server/routers/nexus_evolution.py, tests/unit/test_nexus_evolution.py
+Title: Reuse runtime version in API health surfaces
+Files: src/server/app.py, src/server/routers/health.py, tests/unit/test_health_checks.py
 Issue: none
 
-Add public inspection methods on `EvolutionService` and convert the evolution router to typed responses that no longer read `_lock` or `_config` directly.
-
-Why: `src/server/routers/nexus_evolution.py` currently depends on private attributes for concurrency checks and memory previews. That couples the HTTP layer to service internals and makes status/memory endpoints fragile.
-
-Change:
-- In `src/server/services/evolution_service.py`, expose public helpers for "is evolution running" and for reading memory preview content safely.
-- In `src/server/routers/nexus_evolution.py`, add response models for trigger, synthesis, status, and memory endpoints and switch the handlers to those public helpers.
-- Add tests in `tests/unit/test_nexus_evolution.py` for the 409 path, success payloads, and memory preview behavior.
-
-Verify with `python3 -m pytest tests/unit/test_nexus_evolution.py -q`.
+Remove one slice of duplicated version metadata by making the FastAPI app and `/health` responses read from `src.runtime.__version__` instead of repeating `0.1.0` inline. Update the `FastAPI(...)` declaration in `src/server/app.py` and both `HealthResponse` constructors in `src/server/routers/health.py`, then extend `tests/unit/test_health_checks.py` so the reported version is asserted against the runtime package version rather than a copied literal. Verify with `python3 -m pytest tests/unit/test_health_checks.py -q`.

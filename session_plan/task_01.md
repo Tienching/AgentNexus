@@ -1,14 +1,5 @@
-Title: Surface startup subsystem failures in /health
-Files: src/server/app.py, src/server/routers/health.py, tests/unit/test_health_checks.py
+Title: Make evolution pytest command interpreter-safe
+Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_engine_worktree.py
 Issue: none
 
-Record executor, scheduler, channel service, terminal manager, and evolution service startup outcomes during the FastAPI lifespan, then include those states in the structured /health response.
-
-Why: the app currently logs partial boot failures and keeps serving, but /health only reports Redis, memory, and disk. That can mark the system healthy while core orchestration subsystems are down.
-
-Change:
-- In `src/server/app.py`, persist per-subsystem startup state on `app.state` as each component initializes or fails.
-- In `src/server/routers/health.py`, add health checks that read those startup states and downgrade the overall status when a required subsystem failed to start.
-- Keep the payload structured so mission-control can see which subsystem is degraded and why.
-
-Verify with targeted tests for healthy and failed startup states in `tests/unit/test_health_checks.py`, then run `python3 -m pytest tests/unit/test_health_checks.py -q`.
+Create one authoritative pytest command for the self-evolution flow and stop hardcoding bare `python -m pytest` in an environment where only `python3 -m pytest` is reliable. Update the default assessment/conflict-resolution templates in `src/nanobot/evolve/prompts.py`, and update `run_task_in_worktree` plus `run_implementation_serial` in `src/nanobot/evolve/implementation.py` so they use the same resolved command (prefer `.venv/bin/python` when present, otherwise fall back to `python3`). Extend `tests/evolve/test_engine_worktree.py` to assert the executor prompt and post-run verification both use the authoritative command. Verify with `python3 -m pytest tests/evolve/test_engine_worktree.py tests/evolve/test_prompts.py -q`.
