@@ -437,3 +437,43 @@ error: The following untracked
    - That increases drift risk as the platform surface grows.
 
 ---
+
+## Session 11 — 2026-04-04 08:00 UTC
+
+**Duration:** 885s
+
+**Tasks:** 3 completed, 0 failed
+
+
+### Completed
+
+- Surface startup subsystem failures in /health
+- Replace mission router private bridge accessors
+- Remove evolution router dependence on private service state
+
+### Gaps Identified
+1. **Health and observability are still shallower than the runtime they report.**
+   - App startup intentionally logs and continues if executor, scheduler, channel service, terminal manager, or evolution service fail to initialize.
+   - `/health` only checks Redis, process memory, and disk space. It does not expose whether those orchestration subsystems are actually up.
+   - Result: a partial boot failure can look healthier than it really is.
+
+2. **API stability still depends on internal/private contracts.**
+   - Mission and evolution routers return raw dicts for many endpoints instead of consistently modeled responses.
+   - Routers also reach into private internals such as `bridge._mission_to_dict`, `svc._lock`, and `svc._config`.
+   - That makes refactors harder and increases contract drift risk between backend and dashboard surfaces.
+
+3. **Runtime and packaging contracts are not aligned.**
+   - `pyproject.toml` declares Python `>=3.11`, but the passing test run used Python 3.10.12 in this environment.
+   - The exact `python -m pytest` self-test command is brittle here, and pytest config is split between `pytest.ini` and `pyproject.toml`.
+   - This is operational debt around developer experience and automation trust.
+
+4. **Self-memory freshness is lagging recent work.**
+   - `memory/active_learnings.md` stops at Day 8, while git and journal history show Day 9 and Day 10 activity.
+   - For a self-evolving system, stale active memory weakens planning quality and session-to-session continuity.
+
+5. **Skill scaffolds are cleaner than before, but documentation quality is still mostly manual.**
+   - `init_skill.py` now produces a generic starter document rather than raw TODO placeholders, which is an improvement.
+   - `quick_validate.py` mainly validates frontmatter, name, description, and placeholder markers; it does not verify that the generated Overview/Quick Start/resource sections were actually customized.
+   - Result: scaffold output is safer, but still easy to leave half-generic.
+
+---
