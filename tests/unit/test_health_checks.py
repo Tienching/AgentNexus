@@ -17,6 +17,7 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -238,6 +239,58 @@ class TestPerformHealthCheck:
         assert result.status == "healthy"
         assert len(result.checks) == 3
 
+    def test_includes_startup_subsystem_checks(self):
+        healthy = HealthCheck(name="X", status="healthy", message="OK")
+        startup_states = {
+            "task_executor": {
+                "name": "Task Executor",
+                "status": "healthy",
+                "message": "Started",
+                "required": True,
+                "detail": {"phase": "startup"},
+            },
+            "channel_service": {
+                "name": "Channel Service",
+                "status": "healthy",
+                "message": "No channels configured",
+                "required": False,
+                "detail": {"configured": False},
+            },
+        }
+        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+             patch("src.server.routers.health._check_process_memory", return_value=healthy), \
+             patch("src.server.routers.health._check_disk_space", return_value=healthy):
+            result = _perform_health_check(startup_states=startup_states)
+
+        checks_by_name = {check.name: check for check in result.checks}
+        assert checks_by_name["Task Executor"].status == "healthy"
+        assert checks_by_name["Task Executor"].detail["phase"] == "startup"
+        assert checks_by_name["Channel Service"].detail["configured"] is False
+
+    def test_failed_required_startup_subsystem_degrades_overall(self):
+        healthy = HealthCheck(name="X", status="healthy", message="OK")
+        startup_states = {
+            "task_executor": {
+                "name": "Task Executor",
+                "status": "unhealthy",
+                "message": "Startup failed: executor boom",
+                "required": True,
+                "detail": {"error": "executor boom"},
+            }
+        }
+        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+             patch("src.server.routers.health._check_process_memory", return_value=healthy), \
+             patch("src.server.routers.health._check_disk_space", return_value=healthy):
+            result = _perform_health_check(startup_states=startup_states)
+
+        assert result.status == "unhealthy"
+        assert any(
+            check.name == "Task Executor"
+            and check.status == "unhealthy"
+            and check.detail["error"] == "executor boom"
+            for check in result.checks
+        )
+
     def test_one_warning_degrades_overall(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
         warn = HealthCheck(name="Redis", status="warning", message="slow")
@@ -297,6 +350,7 @@ class TestHealthRoute:
     async def test_health_route_returns_health_response(self):
         from src.server.routers.health import health_check
 
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(startup_subsystems={})))
         healthy = HealthCheck(name="X", status="healthy", message="OK")
         with patch(
             "src.server.routers.health._perform_health_check",
@@ -307,7 +361,7 @@ class TestHealthRoute:
                 checks=[healthy],
             ),
         ):
-            result = await health_check()
+            result = await health_check(request)
 
         assert isinstance(result, HealthResponse)
         assert result.status == "healthy"
@@ -317,6 +371,7 @@ class TestHealthRoute:
     async def test_health_route_degraded_when_redis_down(self):
         from src.server.routers.health import health_check
 
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(startup_subsystems={})))
         bad = HealthCheck(name="Redis", status="unhealthy", message="down")
         with patch(
             "src.server.routers.health._perform_health_check",
@@ -327,7 +382,7 @@ class TestHealthRoute:
                 checks=[bad],
             ),
         ):
-            result = await health_check()
+            result = await health_check(request)
 
         assert result.status == "unhealthy"
 
@@ -336,17 +391,50 @@ class TestHealthRoute:
         from fastapi.responses import JSONResponse
         from src.server.routers.health import health_check
 
+        request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(startup_subsystems={})))
         with patch(
             "src.server.routers.health._perform_health_check",
             side_effect=RuntimeError("redis boot failed"),
         ):
-            result = await health_check()
+            result = await health_check(request)
 
         assert isinstance(result, JSONResponse)
         assert result.status_code == 503
         payload = json.loads(result.body)
         assert payload["status"] == "error"
         assert payload["checks"][0]["detail"]["hint"]
+
+    @pytest.mark.asyncio
+    async def test_health_route_reads_startup_states_from_app_state(self):
+        from src.server.routers.health import health_check
+
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    startup_subsystems={
+                        "task_executor": {
+                            "name": "Task Executor",
+                            "status": "unhealthy",
+                            "message": "Startup failed: executor boom",
+                            "required": True,
+                            "detail": {"error": "executor boom"},
+                        }
+                    }
+                )
+            )
+        )
+        healthy = HealthCheck(name="Redis", status="healthy", message="OK")
+
+        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+             patch("src.server.routers.health._check_process_memory", return_value=healthy), \
+             patch("src.server.routers.health._check_disk_space", return_value=healthy):
+            result = await health_check(request)
+
+        assert result.status == "unhealthy"
+        assert any(
+            check.name == "Task Executor" and check.detail["error"] == "executor boom"
+            for check in result.checks
+        )
 
 
 class TestHealthCliStatus:

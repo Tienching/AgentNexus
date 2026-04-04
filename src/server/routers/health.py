@@ -20,9 +20,9 @@ import os
 import resource
 import subprocess
 import time
-from typing import List
+from typing import Any, List, Mapping
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from ..models import HealthCheck, HealthResponse, MetricsResponse
@@ -41,6 +41,15 @@ def _worst(statuses: List[str]) -> str:
     """Return the most severe status from *statuses*."""
     rank = {s: i for i, s in enumerate(_STATUS_ORDER)}
     return max(statuses, key=lambda s: rank.get(s, 0), default="healthy")
+
+
+_STARTUP_SUBSYSTEM_ORDER = [
+    "task_executor",
+    "task_scheduler",
+    "channel_service",
+    "terminal_manager",
+    "evolution_service",
+]
 
 
 # ─── individual check helpers ────────────────────────────────────────────────
@@ -192,7 +201,68 @@ def _check_disk_space() -> HealthCheck:
 _START_TIME = time.monotonic()
 
 
-def _perform_health_check() -> HealthResponse:
+def _build_startup_subsystem_checks(
+    startup_states: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[List[HealthCheck], List[str]]:
+    checks: List[HealthCheck] = []
+    required_failure_statuses: List[str] = []
+
+    if not startup_states:
+        return checks, required_failure_statuses
+
+    for subsystem in _STARTUP_SUBSYSTEM_ORDER:
+        state = startup_states.get(subsystem)
+        if not state:
+            continue
+
+        status = str(state.get("status", "unknown"))
+        required = bool(state.get("required", False))
+        detail = dict(state.get("detail") or {})
+        detail.setdefault("subsystem", subsystem)
+        detail.setdefault("required", required)
+        detail.setdefault("startup_status", status)
+
+        checks.append(
+            HealthCheck(
+                name=str(state.get("name") or subsystem),
+                status=status,
+                message=str(state.get("message") or ""),
+                detail=detail,
+            )
+        )
+
+        if required and status not in {"healthy", "disabled"}:
+            required_failure_statuses.append(status)
+
+    for subsystem, state in startup_states.items():
+        if subsystem in _STARTUP_SUBSYSTEM_ORDER or not state:
+            continue
+
+        status = str(state.get("status", "unknown"))
+        required = bool(state.get("required", False))
+        detail = dict(state.get("detail") or {})
+        detail.setdefault("subsystem", subsystem)
+        detail.setdefault("required", required)
+        detail.setdefault("startup_status", status)
+
+        checks.append(
+            HealthCheck(
+                name=str(state.get("name") or subsystem),
+                status=status,
+                message=str(state.get("message") or ""),
+                detail=detail,
+            )
+        )
+
+        if required and status not in {"healthy", "disabled"}:
+            required_failure_statuses.append(status)
+
+    return checks, required_failure_statuses
+
+
+def _perform_health_check(
+    startup_states: Mapping[str, Mapping[str, Any]] | None = None,
+) -> HealthResponse:
     """Run all subsystem checks and assemble the HealthResponse.
 
     Ported from mission-control performHealthCheck (commits 4eda03a / afa8e9d).
@@ -202,8 +272,10 @@ def _perform_health_check() -> HealthResponse:
         _check_process_memory(),
         _check_disk_space(),
     ]
+    startup_checks, startup_failures = _build_startup_subsystem_checks(startup_states)
+    checks.extend(startup_checks)
 
-    overall = _worst([c.status for c in checks])
+    overall = _worst([c.status for c in checks[:3]] + startup_failures)
 
     return HealthResponse(
         status=overall,
@@ -240,7 +312,7 @@ def _build_health_error_response(exc: Exception) -> HealthResponse:
 # ─── routes ──────────────────────────────────────────────────────────────────
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(request: Request):
     """Health check endpoint with structured subsystem checks.
 
     Returns overall status (healthy / warning / unhealthy / critical) and a
@@ -248,7 +320,8 @@ async def health_check():
     performHealthCheck (commits 4eda03a / afa8e9d).
     """
     try:
-        return _perform_health_check()
+        startup_states = getattr(request.app.state, "startup_subsystems", {})
+        return _perform_health_check(startup_states=startup_states)
     except Exception as exc:
         logger.error("Health endpoint failed before completion", exc_info=True)
         payload = _build_health_error_response(exc)
