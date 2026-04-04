@@ -3,7 +3,7 @@ name = "agent-nexus"
 version = "0.1.0"
 description = "Agent Nexus - Multi-provider CLI wrapper with AG-UI SSE streaming"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.24.0",
@@ -80,17 +80,12 @@ target-version = "py311"
 line-length = 100
 target-version = ["py311"]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-pythonpath = ["."]
-
 [tool.coverage.run]
-source = ["src/server", "src/runtime", "src/core", "src/providers", "src/protocols"]
+source = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server"]
 omit = ["*/tests/*"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/server", "src/runtime", "src/core", "src/providers", "src/protocols", "src/channels"]
+packages = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server"]
 
 [tool.uv.sources]
 
