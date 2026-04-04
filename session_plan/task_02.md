@@ -1,7 +1,14 @@
-Title: Reject invalid milestone dependency graphs
-Files: src/nanobot/mission/planner.py, tests/unit/test_mission_planner.py
+Title: Replace mission router private bridge accessors
+Files: src/server/services/mission_bridge.py, src/server/routers/nexus_missions.py, tests/unit/test_nexus_missions.py
 Issue: none
 
-Extend `MissionPlanner._validate_plan()` to validate milestone-level `depends_on` edges before a plan is accepted. In addition to the existing task-level checks, reject unknown milestone IDs, self-dependencies, and cross-milestone cycles so the orchestration layer cannot emit an invalid milestone DAG.
+Add public mission serialization helpers to `MissionBridge` and switch the missions router to explicit response models instead of raw dicts and `_mission_to_dict` access.
 
-Keep the implementation inside `MissionPlanner` and add focused tests that exercise `_parse_plan()` / `_validate_plan()` with minimal plans: one valid dependency chain, one missing milestone reference, one self-dependency, and one cycle across milestones. The goal is to catch bad mission graphs before scheduling starts. Verify with `python3 -m pytest tests/unit/test_mission_planner.py -q`.
+Why: `src/server/routers/nexus_missions.py` currently depends on the bridge's private serializer and returns several untyped payloads. That makes the API contract brittle and blocks safe refactors of the mission service layer.
+
+Change:
+- In `src/server/services/mission_bridge.py`, expose public methods for mission detail and mission log/status payloads so the router no longer reaches into private internals.
+- In `src/server/routers/nexus_missions.py`, add response models for mission detail, mission status, mission list, and mission log endpoints, and route all responses through the new public bridge methods.
+- Cover the new payload shapes and 404 behavior with router-focused tests in `tests/unit/test_nexus_missions.py`.
+
+Verify with `python3 -m pytest tests/unit/test_nexus_missions.py -q`.

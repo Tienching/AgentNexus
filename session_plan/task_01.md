@@ -1,7 +1,14 @@
-Title: Unify pytest command resolution in evolve prompts
-Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_prompts.py
+Title: Surface startup subsystem failures in /health
+Files: src/server/app.py, src/server/routers/health.py, tests/unit/test_health_checks.py
 Issue: none
 
-Introduce one shared pytest command resolution path for the self-evolution flow so this repo stops instructing itself to run `python -m pytest` on an environment where bare `python` points at Python 2. Update the default prompt templates in `DEFAULT_TEMPLATES`, the rendering path in `build_assessment_prompt()`, `build_implementation_prompt()`, and `build_conflict_resolution_prompt()`, plus the execution entrypoints `run_task_in_worktree()` and `run_implementation_serial()` so assessment, implementation, and conflict resolution all use the same resolved command.
+Record executor, scheduler, channel service, terminal manager, and evolution service startup outcomes during the FastAPI lifespan, then include those states in the structured /health response.
 
-Keep the change focused on consistency and operability: the assessment prompt, implementation prompt, and post-change verification should all agree on the same command string. Add regression coverage in `tests/evolve/test_prompts.py` that asserts the generated prompts include the resolved pytest command and no longer hardcode the broken `python -m pytest` fallback in this environment. Verify with `python3 -m pytest tests/evolve/test_prompts.py -q`.
+Why: the app currently logs partial boot failures and keeps serving, but /health only reports Redis, memory, and disk. That can mark the system healthy while core orchestration subsystems are down.
+
+Change:
+- In `src/server/app.py`, persist per-subsystem startup state on `app.state` as each component initializes or fails.
+- In `src/server/routers/health.py`, add health checks that read those startup states and downgrade the overall status when a required subsystem failed to start.
+- Keep the payload structured so mission-control can see which subsystem is degraded and why.
+
+Verify with targeted tests for healthy and failed startup states in `tests/unit/test_health_checks.py`, then run `python3 -m pytest tests/unit/test_health_checks.py -q`.

@@ -1,7 +1,14 @@
-Title: Remove remaining scaffold TODO placeholders
-Files: src/nanobot/skills/skill-creator/scripts/init_skill.py, tests/unit/test_init_skill.py
+Title: Remove evolution router dependence on private service state
+Files: src/server/services/evolution_service.py, src/server/routers/nexus_evolution.py, tests/unit/test_nexus_evolution.py
 Issue: none
 
-Tighten the generated skill scaffold so it starts from concrete starter guidance instead of unfinished TODO prose. Update the template constants `SKILL_TEMPLATE`, `EXAMPLE_SCRIPT`, and `EXAMPLE_REFERENCE`, plus the next-step output from `init_skill()`, so a newly generated skill explains what to fill in next without shipping placeholder text that looks incomplete.
+Add public inspection methods on `EvolutionService` and convert the evolution router to typed responses that no longer read `_lock` or `_config` directly.
 
-Keep the scope small: do not redesign the scaffold, just replace the remaining placeholder wording with actionable defaults. Extend `tests/unit/test_init_skill.py` to assert generated `SKILL.md` and example resource files no longer contain the current TODO markers while still mentioning only the selected resource directories. Verify with `python3 -m pytest tests/unit/test_init_skill.py -q`.
+Why: `src/server/routers/nexus_evolution.py` currently depends on private attributes for concurrency checks and memory previews. That couples the HTTP layer to service internals and makes status/memory endpoints fragile.
+
+Change:
+- In `src/server/services/evolution_service.py`, expose public helpers for "is evolution running" and for reading memory preview content safely.
+- In `src/server/routers/nexus_evolution.py`, add response models for trigger, synthesis, status, and memory endpoints and switch the handlers to those public helpers.
+- Add tests in `tests/unit/test_nexus_evolution.py` for the 409 path, success payloads, and memory preview behavior.
+
+Verify with `python3 -m pytest tests/unit/test_nexus_evolution.py -q`.
