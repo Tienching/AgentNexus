@@ -25,6 +25,7 @@ router = APIRouter(
 
 class MissionCreateRequest(BaseModel):
     """Request body for creating/planning a mission."""
+
     goal: str = Field(..., description="Goal description for the mission")
     workspace: Optional[str] = Field(None, description="Working directory path")
     auto_approve: bool = Field(False, description="If True, plan + start immediately")
@@ -33,8 +34,79 @@ class MissionCreateRequest(BaseModel):
 
 class MissionActionResponse(BaseModel):
     """Generic action response."""
+
     ok: bool
     message: str
+
+
+class MissionTaskTokenUsageResponse(BaseModel):
+    total_tokens: int
+    llm_iterations: int
+
+
+class MissionTaskResultResponse(BaseModel):
+    status: str
+    error: str | None = None
+    duration_seconds: float
+    token_usage: MissionTaskTokenUsageResponse
+
+
+class MissionTaskResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    role: str
+    status: str
+    depends_on: list[str] = Field(default_factory=list)
+    result: MissionTaskResultResponse | None = None
+
+
+class MissionMilestoneResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    status: str
+    depends_on: list[str] = Field(default_factory=list)
+    tasks: list[MissionTaskResponse] = Field(default_factory=list)
+
+
+class MissionTokenUsageResponse(BaseModel):
+    total_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+    llm_iterations: int
+    estimated_cost_usd: float
+
+
+class MissionDetailResponse(BaseModel):
+    id: str
+    goal: str
+    mission_type: str
+    status: str
+    milestones: list[MissionMilestoneResponse] = Field(default_factory=list)
+    total_tasks: int
+    completed_tasks: int
+    progress_pct: float
+    wall_clock_display: str
+    token_usage: MissionTokenUsageResponse
+    error: str | None = None
+    created_at_ms: int
+    updated_at_ms: int
+
+
+class MissionStatusResponse(BaseModel):
+    mission_id: str
+    status_text: str
+
+
+class MissionListResponse(BaseModel):
+    missions_text: str
+
+
+class MissionLogResponse(BaseModel):
+    mission_id: str
+    entries: list[str] = Field(default_factory=list)
+    count: int
 
 
 # ── Helpers ────────────────────────────────────────────────────────
@@ -42,19 +114,21 @@ class MissionActionResponse(BaseModel):
 def _get_bridge():
     """Get MissionBridge singleton."""
     from ..services.mission_bridge import MissionBridge
+
     return MissionBridge.get_instance()
 
 
 def _check_enabled():
     """Raise 503 if missions are disabled."""
     from ..config import settings
+
     if not settings.nanobot_missions_enabled:
         raise HTTPException(status_code=503, detail="Mission system is disabled")
 
 
 # ── Endpoints ──────────────────────────────────────────────────────
 
-@router.post("/missions")
+@router.post("/missions", response_model=MissionDetailResponse)
 async def create_mission(req: MissionCreateRequest):
     """Create (plan) a new mission, optionally auto-approving it."""
     _check_enabled()
@@ -72,12 +146,12 @@ async def create_mission(req: MissionCreateRequest):
                 workspace=req.workspace,
                 context=req.context,
             )
-        return data
+        return MissionDetailResponse(**data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/missions/{mission_id}/approve")
+@router.post("/missions/{mission_id}/approve", response_model=MissionActionResponse)
 async def approve_mission(mission_id: str):
     """Approve a planned mission and start execution."""
     _check_enabled()
@@ -91,40 +165,40 @@ async def approve_mission(mission_id: str):
     return MissionActionResponse(ok=True, message=f"Mission {mission_id} approved and started")
 
 
-@router.get("/missions/{mission_id}")
+@router.get("/missions/{mission_id}", response_model=MissionDetailResponse)
 async def get_mission(mission_id: str):
     """Get mission detail with formatted status."""
     _check_enabled()
     bridge = _get_bridge()
-    mission = bridge.get_mission_raw(mission_id)
-    if not mission:
+    data = bridge.get_mission_detail(mission_id)
+    if not data:
         raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found")
-    return bridge._mission_to_dict(mission)
+    return MissionDetailResponse(**data)
 
 
-@router.get("/missions/{mission_id}/status")
+@router.get("/missions/{mission_id}/status", response_model=MissionStatusResponse)
 async def get_mission_status(mission_id: str):
     """Get formatted mission status (markdown)."""
     _check_enabled()
     bridge = _get_bridge()
-    text = await bridge.status(mission_id)
-    if not text:
+    payload = await bridge.get_status_payload(mission_id)
+    if not payload:
         raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found")
-    return {"mission_id": mission_id, "status_text": text}
+    return MissionStatusResponse(**payload)
 
 
-@router.get("/missions")
+@router.get("/missions", response_model=MissionListResponse)
 async def list_missions(
     include_completed: bool = Query(False, description="Include completed/failed/cancelled"),
 ):
     """List all missions."""
     _check_enabled()
     bridge = _get_bridge()
-    text = await bridge.list_missions(include_completed=include_completed)
-    return {"missions_text": text}
+    payload = await bridge.get_mission_list_payload(include_completed=include_completed)
+    return MissionListResponse(**payload)
 
 
-@router.post("/missions/{mission_id}/cancel")
+@router.post("/missions/{mission_id}/cancel", response_model=MissionActionResponse)
 async def cancel_mission(mission_id: str):
     """Cancel a mission."""
     _check_enabled()
@@ -135,7 +209,7 @@ async def cancel_mission(mission_id: str):
     return MissionActionResponse(ok=True, message=f"Mission {mission_id} cancelled")
 
 
-@router.post("/missions/{mission_id}/pause")
+@router.post("/missions/{mission_id}/pause", response_model=MissionActionResponse)
 async def pause_mission(mission_id: str):
     """Pause a running mission."""
     _check_enabled()
@@ -146,7 +220,7 @@ async def pause_mission(mission_id: str):
     return MissionActionResponse(ok=True, message=f"Mission {mission_id} paused")
 
 
-@router.post("/missions/{mission_id}/resume")
+@router.post("/missions/{mission_id}/resume", response_model=MissionActionResponse)
 async def resume_mission(mission_id: str):
     """Resume a paused mission."""
     _check_enabled()
@@ -157,7 +231,7 @@ async def resume_mission(mission_id: str):
     return MissionActionResponse(ok=True, message=f"Mission {mission_id} resumed")
 
 
-@router.get("/missions/{mission_id}/log")
+@router.get("/missions/{mission_id}/log", response_model=MissionLogResponse)
 async def get_mission_log(
     mission_id: str,
     tail: Optional[int] = Query(None, description="Show only last N log entries"),
@@ -165,7 +239,7 @@ async def get_mission_log(
     """Get mission log entries."""
     _check_enabled()
     bridge = _get_bridge()
-    entries = bridge.get_log(mission_id, tail=tail)
-    if entries is None:
+    payload = bridge.get_mission_log_payload(mission_id, tail=tail)
+    if not payload:
         raise HTTPException(status_code=404, detail=f"Mission {mission_id} not found")
-    return {"mission_id": mission_id, "entries": entries, "count": len(entries)}
+    return MissionLogResponse(**payload)

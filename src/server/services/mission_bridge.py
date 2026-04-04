@@ -74,25 +74,24 @@ class MissionBridge:
         goal: str,
         workspace: str | None = None,
         context: str = "",
-    ) -> dict:
-        """Plan a mission (status=planned). Returns dict representation."""
+    ) -> dict[str, Any]:
+        """Plan a mission (status=planned). Returns detail payload."""
         svc = self.service
-        # Override workspace if provided
         if workspace:
             svc.store = type(svc.store)(Path(workspace) / "missions.json")
             svc.planner.workspace = Path(workspace)
             svc.executor.workspace = Path(workspace)
 
         mission = await svc.plan_mission(goal=goal, context=context)
-        return self._mission_to_dict(mission)
+        return self.serialize_mission_detail(mission)
 
     async def start(
         self,
         goal: str,
         workspace: str | None = None,
         context: str = "",
-    ) -> dict:
-        """Plan + auto-approve + start execution. Returns dict."""
+    ) -> dict[str, Any]:
+        """Plan + auto-approve + start execution. Returns detail payload."""
         svc = self.service
         if workspace:
             svc.store = type(svc.store)(Path(workspace) / "missions.json")
@@ -100,7 +99,7 @@ class MissionBridge:
             svc.executor.workspace = Path(workspace)
 
         mission = await svc.start_mission(goal=goal, context=context)
-        return self._mission_to_dict(mission)
+        return self.serialize_mission_detail(mission)
 
     async def approve(self, mission_id: str) -> bool:
         """Approve a planned mission and start execution."""
@@ -131,24 +130,59 @@ class MissionBridge:
         return await self.service.resume_mission(mission_id)
 
     def get_mission_raw(self, mission_id: str) -> Any:
-        """Get raw Mission object (for REST API serialization)."""
+        """Get raw Mission object."""
         return self.service.get_mission(mission_id)
+
+    def get_mission_detail(self, mission_id: str) -> dict[str, Any] | None:
+        """Get serialized mission detail payload."""
+        mission = self.get_mission_raw(mission_id)
+        if not mission:
+            return None
+        return self.serialize_mission_detail(mission)
+
+    async def get_status_payload(self, mission_id: str) -> dict[str, Any] | None:
+        """Get response payload for the mission status endpoint."""
+        text = await self.status(mission_id)
+        if text is None:
+            return None
+        return {"mission_id": mission_id, "status_text": text}
+
+    async def get_mission_list_payload(self, include_completed: bool = True) -> dict[str, Any]:
+        """Get response payload for the mission list endpoint."""
+        text = await self.list_missions(include_completed=include_completed)
+        return {"missions_text": text}
 
     def get_log(self, mission_id: str, tail: int | None = None) -> list[str]:
         """Get mission log entries."""
         mission = self.service.get_mission(mission_id)
         if not mission:
             return []
-        entries = mission.log
-        if tail and tail > 0:
-            entries = entries[-tail:]
-        return entries
+        return self._slice_log_entries(mission.log, tail)
+
+    def get_mission_log_payload(self, mission_id: str, tail: int | None = None) -> dict[str, Any] | None:
+        """Get response payload for the mission log endpoint."""
+        mission = self.service.get_mission(mission_id)
+        if not mission:
+            return None
+
+        entries = self._slice_log_entries(mission.log, tail)
+        return {
+            "mission_id": mission_id,
+            "entries": entries,
+            "count": len(entries),
+        }
 
     # ── Serialization helpers ──────────────────────────────────────────
 
     @staticmethod
-    def _mission_to_dict(mission: Any) -> dict:
-        """Convert a Mission dataclass to a JSON-serializable dict."""
+    def _slice_log_entries(entries: list[str], tail: int | None = None) -> list[str]:
+        if tail and tail > 0:
+            return entries[-tail:]
+        return entries
+
+    @staticmethod
+    def serialize_mission_detail(mission: Any) -> dict[str, Any]:
+        """Convert a Mission dataclass to a JSON-serializable detail payload."""
         milestones = []
         for ms in mission.milestones:
             tasks = []
@@ -203,3 +237,8 @@ class MissionBridge:
             "created_at_ms": mission.created_at_ms,
             "updated_at_ms": mission.updated_at_ms,
         }
+
+    @staticmethod
+    def _mission_to_dict(mission: Any) -> dict[str, Any]:
+        """Backward-compatible alias for mission detail serialization."""
+        return MissionBridge.serialize_mission_detail(mission)
