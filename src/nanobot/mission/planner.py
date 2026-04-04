@@ -216,6 +216,18 @@ class MissionPlanner:
         if not milestones:
             raise ValueError("Plan has no milestones")
 
+        milestone_ids = {milestone.id for milestone in milestones}
+        for ms in milestones:
+            for dep in ms.depends_on:
+                if dep not in milestone_ids:
+                    raise ValueError(
+                        f"Milestone '{ms.title}' depends on '{dep}' which doesn't exist"
+                    )
+                if dep == ms.id:
+                    raise ValueError(f"Milestone '{ms.title}' depends on itself")
+
+        self._check_milestone_cycles(milestones)
+
         for ms in milestones:
             if not ms.tasks:
                 raise ValueError(f"Milestone '{ms.title}' has no tasks")
@@ -242,6 +254,33 @@ class MissionPlanner:
 
             # Detect DAG cycles
             self._check_dag_cycles(ms)
+
+    @staticmethod
+    def _check_milestone_cycles(milestones: list[Milestone]) -> None:
+        """Detect cycles in milestone dependency graph using DFS."""
+        adjacency: dict[str, list[str]] = {
+            milestone.id: list(milestone.depends_on) for milestone in milestones
+        }
+        WHITE, GRAY, BLACK = 0, 1, 2
+        color: dict[str, int] = {milestone_id: WHITE for milestone_id in adjacency}
+
+        def dfs(node: str) -> str | None:
+            color[node] = GRAY
+            for dep in adjacency.get(node, []):
+                if color[dep] == GRAY:
+                    return f"{node} -> {dep}"
+                if color[dep] == WHITE:
+                    result = dfs(dep)
+                    if result:
+                        return result
+            color[node] = BLACK
+            return None
+
+        for milestone_id in adjacency:
+            if color[milestone_id] == WHITE:
+                cycle = dfs(milestone_id)
+                if cycle:
+                    raise ValueError(f"Milestone dependency cycle detected: {cycle}")
 
     @staticmethod
     def _check_dag_cycles(milestone: Milestone) -> None:
