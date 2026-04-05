@@ -1,81 +1,85 @@
-# Assessment — Day 13
+# Assessment — Day 15
 
 ## Build/Test Status
-- **Requested command:** `python -m pytest tests/ -x -q --tb=short` fails immediately in this environment with `/usr/bin/python: No module named pytest`.
-- **Supported interpreter:** `python3 -m pytest tests/ -x -q --tb=short` passes cleanly.
-- `python3 -m pytest tests/ --collect-only -q` reports **1679 collected tests**, so the source tree is green on Python 3, but the default self-evolution test entrypoint is still brittle.
+- **Mixed entrypoint health:** the exact requested command, `python -m pytest tests/ -x -q --tb=short`, fails in this environment before test collection with `/usr/bin/python: No module named pytest`.
+- **Green on supported interpreter:** `python3 -m pytest tests/ -q --tb=short` passed cleanly.
+- `python3 -m pytest tests/ --collect-only -o addopts=` reports **1,686 collected tests**.
+- Current package metadata targets Python 3.10+ in `pyproject.toml:6`, but the built-in evolution assessment prompt still hardcodes bare `python` in `src/nanobot/evolve/prompts.py:20`.
 
 ## Recent Changes (last 3 commits)
-- `941ebdc` Day 12: session wrap-up
-- `7c42c10` Day 12: Reuse runtime version in API health surfaces [worktree]
-- `cc1eb0a` Day 12: Align packaging metadata with the tested source tree [worktree]
+- `349ca22` Day 14: session wrap-up
+- `2629806` Day 14: Replace watchdog private runtime coupling [worktree]
+- `4333513` Day 14: Persist unexpected mission runner failures [worktree]
 
-Recent journal/memory context matches that history: the last few sessions have focused on surfacing subsystem health, tightening router/service boundaries, and keeping package metadata aligned with the tested runtime.
+Recent journal context is consistent with that history. The latest Day 14 entry still flags three unresolved themes: self-evolution command correctness, mission workspace isolation, and startup contract clarity (`JOURNAL.md:597`-`JOURNAL.md:617`).
 
 ## Codebase Size
-- `src/` contains **69,519** Python lines across **268** modules.
-- Requested key-module counts:
+- `src/` contains **69,587** Python lines across **268** modules.
+- Top-level module distribution:
+  - `src/runtime/`: **77** modules
+  - `src/server/`: **70** modules
+  - `src/nanobot/`: **70** modules
+  - `src/providers/`: **35** modules
+  - `src/channels/`: **16** modules
+- Requested key-module breakdown:
   - `src/nanobot/mission/`: **11** modules
   - `src/nanobot/cron/`: **3** modules
   - `src/nanobot/agent/`: **17** modules
   - `src/runtime/`: **77** modules
-- Supporting API surface is also large: `src/server/routers/` has **25** modules and `src/server/services/` has **32** modules.
 - Key entry points:
-  - FastAPI bootstrap: `src/server/app.py:394`
-  - CLI entrypoint: `src/runtime/plugins/cli/__init__.py:51`
+  - FastAPI app bootstrap: `src/server/app.py:394`
+  - App lifespan / subsystem startup: `src/server/app.py:98`
   - Agent loop: `src/nanobot/agent/loop.py:39`
-  - Mission orchestration: `src/nanobot/mission/service.py:24`
-  - Mission planning: `src/nanobot/mission/planner.py:115`
+  - Mission service: `src/nanobot/mission/service.py:24`
+  - Mission planner: `src/nanobot/mission/planner.py:115`
   - Cron service: `src/nanobot/cron/service.py:63`
-  - Runtime scheduler: `src/runtime/execution/scheduler.py:49`
+  - Runtime task scheduler: `src/runtime/execution/scheduler.py:49`
   - Evolution engine: `src/nanobot/evolve/runtime.py:49`
 
 ## Self-Test Results
-- The Python 3 run passed end to end. No failing tests surfaced.
-- Test breadth is strong: the collected suite covers evolve flows, integration APIs, provider routing, channels, health checks, missions, runtimes, storage, schedulers/watchdogs, and worktree behavior.
-- The codebase is structurally substantial rather than scaffold-only:
-  - `src/server/app.py:98` wires executor, scheduler, channels, terminal manager, and evolution startup into the FastAPI lifespan.
-  - `src/nanobot/agent/loop.py:53` builds the main orchestration loop around sessions, tools, missions, cron, MCP, and concurrent message handling.
-  - `src/nanobot/mission/planner.py:123` decomposes goals into milestone/task DAGs and validates dependency graphs in `src/nanobot/mission/planner.py:211`.
-  - `src/runtime/execution/scheduler.py:127` runs a background polling loop plus stale-task watchdog.
-- The main self-test weakness is environmental and prompt-driven, not a red test suite: default evolve prompts still tell the system to run the broken bare-`python` pytest command in `src/nanobot/evolve/prompts.py:19`.
+- The real suite is healthy on the supported interpreter: **1,686/1,686 tests passed** with `python3 -m pytest tests/ -q --tb=short`.
+- The failure is not product behavior; it is the autonomous verification contract. The assessment prompt still instructs the system to use the wrong interpreter in `src/nanobot/evolve/prompts.py:20`.
+- The core orchestration surfaces are substantial and exercised:
+  - `src/server/app.py:98` starts executor, scheduler, channel service, terminal manager, and evolution service from one FastAPI lifespan.
+  - `src/nanobot/agent/loop.py:53` composes sessions, tools, missions, cron, MCP, and concurrent request handling.
+  - `src/nanobot/mission/planner.py:211` validates milestone and task dependency graphs before execution.
+  - `src/runtime/execution/scheduler.py:127` runs both schedule polling and the stale-task watchdog.
 
 ## Capability Gaps
-1. **Startup error handling is observable but still permissive.**
-   - Required subsystems are started behind broad exception handling in `src/server/app.py:123` through `src/server/app.py:337`.
-   - Health reporting now exposes that state cleanly in `src/server/routers/health.py:206` through `src/server/routers/health.py:288`.
-   - That is good operational visibility, but the process contract is still “stay up in degraded mode” rather than “fail fast when core services are broken.”
+1. **Self-evolution is still environment-sensitive and file-contract driven.**
+   - Assessment and planning still depend on writing and reparsing markdown files in `src/nanobot/evolve/runtime.py:110` and `src/nanobot/evolve/runtime.py:144`-`src/nanobot/evolve/runtime.py:188`.
+   - If planning emits nothing usable, the engine falls back to a generic task in `src/nanobot/evolve/runtime.py:169`.
+   - The default assessment prompt still hardcodes the broken bare-`python` test command in `src/nanobot/evolve/prompts.py:20`.
 
-2. **The self-evolution control plane is still file-contract driven and environment-sensitive.**
-   - Assessment expects `session_plan/assessment.md` and planning parses `task_*.md` files line-by-line in `src/nanobot/evolve/runtime.py:110` through `src/nanobot/evolve/runtime.py:188`.
-   - If planning emits nothing usable, the engine falls back to a generic catch-all task in `src/nanobot/evolve/runtime.py:169`.
-   - Prompt templates still hardcode shell behavior in `src/nanobot/evolve/prompts.py:19`, including the wrong pytest entrypoint for this repo.
+2. **Mission workspace isolation is incomplete.**
+   - `MissionBridge` is a singleton in `src/server/services/mission_bridge.py:24`.
+   - Request-scoped workspace overrides mutate shared service state in `src/server/services/mission_bridge.py:80`-`src/server/services/mission_bridge.py:83` and `src/server/services/mission_bridge.py:96`-`src/server/services/mission_bridge.py:99`.
+   - `MissionRunner` captures its `store` at construction in `src/nanobot/mission/runner.py:25`-`src/nanobot/mission/runner.py:35`, so bridge-level store rebinding does not propagate to the runner.
 
-3. **Internal API stability is better at the router layer, but some service boundaries still depend on private internals.**
-   - `src/server/services/stale_task_watchdog.py:37` through `src/server/services/stale_task_watchdog.py:45` reaches into `executor._running_tasks`.
-   - The same watchdog mutates queue internals directly via `_redis` and `_update_task_status` in `src/server/services/stale_task_watchdog.py:113` through `src/server/services/stale_task_watchdog.py:150`.
-   - That works today, but it couples server services tightly to runtime storage implementation details.
+3. **Startup handling is observable, but the contract is still permissive.**
+   - `src/server/app.py:123`-`src/server/app.py:337` catches subsystem startup failures and keeps the API process alive.
+   - That is pragmatic, but it leaves the platform in “degraded but running” mode for required services unless operators inspect startup state explicitly.
 
-4. **Version/compatibility metadata is improved, but not fully centralized.**
-   - The API now uses `runtime_version` in `src/server/app.py:394` and `src/server/routers/health.py:282`.
-   - But runtime, CLI, and packaging still each define version information separately in `src/runtime/__init__.py:18`, `src/runtime/plugins/cli/__init__.py:35`, and `pyproject.toml:3`.
-   - That leaves room for future drift between what the package declares and what the CLI/API report.
+4. **Version/API identity is still split across packages.**
+   - Runtime exposes `0.1.0` in `src/runtime/__init__.py:18`.
+   - CLI also exposes `0.1.0` in `src/runtime/plugins/cli/__init__.py:35`.
+   - Nanobot still reports `0.1.4.post5` in `src/nanobot/__init__.py:5`.
+   - Packaging metadata says `0.1.0` in `pyproject.toml:3`. That is manageable now, but it invites drift as API and dashboard surfaces grow.
 
 ## Known Issues
-- **Obvious current bug:** the exact assessment/self-test command still fails in this environment because `python` does not resolve to a pytest-capable interpreter. The default evolve prompt still embeds that command in `src/nanobot/evolve/prompts.py:19`.
-- **Mission failure path is incomplete:** if `MissionRunner` raises an unexpected exception, `MissionService` logs it in `src/nanobot/mission/service.py:195` but does not mark the mission failed before cleanup in `src/nanobot/mission/service.py:197`. That can leave error state under-surfaced.
-- **TODO/FIXME/HACK search is noisy:** most grep hits are not backlog markers but legitimate `TaskStatus.TODO` references in task models/storage, such as `src/runtime/models/task_models.py:46` and `src/runtime/stores/task_storage.py:31`. Real unresolved markers in source are sparse; the meaningful functional one is the evolve prompt’s hardcoded test command.
-- **Scaffold/documentation quality is guarded, not guaranteed:** `src/nanobot/skills/skill-creator/scripts/quick_validate.py:118` through `src/nanobot/skills/skill-creator/scripts/quick_validate.py:129` explicitly rejects TODO placeholder text, which is good, but it also shows generated skill docs still rely on validation to stay clean.
+- **Confirmed bug:** the built-in assessment prompt still tells the system to run the wrong pytest entrypoint in `src/nanobot/evolve/prompts.py:20`.
+- **Likely mission bug:** workspace overrides in `src/server/services/mission_bridge.py:80`-`src/server/services/mission_bridge.py:83` and `src/server/services/mission_bridge.py:96`-`src/server/services/mission_bridge.py:99` do not update the runner store held in `src/nanobot/mission/runner.py:35`.
+- **No meaningful comment backlog surfaced in `src/`.** A targeted `# TODO|FIXME|HACK` scan returned no real unresolved engineering comments. Most broad matches were false positives from `TaskStatus.TODO` strings rather than actionable code markers.
+- **Test/coverage policy is broad but not explicit.** `pytest.ini:8` defines strict default pytest behavior, and coverage sources exist in `pyproject.toml:83`-`pyproject.toml:88`, but there is no enforced coverage threshold in the default test gate.
 
 ## Recommended Focus
-1. **Fix the self-evolution pytest command everywhere it is hardcoded.**
-   - Highest leverage because it directly affects autonomous assessment, implementation, and conflict-resolution reliability.
-   - Primary file: `src/nanobot/evolve/prompts.py:19`.
+1. **Fix the self-evolution test command first.**
+   - Align the assessment/planning prompts with the interpreter that actually passes in this repo, starting at `src/nanobot/evolve/prompts.py:20`.
 
-2. **Harden mission failure-state reporting.**
-   - Ensure unexpected runner exceptions transition missions to a durable failed state with stored error details instead of only logging.
-   - Primary file: `src/nanobot/mission/service.py:187`.
+2. **Repair MissionBridge workspace isolation and add regression coverage.**
+   - Make workspace selection request-scoped, or fully rebind all mission-service dependencies including the runner store.
+   - Primary files: `src/server/services/mission_bridge.py:24` and `src/nanobot/mission/runner.py:25`.
 
-3. **Replace remaining watchdog/runtime private-member coupling with public APIs.**
-   - This would reduce cross-layer fragility and make the scheduler/watchdog path safer to refactor.
-   - Primary file: `src/server/services/stale_task_watchdog.py:30`.
+3. **Decide and codify the startup failure policy.**
+   - If executor, scheduler, channel service, terminal manager, and evolution are required, boot should fail loudly. If degraded mode is intended, expose it as a first-class contract instead of an implementation side effect.
+   - Primary file: `src/server/app.py:98`.

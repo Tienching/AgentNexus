@@ -1,9 +1,11 @@
-Title: Replace watchdog private runtime coupling
-Files: src/server/services/stale_task_watchdog.py, src/runtime/execution/task_executor.py, src/runtime/stores/task_storage.py
+Title: Codify startup failure policy for required subsystems
+Files: src/server/app.py, tests/unit/test_health_checks.py, tests/integration/test_api.py
 Issue: none
 
-Refactor stale-task recovery to stop reaching into runtime internals directly. Add a narrow public accessor on `TaskExecutor` for active task IDs, add public `TaskQueue` helpers that own the status/index/Redis mutations needed to requeue or permanently fail stale tasks, and update `requeue_stale_tasks()` in `src/server/services/stale_task_watchdog.py` to use those APIs instead of `_running_tasks`, `_redis`, and `_update_task_status`.
+Turn the current startup behavior into an explicit contract. In `src/server/app.py`, add a single policy check near the end of `lifespan()` that evaluates `app.state.startup_subsystems` after initialization and decides whether the process may continue when a required subsystem is unhealthy.
 
-Why: the Day 13 assessment identified this watchdog path as a fragile cross-layer dependency. Keeping the storage and executor invariants behind public methods makes the scheduler/watchdog flow safer to change without breaking runtime bookkeeping.
+Keep the rule simple: if a subsystem is truly optional, mark it optional when recording startup state; if it is required, fail startup loudly instead of leaving the API running in an implicit degraded mode. That keeps `/health` reporting and actual boot behavior aligned.
 
-Keep behavior unchanged for callers: stale active tasks are still skipped, stale inactive tasks are still requeued or failed with the same counters and messages. Verify with the existing regression suite: `python3 -m pytest tests/unit/test_stale_task_watchdog.py -q`.
+Update tests to lock the contract in place. Extend `tests/unit/test_health_checks.py` so health aggregation still reflects required-vs-optional startup states, and add or update an API-level test in `tests/integration/test_api.py` that verifies the app surface matches the chosen startup policy.
+
+Verify with: `python3 -m pytest tests/unit/test_health_checks.py tests/integration/test_api.py -q`.
