@@ -193,6 +193,11 @@ class MissionService:
             mission.add_log("Mission cancelled")
             self.store.update_mission(mission)
         except Exception as e:
+            mission.status = "failed"
+            mission.error = str(e)
+            mission.add_log(f"Mission failed with error: {e}")
+            mission.updated_at_ms = _now_ms()
+            self.store.update_mission(mission)
             logger.exception("Mission [{}] runner error", mission.id)
         finally:
             self._running_missions.pop(mission.id, None)
