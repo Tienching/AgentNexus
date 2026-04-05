@@ -1,5 +1,9 @@
-Title: Make evolution pytest command interpreter-safe
-Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_engine_worktree.py
+Title: Unify evolve pytest command selection
+Files: src/nanobot/evolve/prompts.py, src/nanobot/evolve/implementation.py, tests/evolve/test_prompts.py
 Issue: none
 
-Create one authoritative pytest command for the self-evolution flow and stop hardcoding bare `python -m pytest` in an environment where only `python3 -m pytest` is reliable. Update the default assessment/conflict-resolution templates in `src/nanobot/evolve/prompts.py`, and update `run_task_in_worktree` plus `run_implementation_serial` in `src/nanobot/evolve/implementation.py` so they use the same resolved command (prefer `.venv/bin/python` when present, otherwise fall back to `python3`). Extend `tests/evolve/test_engine_worktree.py` to assert the executor prompt and post-run verification both use the authoritative command. Verify with `python3 -m pytest tests/evolve/test_engine_worktree.py tests/evolve/test_prompts.py -q`.
+Replace the remaining bare `python -m pytest` instructions in the self-evolution flow with one shared pytest command resolver that matches this repository's working interpreter. Update `DEFAULT_TEMPLATES` in `src/nanobot/evolve/prompts.py` so the assessment and conflict-resolution prompts stop telling agents to run a broken command, and update `run_task_in_worktree()` plus `run_implementation_serial()` in `src/nanobot/evolve/implementation.py` to reuse the same command when injecting `pytest_cmd` and when running post-change validation.
+
+Why: Day 13 assessment showed the source tree is green on Python 3, but the self-evolution control plane still hardcodes a pytest entrypoint that fails in this environment. Fixing that makes autonomous assessment, implementation, and merge resolution consistent.
+
+Verify by extending `tests/evolve/test_prompts.py` to assert the generated prompt text and resolved command prefer `.venv/bin/python` when available and otherwise fall back to `python3 -m pytest`, then run `python3 -m pytest tests/evolve/test_prompts.py -q`.
