@@ -199,8 +199,7 @@ class MissionService:
             mission.updated_at_ms = _now_ms()
             self.store.update_mission(mission)
             logger.exception("Mission [{}] runner error", mission.id)
-        finally:
-            self._running_missions.pop(mission.id, None)
+        self._running_missions.pop(mission.id, None)
 
     async def pause_mission(self, mission_id: str) -> bool:
         """Pause a running mission."""

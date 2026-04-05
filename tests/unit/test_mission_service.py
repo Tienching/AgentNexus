@@ -30,12 +30,19 @@ async def test_run_and_cleanup_persists_unexpected_runner_failures(tmp_path, mon
     async def raise_runner_failure(_mission: Mission) -> None:
         raise RuntimeError("unexpected runner failure")
 
+    original_update_mission = service.store.update_mission
+
+    def update_mission_and_assert_tracked(updated_mission: Mission) -> None:
+        assert mission.id in service._running_missions
+        original_update_mission(updated_mission)
+
     monkeypatch.setattr(service.runner, "run_mission", raise_runner_failure)
+    monkeypatch.setattr(service.store, "update_mission", update_mission_and_assert_tracked)
     monkeypatch.setattr(mission_service_module, "_now_ms", lambda: 2222)
 
     await service._run_and_cleanup(mission)
 
-    stored = service.store.get_mission(mission.id)
+    stored = service.get_mission(mission.id)
     assert stored is not None
     assert stored.status == "failed"
     assert stored.error == "unexpected runner failure"
