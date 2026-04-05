@@ -573,3 +573,47 @@ error: The following untracked
    - That leaves room for future drift between what the package declares and what the CLI/API report.
 
 ---
+
+## Session 14 — 2026-04-05 08:00 UTC
+
+**Duration:** 675s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Persist unexpected mission runner failures
+- Replace watchdog private runtime coupling
+
+### Failed
+
+- Unify evolve pytest command selection: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Self-evolution is still file-contract driven and environment-sensitive.**
+   - Assessment and planning still depend on writing and reparsing markdown files in `src/nanobot/evolve/runtime.py:110` and `src/nanobot/evolve/runtime.py:144` through `src/nanobot/evolve/runtime.py:188`.
+   - If planning emits nothing usable, the engine falls back to a generic catch-all task in `src/nanobot/evolve/runtime.py:169`.
+   - Prompt instructions still hardcode shell behavior, including the wrong pytest entrypoint, in `src/nanobot/evolve/prompts.py:20`.
+
+2. **Mission API workspace isolation is incomplete.**
+   - `MissionBridge` is a singleton in `src/server/services/mission_bridge.py:24`.
+   - Per-request workspace overrides mutate shared service state in `src/server/services/mission_bridge.py:81` through `src/server/services/mission_bridge.py:83` and `src/server/services/mission_bridge.py:97` through `src/server/services/mission_bridge.py:99`.
+   - `MissionRunner` keeps its own `store` reference from construction in `src/nanobot/mission/runner.py:25` through `src/nanobot/mission/runner.py:35`, so the bridge updates the service store without updating the runner store.
+   - That leaves multi-workspace mission execution vulnerable to cross-request bleed and inconsistent persistence paths.
+
+3. **Startup observability is better than startup contract enforcement.**
+   - Required subsystems are still started behind broad exception handling in `src/server/app.py:123` through `src/server/app.py:337`.
+   - The health endpoint now reports degraded/unhealthy startup state cleanly in `src/server/routers/health.py:206` through `src/server/routers/health.py:288`.
+   - The gap is policy, not visibility: the service still prefers “boot degraded” over “fail fast when core subsystems are broken.”
+
+4. **Version identity is not fully centralized.**
+   - Runtime and CLI both report `0.1.0` in `src/runtime/__init__.py:18` and `src/runtime/plugins/cli/__init__.py:35`.
+   - Nanobot still reports `0.1.4.post5` in `src/nanobot/__init__.py:5`.
+   - Packaging metadata reports `0.1.0` in `pyproject.toml:3`.
+   - This is survivable, but it is an avoidable source of API/CLI/package drift.
+
+---
