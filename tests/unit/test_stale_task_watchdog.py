@@ -25,6 +25,7 @@ from src.server.services.stale_task_watchdog import (
     STALE_THRESHOLD_SECONDS,
     MAX_DISPATCH_RETRIES,
 )
+from src.runtime.execution.task_executor import TaskExecutor
 from src.runtime.stores.task_storage import TaskQueue
 from src.server.models import Task, TaskPriority, TaskStatus
 
@@ -201,6 +202,10 @@ def task_queue(mock_redis):
         return q
 
 
+async def _noop_task_handler(task):
+    return None
+
+
 def _add_doing_task(
     task_queue: TaskQueue,
     task_id: str = "t01",
@@ -266,6 +271,62 @@ def _no_active_tasks():
         "src.server.services.stale_task_watchdog._get_executor_active_task_ids",
         return_value=set(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests: public runtime accessors used by watchdog
+# ---------------------------------------------------------------------------
+
+class TestPublicRuntimeAccessors:
+    def test_executor_get_active_task_ids_returns_copy(self, task_queue):
+        executor = TaskExecutor(task_queue, _noop_task_handler)
+        executor._running_tasks["active-copy"] = MagicMock()
+
+        active_task_ids = executor.get_active_task_ids()
+
+        assert active_task_ids == {"active-copy"}
+        active_task_ids.add("mutated")
+        assert executor.get_active_task_ids() == {"active-copy"}
+
+    def test_requeue_stale_task_updates_status_indexes_and_queue(self, task_queue, mock_redis):
+        _add_doing_task(task_queue, task_id="pubreq01", attempt_count=1, workspace="ws_public")
+        queue_key = task_queue._queue_key("ws_public")
+        exec_key = task_queue._executing_key("ws_public")
+        mock_redis._lists.clear()
+
+        task_queue.requeue_stale_task(
+            "pubreq01",
+            attempt_count=2,
+            error_message="Task requeued (attempt 2/5): was DOING for 1200s with no active executor.",
+        )
+
+        task = task_queue.get_task("pubreq01")
+        status = task.status if isinstance(task.status, str) else task.status.value
+        assert status == TaskStatus.TODO.value
+        assert task.attempt_count == 2
+        assert "requeued" in (task.error_message or "").lower()
+        assert "pubreq01" not in mock_redis.smembers(exec_key)
+        assert mock_redis.lrange(queue_key, 0, -1) == ["pubreq01"]
+
+    def test_fail_stale_task_updates_status_and_clears_execution(self, task_queue, mock_redis):
+        _add_doing_task(task_queue, task_id="pubfail01", attempt_count=4, workspace="ws_public_fail")
+        queue_key = task_queue._queue_key("ws_public_fail")
+        exec_key = task_queue._executing_key("ws_public_fail")
+        mock_redis._lists.clear()
+
+        task_queue.fail_stale_task(
+            "pubfail01",
+            attempt_count=5,
+            error_message="Task stuck in DOING for 1200s — executor not running. Permanently failed after 5 attempt(s).",
+        )
+
+        task = task_queue.get_task("pubfail01")
+        status = task.status if isinstance(task.status, str) else task.status.value
+        assert status == TaskStatus.FAILED.value
+        assert task.attempt_count == 5
+        assert "failed" in (task.error_message or "").lower() or "permanently" in (task.error_message or "").lower()
+        assert "pubfail01" not in mock_redis.smembers(exec_key)
+        assert mock_redis.lrange(queue_key, 0, -1) == []
 
 
 # ---------------------------------------------------------------------------
