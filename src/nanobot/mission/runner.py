@@ -36,6 +36,25 @@ class MissionRunner:
         self.bus = bus
         self._notify_cb = notify_callback
 
+    def rebind(
+        self,
+        *,
+        store: MissionFileStore | None = None,
+        planner: MissionPlanner | None = None,
+        executor: MissionExecutor | None = None,
+        workspace: Path | None = None,
+    ) -> None:
+        """Rebind runner dependencies when the active workspace changes."""
+        if store is not None:
+            self.store = store
+        if planner is not None:
+            self.planner = planner
+        if executor is not None:
+            self.executor = executor
+        if workspace is not None:
+            self.planner.workspace = workspace
+            self.executor.workspace = workspace
+
     def _notify(self, message: str, origin: Any = None) -> None:
         """Send a progress notification if a callback is registered."""
         if self._notify_cb:
