@@ -56,10 +56,42 @@ class MockTaskQueue:
         task = self._tasks.get(task_id)
         if task:
             if error_message:
-                task.status = TaskStatus.FAILED
+                return self.fail_task(task_id, error_message)
+            task.status = TaskStatus.DONE
+            task.completed_at = datetime.now(timezone.utc)
+            self._executing.discard(task_id)
+        return task
+
+    def requeue_task(
+        self,
+        task_id: str,
+        error_message: str = None,
+        attempt_count: int = None,
+    ) -> Task:
+        task = self._tasks.get(task_id)
+        if task:
+            if attempt_count is not None:
+                task.attempt_count = attempt_count
+            if error_message is not None:
                 task.error_message = error_message
-            else:
-                task.status = TaskStatus.DONE
+            task.status = TaskStatus.TODO
+            self._executing.discard(task_id)
+            if task not in self._todo_tasks:
+                self._todo_tasks.append(task)
+        return task
+
+    def fail_task(
+        self,
+        task_id: str,
+        error_message: str,
+        attempt_count: int = None,
+    ) -> Task:
+        task = self._tasks.get(task_id)
+        if task:
+            if attempt_count is not None:
+                task.attempt_count = attempt_count
+            task.status = TaskStatus.FAILED
+            task.error_message = error_message
             task.completed_at = datetime.now(timezone.utc)
             self._executing.discard(task_id)
         return task
@@ -219,6 +251,30 @@ class TestTaskExecutor:
         
         result_task = mock_task_queue.get_task(task.id)
         assert result_task.status == TaskStatus.FAILED
+
+    @pytest.mark.asyncio
+    async def test_executor_requeues_retryable_failure(self, mock_task_queue, config):
+        """Test that retryable failures are requeued and retried."""
+        attempts = 0
+
+        async def handler(task):
+            nonlocal attempts
+            attempts += 1
+            return "Task failed" if attempts == 1 else None
+
+        task = mock_task_queue.add_task(description="Retry task")
+
+        executor = TaskExecutor(mock_task_queue, handler, config)
+        await executor.start()
+
+        await asyncio.sleep(0.7)
+
+        await executor.stop()
+
+        result_task = mock_task_queue.get_task(task.id)
+        assert attempts == 2
+        assert result_task.status == TaskStatus.DONE
+        assert result_task.attempt_count == 2
 
     @pytest.mark.asyncio
     async def test_executor_status(self, mock_task_queue, config):

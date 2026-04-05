@@ -1104,14 +1104,69 @@ class TaskQueue:
         self._redis.srem(self._executing_key(task.workspace), task.id)
         
         if error_message:
-            task.error_message = error_message
-            self._redis.hset(self._task_key(task.id), {"error_message": error_message})
-            self._update_task_status(task, TaskStatus.FAILED)
-            logger.error(f"Task {task_id} failed: {error_message}")
-        else:
-            self._update_task_status(task, TaskStatus.DONE)
-            logger.info(f"Task {task_id} completed successfully")
+            failed_task = self.fail_task(task_id, error_message=error_message)
+            if failed_task:
+                logger.error(f"Task {task_id} failed: {error_message}")
+            return failed_task
+
+        self._update_task_status(task, TaskStatus.DONE)
+        logger.info(f"Task {task_id} completed successfully")
         
+        return task
+
+    def requeue_task(
+        self,
+        task_id: str,
+        error_message: Optional[str] = None,
+        attempt_count: Optional[int] = None,
+    ) -> Optional[Task]:
+        """Move a task back to TODO while keeping queue bookkeeping consistent."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        eu = getattr(task, "exec_user", None)
+        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
+
+        updates = {}
+        if attempt_count is not None:
+            task.attempt_count = attempt_count
+            updates["attempt_count"] = str(attempt_count)
+        if error_message is not None:
+            task.error_message = error_message
+            updates["error_message"] = error_message
+        if updates:
+            self._redis.hset(self._task_key(task.id, eu), updates)
+
+        self._update_task_status(task, TaskStatus.TODO)
+        self._redis.rpush(self._queue_key(task.workspace, eu), task.id)
+        return task
+
+    def fail_task(
+        self,
+        task_id: str,
+        error_message: Optional[str],
+        attempt_count: Optional[int] = None,
+    ) -> Optional[Task]:
+        """Move a task to FAILED while keeping queue bookkeeping consistent."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        eu = getattr(task, "exec_user", None)
+        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
+
+        updates = {}
+        if attempt_count is not None:
+            task.attempt_count = attempt_count
+            updates["attempt_count"] = str(attempt_count)
+        if error_message is not None:
+            task.error_message = error_message
+            updates["error_message"] = error_message
+        if updates:
+            self._redis.hset(self._task_key(task.id, eu), updates)
+
+        self._update_task_status(task, TaskStatus.FAILED)
         return task
 
     def requeue_stale_task(
@@ -1121,22 +1176,11 @@ class TaskQueue:
         error_message: str,
     ) -> Optional[Task]:
         """Move a stale DOING task back to TODO with updated retry metadata."""
-        task = self.get_task(task_id)
-        if not task:
-            return None
-
-        eu = getattr(task, "exec_user", None)
-        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
-
-        task.attempt_count = attempt_count
-        task.error_message = error_message
-        self._redis.hset(
-            self._task_key(task.id, eu),
-            {"attempt_count": str(attempt_count), "error_message": error_message},
+        return self.requeue_task(
+            task_id,
+            error_message=error_message,
+            attempt_count=attempt_count,
         )
-        self._update_task_status(task, TaskStatus.TODO)
-        self._redis.rpush(self._queue_key(task.workspace, eu), task.id)
-        return task
 
     def fail_stale_task(
         self,
@@ -1145,21 +1189,11 @@ class TaskQueue:
         error_message: str,
     ) -> Optional[Task]:
         """Permanently fail a stale DOING task with updated retry metadata."""
-        task = self.get_task(task_id)
-        if not task:
-            return None
-
-        eu = getattr(task, "exec_user", None)
-        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
-
-        task.attempt_count = attempt_count
-        task.error_message = error_message
-        self._redis.hset(
-            self._task_key(task.id, eu),
-            {"attempt_count": str(attempt_count), "error_message": error_message},
+        return self.fail_task(
+            task_id,
+            error_message=error_message,
+            attempt_count=attempt_count,
         )
-        self._update_task_status(task, TaskStatus.FAILED)
-        return task
     
     def get_executing_count(self, workspace: Optional[str] = None) -> int:
         """Get count of currently executing tasks for a workspace"""
@@ -1213,9 +1247,6 @@ class TaskQueue:
             if elapsed <= timeout_seconds:
                 continue
 
-            # Remove from executing set regardless of what we do next.
-            self._redis.srem(self._executing_key(task.workspace), task.id)
-
             new_attempts = (task.attempt_count or 0) + 1
 
             if new_attempts >= self.MAX_DISPATCH_RETRIES:
@@ -1225,13 +1256,11 @@ class TaskQueue:
                     f"{new_attempts} time(s) — permanently failing after "
                     f"{self.MAX_DISPATCH_RETRIES} attempts."
                 )
-                task.attempt_count = new_attempts
-                task.error_message = error_msg
-                self._redis.hset(
-                    self._task_key(task.id),
-                    {"attempt_count": str(new_attempts), "error_message": error_msg},
+                self.fail_task(
+                    task.id,
+                    error_message=error_msg,
+                    attempt_count=new_attempts,
                 )
-                self._update_task_status(task, TaskStatus.FAILED)
                 logger.error(
                     f"Task {task_id} permanently failed after {new_attempts} stuck-requeue attempts "
                     f"({elapsed:.0f}s elapsed)"
@@ -1243,14 +1272,11 @@ class TaskQueue:
                     f"Task requeued (attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}): "
                     f"was stuck in DOING for {elapsed:.0f}s."
                 )
-                task.attempt_count = new_attempts
-                task.error_message = error_msg
-                self._redis.hset(
-                    self._task_key(task.id),
-                    {"attempt_count": str(new_attempts), "error_message": error_msg},
+                self.requeue_task(
+                    task.id,
+                    error_message=error_msg,
+                    attempt_count=new_attempts,
                 )
-                self._update_task_status(task, TaskStatus.TODO)
-                self._redis.rpush(self._queue_key(task.workspace), task.id)
                 logger.warning(
                     f"Task {task_id} requeued (attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}) "
                     f"after {elapsed:.0f}s timeout"

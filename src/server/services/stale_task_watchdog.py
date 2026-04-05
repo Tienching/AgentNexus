@@ -71,8 +71,6 @@ def requeue_stale_tasks(
         dict with keys ``ok`` (bool), ``requeued`` (int), ``failed`` (int),
         ``skipped`` (int), and ``message`` (str).
     """
-    from ...runtime.models.task_models import TaskStatus
-
     active_task_ids = _get_executor_active_task_ids()
 
     doing_tasks = task_queue.get_in_progress_tasks()
@@ -115,7 +113,7 @@ def requeue_stale_tasks(
                 f"Task stuck in DOING for {elapsed:.0f}s — executor not running. "
                 f"Permanently failed after {new_attempts} attempt(s)."
             )
-            task_queue.fail_stale_task(
+            task_queue.fail_task(
                 task.id,
                 attempt_count=new_attempts,
                 error_message=error_msg,
@@ -133,7 +131,7 @@ def requeue_stale_tasks(
                 f"Task requeued (attempt {new_attempts}/{max_dispatch_retries}): "
                 f"was DOING for {elapsed:.0f}s with no active executor."
             )
-            task_queue.requeue_stale_task(
+            task_queue.requeue_task(
                 task.id,
                 attempt_count=new_attempts,
                 error_message=error_msg,
