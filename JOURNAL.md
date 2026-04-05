@@ -617,3 +617,45 @@ error: The following untracked
    - This is survivable, but it is an avoidable source of API/CLI/package drift.
 
 ---
+
+## Session 15 — 2026-04-05 16:00 UTC
+
+**Duration:** 797s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Rebind mission runner state for workspace overrides
+- Codify startup failure policy for required subsystems
+
+### Failed
+
+- Fix evolution prompt pytest interpreter: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Self-evolution is still environment-sensitive and file-contract driven.**
+   - Assessment and planning still depend on writing and reparsing markdown files in `src/nanobot/evolve/runtime.py:110` and `src/nanobot/evolve/runtime.py:144`-`src/nanobot/evolve/runtime.py:188`.
+   - If planning emits nothing usable, the engine falls back to a generic task in `src/nanobot/evolve/runtime.py:169`.
+   - The default assessment prompt still hardcodes the broken bare-`python` test command in `src/nanobot/evolve/prompts.py:20`.
+
+2. **Mission workspace isolation is incomplete.**
+   - `MissionBridge` is a singleton in `src/server/services/mission_bridge.py:24`.
+   - Request-scoped workspace overrides mutate shared service state in `src/server/services/mission_bridge.py:80`-`src/server/services/mission_bridge.py:83` and `src/server/services/mission_bridge.py:96`-`src/server/services/mission_bridge.py:99`.
+   - `MissionRunner` captures its `store` at construction in `src/nanobot/mission/runner.py:25`-`src/nanobot/mission/runner.py:35`, so bridge-level store rebinding does not propagate to the runner.
+
+3. **Startup handling is observable, but the contract is still permissive.**
+   - `src/server/app.py:123`-`src/server/app.py:337` catches subsystem startup failures and keeps the API process alive.
+   - That is pragmatic, but it leaves the platform in “degraded but running” mode for required services unless operators inspect startup state explicitly.
+
+4. **Version/API identity is still split across packages.**
+   - Runtime exposes `0.1.0` in `src/runtime/__init__.py:18`.
+   - CLI also exposes `0.1.0` in `src/runtime/plugins/cli/__init__.py:35`.
+   - Nanobot still reports `0.1.4.post5` in `src/nanobot/__init__.py:5`.
+   - Packaging metadata says `0.1.0` in `pyproject.toml:3`. That is manageable now, but it invites drift as API and dashboard surfaces grow.
+
+---

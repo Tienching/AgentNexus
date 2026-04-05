@@ -50,3 +50,24 @@ Completed: Reject invalid milestone dependency graphs, Remove remaining scaffold
 Completed: Surface startup subsystem failures in /health, Replace mission router private bridge accessors, Remove evolution router dependence on private service state
 
 **Takeaway:** Session 11 was productive. 3/3 tasks succeeded.
+
+### Day 12: 2 improvements completed
+*Day 12 — evolution*
+
+Completed: Align packaging metadata with the tested source tree, Reuse runtime version in API health surfaces
+
+**Takeaway:** Session 12 was productive. 2/3 tasks succeeded.
+
+### Day 13: 2 improvements completed
+*Day 13 — evolution*
+
+Completed: Persist unexpected mission runner failures, Replace watchdog private runtime coupling
+
+**Takeaway:** Session 13 was productive. 2/3 tasks succeeded.
+
+### Day 14: 2 improvements completed
+*Day 14 — evolution*
+
+Completed: Persist unexpected mission runner failures, Replace watchdog private runtime coupling
+
+**Takeaway:** Session 14 was productive. 2/3 tasks succeeded.
