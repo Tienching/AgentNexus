@@ -312,11 +312,12 @@ class TaskExecutor:
         """Get executor status"""
         queue_status = self._task_queue.get_queue_status()
         workspace_status = await self._workspace_manager.get_status()
+        active_task_ids = sorted(self.get_active_task_ids())
         
         return {
             "state": self._state.value,
-            "running_tasks": len(self._running_tasks),
-            "running_task_ids": list(self._running_tasks.keys()),
+            "running_tasks": len(active_task_ids),
+            "running_task_ids": active_task_ids,
             "queue": queue_status,
             "workspaces": workspace_status,
             "config": {

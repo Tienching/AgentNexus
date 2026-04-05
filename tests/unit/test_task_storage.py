@@ -505,6 +505,39 @@ class TestTaskQueue:
         assert failed.status == TaskStatus.FAILED
         assert failed.error_message == "Something went wrong"
 
+    def test_requeue_task_moves_doing_task_back_to_todo(self, task_queue):
+        task = task_queue.add_task(description="To requeue", workspace="/path/requeue")
+        task_queue.start_task(task.id)
+
+        requeued = task_queue.requeue_task(
+            task.id,
+            attempt_count=2,
+            error_message="Retry requested",
+        )
+
+        assert requeued is not None
+        assert requeued.status == TaskStatus.TODO
+        assert requeued.attempt_count == 2
+        assert requeued.error_message == "Retry requested"
+        assert task.id in task_queue._redis.lrange(task_queue._queue_key("/path/requeue"), 0, -1)
+        assert task.id not in task_queue._redis.smembers(task_queue._executing_key("/path/requeue"))
+
+    def test_fail_task_marks_doing_task_failed(self, task_queue):
+        task = task_queue.add_task(description="To fail publicly", workspace="/path/fail")
+        task_queue.start_task(task.id)
+
+        failed = task_queue.fail_task(
+            task.id,
+            error_message="Executor disappeared",
+            attempt_count=3,
+        )
+
+        assert failed is not None
+        assert failed.status == TaskStatus.FAILED
+        assert failed.attempt_count == 3
+        assert failed.error_message == "Executor disappeared"
+        assert task.id not in task_queue._redis.smembers(task_queue._executing_key("/path/fail"))
+
     def test_get_executing_count(self, task_queue):
         """Test getting executing task count"""
         task1 = task_queue.add_task(description="Task 1", workspace="/path/a")
