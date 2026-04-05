@@ -84,6 +84,10 @@ class TaskExecutor:
     def is_running(self) -> bool:
         """Check if executor is running"""
         return self._state == ExecutorState.RUNNING
+
+    def get_active_task_ids(self) -> set[str]:
+        """Return a snapshot of task ids currently executing."""
+        return set(self._running_tasks.keys())
     
     async def start(self) -> None:
         """Start the executor"""

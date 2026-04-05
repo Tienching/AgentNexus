@@ -1113,6 +1113,53 @@ class TaskQueue:
             logger.info(f"Task {task_id} completed successfully")
         
         return task
+
+    def requeue_stale_task(
+        self,
+        task_id: str,
+        attempt_count: int,
+        error_message: str,
+    ) -> Optional[Task]:
+        """Move a stale DOING task back to TODO with updated retry metadata."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        eu = getattr(task, "exec_user", None)
+        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
+
+        task.attempt_count = attempt_count
+        task.error_message = error_message
+        self._redis.hset(
+            self._task_key(task.id, eu),
+            {"attempt_count": str(attempt_count), "error_message": error_message},
+        )
+        self._update_task_status(task, TaskStatus.TODO)
+        self._redis.rpush(self._queue_key(task.workspace, eu), task.id)
+        return task
+
+    def fail_stale_task(
+        self,
+        task_id: str,
+        attempt_count: int,
+        error_message: str,
+    ) -> Optional[Task]:
+        """Permanently fail a stale DOING task with updated retry metadata."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        eu = getattr(task, "exec_user", None)
+        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
+
+        task.attempt_count = attempt_count
+        task.error_message = error_message
+        self._redis.hset(
+            self._task_key(task.id, eu),
+            {"attempt_count": str(attempt_count), "error_message": error_message},
+        )
+        self._update_task_status(task, TaskStatus.FAILED)
+        return task
     
     def get_executing_count(self, workspace: Optional[str] = None) -> int:
         """Get count of currently executing tasks for a workspace"""

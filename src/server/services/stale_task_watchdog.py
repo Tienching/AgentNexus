@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Set
+from typing import Set
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def _get_executor_active_task_ids() -> Set[str]:
         from ...runtime.execution.task_executor import get_executor
         executor = get_executor()
         if executor is not None and executor.is_running:
-            return set(executor._running_tasks.keys())
+            return executor.get_active_task_ids()
     except Exception:
         pass
     return set()
@@ -75,11 +75,9 @@ def requeue_stale_tasks(
 
     active_task_ids = _get_executor_active_task_ids()
 
-    doing_task_ids = task_queue._redis.smembers(
-        task_queue._status_key(TaskStatus.DOING)
-    )
+    doing_tasks = task_queue.get_in_progress_tasks()
 
-    if not doing_task_ids:
+    if not doing_tasks:
         return {"ok": True, "requeued": 0, "failed": 0, "skipped": 0,
                 "message": "No stale tasks found"}
 
@@ -88,14 +86,15 @@ def requeue_stale_tasks(
     skipped = 0
     now = datetime.now(timezone.utc)
 
-    for task_id in doing_task_ids:
+    for task in doing_tasks:
+        task_id = task.id
+
         # Agent still processing this task — leave it alone.
         if task_id in active_task_ids:
             skipped += 1
             continue
 
-        task = task_queue.get_task(task_id)
-        if not (task and task.started_at):
+        if not task.started_at:
             skipped += 1
             continue
 
@@ -109,11 +108,6 @@ def requeue_stale_tasks(
             continue
 
         # Task is stale and its executor slot is gone — clean up and requeue.
-        eu = getattr(task, "exec_user", None)
-        task_queue._redis.srem(
-            task_queue._executing_key(task.workspace), task.id
-        )
-
         new_attempts = (task.attempt_count or 0) + 1
 
         if new_attempts >= max_dispatch_retries:
@@ -121,13 +115,11 @@ def requeue_stale_tasks(
                 f"Task stuck in DOING for {elapsed:.0f}s — executor not running. "
                 f"Permanently failed after {new_attempts} attempt(s)."
             )
-            task.attempt_count = new_attempts
-            task.error_message = error_msg
-            task_queue._redis.hset(
-                task_queue._task_key(task.id, eu),
-                {"attempt_count": str(new_attempts), "error_message": error_msg},
+            task_queue.fail_stale_task(
+                task.id,
+                attempt_count=new_attempts,
+                error_message=error_msg,
             )
-            task_queue._update_task_status(task, TaskStatus.FAILED)
             logger.error(
                 "stale_task_watchdog: task %s permanently failed after %d attempts "
                 "(%ds elapsed)",
@@ -141,15 +133,10 @@ def requeue_stale_tasks(
                 f"Task requeued (attempt {new_attempts}/{max_dispatch_retries}): "
                 f"was DOING for {elapsed:.0f}s with no active executor."
             )
-            task.attempt_count = new_attempts
-            task.error_message = error_msg
-            task_queue._redis.hset(
-                task_queue._task_key(task.id, eu),
-                {"attempt_count": str(new_attempts), "error_message": error_msg},
-            )
-            task_queue._update_task_status(task, TaskStatus.TODO)
-            task_queue._redis.rpush(
-                task_queue._queue_key(task.workspace, eu), task.id
+            task_queue.requeue_stale_task(
+                task.id,
+                attempt_count=new_attempts,
+                error_message=error_msg,
             )
             logger.warning(
                 "stale_task_watchdog: task %s requeued (attempt %d/%d, %ds elapsed)",
