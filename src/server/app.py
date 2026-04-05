@@ -345,49 +345,78 @@ async def lifespan(app: FastAPI):
             detail={"enabled": False},
         )
 
-    yield
+    startup_subsystems = getattr(app.state, "startup_subsystems", {})
+    required_startup_failures = []
+    for subsystem, state in startup_subsystems.items():
+        if not state or not state.get("required"):
+            continue
 
-    # 关闭时
-    # 停止自我进化系统
-    if evolution_service:
-        try:
-            await evolution_service.stop()
-            logger.info("Evolution service stopped")
-        except Exception as e:
-            logger.error(f"Error stopping evolution service: {e}")
+        subsystem_status = str(state.get("status", "unknown"))
+        if subsystem_status in {"healthy", "disabled"}:
+            continue
 
-    # 停止 Terminal Manager
-    if terminal_manager:
-        try:
-            terminal_manager.cleanup_all()
-            logger.info("Terminal manager stopped")
-        except Exception as e:
-            logger.error(f"Error stopping terminal manager: {e}")
+        subsystem_name = str(state.get("name") or subsystem)
+        subsystem_message = str(state.get("message") or "")
+        required_startup_failures.append(
+            f"{subsystem_name} ({subsystem_status})"
+            if not subsystem_message
+            else f"{subsystem_name} ({subsystem_status}): {subsystem_message}"
+        )
 
-    # 停止 Channel 服务
-    if channel_service:
-        try:
-            await channel_service.stop()
-            logger.info("Channel service stopped")
-        except Exception as e:
-            logger.error(f"Error stopping channel service: {e}")
+    try:
+        if required_startup_failures:
+            logger.error(
+                "Required startup subsystems failed; refusing to start API",
+                extra={"startup_failures": required_startup_failures},
+            )
+            raise RuntimeError(
+                "Required startup subsystems failed: "
+                + "; ".join(required_startup_failures)
+            )
 
-    # 停止定时调度器
-    if scheduler:
-        try:
-            await scheduler.stop()
-            logger.info("Task scheduler stopped")
-        except Exception as e:
-            logger.error(f"Error stopping task scheduler: {e}")
+        yield
+    finally:
+        # 关闭时
+        # 停止自我进化系统
+        if evolution_service:
+            try:
+                await evolution_service.stop()
+                logger.info("Evolution service stopped")
+            except Exception as e:
+                logger.error(f"Error stopping evolution service: {e}")
 
-    if executor:
-        try:
-            await executor.stop()
-            logger.info("Task executor stopped")
-        except Exception as e:
-            logger.error(f"Error stopping task executor: {e}")
-    
-    logger.info("Shutting down Agent Nexus")
+        # 停止 Terminal Manager
+        if terminal_manager:
+            try:
+                terminal_manager.cleanup_all()
+                logger.info("Terminal manager stopped")
+            except Exception as e:
+                logger.error(f"Error stopping terminal manager: {e}")
+
+        # 停止 Channel 服务
+        if channel_service:
+            try:
+                await channel_service.stop()
+                logger.info("Channel service stopped")
+            except Exception as e:
+                logger.error(f"Error stopping channel service: {e}")
+
+        # 停止定时调度器
+        if scheduler:
+            try:
+                await scheduler.stop()
+                logger.info("Task scheduler stopped")
+            except Exception as e:
+                logger.error(f"Error stopping task scheduler: {e}")
+
+        if executor:
+            try:
+                await executor.stop()
+                logger.info("Task executor stopped")
+            except Exception as e:
+                logger.error(f"Error stopping task executor: {e}")
+        
+        logger.info("Shutting down Agent Nexus")
 
 
 # 创建FastAPI应用
