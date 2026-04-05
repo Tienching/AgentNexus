@@ -531,3 +531,45 @@ error: The following untracked
    - Flexible, but weakly typed and vulnerable to prompt/output drift.
 
 ---
+
+## Session 13 — 2026-04-05 00:00 UTC
+
+**Duration:** 924s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Persist unexpected mission runner failures
+- Replace watchdog private runtime coupling
+
+### Failed
+
+- Unify evolve pytest command selection: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Startup error handling is observable but still permissive.**
+   - Required subsystems are started behind broad exception handling in `src/server/app.py:123` through `src/server/app.py:337`.
+   - Health reporting now exposes that state cleanly in `src/server/routers/health.py:206` through `src/server/routers/health.py:288`.
+   - That is good operational visibility, but the process contract is still “stay up in degraded mode” rather than “fail fast when core services are broken.”
+
+2. **The self-evolution control plane is still file-contract driven and environment-sensitive.**
+   - Assessment expects `session_plan/assessment.md` and planning parses `task_*.md` files line-by-line in `src/nanobot/evolve/runtime.py:110` through `src/nanobot/evolve/runtime.py:188`.
+   - If planning emits nothing usable, the engine falls back to a generic catch-all task in `src/nanobot/evolve/runtime.py:169`.
+   - Prompt templates still hardcode shell behavior in `src/nanobot/evolve/prompts.py:19`, including the wrong pytest entrypoint for this repo.
+
+3. **Internal API stability is better at the router layer, but some service boundaries still depend on private internals.**
+   - `src/server/services/stale_task_watchdog.py:37` through `src/server/services/stale_task_watchdog.py:45` reaches into `executor._running_tasks`.
+   - The same watchdog mutates queue internals directly via `_redis` and `_update_task_status` in `src/server/services/stale_task_watchdog.py:113` through `src/server/services/stale_task_watchdog.py:150`.
+   - That works today, but it couples server services tightly to runtime storage implementation details.
+
+4. **Version/compatibility metadata is improved, but not fully centralized.**
+   - The API now uses `runtime_version` in `src/server/app.py:394` and `src/server/routers/health.py:282`.
+   - But runtime, CLI, and packaging still each define version information separately in `src/runtime/__init__.py:18`, `src/runtime/plugins/cli/__init__.py:35`, and `pyproject.toml:3`.
+   - That leaves room for future drift between what the package declares and what the CLI/API report.
+
+---
