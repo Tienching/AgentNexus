@@ -3,11 +3,12 @@
 import pytest
 import json
 import warnings
+from unittest.mock import patch
 from httpx import AsyncClient
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from src.server.app import validation_exception_handler
+from src.server.app import app, validation_exception_handler
 from src.server.models import RequestModel
 
 
@@ -47,6 +48,19 @@ class TestAPIEndpoints:
         assert "cli_command" in data
         assert "requests_total" in data
         assert "requests_active" in data
+
+    @pytest.mark.asyncio
+    async def test_required_startup_failure_blocks_app_lifespan(self, monkeypatch):
+        """测试必需启动子系统失败时拒绝启动 API"""
+        monkeypatch.setattr("src.server.app.settings.executor_enabled", False)
+        monkeypatch.setattr("src.server.app.settings.scheduler_enabled", False)
+        monkeypatch.setattr("src.server.app.settings.evolution_enabled", False)
+
+        with patch("src.server.services.channel_service.create_channel_service", return_value=None), \
+             patch("src.server.services.terminal_manager.TerminalManager", side_effect=RuntimeError("tmux missing")):
+            with pytest.raises(RuntimeError, match="Terminal Manager"):
+                async with app.router.lifespan_context(app):
+                    pass
 
     @pytest.mark.asyncio
     async def test_chat_stream_endpoint_headers(self, client: AsyncClient, sample_request):

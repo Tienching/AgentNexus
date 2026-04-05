@@ -292,6 +292,30 @@ class TestPerformHealthCheck:
             for check in result.checks
         )
 
+    def test_failed_optional_startup_subsystem_does_not_degrade_overall(self):
+        healthy = HealthCheck(name="X", status="healthy", message="OK")
+        startup_states = {
+            "channel_service": {
+                "name": "Channel Service",
+                "status": "unhealthy",
+                "message": "Startup failed: missing token",
+                "required": False,
+                "detail": {"configured": True},
+            }
+        }
+        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+             patch("src.server.routers.health._check_process_memory", return_value=healthy), \
+             patch("src.server.routers.health._check_disk_space", return_value=healthy):
+            result = _perform_health_check(startup_states=startup_states)
+
+        assert result.status == "healthy"
+        assert any(
+            check.name == "Channel Service"
+            and check.status == "unhealthy"
+            and check.detail["required"] is False
+            for check in result.checks
+        )
+
     def test_one_warning_degrades_overall(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
         warn = HealthCheck(name="Redis", status="warning", message="slow")
