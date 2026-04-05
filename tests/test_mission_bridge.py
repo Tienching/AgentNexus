@@ -6,6 +6,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
+from src.nanobot.mission.runner import MissionRunner
+from src.nanobot.mission.store import MissionFileStore
+
 
 class TestMissionBridgeSingleton:
     """Test singleton lifecycle."""
@@ -75,6 +78,22 @@ class TestMissionBridgeMethods:
         mock_mission.log = ["[10:00:00] Mission planned"]
         return mock_mission
 
+    def _make_mock_service(self, workspace: Path):
+        store = MissionFileStore(workspace / "missions.json")
+        planner = MagicMock()
+        planner.workspace = workspace
+        executor = MagicMock()
+        executor.workspace = workspace
+        runner = MissionRunner(executor=executor, planner=planner, store=store)
+
+        mock_service = MagicMock()
+        mock_service.workspace = workspace
+        mock_service.store = store
+        mock_service.planner = planner
+        mock_service.executor = executor
+        mock_service.runner = runner
+        return mock_service
+
     @pytest.mark.asyncio
     async def test_plan_calls_service(self):
         from src.server.services.mission_bridge import MissionBridge
@@ -92,6 +111,47 @@ class TestMissionBridgeMethods:
         assert result["status"] == "planned"
         assert result["goal"] == "Test goal"
         mock_service.plan_mission.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("bridge_method", "service_method"),
+        [("plan", "plan_mission"), ("start", "start_mission")],
+    )
+    async def test_workspace_override_rebinds_service_and_runner_state(
+        self,
+        tmp_path,
+        bridge_method,
+        service_method,
+    ):
+        from src.server.services.mission_bridge import MissionBridge
+
+        bridge = MissionBridge.get_instance()
+        mock_mission = self._make_mock_mission(status="running" if bridge_method == "start" else "planned")
+        default_workspace = tmp_path / "default"
+        requested_workspace = tmp_path / "requested"
+        default_workspace.mkdir()
+        requested_workspace.mkdir()
+
+        mock_service = self._make_mock_service(default_workspace)
+
+        async def _assert_rebound(*args, **kwargs):
+            assert mock_service.workspace == requested_workspace
+            assert mock_service.store.store_path == requested_workspace / "missions.json"
+            assert mock_service.planner.workspace == requested_workspace
+            assert mock_service.executor.workspace == requested_workspace
+            assert mock_service.runner.store is mock_service.store
+            assert mock_service.runner.store.store_path == requested_workspace / "missions.json"
+            assert mock_service.runner.planner is mock_service.planner
+            assert mock_service.runner.executor is mock_service.executor
+            return mock_mission
+
+        setattr(mock_service, service_method, AsyncMock(side_effect=_assert_rebound))
+        bridge._service = mock_service
+
+        result = await getattr(bridge, bridge_method)("Test goal", workspace=str(requested_workspace))
+
+        assert result["id"] == "msn-test1234"
+        getattr(mock_service, service_method).assert_awaited_once_with(goal="Test goal", context="")
 
     @pytest.mark.asyncio
     async def test_approve_delegates_to_service(self):

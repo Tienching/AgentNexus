@@ -67,6 +67,32 @@ class MissionBridge:
             model=model,
         )
 
+    def _rebind_service_workspace(self, svc: Any, workspace: str) -> None:
+        """Rebind mission service dependencies to the requested workspace."""
+        requested_workspace = Path(workspace)
+        rebound_store = type(svc.store)(requested_workspace / "missions.json")
+
+        svc.workspace = requested_workspace
+        svc.store = rebound_store
+        svc.planner.workspace = requested_workspace
+        svc.executor.workspace = requested_workspace
+
+        runner = getattr(svc, "runner", None)
+        if runner is not None:
+            if hasattr(runner, "rebind"):
+                runner.rebind(
+                    store=rebound_store,
+                    planner=svc.planner,
+                    executor=svc.executor,
+                    workspace=requested_workspace,
+                )
+            else:
+                runner.store = rebound_store
+                runner.planner = svc.planner
+                runner.executor = svc.executor
+                runner.planner.workspace = requested_workspace
+                runner.executor.workspace = requested_workspace
+
     # ── High-level API ─────────────────────────────────────────────────
 
     async def plan(
@@ -78,9 +104,7 @@ class MissionBridge:
         """Plan a mission (status=planned). Returns detail payload."""
         svc = self.service
         if workspace:
-            svc.store = type(svc.store)(Path(workspace) / "missions.json")
-            svc.planner.workspace = Path(workspace)
-            svc.executor.workspace = Path(workspace)
+            self._rebind_service_workspace(svc, workspace)
 
         mission = await svc.plan_mission(goal=goal, context=context)
         return self.serialize_mission_detail(mission)
@@ -94,9 +118,7 @@ class MissionBridge:
         """Plan + auto-approve + start execution. Returns detail payload."""
         svc = self.service
         if workspace:
-            svc.store = type(svc.store)(Path(workspace) / "missions.json")
-            svc.planner.workspace = Path(workspace)
-            svc.executor.workspace = Path(workspace)
+            self._rebind_service_workspace(svc, workspace)
 
         mission = await svc.start_mission(goal=goal, context=context)
         return self.serialize_mission_detail(mission)
