@@ -671,5 +671,25 @@ def create_app(
     return app
 
 
+def create_app_with_overrides(
+    *,
+    use_env: bool = True,
+    settings_overrides: Optional[dict[str, Any]] = None,
+    startup_policy_overrides: Optional[dict[str, bool]] = None,
+) -> FastAPI:
+    startup_policy = (
+        AppStartupPolicy(**startup_policy_overrides)
+        if startup_policy_overrides is not None
+        else None
+    )
+    return create_app(
+        settings_override=create_app_settings(
+            use_env=use_env,
+            overrides=settings_overrides,
+        ),
+        startup_policy=startup_policy,
+    )
+
+
 # 创建FastAPI应用
 app = create_app()
