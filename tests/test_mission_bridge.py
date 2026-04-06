@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Unit tests for MissionBridge service."""
 
-import os
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from src.nanobot.mission.runner import MissionRunner
 from src.nanobot.mission.store import MissionFileStore
@@ -16,29 +16,34 @@ class TestMissionBridgeSingleton:
     def setup_method(self):
         """Reset singleton between tests."""
         from src.server.services.mission_bridge import MissionBridge
+
         MissionBridge.reset()
 
     def teardown_method(self):
         from src.server.services.mission_bridge import MissionBridge
+
         MissionBridge.reset()
 
     def test_singleton_returns_same_instance(self):
         from src.server.services.mission_bridge import MissionBridge
+
         a = MissionBridge.get_instance()
         b = MissionBridge.get_instance()
         assert a is b
 
     def test_reset_clears_singleton(self):
         from src.server.services.mission_bridge import MissionBridge
+
         a = MissionBridge.get_instance()
         MissionBridge.reset()
         b = MissionBridge.get_instance()
         assert a is not b
 
-    def test_service_is_none_initially(self):
+    def test_service_cache_is_empty_initially(self):
         from src.server.services.mission_bridge import MissionBridge
+
         bridge = MissionBridge.get_instance()
-        assert bridge._service is None
+        assert bridge._services == {}
 
 
 class TestMissionBridgeMethods:
@@ -46,10 +51,12 @@ class TestMissionBridgeMethods:
 
     def setup_method(self):
         from src.server.services.mission_bridge import MissionBridge
+
         MissionBridge.reset()
 
     def teardown_method(self):
         from src.server.services.mission_bridge import MissionBridge
+
         MissionBridge.reset()
 
     def _make_mock_mission(self, mission_id="msn-test1234", status="planned"):
@@ -92,10 +99,15 @@ class TestMissionBridgeMethods:
         mock_service.planner = planner
         mock_service.executor = executor
         mock_service.runner = runner
+        mock_service.plan_mission = AsyncMock()
+        mock_service.start_mission = AsyncMock()
         return mock_service
 
+    def _set_default_service(self, bridge, service) -> None:
+        bridge._services[bridge._default_workspace()] = service
+
     @pytest.mark.asyncio
-    async def test_plan_calls_service(self):
+    async def test_plan_calls_default_service(self):
         from src.server.services.mission_bridge import MissionBridge
 
         bridge = MissionBridge.get_instance()
@@ -103,55 +115,122 @@ class TestMissionBridgeMethods:
 
         mock_service = MagicMock()
         mock_service.plan_mission = AsyncMock(return_value=mock_mission)
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
-        # Call without workspace to avoid store re-creation branch
         result = await bridge.plan("Test goal")
         assert result["id"] == "msn-test1234"
         assert result["status"] == "planned"
         assert result["goal"] == "Test goal"
-        mock_service.plan_mission.assert_called_once()
+        mock_service.plan_mission.assert_awaited_once_with(goal="Test goal", context="")
+
+    def test_get_service_reuses_cached_service_for_same_workspace(self, tmp_path):
+        from src.server.services.mission_bridge import MissionBridge
+
+        bridge = MissionBridge.get_instance()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        bridge._create_service = MagicMock(side_effect=self._make_mock_service)
+
+        first = bridge._get_service(str(workspace))
+        second = bridge._get_service(str(workspace))
+
+        assert first is second
+        bridge._create_service.assert_called_once_with(workspace)
+
+    def test_get_service_isolates_different_workspaces(self, tmp_path):
+        from src.server.services.mission_bridge import MissionBridge
+
+        bridge = MissionBridge.get_instance()
+        workspace_a = tmp_path / "workspace-a"
+        workspace_b = tmp_path / "workspace-b"
+        workspace_a.mkdir()
+        workspace_b.mkdir()
+
+        bridge._create_service = MagicMock(side_effect=self._make_mock_service)
+
+        service_a = bridge._get_service(str(workspace_a))
+        service_b = bridge._get_service(str(workspace_b))
+        service_a_again = bridge._get_service(str(workspace_a))
+
+        assert service_a is service_a_again
+        assert service_a is not service_b
+        assert service_a.workspace == workspace_a
+        assert service_b.workspace == workspace_b
+        assert service_a.store.store_path == workspace_a / "missions.json"
+        assert service_b.store.store_path == workspace_b / "missions.json"
+        assert service_a.planner.workspace == workspace_a
+        assert service_b.planner.workspace == workspace_b
+        assert service_a.executor.workspace == workspace_a
+        assert service_b.executor.workspace == workspace_b
+        assert service_a.runner.store is service_a.store
+        assert service_b.runner.store is service_b.store
+        assert service_a.runner.planner is service_a.planner
+        assert service_b.runner.planner is service_b.planner
+        assert service_a.runner.executor is service_a.executor
+        assert service_b.runner.executor is service_b.executor
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("bridge_method", "service_method"),
-        [("plan", "plan_mission"), ("start", "start_mission")],
+        ("bridge_method", "service_method", "default_status", "workspace_status"),
+        [
+            ("plan", "plan_mission", "planned", "planned"),
+            ("start", "start_mission", "running", "running"),
+        ],
     )
-    async def test_workspace_override_rebinds_service_and_runner_state(
+    async def test_workspace_scoped_methods_delegate_without_cross_workspace_bleed(
         self,
         tmp_path,
         bridge_method,
         service_method,
+        default_status,
+        workspace_status,
     ):
         from src.server.services.mission_bridge import MissionBridge
 
         bridge = MissionBridge.get_instance()
-        mock_mission = self._make_mock_mission(status="running" if bridge_method == "start" else "planned")
-        default_workspace = tmp_path / "default"
+        default_workspace = bridge._default_workspace()
         requested_workspace = tmp_path / "requested"
-        default_workspace.mkdir()
         requested_workspace.mkdir()
 
-        mock_service = self._make_mock_service(default_workspace)
+        default_service = self._make_mock_service(default_workspace)
+        requested_service = self._make_mock_service(requested_workspace)
+        default_mission = self._make_mock_mission("msn-default", status=default_status)
+        requested_mission = self._make_mock_mission("msn-requested", status=workspace_status)
 
-        async def _assert_rebound(*args, **kwargs):
-            assert mock_service.workspace == requested_workspace
-            assert mock_service.store.store_path == requested_workspace / "missions.json"
-            assert mock_service.planner.workspace == requested_workspace
-            assert mock_service.executor.workspace == requested_workspace
-            assert mock_service.runner.store is mock_service.store
-            assert mock_service.runner.store.store_path == requested_workspace / "missions.json"
-            assert mock_service.runner.planner is mock_service.planner
-            assert mock_service.runner.executor is mock_service.executor
-            return mock_mission
+        getattr(default_service, service_method).return_value = default_mission
+        getattr(requested_service, service_method).return_value = requested_mission
+        bridge._services = {
+            default_workspace: default_service,
+            requested_workspace: requested_service,
+        }
 
-        setattr(mock_service, service_method, AsyncMock(side_effect=_assert_rebound))
-        bridge._service = mock_service
+        workspace_result = await getattr(bridge, bridge_method)(
+            "Workspace goal",
+            workspace=str(requested_workspace),
+        )
+        default_result = await getattr(bridge, bridge_method)("Default goal")
 
-        result = await getattr(bridge, bridge_method)("Test goal", workspace=str(requested_workspace))
-
-        assert result["id"] == "msn-test1234"
-        getattr(mock_service, service_method).assert_awaited_once_with(goal="Test goal", context="")
+        assert workspace_result["id"] == "msn-requested"
+        assert workspace_result["status"] == workspace_status
+        assert default_result["id"] == "msn-default"
+        assert default_result["status"] == default_status
+        getattr(requested_service, service_method).assert_awaited_once_with(
+            goal="Workspace goal",
+            context="",
+        )
+        getattr(default_service, service_method).assert_awaited_once_with(
+            goal="Default goal",
+            context="",
+        )
+        assert requested_service.workspace == requested_workspace
+        assert requested_service.store.store_path == requested_workspace / "missions.json"
+        assert requested_service.planner.workspace == requested_workspace
+        assert requested_service.executor.workspace == requested_workspace
+        assert default_service.workspace == default_workspace
+        assert default_service.store.store_path == default_workspace / "missions.json"
+        assert default_service.planner.workspace == default_workspace
+        assert default_service.executor.workspace == default_workspace
 
     @pytest.mark.asyncio
     async def test_approve_delegates_to_service(self):
@@ -160,7 +239,7 @@ class TestMissionBridgeMethods:
         bridge = MissionBridge.get_instance()
         mock_service = MagicMock()
         mock_service.confirm_mission = AsyncMock(return_value=True)
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
         result = await bridge.approve("msn-test1234")
         assert result is True
@@ -173,7 +252,7 @@ class TestMissionBridgeMethods:
         bridge = MissionBridge.get_instance()
         mock_service = MagicMock()
         mock_service.cancel_mission = AsyncMock(return_value=True)
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
         result = await bridge.cancel("msn-test1234")
         assert result is True
@@ -188,7 +267,7 @@ class TestMissionBridgeMethods:
         mock_service = MagicMock()
         mock_service.get_mission.return_value = mock_mission
         mock_service.format_status.return_value = "## Mission: Test goal\n..."
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
         result = await bridge.status("msn-test1234")
         assert "Mission: Test goal" in result
@@ -200,7 +279,7 @@ class TestMissionBridgeMethods:
         bridge = MissionBridge.get_instance()
         mock_service = MagicMock()
         mock_service.get_mission.return_value = None
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
         result = await bridge.status("msn-nonexist")
         assert result is None
@@ -214,7 +293,7 @@ class TestMissionBridgeMethods:
 
         mock_service = MagicMock()
         mock_service.get_mission.return_value = mock_mission
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
         entries = bridge.get_log("msn-test1234", tail=3)
         assert len(entries) == 3
@@ -226,7 +305,7 @@ class TestMissionBridgeMethods:
         bridge = MissionBridge.get_instance()
         mock_service = MagicMock()
         mock_service.get_mission.return_value = None
-        bridge._service = mock_service
+        self._set_default_service(bridge, mock_service)
 
         entries = bridge.get_log("msn-nonexist")
         assert entries == []
@@ -238,7 +317,6 @@ class TestMissionToDict:
     def test_basic_mission_serialization(self):
         from src.server.services.mission_bridge import MissionBridge
 
-        # Create a simple mock with milestones and tasks
         mock_task_token = MagicMock()
         mock_task_token.total_tokens = 50
         mock_task_token.llm_iterations = 2

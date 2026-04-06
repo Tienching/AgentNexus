@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Bridge between agent-nexus and nanobot's mission system.
 
-Singleton service that lazily initializes nanobot's MissionService,
-exposing a simplified async API for the mission skill CLI and REST router.
+Singleton bridge that lazily initializes workspace-scoped MissionService
+instances, exposing a simplified async API for the mission skill CLI and
+REST router.
 """
 
 from __future__ import annotations
@@ -35,16 +36,24 @@ class MissionBridge:
         cls._instance = None
 
     def __init__(self) -> None:
-        self._service: Any = None  # nanobot.mission.service.MissionService
+        self._services: dict[Path, Any] = {}
 
     @property
     def service(self) -> Any:
-        """Lazily create and return the MissionService."""
-        if self._service is None:
-            self._service = self._create_service()
-        return self._service
+        """Lazily create and return the default MissionService."""
+        return self._get_service()
 
-    def _create_service(self) -> Any:
+    def _default_workspace(self) -> Path:
+        workspace_str = os.environ.get("NANOBOT_WORKSPACE", "")
+        workspace = Path(workspace_str) if workspace_str else Path.home() / "Projects"
+        return workspace.expanduser().resolve(strict=False)
+
+    def _normalize_workspace(self, workspace: str | Path | None = None) -> Path:
+        if workspace is None or workspace == "":
+            return self._default_workspace()
+        return Path(workspace).expanduser().resolve(strict=False)
+
+    def _create_service(self, workspace: Path | None = None) -> Any:
         """Create MissionService with OpenAI-compatible provider."""
         from nanobot.providers.openai_compat_provider import OpenAICompatProvider
         from nanobot.mission.service import MissionService
@@ -52,8 +61,7 @@ class MissionBridge:
         api_key = os.environ.get("OPENAI_API_KEY", "")
         api_base = os.environ.get("OPENAI_API_BASE", "")
         model = os.environ.get("NANOBOT_MODEL", "gpt-4o")
-        workspace_str = os.environ.get("NANOBOT_WORKSPACE", "")
-        workspace = Path(workspace_str) if workspace_str else Path.home() / "Projects"
+        workspace = self._default_workspace() if workspace is None else workspace
 
         provider = OpenAICompatProvider(
             api_key=api_key,
@@ -67,31 +75,13 @@ class MissionBridge:
             model=model,
         )
 
-    def _rebind_service_workspace(self, svc: Any, workspace: str) -> None:
-        """Rebind mission service dependencies to the requested workspace."""
-        requested_workspace = Path(workspace)
-        rebound_store = type(svc.store)(requested_workspace / "missions.json")
-
-        svc.workspace = requested_workspace
-        svc.store = rebound_store
-        svc.planner.workspace = requested_workspace
-        svc.executor.workspace = requested_workspace
-
-        runner = getattr(svc, "runner", None)
-        if runner is not None:
-            if hasattr(runner, "rebind"):
-                runner.rebind(
-                    store=rebound_store,
-                    planner=svc.planner,
-                    executor=svc.executor,
-                    workspace=requested_workspace,
-                )
-            else:
-                runner.store = rebound_store
-                runner.planner = svc.planner
-                runner.executor = svc.executor
-                runner.planner.workspace = requested_workspace
-                runner.executor.workspace = requested_workspace
+    def _get_service(self, workspace: str | Path | None = None) -> Any:
+        workspace_path = self._normalize_workspace(workspace)
+        service = self._services.get(workspace_path)
+        if service is None:
+            service = self._create_service(workspace_path)
+            self._services[workspace_path] = service
+        return service
 
     # ── High-level API ─────────────────────────────────────────────────
 
@@ -102,10 +92,7 @@ class MissionBridge:
         context: str = "",
     ) -> dict[str, Any]:
         """Plan a mission (status=planned). Returns detail payload."""
-        svc = self.service
-        if workspace:
-            self._rebind_service_workspace(svc, workspace)
-
+        svc = self._get_service(workspace)
         mission = await svc.plan_mission(goal=goal, context=context)
         return self.serialize_mission_detail(mission)
 
@@ -116,10 +103,7 @@ class MissionBridge:
         context: str = "",
     ) -> dict[str, Any]:
         """Plan + auto-approve + start execution. Returns detail payload."""
-        svc = self.service
-        if workspace:
-            self._rebind_service_workspace(svc, workspace)
-
+        svc = self._get_service(workspace)
         mission = await svc.start_mission(goal=goal, context=context)
         return self.serialize_mission_detail(mission)
 
