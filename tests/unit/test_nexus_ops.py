@@ -7,11 +7,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+TEST_SAFE_STARTUP_POLICY = {
+    "start_task_executor": False,
+    "start_task_scheduler": False,
+    "start_channel_service": False,
+    "start_terminal_manager": False,
+    "start_evolution_service": False,
+}
+
+
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, app_factory):
     monkeypatch.setenv("NEXUS_AUTH_TOKEN", "test-token")
-    from src.server.app import app
-    with TestClient(app) as c:
+    with TestClient(app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)) as c:
         yield c
 
 
@@ -24,6 +32,16 @@ def _auth():
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestGlobalSearch:
+    def test_bootstrap_isolated_from_ambient_settings(self, monkeypatch, app_factory):
+        monkeypatch.setenv("NEXUS_AUTH_TOKEN", "test-token")
+        monkeypatch.setattr("src.server.app.settings.executor_enabled", False)
+        monkeypatch.setattr("src.server.app.settings.scheduler_enabled", True)
+
+        with TestClient(app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)) as client:
+            resp = client.get("/api/nexus/search?q=test", headers=_auth())
+
+        assert resp.status_code == 200
+
     def test_returns_200(self, client):
         resp = client.get("/api/nexus/search?q=test", headers=_auth())
         assert resp.status_code == 200
