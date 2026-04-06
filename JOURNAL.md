@@ -718,3 +718,48 @@ Aborting
    - The suite is large, but “enough coverage” is still policy-free.
 
 ---
+
+## Session 17 — 2026-04-06 08:00 UTC
+
+**Duration:** 736s
+
+**Tasks:** 1 completed, 2 failed
+
+
+### Completed
+
+- Isolate nexus admin startup from ambient settings
+
+### Failed
+
+- Replace bare python in default evolve prompts: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+- Reuse interpreter resolution in serial and worktree evolution runs: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **API startup is stricter than the test harness.**
+   - The app now correctly fails fast on required subsystem failures in `src/server/app.py:445-472`.
+   - But endpoint tests are inconsistent about using a controlled startup policy; `tests/unit/test_nexus_ops.py:10-15` still imports the shared app directly, while other tests already use safer app-factory patterns.
+   - Result: test outcomes still depend on ambient configuration instead of only the route under test.
+
+2. **Self-evolution is still prompt/file-contract driven.**
+   - Assessment success is inferred from `session_plan/assessment.md` in `src/nanobot/evolve/runtime.py:110-142`.
+   - Planning discovers and reparses `task_*.md` files in `src/nanobot/evolve/runtime.py:161-218`.
+   - This is flexible, but correctness still depends on markdown structure and prompt obedience rather than a validated typed artifact.
+
+3. **Shared mutable mission state remains in the server bridge.**
+   - `MissionBridge` is still a singleton in `src/server/services/mission_bridge.py:24-45`.
+   - Workspace overrides mutate one shared service instance in place via `src/server/services/mission_bridge.py:70-123`.
+   - The recent runner rebinding fix improved correctness, but concurrent multi-workspace use can still contend on shared mutable state.
+
+4. **API identity and quality gates are still soft.**
+   - Runtime reports `0.1.0` in `src/runtime/__init__.py:18`, while nanobot reports `0.1.4.post5` in `src/nanobot/__init__.py:5`.
+   - Coverage tooling exists in `pyproject.toml:35-38` and `pyproject.toml:83-88`, but `pytest.ini:1-12` does not enforce any coverage threshold.
+   - The journal tail also still points to memory/coverage drift: `memory/active_learnings.md` stops at Day 14 while git and `JOURNAL.md` have newer Day 16 history.
+
+---
