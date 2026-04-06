@@ -659,3 +659,62 @@ error: The following untracked
    - Packaging metadata says `0.1.0` in `pyproject.toml:3`. That is manageable now, but it invites drift as API and dashboard surfaces grow.
 
 ---
+
+## Session 16 — 2026-04-06 00:00 UTC
+
+**Duration:** 895s
+
+**Tasks:** 1 completed, 2 failed
+
+
+### Completed
+
+- Isolate nexus admin startup from ambient settings
+
+### Failed
+
+- Replace bare python in default evolve prompts: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+- Reuse interpreter resolution in serial and worktree evolution runs: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+Aborting
+
+
+### Gaps Identified
+1. **Self-evolution verification is still environment-unsafe.**
+   - The default assessment, planning, and conflict-resolution prompts still hardcode bare `python`/shell commands in `src/nanobot/evolve/prompts.py:20-23`.
+   - Worktree implementation partly prefers `.venv/bin/python` in `src/nanobot/evolve/implementation.py:185-190`, but the serial path still hardcodes bare `python` in `src/nanobot/evolve/implementation.py:388-409`.
+   - Result: agent-nexus can still misdiagnose itself before the real test suite runs.
+
+2. **The self-evolution control plane is still markdown/file-contract driven.**
+   - Assessment success is inferred from `session_plan/assessment.md` in `src/nanobot/evolve/runtime.py:130-136`.
+   - Planning reparses `task_*.md` files line-by-line in `src/nanobot/evolve/runtime.py:162-218`.
+   - If nothing usable is emitted, the engine falls back to a generic catch-all task in `src/nanobot/evolve/runtime.py:169-181`.
+   - This is flexible, but fragile under prompt drift and hard to validate mechanically.
+
+3. **API bootstrap and tests are tightly coupled to ambient configuration.**
+   - The new startup policy is explicit and better than silent degradation, but it now exposes how much the app depends on import-time settings and real environment state.
+   - `settings = Settings()` is created at import time in `src/server/config.py:253`, the app is imported in `tests/conftest.py:7`, and required startup checks execute in `src/server/app.py:98-375`.
+   - That makes endpoint tests less hermetic than they should be.
+
+4. **Mission workspace isolation is improved, but still shared-state based.**
+   - `MissionBridge` remains a singleton in `src/server/services/mission_bridge.py:24`.
+   - Workspace overrides still mutate one shared service instance in-place in `src/server/services/mission_bridge.py:70-95`, then request handlers reuse that same service in `src/server/services/mission_bridge.py:98-123`.
+   - The runner rebinding fix helps correctness, but concurrent multi-workspace requests can still contend on shared mutable state.
+
+5. **Version and compatibility identity are still split across packages.**
+   - Runtime reports `0.1.0` in `src/runtime/__init__.py:18`.
+   - CLI reports `0.1.0` in `src/runtime/plugins/cli/__init__.py:35`.
+   - Nanobot reports `0.1.4.post5` in `src/nanobot/__init__.py:5`.
+   - Packaging metadata reports `0.1.0` in `pyproject.toml:2-6`.
+   - This is survivable, but it invites drift as public API and dashboard surfaces grow.
+
+6. **Coverage tooling exists, but coverage is not part of the default quality gate.**
+   - `pytest-cov` is present in `pyproject.toml:35-41` and coverage sources are configured in `pyproject.toml:83-88`.
+   - The active pytest defaults in `pytest.ini:1-12` do not enforce a coverage threshold.
+   - The suite is large, but “enough coverage” is still policy-free.
+
+---
