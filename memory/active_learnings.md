@@ -71,3 +71,24 @@ Completed: Persist unexpected mission runner failures, Replace watchdog private 
 Completed: Persist unexpected mission runner failures, Replace watchdog private runtime coupling
 
 **Takeaway:** Session 14 was productive. 2/3 tasks succeeded.
+
+### Day 15: 2 improvements completed
+*Day 15 — evolution*
+
+Completed: Rebind mission runner state for workspace overrides, Codify startup failure policy for required subsystems
+
+**Takeaway:** Session 15 was productive. 2/3 tasks succeeded.
+
+### Day 16: 1 improvements completed
+*Day 16 — evolution*
+
+Completed: Isolate nexus admin startup from ambient settings
+
+**Takeaway:** Session 16 was mixed. 1/3 tasks succeeded.
+
+### Day 17: 1 improvements completed
+*Day 17 — evolution*
+
+Completed: Isolate nexus admin startup from ambient settings
+
+**Takeaway:** Session 17 was mixed. 1/3 tasks succeeded.

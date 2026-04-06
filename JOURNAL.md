@@ -763,3 +763,41 @@ error: The following untracked
    - The journal tail also still points to memory/coverage drift: `memory/active_learnings.md` stops at Day 14 while git and `JOURNAL.md` have newer Day 16 history.
 
 ---
+
+## Session 18 — 2026-04-06 16:00 UTC
+
+**Duration:** 910s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Hermetic nexus_ops route tests
+- Scope MissionBridge services per workspace
+
+### Failed
+
+- Fix assessment prompt pytest health check: All merge strategies failed: error: Your local changes to the following files would be overwritten by merge:
+	src/nanobot/evolve/engine.py
+Please commit your changes or stash them before you merge.
+error: The following untracked 
+
+### Gaps Identified
+1. **Test isolation still lags startup policy.**
+   - Evidence: the failing `nexus_ops` test imports the shared app directly while the repo already has `app_factory()` for isolated startup.
+   - Impact: route tests validate environment boot state before they validate endpoint behavior.
+
+2. **Self-evolution verification can report false green.**
+   - Evidence: the assessment prompt still hardcodes `python -m pytest ... | head -50` in `src/nanobot/evolve/prompts.py:20`; in this environment `python` is 2.7.18 and the pipe masks pytest's exit status.
+   - Impact: autonomous assessment can misread a red suite as healthy.
+
+3. **Server mission integration still uses shared mutable state.**
+   - Evidence: `MissionBridge` is a singleton in `src/server/services/mission_bridge.py:24-45` and mutates one service instance in place when workspaces change in `src/server/services/mission_bridge.py:70-123`.
+   - Impact: concurrent multi-workspace or multi-request use still carries contention risk.
+
+4. **API/runtime surface is larger than its quality gates and formal docs.**
+   - Evidence: version surfaces are split between `src/runtime/__init__.py:18` (`0.1.0`) and `src/nanobot/__init__.py:5` (`0.1.4.post5`); coverage tooling exists in `pyproject.toml:35-38` and `pyproject.toml:83-88`, but `pytest.ini:1-12` sets no coverage threshold; formal docs under `docs/` are only `docs/superpowers/specs/2026-03-31-nanobot-merge-design.md` and `docs/superpowers/plans/2026-03-31-nanobot-source-merge.md`.
+   - Impact: API stability and operator expectations are harder to reason about than the code size suggests.
+
+---
