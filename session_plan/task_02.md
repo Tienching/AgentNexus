@@ -1,11 +1,11 @@
-Title: Rebind mission runner state for workspace overrides
-Files: src/server/services/mission_bridge.py, src/nanobot/mission/runner.py, tests/test_mission_bridge.py
+Title: Replace bare python in default evolve prompts
+Files: src/nanobot/evolve/prompts.py, tests/evolve/test_prompts.py
 Issue: none
 
-Make workspace selection in `MissionBridge` request-scoped instead of only partially mutating shared service state. Focus on `MissionBridge.plan()` and `MissionBridge.start()` in `src/server/services/mission_bridge.py`: when a caller passes `workspace`, rebind every mission-service dependency that persists workspace state, not just `svc.store`, `svc.planner.workspace`, and `svc.executor.workspace`.
+Update the built-in prompt templates in `DEFAULT_TEMPLATES` so every pytest instruction emitted by the assessment, implementation, and conflict-resolution prompts uses the supported interpreter in this repo. Keep `build_assessment_prompt()` path substitution intact while removing any remaining bare `python -m pytest ...` guidance from the rendered prompt text.
 
-Specifically ensure the `MissionRunner` created in `src/nanobot/mission/runner.py` stays aligned with the active store/workspace after rebinding. The current bridge mutates `MissionService.store`, but `MissionRunner.store` is captured at construction time, so missions can still persist through the original `missions.json` path.
+Why: the self-evolution planner still bakes `/usr/bin/python` into prompt text, which makes assessment and remediation fail before the real suite runs in this environment.
 
-Add a regression test in `tests/test_mission_bridge.py` that exercises workspace overrides and asserts the active service state and runner state both point at the requested workspace before mission planning/execution proceeds.
+Add regression coverage in `tests/evolve/test_prompts.py` that checks the rendered assessment prompt uses `python3 -m pytest tests/ -x -q --tb=short` and that the built-in implementation/conflict prompt templates no longer mention bare `python`.
 
-Verify with: `python3 -m pytest tests/test_mission_bridge.py -q`.
+Verify with: `python3 -m pytest tests/evolve/test_prompts.py -q`.

@@ -1,11 +1,9 @@
-Title: Fix evolution prompt pytest interpreter
-Files: src/nanobot/evolve/prompts.py, tests/evolve/test_prompts.py
+Title: Isolate nexus admin startup from ambient settings
+Files: src/server/app.py, tests/conftest.py, tests/unit/test_nexus_admin.py
 Issue: none
 
-Update the built-in default prompt templates that still hardcode bare `python` for test execution. Start with `DEFAULT_TEMPLATES["assessment"]` in `src/nanobot/evolve/prompts.py`, and also fix any other default evolution prompt text in the same module that directly instructs pytest execution.
+Introduce a test-safe app bootstrap path so admin diagnostics tests do not inherit host configuration at import time. Focus on the FastAPI construction and `lifespan()` entry points in `src/server/app.py`: extract or expose an app-factory/settings-override path that lets tests decide whether required subsystems should start before `TestClient` enters lifespan. Then update `tests/conftest.py` and the `client` fixture in `tests/unit/test_nexus_admin.py` to use that path instead of importing the global app eagerly.
 
-Why: the autonomous assessment contract currently fails in this repo because `/usr/bin/python` does not have pytest, while `python3 -m pytest tests/ -x -q --tb=short` passes. The planner should generate commands that match the supported interpreter instead of baking environment-sensitive failures into the default prompt.
+Why: `tests/unit/test_nexus_admin.py` currently fails during startup because the scheduler is marked unhealthy when the executor is disabled by ambient settings. The test should validate `/api/nexus/diagnostics` and `/api/nexus/audit`, not the developer machine's startup configuration.
 
-Add a regression test in `tests/evolve/test_prompts.py` around `build_assessment_prompt()` that asserts the rendered prompt contains the Python 3 pytest command and still injects the evolve journal and memory paths correctly.
-
-Verify with: `python3 -m pytest tests/evolve/test_prompts.py -q`.
+Verify with: `python3 -m pytest tests/unit/test_nexus_admin.py -q`.
