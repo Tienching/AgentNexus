@@ -1,9 +1,10 @@
-Title: Isolate nexus admin startup from ambient settings
-Files: src/server/app.py, tests/conftest.py, tests/unit/test_nexus_admin.py
+Title: Hermetic nexus_ops route tests
+Files: tests/unit/test_nexus_ops.py
 Issue: none
 
-Introduce a test-safe app bootstrap path so admin diagnostics tests do not inherit host configuration at import time. Focus on the FastAPI construction and `lifespan()` entry points in `src/server/app.py`: extract or expose an app-factory/settings-override path that lets tests decide whether required subsystems should start before `TestClient` enters lifespan. Then update `tests/conftest.py` and the `client` fixture in `tests/unit/test_nexus_admin.py` to use that path instead of importing the global app eagerly.
+Replace the client fixture in `tests/unit/test_nexus_ops.py` so it uses `app_factory()` instead of importing the shared global `app`. Mirror the startup isolation pattern already used in `tests/unit/test_nexus_admin.py`: define a local `TEST_SAFE_STARTUP_POLICY` that disables the executor, scheduler, channel service, terminal manager, and evolution service, then build `TestClient(app_factory(startup_policy_overrides=...))`.
 
-Why: `tests/unit/test_nexus_admin.py` currently fails during startup because the scheduler is marked unhealthy when the executor is disabled by ambient settings. The test should validate `/api/nexus/diagnostics` and `/api/nexus/audit`, not the developer machine's startup configuration.
+Add a focused regression assertion that ambient startup settings do not leak into these route tests — for example, patch `src.server.app.settings.executor_enabled` and `src.server.app.settings.scheduler_enabled` into a broken combination and confirm `/api/nexus/search` still responds successfully with auth. The goal is to keep `TestGlobalSearch::test_returns_200` testing the endpoint, not global process startup.
 
-Verify with: `python3 -m pytest tests/unit/test_nexus_admin.py -q`.
+Verify with:
+`python3 -m pytest tests/unit/test_nexus_ops.py -q`
