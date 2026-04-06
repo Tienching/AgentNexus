@@ -9,22 +9,20 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from src.server.app import AppStartupPolicy
 
-
-TEST_SAFE_STARTUP_POLICY = AppStartupPolicy(
-    start_task_executor=False,
-    start_task_scheduler=False,
-    start_channel_service=False,
-    start_terminal_manager=False,
-    start_evolution_service=False,
-)
+TEST_SAFE_STARTUP_POLICY = {
+    "start_task_executor": False,
+    "start_task_scheduler": False,
+    "start_channel_service": False,
+    "start_terminal_manager": False,
+    "start_evolution_service": False,
+}
 
 
 @pytest.fixture
 def client(monkeypatch, app_factory):
     monkeypatch.setenv("NEXUS_AUTH_TOKEN", "test-token")
-    with TestClient(app_factory(startup_policy=TEST_SAFE_STARTUP_POLICY)) as c:
+    with TestClient(app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)) as c:
         yield c
 
 
@@ -42,7 +40,7 @@ class TestDiagnostics:
         monkeypatch.setattr("src.server.app.settings.executor_enabled", False)
         monkeypatch.setattr("src.server.app.settings.scheduler_enabled", True)
 
-        with TestClient(app_factory(startup_policy=TEST_SAFE_STARTUP_POLICY)) as client:
+        with TestClient(app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)) as client:
             r = client.get("/api/nexus/diagnostics", headers=_auth())
 
         assert r.status_code == 200

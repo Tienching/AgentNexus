@@ -4,7 +4,6 @@ import pytest
 import asyncio
 from typing import Any, AsyncGenerator
 from httpx import AsyncClient, ASGITransport
-from src.server.app import AppStartupPolicy, create_app, create_app_settings
 
 
 @pytest.fixture(scope="session")
@@ -22,14 +21,14 @@ def app_factory():
     def _create_app(
         *,
         settings_overrides: dict[str, Any] | None = None,
-        startup_policy: AppStartupPolicy | None = None,
+        startup_policy_overrides: dict[str, bool] | None = None,
     ):
-        return create_app(
-            settings_override=create_app_settings(
-                use_env=False,
-                overrides=settings_overrides,
-            ),
-            startup_policy=startup_policy,
+        from src.server import app as server_app
+
+        return server_app.create_app_with_overrides(
+            use_env=False,
+            settings_overrides=settings_overrides,
+            startup_policy_overrides=startup_policy_overrides,
         )
 
     return _create_app
