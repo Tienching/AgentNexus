@@ -181,6 +181,14 @@ class RedisClient:
         """Remove elements from list"""
         return self.client.lrem(self._key(name), count, value)
     
+    def lset(self, name: str, index: int, value: str) -> bool:
+        """Set value at index in list"""
+        return self.client.lset(self._key(name), index, value)
+    
+    def ltrim(self, name: str, start: int, end: int) -> bool:
+        """Trim list to specified range"""
+        return self.client.ltrim(self._key(name), start, end)
+    
     # ============ Set Operations ============
     
     def sadd(self, name: str, *values: str) -> int:
@@ -224,6 +232,10 @@ class RedisClient:
     def zrange(self, name: str, start: int, end: int, withscores: bool = False) -> List:
         """Get sorted set range by index"""
         return self.client.zrange(self._key(name), start, end, withscores=withscores)
+    
+    def zrevrange(self, name: str, start: int, end: int, withscores: bool = False) -> List:
+        """Get sorted set range by index in reverse order (highest to lowest score)"""
+        return self.client.zrevrange(self._key(name), start, end, withscores=withscores)
     
     def zrangebyscore(self, name: str, min_score: float, max_score: float, 
                       start: Optional[int] = None, num: Optional[int] = None,
