@@ -106,6 +106,36 @@ class TestMissionBridgeMethods:
     def _set_default_service(self, bridge, service) -> None:
         bridge._services[bridge._default_workspace()] = service
 
+    def _seed_non_default_mission_services(self, bridge, tmp_path, mission_id="msn-workspace"):
+        default_workspace = bridge._default_workspace()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        default_service = self._make_mock_service(default_workspace)
+        default_service.get_mission = MagicMock(return_value=None)
+        default_service.format_status = MagicMock(side_effect=AssertionError("default status used"))
+        default_service.confirm_mission = AsyncMock(side_effect=AssertionError("default approve used"))
+        default_service.cancel_mission = AsyncMock(side_effect=AssertionError("default cancel used"))
+        default_service.pause_mission = AsyncMock(side_effect=AssertionError("default pause used"))
+        default_service.resume_mission = AsyncMock(side_effect=AssertionError("default resume used"))
+
+        workspace_service = self._make_mock_service(workspace)
+        mission = self._make_mock_mission(mission_id=mission_id, status="running")
+        mission.goal = "Workspace mission"
+        mission.log = ["[10:00:00] Workspace log 1", "[10:01:00] Workspace log 2"]
+        workspace_service.get_mission = MagicMock(return_value=mission)
+        workspace_service.format_status = MagicMock(return_value="## Mission: Workspace mission\nStatus: running")
+        workspace_service.confirm_mission = AsyncMock(return_value=True)
+        workspace_service.cancel_mission = AsyncMock(return_value=True)
+        workspace_service.pause_mission = AsyncMock(return_value=True)
+        workspace_service.resume_mission = AsyncMock(return_value=True)
+
+        bridge._services = {
+            default_workspace: default_service,
+            workspace: workspace_service,
+        }
+        return default_service, workspace_service, mission
+
     @pytest.mark.asyncio
     async def test_plan_calls_default_service(self):
         from src.server.services.mission_bridge import MissionBridge
@@ -231,6 +261,58 @@ class TestMissionBridgeMethods:
         assert default_service.store.store_path == default_workspace / "missions.json"
         assert default_service.planner.workspace == default_workspace
         assert default_service.executor.workspace == default_workspace
+
+    @pytest.mark.asyncio
+    async def test_non_default_mission_actions_use_owning_workspace_service(self, tmp_path):
+        from src.server.services.mission_bridge import MissionBridge
+
+        bridge = MissionBridge.get_instance()
+        default_service, workspace_service, mission = self._seed_non_default_mission_services(
+            bridge,
+            tmp_path,
+        )
+
+        assert await bridge.approve(mission.id) is True
+        assert await bridge.cancel(mission.id) is True
+        assert await bridge.pause(mission.id) is True
+        assert await bridge.resume(mission.id) is True
+        assert await bridge.status(mission.id) == "## Mission: Workspace mission\nStatus: running"
+        assert await bridge.get_status_payload(mission.id) == {
+            "mission_id": mission.id,
+            "status_text": "## Mission: Workspace mission\nStatus: running",
+        }
+
+        workspace_service.confirm_mission.assert_awaited_once_with(mission.id)
+        workspace_service.cancel_mission.assert_awaited_once_with(mission.id)
+        workspace_service.pause_mission.assert_awaited_once_with(mission.id)
+        workspace_service.resume_mission.assert_awaited_once_with(mission.id)
+        assert workspace_service.format_status.call_count == 2
+        default_service.confirm_mission.assert_not_called()
+        default_service.cancel_mission.assert_not_called()
+        default_service.pause_mission.assert_not_called()
+        default_service.resume_mission.assert_not_called()
+        default_service.format_status.assert_not_called()
+
+    def test_non_default_mission_reads_and_payloads_use_owning_workspace_service(self, tmp_path):
+        from src.server.services.mission_bridge import MissionBridge
+
+        bridge = MissionBridge.get_instance()
+        default_service, workspace_service, mission = self._seed_non_default_mission_services(
+            bridge,
+            tmp_path,
+        )
+
+        assert bridge.get_mission_raw(mission.id) is mission
+        assert bridge.get_mission_detail(mission.id)["id"] == mission.id
+        assert bridge.get_log(mission.id, tail=1) == ["[10:01:00] Workspace log 2"]
+        assert bridge.get_mission_log_payload(mission.id, tail=1) == {
+            "mission_id": mission.id,
+            "entries": ["[10:01:00] Workspace log 2"],
+            "count": 1,
+        }
+
+        assert default_service.get_mission.call_count >= 1
+        assert workspace_service.get_mission.call_count >= 1
 
     @pytest.mark.asyncio
     async def test_approve_delegates_to_service(self):

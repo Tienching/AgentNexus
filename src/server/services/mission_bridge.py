@@ -83,6 +83,21 @@ class MissionBridge:
             self._services[workspace_path] = service
         return service
 
+    def _get_service_for_mission(self, mission_id: str) -> tuple[Any, Any | None]:
+        default_workspace = self._default_workspace()
+        default_service = self._services.get(default_workspace)
+
+        for service in self._services.values():
+            mission = service.get_mission(mission_id)
+            if mission:
+                return service, mission
+
+        if default_service is not None:
+            return default_service, None
+
+        service = self.service
+        return service, service.get_mission(mission_id)
+
     # ── High-level API ─────────────────────────────────────────────────
 
     async def plan(
@@ -109,14 +124,15 @@ class MissionBridge:
 
     async def approve(self, mission_id: str) -> bool:
         """Approve a planned mission and start execution."""
-        return await self.service.confirm_mission(mission_id)
+        service, _ = self._get_service_for_mission(mission_id)
+        return await service.confirm_mission(mission_id)
 
     async def status(self, mission_id: str) -> str | None:
         """Get formatted status for a mission."""
-        mission = self.service.get_mission(mission_id)
+        service, mission = self._get_service_for_mission(mission_id)
         if not mission:
             return None
-        return self.service.format_status(mission)
+        return service.format_status(mission)
 
     async def list_missions(self, include_completed: bool = True) -> str:
         """Get formatted list of all missions."""
@@ -125,19 +141,23 @@ class MissionBridge:
 
     async def cancel(self, mission_id: str) -> bool:
         """Cancel a mission."""
-        return await self.service.cancel_mission(mission_id)
+        service, _ = self._get_service_for_mission(mission_id)
+        return await service.cancel_mission(mission_id)
 
     async def pause(self, mission_id: str) -> bool:
         """Pause a running mission."""
-        return await self.service.pause_mission(mission_id)
+        service, _ = self._get_service_for_mission(mission_id)
+        return await service.pause_mission(mission_id)
 
     async def resume(self, mission_id: str) -> bool:
         """Resume a paused mission."""
-        return await self.service.resume_mission(mission_id)
+        service, _ = self._get_service_for_mission(mission_id)
+        return await service.resume_mission(mission_id)
 
     def get_mission_raw(self, mission_id: str) -> Any:
         """Get raw Mission object."""
-        return self.service.get_mission(mission_id)
+        _, mission = self._get_service_for_mission(mission_id)
+        return mission
 
     def get_mission_detail(self, mission_id: str) -> dict[str, Any] | None:
         """Get serialized mission detail payload."""
@@ -160,14 +180,14 @@ class MissionBridge:
 
     def get_log(self, mission_id: str, tail: int | None = None) -> list[str]:
         """Get mission log entries."""
-        mission = self.service.get_mission(mission_id)
+        mission = self.get_mission_raw(mission_id)
         if not mission:
             return []
         return self._slice_log_entries(mission.log, tail)
 
     def get_mission_log_payload(self, mission_id: str, tail: int | None = None) -> dict[str, Any] | None:
         """Get response payload for the mission log endpoint."""
-        mission = self.service.get_mission(mission_id)
+        mission = self.get_mission_raw(mission_id)
         if not mission:
             return None
 
