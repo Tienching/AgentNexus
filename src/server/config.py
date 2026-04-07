@@ -69,6 +69,14 @@ class ServerSettings(BaseSettings):
     
     # Channel 服务配置
     channels_enabled: bool = True
+
+    # Nanobot Mission System
+    nanobot_model: str = ""  # Empty = use ~/.nanobot/config.json setting
+    nanobot_workspace: str = ""  # Default: ~/Projects
+    nanobot_missions_enabled: bool = True
+
+    # Default chat provider (can be overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
+    default_chat_provider: str = "claude"  # "claude", "nanobot", "gemini", etc.
     
     # Telegram 配置
     telegram_bot_token: str | None = None
@@ -157,7 +165,8 @@ class ServerSettings(BaseSettings):
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",
-        "case_sensitive": False
+        "case_sensitive": False,
+        "extra": "ignore",  # Ignore NANOBOT_* env vars used by nanobot config
     }
 
 
@@ -173,7 +182,7 @@ class ProviderSettings(BaseSettings):
     gemini_command: str = "gemini"
     
     # 默认 Provider 和 Exec User
-    default_provider: str = "codebuddy"
+    default_provider: str = "nanobot"
     default_alias: str = ""
     default_exec_user: str = ""
 
@@ -181,6 +190,34 @@ class ProviderSettings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False
+    }
+
+
+class EvolutionSettings(BaseSettings):
+    """Self-evolution system configuration (EVOLUTION_* env vars)."""
+
+    evolution_enabled: bool = False
+    evolution_cron_expr: str = "0 * * * *"       # Every hour by default
+    evolution_interval_hours: int = 1
+    evolution_memory_path: str = "./evolve/memory"
+    evolution_journal_path: str = "./evolve/JOURNAL.md"
+    evolution_identity_file: str = "./evolve/context/IDENTITY.md"
+    evolution_personality_file: str = "./evolve/context/PERSONALITY.md"
+    evolution_max_tasks_per_session: int = 3
+    evolution_codebuddy_path: str = "codebuddy"
+    evolution_codebuddy_model: str = ""
+    evolution_codebuddy_timeout: int = 600
+    evolution_working_dir: str = "."
+    evolution_use_worktree: bool = True
+    evolution_parallel_tasks: bool = True
+    evolution_worktree_base_dir: str = ".evolve"
+    evolution_memory_synthesis_cron: str = "0 12 * * *"
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",
     }
 
 
@@ -201,9 +238,15 @@ class NexusSettings(BaseSettings):
 
 
 # 合并配置
-class Settings(ServerSettings, ProviderSettings, NexusSettings):
-    """完整配置（包含服务器和 Provider 配置）"""
-    pass
+class Settings(ServerSettings, ProviderSettings, NexusSettings, EvolutionSettings):
+    """完整配置（包含服务器、Provider 和进化配置）"""
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",  # Ignore unknown env vars (e.g. NANOBOT_EVOLUTION__*)
+    }
 
 
 # 全局配置实例

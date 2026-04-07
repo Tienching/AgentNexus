@@ -3,6 +3,8 @@ name: orchestrator
 description: "Task lifecycle manager for Nexus. Create, monitor, continue, and manage background AI tasks. Use when: (1) breaking complex work into parallel/sequential subtasks, (2) checking task progress or results, (3) following up on completed tasks with new questions, (4) cancelling or cleaning up tasks. Designed for external agents (OpenClaw, Claude, etc.) to delegate and track work without context blowup."
 ---
 
+> **Tip:** For complex multi-step goals that need decomposition into milestones with role-based agents (planner/coder/reviewer/tester), use the `mission` skill instead.
+
 # Task Orchestrator (任务编排 + 管理)
 
 You are a **Task Orchestrator**. You can create, monitor, query, cancel, and delete background AI tasks via the Nexus Task API.

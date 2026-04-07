@@ -2,9 +2,8 @@
 
 import pytest
 import asyncio
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from httpx import AsyncClient, ASGITransport
-from src.server.app import app
 
 
 @pytest.fixture(scope="session")
@@ -16,9 +15,29 @@ def event_loop():
 
 
 @pytest.fixture
-async def client() -> AsyncGenerator[AsyncClient, None]:
+def app_factory():
+    """创建隔离于宿主环境的测试应用"""
+
+    def _create_app(
+        *,
+        settings_overrides: dict[str, Any] | None = None,
+        startup_policy_overrides: dict[str, bool] | None = None,
+    ):
+        from src.server import app as server_app
+
+        return server_app.create_app_with_overrides(
+            use_env=False,
+            settings_overrides=settings_overrides,
+            startup_policy_overrides=startup_policy_overrides,
+        )
+
+    return _create_app
+
+
+@pytest.fixture
+async def client(app_factory) -> AsyncGenerator[AsyncClient, None]:
     """创建测试客户端"""
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=app_factory())
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 

@@ -37,6 +37,19 @@ cd <project-directory>
 uv sync
 ```
 
+Choose one setup path before starting the service:
+
+```bash
+# Guided setup (recommended)
+anexus onboard
+
+# Minimal bootstrap (creates directories and .env)
+anexus init
+```
+
+Before `anexus start`, make sure Redis is reachable and your selected provider CLI
+is installed and authenticated.
+
 ### Onboard (Recommended for First-Time Setup)
 
 ```bash
@@ -61,6 +74,12 @@ Options: `--reset` (reset .env), `--skip-install`, `--skip-start`
 cp .env.example .env
 # Edit .env with your settings
 ```
+
+Minimum fields to review on first boot:
+
+- `EXEC_USER` must match a real Linux user that can run provider CLIs.
+- `REDIS_HOST` / `REDIS_PORT` must point at a reachable Redis instance.
+- `DEFAULT_PROVIDER` and `CLI_COMMAND` should match an installed provider CLI.
 
 ### Running with `anexus` CLI
 
@@ -91,6 +110,9 @@ anexus config wizard
 
 # List installed plugins
 anexus list
+
+# Verify runtime health after startup
+anexus status --health
 ```
 
 ### Running with Scripts (Alternative)
@@ -101,6 +123,14 @@ anexus list
 ./scripts/status.sh               # Check status
 ./scripts/stop.sh                 # Stop service
 ```
+
+## Setup Troubleshooting
+
+- `uv: command not found`: install `uv` first, then rerun `uv sync`.
+- `Redis connection refused` or health-check failures: start Redis locally or update `REDIS_HOST` / `REDIS_PORT` in `.env`, then rerun `anexus status --health`.
+- `provider command not found`: install the CLI named by `CLI_COMMAND` and complete its login/auth flow before starting new tasks.
+- Channel import or token errors: install the matching extra with `anexus install channel <name>`, then update the relevant `*_TOKEN` values in `.env`.
+- Setup becomes inconsistent: rerun `anexus onboard --reset` for the guided flow, or `anexus init --force` to regenerate `.env` from `.env.example`.
 
 ## Configuration
 

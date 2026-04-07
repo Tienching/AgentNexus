@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "id": "b4a170e1",
+      "name": "nexus-self-evolve",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "atMs": null,
+        "everyMs": null,
+        "expr": "0 */8 * * *",
+        "tz": "UTC"
+      },
+      "payload": {
+        "kind": "agent_turn",
+        "message": "__nexus_evolve__",
+        "deliver": false,
+        "channel": null,
+        "to": null
+      },
+      "state": {
+        "nextRunAtMs": 1774972800000,
+        "lastRunAtMs": null,
+        "lastStatus": null,
+        "lastError": null,
+        "runHistory": []
+      },
+      "createdAtMs": 1774958974646,
+      "updatedAtMs": 1774958974646,
+      "deleteAfterRun": false
+    },
+    {
+      "id": "3a64bd2b",
+      "name": "nexus-memory-synth",
+      "enabled": true,
+      "schedule": {
+        "kind": "cron",
+        "atMs": null,
+        "everyMs": null,
+        "expr": "0 12 * * *",
+        "tz": "UTC"
+      },
+      "payload": {
+        "kind": "agent_turn",
+        "message": "__nexus_memory_synth__",
+        "deliver": false,
+        "channel": null,
+        "to": null
+      },
+      "state": {
+        "nextRunAtMs": 1775044800000,
+        "lastRunAtMs": null,
+        "lastStatus": null,
+        "lastError": null,
+        "runHistory": []
+      },
+      "createdAtMs": 1774958974647,
+      "updatedAtMs": 1774958974647,
+      "deleteAfterRun": false
+    }
+  ]
+}

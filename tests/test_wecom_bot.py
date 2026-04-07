@@ -207,8 +207,8 @@ class TestWeComBotChannel:
         payload = {
             "msgtype": "text",
             "msgid": "msg_001",
-            "chattype": "single",
-            "chatid": "",
+            "chattype": "group",
+            "chatid": "group_test",
             "from": {"userid": "user_123"},
             "text": {"content": "Hello Bot"},
         }
@@ -334,8 +334,8 @@ class TestWeComBotChannel:
         payload = {
             "msgtype": "text",
             "msgid": "msg_003",
-            "chattype": "single",
-            "chatid": "",
+            "chattype": "group",
+            "chatid": "group_test",
             "from": {"userid": "user_789"},
             "text": {"content": "test"},
         }
@@ -357,10 +357,10 @@ class TestWeComBotChannel:
         simulator_id = inbound.metadata["simulator_id"]
         sim = channel.get_stream_simulator_by_id(simulator_id)
         assert sim is not None
-        assert sim.chat_id == "user_789"
+        assert sim.chat_id == "group_test"
 
         # Also accessible by chat_id
-        sim2 = channel.get_stream_simulator("user_789")
+        sim2 = channel.get_stream_simulator("group_test")
         assert sim2 is sim
 
         await channel._stop()
@@ -578,7 +578,7 @@ class TestChatTypeDispatch:
 
     @pytest.mark.asyncio
     async def test_single_chat_sets_private(self):
-        """单聊消息 chattype=single → chat_type='private'"""
+        """单聊消息 chattype=single → 返回被动回复提示（不走 AI 处理）"""
         config = _make_config()
         channel = WeComBotChannel(config)
         await channel._start()
@@ -606,11 +606,12 @@ class TestChatTypeDispatch:
             "nonce": nonce,
         }
 
-        await channel.handle_webhook(body, {}, query_params)
+        result = await channel.handle_webhook(body, {}, query_params)
 
-        inbound = handler.call_args[0][0]
-        assert inbound.chat_type == "private"
-        assert inbound.chat_id == "user_single"
+        # Single chat returns a passive reply (encrypted), handler NOT called
+        assert result is not None
+        assert "encrypt" in result
+        assert not handler.called
 
         await channel._stop()
 
@@ -654,7 +655,7 @@ class TestChatTypeDispatch:
 
     @pytest.mark.asyncio
     async def test_single_chat_uses_userid_as_chatid(self):
-        """单聊时 chatid 为空，应使用 userid 作为 chat_id"""
+        """单聊时 chatid 为空，被动回复路径仍返回加密响应"""
         config = _make_config()
         channel = WeComBotChannel(config)
         await channel._start()
@@ -682,10 +683,11 @@ class TestChatTypeDispatch:
             "nonce": nonce,
         }
 
-        await channel.handle_webhook(body, {}, query_params)
+        result = await channel.handle_webhook(body, {}, query_params)
 
-        inbound = handler.call_args[0][0]
-        assert inbound.chat_id == "user_fallback"
-        assert inbound.metadata["chattype"] == "single"
+        # Single chat returns passive reply, handler NOT called
+        assert result is not None
+        assert "encrypt" in result
+        assert not handler.called
 
         await channel._stop()

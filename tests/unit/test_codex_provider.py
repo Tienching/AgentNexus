@@ -17,7 +17,7 @@ class TestCodexExecutorConfig:
     def test_default_config(self):
         """测试默认配置"""
         config = CodexExecutorConfig()
-        assert config.timeout == 120.0
+        assert config.timeout == 600.0
         assert config.codex_command == "codex"
         assert config.mcp_server_mode == "auto"
 

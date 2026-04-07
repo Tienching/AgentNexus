@@ -79,9 +79,13 @@ class InitCommand(BaseCommand):
         # 2. 创建 .env 文件
         self.printer.section("配置环境变量")
         env_created = self._create_env_file(force=args.force)
+
+        if env_created:
+            self._print_setup_checklist()
         
         if not env_created and not args.force:
             self.printer.warning(".env 文件已存在，使用 --force 强制覆盖")
+            self.printer.list_item("如需重新生成模板，可运行 `anexus init --force`")
         
         # 3. 交互式配置（如果启用）
         if not args.no_interactive and env_created:
@@ -128,6 +132,14 @@ class InitCommand(BaseCommand):
             self.printer.error("创建 .env 文件失败")
             return False
     
+    def _print_setup_checklist(self) -> None:
+        """显示初始化后的关键检查项"""
+        self.printer.print("完成 .env 创建后，请至少确认以下项目：")
+        self.printer.list_item("EXEC_USER 对应真实 Linux 用户，并已拥有 Provider CLI 的登录态")
+        self.printer.list_item("REDIS_HOST / REDIS_PORT 指向可用 Redis 实例")
+        self.printer.list_item("DEFAULT_PROVIDER / CLI_COMMAND 与已安装 CLI 保持一致")
+        self.printer.print()
+
     def _interactive_setup(self) -> None:
         """交互式配置向导"""
         self.printer.print("请设置以下核心配置（按 Enter 使用默认值）：")
@@ -171,6 +183,8 @@ class InitCommand(BaseCommand):
         self.printer.print()
         self.printer.print("下一步操作：")
         self.printer.list_item("编辑 .env 文件配置更多选项")
-        self.printer.list_item("运行 'anexus start' 启动服务")
-        self.printer.list_item("运行 'anexus config wizard' 进行更详细的配置")
+        self.printer.list_item("运行 'anexus config wizard' 继续完善 Provider / Channel 配置")
+        self.printer.list_item("确认 Redis 与 Provider CLI 就绪后，运行 'anexus start' 启动服务")
+        self.printer.list_item("启动后运行 'anexus status --health' 验证服务健康状态")
+        self.printer.list_item("如需回到模板初始状态，可运行 'anexus init --force'")
         self.printer.print()

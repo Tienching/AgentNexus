@@ -934,6 +934,104 @@ class NexusAPI {
         if (!response.ok) throw new Error(`Failed to fetch schedule history: ${response.statusText}`);
         return response.json();
     }
+
+    // ============ Agent Runtimes API ============
+
+    /**
+     * Detect installed agent runtimes (claude, codex, gemini, codebuddy, nanobot)
+     * @param {string} [runtimeId] - Optional: detect a specific runtime only
+     * @returns {Promise<Object>} Runtimes detection result
+     */
+    static async getAgentRuntimes(runtimeId) {
+        const params = new URLSearchParams();
+        if (runtimeId) params.set('runtime_id', runtimeId);
+        const query = params.toString();
+        const response = await fetch(`${API_BASE}/agent-runtimes${query ? '?' + query : ''}`);
+        if (!response.ok) throw new Error(`Failed to detect runtimes: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Admin / Ops APIs ============
+
+    static async getDiagnostics() {
+        const response = await fetch(`${API_BASE}/diagnostics`);
+        if (!response.ok) throw new Error(`Failed to fetch diagnostics: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getSecurityScan() {
+        const response = await fetch(`${API_BASE}/security-scan`);
+        if (!response.ok) throw new Error(`Failed to fetch security scan: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getSystemMonitor() {
+        const response = await fetch(`${API_BASE}/system-monitor`);
+        if (!response.ok) throw new Error(`Failed to fetch system monitor: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getWorkload() {
+        const response = await fetch(`${API_BASE}/workload`);
+        if (!response.ok) throw new Error(`Failed to fetch workload: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getStandup() {
+        const response = await fetch(`${API_BASE}/standup`);
+        if (!response.ok) throw new Error(`Failed to fetch standup: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getAuditLog(params = {}) {
+        const qs = new URLSearchParams();
+        if (params.action) qs.set('action', params.action);
+        if (params.limit) qs.set('limit', params.limit);
+        const query = qs.toString();
+        const response = await fetch(`${API_BASE}/audit${query ? '?' + query : ''}`);
+        if (!response.ok) throw new Error(`Failed to fetch audit log: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async globalSearch(q, type) {
+        const params = new URLSearchParams({ q });
+        if (type && type !== 'all') params.set('type', type);
+        const response = await fetch(`${API_BASE}/search?${params}`);
+        if (!response.ok) throw new Error(`Failed to search: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getCleanupPreview() {
+        const response = await fetch(`${API_BASE}/cleanup`);
+        if (!response.ok) throw new Error(`Failed to fetch cleanup preview: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async executeCleanup(dryRun = true) {
+        const params = new URLSearchParams({ dry_run: dryRun });
+        const response = await fetch(`${API_BASE}/cleanup?${params}`, { method: 'POST' });
+        if (!response.ok) throw new Error(`Failed to execute cleanup: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async parseSchedule(input) {
+        const params = new URLSearchParams({ input });
+        const response = await fetch(`${API_BASE}/schedule-parse?${params}`);
+        if (!response.ok) throw new Error(`Failed to parse schedule: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async exportData(type, format) {
+        const params = new URLSearchParams({ type });
+        if (format) params.set('format', format);
+        const response = await fetch(`${API_BASE}/export?${params}`);
+        if (!response.ok) throw new Error(`Failed to export data: ${response.statusText}`);
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('text/csv') || (format && format.toLowerCase() === 'csv')) {
+            return response.text();
+        }
+        return response.json();
+    }
 }
 
 // Export for use in other scripts

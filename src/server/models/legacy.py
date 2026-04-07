@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """易事厅格式数据模型定义"""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional
 
 
@@ -20,9 +20,7 @@ class RequestModel(BaseModel):
     file_paths: Optional[List[str]] = Field(default_factory=list, description="本地文件路径列表（由 media_downloader 下载后填充）")
     content_parts: Optional[list] = Field(default_factory=list, description="有序内容部件列表，保留图文交错顺序。每项为 {'type':'text','content':'...'} 或 {'type':'image','path':'...'}")
 
-    # 允许额外字段
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 class Document(BaseModel):
@@ -51,12 +49,30 @@ class StreamResponse(BaseModel):
     global_output: GlobalOutput = Field(..., description="全局输出信息")
 
 
+class HealthCheck(BaseModel):
+    """Single subsystem health check result.
+
+    Ported from mission-control performHealthCheck (commits 4eda03a / afa8e9d).
+    """
+    name: str
+    status: str  # "healthy" | "warning" | "degraded" | "unhealthy" | "error"
+    message: str = ""
+    detail: Optional[dict] = None
+
+
 class HealthResponse(BaseModel):
-    """健康检查响应"""
+    """健康检查响应 — enhanced with structured checks.
+
+    Ported from mission-control performHealthCheck (commits 4eda03a / afa8e9d):
+    - checks: list of per-subsystem health results
+    - overall status degrades to worst check status
+    """
 
     status: str = Field(..., description="服务状态")
     service: str = Field(..., description="服务名称")
     version: str = Field(..., description="服务版本")
+    uptime_seconds: Optional[float] = Field(None, description="Process uptime in seconds")
+    checks: List[HealthCheck] = Field(default_factory=list, description="Per-subsystem health checks")
 
 
 class MetricsResponse(BaseModel):

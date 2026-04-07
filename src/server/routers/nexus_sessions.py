@@ -91,6 +91,7 @@ async def get_agents():
         usernames = ["ubuntu"]
 
     agent_types = [
+        {"type": "nanobot", "label": "nanobot"},
         {"type": "claude", "label": "claude"},
         {"type": "gemini", "label": "gemini"},
         {"type": "codex", "label": "codex"},

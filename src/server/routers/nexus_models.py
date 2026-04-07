@@ -94,6 +94,11 @@ class TaskItem(BaseModel):
     updated_at: Optional[datetime] = None
     attempt_count: int = 0
     error_message: Optional[str] = None
+    # Outcome tracking — ported from mission-control commit 6cf4256
+    outcome: Optional[str] = None
+    resolution: Optional[str] = None
+    feedback_rating: Optional[int] = None
+    feedback_notes: Optional[str] = None
     exec_user: Optional[str] = None
     session_id: Optional[str] = None
     depends_on: List[str] = Field(default_factory=list)
@@ -103,6 +108,10 @@ class TaskItem(BaseModel):
     loop_max_iterations: int = 1
     loop_keywords: List[str] = Field(default_factory=list)
     loop_keyword_found: bool = False
+    # Derived overlay — not stored; computed from description keywords.
+    # "waiting_for_owner" signals that the task is blocked on human action.
+    # Ported from mission-control detectAwaitingOwner (commit fc4384b).
+    effective_status: Optional[str] = None
 
 
 class TaskListResponse(BaseModel):
@@ -165,6 +174,54 @@ class BulkCreateTaskResponse(BaseModel):
 
 class UpdateTaskStatusRequest(BaseModel):
     status: str = Field(..., description="New task status (todo/doing/done/failed/cancelled/archived)")
+
+
+class UpdateTaskOutcomeRequest(BaseModel):
+    """Set or update the outcome of a completed task.
+
+    Ported from mission-control commit 6cf4256.
+    outcome: success | failed | partial | abandoned
+    feedback_rating: 1-5 (optional human rating)
+    """
+    outcome: str = Field(..., description="Outcome: success | failed | partial | abandoned")
+    resolution: Optional[str] = Field(None, description="Free-text resolution notes")
+    feedback_rating: Optional[int] = Field(None, ge=1, le=5, description="Human rating 1-5")
+    feedback_notes: Optional[str] = Field(None, description="Human feedback text")
+
+
+class OutcomeBuckets(BaseModel):
+    success: int = 0
+    failed: int = 0
+    partial: int = 0
+    abandoned: int = 0
+    unknown: int = 0
+
+
+class OutcomesByDimension(OutcomeBuckets):
+    total: int = 0
+    success_rate: float = 0.0
+
+
+class TaskOutcomeSummary(BaseModel):
+    total_done: int = 0
+    with_outcome: int = 0
+    by_outcome: OutcomeBuckets = Field(default_factory=OutcomeBuckets)
+    avg_attempt_count: float = 0.0
+    avg_time_to_resolution_seconds: float = 0.0
+    success_rate: float = 0.0
+
+
+class TaskOutcomesResponse(BaseModel):
+    """Analytics response for GET /api/nexus/tasks/outcomes.
+
+    Ported from mission-control commit 6cf4256.
+    """
+    timeframe: str = "all"
+    summary: TaskOutcomeSummary = Field(default_factory=TaskOutcomeSummary)
+    by_provider: Dict[str, Any] = Field(default_factory=dict)
+    by_priority: Dict[str, Any] = Field(default_factory=dict)
+    common_errors: List[Dict[str, Any]] = Field(default_factory=list)
+    record_count: int = 0
 
 
 class ChatContinueRequest(BaseModel):
@@ -266,12 +323,91 @@ def task_updated_at(task) -> Optional[datetime]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# awaiting-owner detection
+# Ported from mission-control task-board-panel.tsx detectAwaitingOwner (commit fc4384b).
+# When a TODO or DOING task's description contains any of these phrases, it means
+# the agent is blocked waiting for human action — surfaced as effective_status.
+# ---------------------------------------------------------------------------
+
+_WAITING_FOR_OWNER_KEYWORDS = [
+    "waiting for",
+    "waiting on",
+    "needs human",
+    "manual action",
+    "account creation",
+    "browser login",
+    "approval needed",
+    "owner action",
+    "human required",
+    "blocked on owner",
+    "awaiting owner",
+    "awaiting human",
+    "needs owner",
+]
+
+_ACTIVE_STATUSES = {"todo", "doing"}
+
+
+def detect_waiting_for_owner(task) -> bool:
+    """Return True when the task appears to be blocked waiting for human action.
+
+    Only triggers for active tasks (TODO/DOING) — completed/failed/cancelled
+    tasks are not flagged regardless of description content.
+    """
+    raw_status = task.status if isinstance(task.status, str) else task.status.value
+    if raw_status not in _ACTIVE_STATUSES:
+        return False
+    text = (getattr(task, "description", "") or "").lower()
+    return any(kw in text for kw in _WAITING_FOR_OWNER_KEYWORDS)
+
+
+def _str_or_none(val) -> Optional[str]:
+    """Return val if it is a str, else None.  Protects TaskItem from MagicMock attrs in tests."""
+    return val if isinstance(val, str) else None
+
+
+def _int_or_none(val) -> Optional[int]:
+    """Return val if it is an int, else None.  Protects TaskItem from MagicMock attrs in tests."""
+    return val if isinstance(val, int) else None
+
+
+# ---------------------------------------------------------------------------
+# Task comment models
+# Ported from mission-control GET/POST /api/tasks/[id]/comments (commit 4ef91d4).
+# MC stores comments in SQLite; here we use Redis hashes + sorted sets.
+# ---------------------------------------------------------------------------
+
+class TaskComment(BaseModel):
+    """A single comment (or reply) on a task."""
+    id: str
+    task_id: str
+    author: str
+    content: str
+    created_at: float          # POSIX timestamp
+    parent_id: Optional[str] = None
+    replies: List["TaskComment"] = Field(default_factory=list)
+
+
+class TaskCommentsResponse(BaseModel):
+    task_id: str
+    comments: List[TaskComment] = Field(default_factory=list)
+    total: int = 0
+
+
+class CreateCommentRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="Comment text")
+    author: str = Field(default="user", description="Author identifier")
+    parent_id: Optional[str] = Field(None, description="ID of parent comment for replies")
+
+
 def task_to_item(task) -> TaskItem:
     """Convert a storage Task to a TaskItem response model."""
     status_val = task.status if isinstance(task.status, str) else task.status.value
     priority_val = task.priority if isinstance(task.priority, str) else task.priority.value
     session_id = getattr(task, "session_id", None) or f"task_{task.id}"
     depends_on = getattr(task, "depends_on", None) or []
+    effective_status = "waiting_for_owner" if detect_waiting_for_owner(task) else None
     return TaskItem(
         id=str(task.id),
         description=task.description,
@@ -288,6 +424,10 @@ def task_to_item(task) -> TaskItem:
         updated_at=task_updated_at(task),
         attempt_count=int(task.attempt_count or 0),
         error_message=task.error_message,
+        outcome=_str_or_none(getattr(task, "outcome", None)),
+        resolution=_str_or_none(getattr(task, "resolution", None)),
+        feedback_rating=_int_or_none(getattr(task, "feedback_rating", None)),
+        feedback_notes=_str_or_none(getattr(task, "feedback_notes", None)),
         exec_user=task.exec_user,
         session_id=session_id,
         depends_on=depends_on,
@@ -296,4 +436,5 @@ def task_to_item(task) -> TaskItem:
         loop_max_iterations=getattr(task, "loop_max_iterations", 1),
         loop_keywords=getattr(task, "loop_keywords", []) or [],
         loop_keyword_found=getattr(task, "loop_keyword_found", False),
+        effective_status=effective_status,
     )
