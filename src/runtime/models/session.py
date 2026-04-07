@@ -4,7 +4,6 @@
 Defines data models for storing AGUI session data in Redis.
 """
 
-import json
 import time
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
@@ -107,13 +106,12 @@ class StoredMessage(BaseModel):
 
     def to_json(self) -> str:
         """Serialize to JSON string for Redis storage"""
-        return json.dumps(self.model_dump(), ensure_ascii=False)
+        return self.model_dump_json()
 
     @classmethod
     def from_json(cls, json_str: str) -> "StoredMessage":
         """Deserialize from JSON string"""
-        data = json.loads(json_str)
-        return cls(**data)
+        return cls.model_validate_json(json_str)
 
 
 class ToolCallStatus(str, Enum):
@@ -139,13 +137,12 @@ class StoredToolCall(BaseModel):
 
     def to_json(self) -> str:
         """Serialize to JSON string for Redis storage"""
-        return json.dumps(self.model_dump(), ensure_ascii=False)
+        return self.model_dump_json()
 
     @classmethod
     def from_json(cls, json_str: str) -> "StoredToolCall":
         """Deserialize from JSON string"""
-        data = json.loads(json_str)
-        return cls(**data)
+        return cls.model_validate_json(json_str)
 
 
 # API Response Models
