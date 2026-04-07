@@ -122,3 +122,26 @@ class TestCodeBuddyExecutor:
         assert "--tools" in call_args
         tools_idx = list(call_args).index("--tools")
         assert call_args[tools_idx + 1] == "Read,Write"
+
+    @pytest.mark.asyncio
+    async def test_model_passed_to_command(self):
+        """Configured model should appear in the command."""
+        config = EvolutionConfig(
+            codebuddy_path="codebuddy",
+            codebuddy_timeout=30,
+            working_dir=".",
+            codebuddy_model="glm-5.0-ioa",
+        )
+        executor = CodeBuddyExecutor(config)
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await executor.execute("task")
+
+        call_args = mock_exec.call_args[0]
+        assert "--model" in call_args
+        model_idx = list(call_args).index("--model")
+        assert call_args[model_idx + 1] == "glm-5.0-ioa"

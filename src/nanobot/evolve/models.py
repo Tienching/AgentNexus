@@ -125,14 +125,16 @@ class EvolutionConfig:
     enabled: bool = False
     interval_hours: int = 1
     cron_expr: str = "0 * * * *"
-    memory_path: str = "./memory"
-    journal_path: str = "./JOURNAL.md"
-    identity_file: str = "./IDENTITY.md"
-    personality_file: str = "./PERSONALITY.md"
+    memory_path: str = "./evolve/memory"
+    journal_path: str = "./evolve/JOURNAL.md"
+    identity_file: str = "./evolve/context/IDENTITY.md"
+    personality_file: str = "./evolve/context/PERSONALITY.md"
     max_session_duration_seconds: int = 3600
     max_tasks_per_session: int = 3
     max_fix_attempts: int = 10
     protected_files: list[str] = field(default_factory=lambda: [
+        "evolve/context/IDENTITY.md",
+        "evolve/context/PERSONALITY.md",
         "IDENTITY.md",
         "PERSONALITY.md",
     ])

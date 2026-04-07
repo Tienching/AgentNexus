@@ -24,46 +24,66 @@ EVOLVE_PAYLOAD_MSG_EVOLVE = "__nexus_evolve__"
 EVOLVE_PAYLOAD_MSG_SYNTH = "__nexus_memory_synth__"
 
 
+def _sync_or_add_job(
+    cron_service: CronService,
+    *,
+    name: str,
+    desired_expr: str,
+    message: str,
+) -> None:
+    existing_job = next(
+        (job for job in cron_service.list_jobs(include_disabled=True) if job.name == name),
+        None,
+    )
+    if existing_job and existing_job.schedule.expr == desired_expr:
+        logger.info("Evolution: job '{}' already registered with cron='{}'", name, desired_expr)
+        return
+
+    was_enabled = existing_job.enabled if existing_job else True
+    if existing_job:
+        logger.info(
+            "Evolution: job '{}' cron mismatch ('{}' -> '{}'), recreating",
+            name,
+            existing_job.schedule.expr,
+            desired_expr,
+        )
+        cron_service.remove_job(existing_job.id)
+
+    job = cron_service.add_job(
+        name=name,
+        schedule=CronSchedule(kind="cron", expr=desired_expr, tz="UTC"),
+        message=message,
+    )
+    if not was_enabled:
+        cron_service.enable_job(job.id, enabled=False)
+    logger.info("Evolution: registered job '{}' ({}), cron='{}'", name, job.id, desired_expr)
+
+
+
 def register_evolution_jobs(
     cron_service: CronService,
     config: SchemaEvolutionConfig,
 ) -> None:
     """Register evolution cron jobs if enabled.
 
-    Safe to call multiple times — skips if jobs already registered.
+    Safe to call multiple times — existing jobs are synchronized to config.
     """
     if not config.enabled:
         logger.info("Evolution: disabled in config, skipping cron registration")
         return
 
-    existing_names = {j.name for j in cron_service.list_jobs(include_disabled=True)}
-
-    # Register evolution job
-    if EVOLVE_JOB_NAME not in existing_names:
-        from src.nanobot.cron.types import CronSchedule, CronPayload
-        import time
-
-        job = cron_service.add_job(
-            name=EVOLVE_JOB_NAME,
-            schedule=CronSchedule(kind="cron", expr=config.cron_expr, tz="UTC"),
-            message=EVOLVE_PAYLOAD_MSG_EVOLVE,
-        )
-        logger.info("Evolution: registered job '{}' ({}), cron='{}'",
-                     EVOLVE_JOB_NAME, job.id, config.cron_expr)
-    else:
-        logger.info("Evolution: job '{}' already registered", EVOLVE_JOB_NAME)
-
-    # Register memory synthesis job
-    if MEMORY_SYNTH_JOB_NAME not in existing_names:
-        job = cron_service.add_job(
-            name=MEMORY_SYNTH_JOB_NAME,
-            schedule=CronSchedule(kind="cron", expr=config.memory_synthesis_cron, tz="UTC"),
-            message=EVOLVE_PAYLOAD_MSG_SYNTH,
-        )
-        logger.info("Evolution: registered job '{}' ({}), cron='{}'",
-                     MEMORY_SYNTH_JOB_NAME, job.id, config.memory_synthesis_cron)
-    else:
-        logger.info("Evolution: job '{}' already registered", MEMORY_SYNTH_JOB_NAME)
+    _sync_or_add_job(
+        cron_service,
+        name=EVOLVE_JOB_NAME,
+        desired_expr=config.cron_expr,
+        message=EVOLVE_PAYLOAD_MSG_EVOLVE,
+    )
+    _sync_or_add_job(
+        cron_service,
+        name=MEMORY_SYNTH_JOB_NAME,
+        desired_expr=config.memory_synthesis_cron,
+        message=EVOLVE_PAYLOAD_MSG_SYNTH,
+    )
 
 
 def is_evolution_job(job: CronJob) -> bool:

@@ -33,19 +33,24 @@ class ThemeManager {
 class PageManager {
     constructor(app) {
         this.app = app;
-        // Migrate old 'project' value to 'chat' for backward compatibility
+        // Migrate old page names to the current structure
         let storedPage = localStorage.getItem('nexus-page');
         if (storedPage === 'project') {
             storedPage = 'chat';
-            localStorage.setItem('nexus-page', 'chat');
+        }
+        if (storedPage === 'config' || storedPage === 'admin') {
+            storedPage = 'settings';
+        }
+        if (storedPage) {
+            localStorage.setItem('nexus-page', storedPage);
         }
         this.currentPage = storedPage || 'chat';
         this.chatView = document.getElementById('chatView');
         this.taskView = document.getElementById('taskView');
-        this.configView = document.getElementById('configView');
-        this.adminView = document.getElementById('adminView');
+        this.settingsView = document.getElementById('settingsView');
         this.projectHeaderCenter = document.getElementById('projectHeaderCenter');
         this.projectHeaderRight = document.getElementById('projectHeaderRight');
+        this.globalUserFilter = document.getElementById('globalUserFilter');
         this.bindEvents();
         this.apply();
     }
@@ -69,14 +74,9 @@ class PageManager {
             this.app.taskView._stopAutoPolling();
         }
 
-        // Refresh config view when switching to config page
-        if (page === 'config' && this.app.configView) {
-            this.app.configView.refresh();
-        }
-
-        // Refresh admin view when switching to admin page
-        if (page === 'admin' && this.app.adminView) {
-            this.app.adminView.refresh();
+        // Refresh settings view when switching to settings page
+        if (page === 'settings' && this.app.settingsView) {
+            this.app.settingsView.refresh();
         }
 
         // Refresh task view when switching to task page
@@ -104,20 +104,20 @@ class PageManager {
         if (this.taskView) {
             this.taskView.classList.toggle('active', this.currentPage === 'task');
         }
-        if (this.configView) {
-            this.configView.classList.toggle('active', this.currentPage === 'config');
-        }
-        if (this.adminView) {
-            this.adminView.classList.toggle('active', this.currentPage === 'admin');
+        if (this.settingsView) {
+            this.settingsView.classList.toggle('active', this.currentPage === 'settings');
         }
 
-        // Show/hide chat-specific header elements (layout switcher, user filter, etc.)
+        // Show/hide chat-specific header elements
         const isChatPage = this.currentPage === 'chat';
         if (this.projectHeaderCenter) {
             this.projectHeaderCenter.style.display = isChatPage ? '' : 'none';
         }
         if (this.projectHeaderRight) {
-            this.projectHeaderRight.style.display = isChatPage ? '' : 'none';
+            this.projectHeaderRight.style.display = '';
+        }
+        if (this.globalUserFilter) {
+            this.globalUserFilter.style.display = isChatPage ? '' : 'none';
         }
     }
 }
@@ -6274,7 +6274,7 @@ class AdminView {
             ]);
             if (!diag) { this._showError('Failed to load diagnostics'); return; }
             const sys = diag.system || {}, redis = diag.redis || {}, tasks = diag.tasks || {}, sessions = diag.sessions || {}, wl = workload || {};
-            const sig = (wl.recommendation||'normal').toLowerCase().replace(/[^a-z-]/g,'');
+            const sig = (wl.recommendation?.action||'normal').toLowerCase().replace(/[^a-z-]/g,'');
             this.container.innerHTML = `
                 <div class="admin-section">
                     <h3 class="admin-section-title">System Overview</h3>
@@ -6301,7 +6301,7 @@ class AdminView {
                         <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Sessions</span></div><div class="admin-card-body">
                             <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${sessions.total??0}</span></div>
                         </div></div>
-                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Workload</span><span class="admin-badge ${sig}">${this._esc(wl.recommendation||'N/A')}</span></div><div class="admin-card-body">
+                        <div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">Workload</span><span class="admin-badge ${sig}">${this._esc(wl.recommendation?.action||'N/A')}</span></div><div class="admin-card-body">
                             <div class="admin-metric"><span class="admin-metric-label">Active Tasks</span><span class="admin-metric-value">${wl.active_tasks??'N/A'}</span></div>
                             <div class="admin-metric"><span class="admin-metric-label">Queue Depth</span><span class="admin-metric-value">${wl.queue_depth??'N/A'}</span></div>
                         </div></div>
@@ -6428,6 +6428,129 @@ class AdminView {
     }
 }
 
+class SettingsView {
+    constructor(app) {
+        this.app = app;
+        this.activeTab = localStorage.getItem('nexus-settings-tab') || 'overview';
+        this.configSection = document.getElementById('settingsConfigSection');
+        this.adminSection = document.getElementById('settingsAdminSection');
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        document.querySelectorAll('.settings-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                this.switchTab(tab.dataset.settingsTab);
+            });
+        });
+    }
+
+    switchTab(tabName) {
+        this.activeTab = tabName;
+        localStorage.setItem('nexus-settings-tab', tabName);
+        this.applyTab();
+    }
+
+    applyTab() {
+        const configTabMap = {
+            general: 'parameters',
+            mcp: 'mcp',
+            skills: 'skills',
+        };
+
+        document.querySelectorAll('.settings-tab').forEach(tab => {
+            tab.classList.toggle('active', tab.dataset.settingsTab === this.activeTab);
+        });
+
+        const configTab = configTabMap[this.activeTab];
+        if (configTab) {
+            if (this.configSection) this.configSection.style.display = '';
+            if (this.adminSection) this.adminSection.style.display = 'none';
+            this.app.configView.refresh();
+            this.app.configView.switchTab(configTab);
+            return;
+        }
+
+        if (this.configSection) this.configSection.style.display = 'none';
+        if (this.adminSection) this.adminSection.style.display = '';
+        this.app.adminView.switchTab(this.activeTab);
+    }
+
+    refresh() {
+        this.applyTab();
+    }
+}
+
+class GlobalSearch {
+    constructor(app) {
+        this.app = app;
+        this.modal = document.getElementById('globalSearchModal');
+        this.input = document.getElementById('globalSearchInput');
+        this.type = document.getElementById('globalSearchType');
+        this.results = document.getElementById('globalSearchResults');
+        this.submitBtn = document.getElementById('globalSearchSubmitBtn');
+        this.triggerBtn = document.getElementById('globalSearchBtn');
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        this.triggerBtn?.addEventListener('click', () => this.open());
+        this.submitBtn?.addEventListener('click', () => this.search());
+        this.input?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                this.search();
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                this.open();
+            }
+        });
+    }
+
+    open() {
+        this.modal?.classList.add('open');
+        setTimeout(() => this.input?.focus(), 0);
+    }
+
+    _esc(str) {
+        return String(str || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    async search() {
+        const q = this.input?.value?.trim();
+        if (!q || !this.results) return;
+        const type = this.type?.value || 'all';
+        this.results.innerHTML = '<div class="admin-loading">Searching...</div>';
+        try {
+            const data = await NexusAPI.globalSearch(q, type);
+            const items = data.results || [];
+            if (!items.length) {
+                this.results.innerHTML = '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-xl);">No results found</div>';
+                return;
+            }
+            this.results.innerHTML = items.map(i => `
+                <div class="search-result-item">
+                    <span class="search-result-type"><span class="admin-badge info">${this._esc(i.type || 'item')}</span></span>
+                    <div class="search-result-info">
+                        <div class="search-result-title">${this._esc(i.title || i.id || '')}</div>
+                        ${i.subtitle ? `<div class="search-result-subtitle">${this._esc(i.subtitle)}</div>` : ''}
+                        ${i.excerpt ? `<div class="search-result-excerpt">${this._esc(i.excerpt)}</div>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        } catch (e) {
+            this.results.innerHTML = `<div class="admin-error">Search failed: ${this._esc(e.message)}</div>`;
+        }
+    }
+}
+
 // ============================================================
 // Main Application
 // ============================================================
@@ -6440,6 +6563,8 @@ class NexusApp {
         this.layoutManager = new LayoutManager(this);
         this.configView = new ConfigView(this);
         this.adminView = new AdminView(this);
+        this.settingsView = new SettingsView(this);
+        this.globalSearch = new GlobalSearch(this);
         this.pageManager = new PageManager(this);
         this.availableAgents = [];
         this.customProviders = this.loadCustomProviders();
@@ -6708,10 +6833,8 @@ class NexusApp {
         const currentPage = this.pageManager.currentPage;
         if (currentPage === 'task' && this.taskView) {
             this.taskView.renderFullPage();
-        } else if (currentPage === 'config' && this.configView) {
-            this.configView.refresh();
-        } else if (currentPage === 'admin' && this.adminView) {
-            this.adminView.refresh();
+        } else if (currentPage === 'settings' && this.settingsView) {
+            this.settingsView.refresh();
         }
 
         // Start auto-refresh for session list and active messages
@@ -6727,9 +6850,9 @@ class NexusApp {
             this.serverDefaults = await NexusAPI.getDefaults();
             // Update API-level default exec_user so all API calls use it
             NexusAPI.setDefaultExecUser(this.serverDefaults.exec_user);
-            // Re-render config view if it's currently active so it picks up server defaults
-            if (this.pageManager.currentPage === 'config' && this.configView) {
-                this.configView.renderParameters();
+            // Re-render settings view if it's currently active so it picks up server defaults
+            if (this.pageManager.currentPage === 'settings' && this.settingsView) {
+                this.settingsView.refresh();
             }
         } catch (error) {
             console.warn('Failed to load server defaults, using built-in fallbacks:', error);
@@ -6930,8 +7053,9 @@ class NexusApp {
         } else if (currentPage === 'task') {
             // Refresh task list in the standalone task page
             this.taskView.loadTasks('global');
+        } else if (currentPage === 'settings' && this.settingsView) {
+            this.settingsView.refresh();
         }
-        // Config page refresh is handled by ConfigView.refresh()
     }
 
     refreshChatProviders() {

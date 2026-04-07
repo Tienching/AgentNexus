@@ -199,10 +199,10 @@ class EvolutionSettings(BaseSettings):
     evolution_enabled: bool = False
     evolution_cron_expr: str = "0 * * * *"       # Every hour by default
     evolution_interval_hours: int = 1
-    evolution_memory_path: str = "./memory"
-    evolution_journal_path: str = "./JOURNAL.md"
-    evolution_identity_file: str = "./IDENTITY.md"
-    evolution_personality_file: str = "./PERSONALITY.md"
+    evolution_memory_path: str = "./evolve/memory"
+    evolution_journal_path: str = "./evolve/JOURNAL.md"
+    evolution_identity_file: str = "./evolve/context/IDENTITY.md"
+    evolution_personality_file: str = "./evolve/context/PERSONALITY.md"
     evolution_max_tasks_per_session: int = 3
     evolution_codebuddy_path: str = "codebuddy"
     evolution_codebuddy_model: str = ""

@@ -3129,6 +3129,14 @@
     background: #ef4444;
 }
 
+/* ========== Settings View ========== */
+.settings-tabs { display:flex; gap:var(--spacing-xs); padding:var(--spacing-md) var(--spacing-lg); border-bottom:1px solid var(--border-primary); overflow-x:auto; flex-wrap:wrap; }
+.settings-tab { display:flex; align-items:center; gap:var(--spacing-sm); padding:var(--spacing-sm) var(--spacing-md); border:1px solid var(--border-primary); border-radius:var(--radius-lg); background:transparent; color:var(--text-tertiary); font-size:var(--text-sm); font-weight:500; cursor:pointer; transition:all var(--transition-fast); white-space:nowrap; }
+.settings-tab:hover { color:var(--text-secondary); background:var(--bg-hover); }
+.settings-tab.active { background:var(--primary-500); color:white; border-color:var(--primary-500); }
+.settings-tab svg { width:18px; height:18px; }
+.settings-section { flex:1; min-height:0; }
+
 /* ========== Admin View ========== */
 .admin-tabs { display:flex; gap:var(--spacing-xs); padding:var(--spacing-md) var(--spacing-lg); border-bottom:1px solid var(--border-primary); overflow-x:auto; flex-wrap:wrap; }
 .admin-tab { display:flex; align-items:center; gap:var(--spacing-sm); padding:var(--spacing-sm) var(--spacing-md); border:1px solid var(--border-primary); border-radius:var(--radius-lg); background:transparent; color:var(--text-tertiary); font-size:var(--text-sm); font-weight:500; cursor:pointer; transition:all var(--transition-fast); white-space:nowrap; }

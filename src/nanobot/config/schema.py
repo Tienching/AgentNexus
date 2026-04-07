@@ -156,14 +156,16 @@ class EvolutionConfig(Base):
     enabled: bool = Field(default=False)
     interval_hours: int = Field(default=1, ge=1)
     cron_expr: str = Field(default="0 * * * *")
-    memory_path: str = Field(default="./memory")
-    journal_path: str = Field(default="./JOURNAL.md")
-    identity_file: str = Field(default="./IDENTITY.md")
-    personality_file: str = Field(default="./PERSONALITY.md")
+    memory_path: str = Field(default="./evolve/memory")
+    journal_path: str = Field(default="./evolve/JOURNAL.md")
+    identity_file: str = Field(default="./evolve/context/IDENTITY.md")
+    personality_file: str = Field(default="./evolve/context/PERSONALITY.md")
     max_session_duration_seconds: int = Field(default=3600)
     max_tasks_per_session: int = Field(default=3, ge=1, le=10)
     max_fix_attempts: int = Field(default=10, ge=1)
     protected_files: list[str] = Field(default_factory=lambda: [
+        "evolve/context/IDENTITY.md",
+        "evolve/context/PERSONALITY.md",
         "IDENTITY.md",
         "PERSONALITY.md",
     ])

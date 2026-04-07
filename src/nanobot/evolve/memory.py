@@ -189,7 +189,7 @@ class MemoryManager:
             lines.append("## Recent (last 2 weeks)\n")
             for r in recent:
                 lines.append(f"### {r.get('title', 'Untitled')}")
-                lines.append(f"*Day {r.get('day', '?')} — {r.get('source', 'unknown')}*\n")
+                lines.append(f"*Session {r.get('day', '?')} — {r.get('source', 'unknown')}*\n")
                 if r.get("context"):
                     lines.append(f"{r['context']}\n")
                 lines.append(f"**Takeaway:** {r.get('takeaway', '')}\n")

@@ -79,6 +79,25 @@ class TestEvolutionServiceLifecycle:
             raise
 
     @pytest.mark.asyncio
+    async def test_start_updates_existing_evolve_cron_expr(self, service):
+        """Existing evolve cron jobs should be synchronized to config on restart."""
+        await service.start()
+        try:
+            await service.stop()
+            service._config.cron_expr = "0 * * * *"
+            svc2 = EvolutionService(service._config)
+            await svc2.start()
+            try:
+                jobs = svc2._cron.list_jobs(include_disabled=True)
+                evolve_job = next(j for j in jobs if j.name == "nexus-self-evolve")
+                assert evolve_job.schedule.expr == "0 * * * *"
+            finally:
+                await svc2.stop()
+        except Exception:
+            await service.stop()
+            raise
+
+    @pytest.mark.asyncio
     async def test_stop_cleans_up(self, service):
         """stop() should set _running to False and stop CronService."""
         await service.start()

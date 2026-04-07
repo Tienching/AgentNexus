@@ -52,17 +52,17 @@ def _make_session(config) -> EvolutionSession:
 
 
 class TestEvolutionEngine:
-    def test_get_session_day_no_journal(self, engine, tmp_dir):
-        """Should return day 1 when no journal exists."""
-        day = engine._get_session_day()
-        assert day == 1
+    def test_get_session_number_no_journal(self, engine, tmp_dir):
+        """Should return session 1 when no journal exists."""
+        session_number = engine._get_session_number()
+        assert session_number == 1
 
-    def test_get_session_day_with_journal(self, engine, tmp_dir):
+    def test_get_session_number_with_journal(self, engine, tmp_dir):
         """Should count sessions from journal entries."""
         journal = tmp_dir / "JOURNAL.md"
         journal.write_text("## Session 1\n\n## Session 2\n\n## Session 3\n", encoding="utf-8")
-        day = engine._get_session_day()
-        assert day == 4
+        session_number = engine._get_session_number()
+        assert session_number == 4
 
     def test_parse_task_file(self, engine, tmp_dir):
         """Should parse task file into EvolutionTask."""
@@ -96,7 +96,7 @@ class TestEvolutionEngine:
         session_plan = tmp_dir / "session_plan"
         session_plan.mkdir()
         (session_plan / "assessment.md").write_text(
-            "# Assessment — Day 1\n\n## Build/Test Status\npass, 50 tests\n",
+            "# Assessment — Session 1\n\n## Build/Test Status\npass, 50 tests\n",
             encoding="utf-8",
         )
 
