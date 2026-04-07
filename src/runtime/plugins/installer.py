@@ -10,11 +10,21 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, TypedDict
 
 
 # 可用的 Providers
-AVAILABLE_PROVIDERS = {
+
+
+class ProviderInfo(TypedDict):
+    """Provider 信息类型。"""
+
+    name: str
+    package: Optional[str]
+    config_template: str
+
+
+AVAILABLE_PROVIDERS: Dict[str, ProviderInfo] = {
     "claude": {
         "name": "Claude",
         "package": None,  # 内置
