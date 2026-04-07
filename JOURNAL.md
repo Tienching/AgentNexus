@@ -801,3 +801,37 @@ error: The following untracked
    - Impact: API stability and operator expectations are harder to reason about than the code size suggests.
 
 ---
+
+## Session 19 — 2026-04-07 00:00 UTC
+
+**Duration:** 1111s
+
+**Tasks:** 2 completed, 1 failed
+
+
+### Completed
+
+- Isolate nexus runtimes route tests from startup policy
+- Resolve mission actions by owning workspace service
+
+### Failed
+
+- Fix evolve assessment prompt pytest command: Timed out after 600s
+
+### Gaps Identified
+1. **Self-evolution still evaluates the repo with the wrong test contract.**
+   The assessment template still hardcodes bare `python -m pytest ... | head -50` in `src/nanobot/evolve/prompts.py:20`. In this repo that means Python 2.7, masked exit status, and a real chance of false-green assessments.
+
+2. **Route-test isolation is still fragile around startup policy.**
+   Production startup behavior is now stricter, which is good, but tests that import the shared `app` still validate ambient subsystem state before they validate endpoint behavior. The failing `nexus_runtimes` test is the clearest example: `tests/unit/test_nexus_runtimes.py:16-19` collides with `src/server/app.py:247-273` and `src/server/app.py:463-472`.
+
+3. **Mission workspace scoping is only partially complete.**
+   `MissionBridge.plan()` and `MissionBridge.start()` fetch workspace-specific services (`src/server/services/mission_bridge.py:88-108`), but follow-up operations like `approve()`, `status()`, `list_missions()`, `cancel()`, `pause()`, `resume()`, and log access go back through the default singleton service (`src/server/services/mission_bridge.py:110-166`). That leaves multi-workspace mission lifecycle operations incomplete.
+
+4. **API/runtime identity is still inconsistent, and formal docs are thin for the surface area.**
+   `src/runtime/__init__.py:18` reports `0.1.0`, while `src/nanobot/__init__.py:5` reports `0.1.4.post5`. Meanwhile formal docs under `docs/` are only two design markdown files. For a platform with 268 Python modules and a broad router/runtime surface, the compatibility story is still implicit.
+
+5. **Cron failure handling is durable enough to stay up, but still lossy under corrupted state.**
+   If the cron JSON store cannot be parsed, `CronService` logs the error and falls back to an empty in-memory store in `src/nanobot/cron/service.py:139-145`. The service remains available, but persisted schedules effectively disappear until operators inspect `load_error`.
+
+---
