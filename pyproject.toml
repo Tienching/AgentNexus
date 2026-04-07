@@ -81,11 +81,10 @@ line-length = 100
 target-version = ["py311"]
 
 [tool.coverage.run]
-source = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server"]
+source = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server", "src/core", "src/protocols"]
 omit = ["*/tests/*"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server"]
+packages = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server", "src/core", "src/protocols"]
 
 [tool.uv.sources]
-
