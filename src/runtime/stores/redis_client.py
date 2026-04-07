@@ -20,6 +20,7 @@ class RedisClient:
     
     _instance: Optional["RedisClient"] = None
     _pool: Optional[ConnectionPool] = None
+    _connection_logged: bool = False
     
     def __new__(cls) -> "RedisClient":
         """Singleton pattern for Redis client"""
@@ -32,7 +33,9 @@ class RedisClient:
         """Initialize Redis client with connection pool"""
         if self._initialized:
             return
-            
+        
+        self._connected = False
+        
         host = os.environ.get("REDIS_HOST", "localhost")
         port = int(os.environ.get("REDIS_PORT", "6379"))
         db = int(os.environ.get("REDIS_DB", "0"))
@@ -41,19 +44,25 @@ class RedisClient:
         socket_connect_timeout = float(os.environ.get("REDIS_CONNECTION_TIMEOUT", "5"))
         self._prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
 
-        self._pool = ConnectionPool(
-            host=host,
-            port=port,
-            db=db,
-            password=password,
-            socket_timeout=socket_timeout,
-            socket_connect_timeout=socket_connect_timeout,
-            decode_responses=True,
-            max_connections=50,
-        )
+        try:
+            self._pool = ConnectionPool(
+                host=host,
+                port=port,
+                db=db,
+                password=password,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_connect_timeout,
+                decode_responses=True,
+                max_connections=50,
+            )
+            logger.info(f"Redis client initialized: {host}:{port}/{db}")
+        except redis.ConnectionError:
+            self._pool = None
+            if not self._connection_logged:
+                logger.error(f"Redis connection failed: {host}:{port}/{db}")
+                self.__class__._connection_logged = True
 
         self._initialized = True
-        logger.info(f"Redis client initialized: {host}:{port}/{db}")
     
     @property
     def client(self) -> Redis:
@@ -66,12 +75,32 @@ class RedisClient:
     
     # ============ Basic Operations ============
     
+    def is_available(self) -> bool:
+        """Check if Redis connection is available
+        
+        Returns:
+            bool: True if pool exists and connection is ready
+        """
+        return self._pool is not None
+    
     def ping(self) -> bool:
-        """Check Redis connection"""
+        """Check Redis connection and cache result
+        
+        Returns:
+            bool: True if connection successful, False otherwise
+        """
+        if self._pool is None:
+            return False
+        
         try:
-            return self.client.ping()
+            result = self.client.ping()
+            self._connected = result
+            return result
         except redis.ConnectionError as e:
-            logger.error(f"Redis connection error: {e}")
+            self._connected = False
+            if not self._connection_logged:
+                logger.error(f"Redis connection error: {e}")
+                self.__class__._connection_logged = True
             return False
     
     def get(self, key: str) -> Optional[str]:
