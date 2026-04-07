@@ -5,7 +5,7 @@
 
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class ClaudeEventType(str, Enum):
@@ -250,8 +250,7 @@ class ClaudeEvent(BaseModel):
     result: Optional[str] = None
     is_error: Optional[bool] = None
     
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
     @classmethod
     def parse_line(cls, line: str) -> "ClaudeEvent":
