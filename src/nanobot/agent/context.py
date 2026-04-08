@@ -19,15 +19,16 @@ class ContextBuilder:
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md"]
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
-    def __init__(self, workspace: Path, timezone: str | None = None):
+    def __init__(self, workspace: Path, timezone: str | None = None, identity_override: str | None = None):
         self.workspace = workspace
         self.timezone = timezone
+        self.identity_override = identity_override
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
-        parts = [self._get_identity()]
+        parts = [self.identity_override if self.identity_override else self._get_identity()]
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:

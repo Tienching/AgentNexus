@@ -139,11 +139,16 @@ class SubagentManager:
                         thinking_blocks=response.thinking_blocks,
                     ))
 
-                    # Execute tools
-                    for tool_call in response.tool_calls:
+                    # Execute tools concurrently (matches main loop behavior)
+                    results = await asyncio.gather(*(
+                        tools.execute(tc.name, tc.arguments) for tc in response.tool_calls
+                    ), return_exceptions=True)
+
+                    for tool_call, result in zip(response.tool_calls, results):
+                        if isinstance(result, BaseException):
+                            result = f"Error: {type(result).__name__}: {result}"
                         args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                         logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
-                        result = await tools.execute(tool_call.name, tool_call.arguments)
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
