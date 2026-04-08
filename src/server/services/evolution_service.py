@@ -1,11 +1,12 @@
-"""Evolution service — integrates EvolutionEngine with CronService and app lifecycle.
+"""Evolution service — integrates EvolutionEngine with TaskScheduler.
 
 This module is the "glue" between the evolution engine (which knows how to
-self-improve) and the application runtime (CronService, app.py lifespan).
+self-improve) and the application runtime (TaskScheduler / ScheduleStorage,
+app.py lifespan).
 
 Responsibilities:
-  - Initialize CronService with evolution-specific jobs
-  - Route cron job triggers to the correct engine method
+  - Register evolution schedules via ScheduleStorage (consumed by TaskScheduler)
+  - Provide a callback for TaskScheduler to invoke when evolution schedules fire
   - Provide a manual trigger API for on-demand evolution
   - Track the current session state for status queries
   - Ensure concurrent evolution sessions cannot overlap
@@ -20,16 +21,14 @@ from typing import Any
 
 from loguru import logger
 
-from src.nanobot.cron.service import CronService
-from src.nanobot.cron.types import CronJob
-from src.nanobot.evolve.cron_jobs import (
-    EVOLVE_PAYLOAD_MSG_EVOLVE,
-    EVOLVE_PAYLOAD_MSG_SYNTH,
-    get_evolution_action,
-    register_evolution_jobs,
-)
 from src.nanobot.evolve.engine import EvolutionEngine
 from src.nanobot.evolve.models import EvolutionConfig, EvolutionSession
+from src.runtime.models.schedule_models import Schedule, ScheduleKind
+
+
+# Well-known schedule names used to identify evolution schedules.
+EVOLVE_SCHEDULE_NAME = "nexus-self-evolve"
+MEMORY_SYNTH_SCHEDULE_NAME = "nexus-memory-synth"
 
 
 def _now_ms() -> int:
@@ -40,8 +39,8 @@ class EvolutionService:
     """Manages the lifecycle of the self-evolution system.
 
     Usage (in app.py lifespan):
-        svc = await EvolutionService.create()
-        await svc.start()
+        svc = EvolutionService.create()
+        await svc.start(schedule_storage)
         # ... app runs ...
         await svc.stop()
 
@@ -51,13 +50,12 @@ class EvolutionService:
 
     def __init__(self, engine_config: EvolutionConfig):
         self._config = engine_config
-        self._cron_store_path = Path(engine_config.working_dir) / ".nexus" / "evolve_cron.json"
-        self._cron: CronService | None = None
         self._engine: EvolutionEngine | None = None
         self._running = False
         self._lock = asyncio.Lock()  # Prevents concurrent evolution sessions
         self._current_session: EvolutionSession | None = None
         self._session_history: list[EvolutionSession] = []
+        self._schedule_storage = None  # Set during start()
 
     @classmethod
     def create(cls) -> "EvolutionService":
@@ -65,39 +63,134 @@ class EvolutionService:
         config = _load_evolution_config()
         return cls(config)
 
-    async def start(self) -> None:
-        """Initialize CronService, register jobs, and start the scheduler."""
+    async def start(self, schedule_storage=None) -> None:
+        """Initialize EvolutionEngine and register schedules in ScheduleStorage.
+
+        Args:
+            schedule_storage: ScheduleStorage instance from the app lifespan.
+                              If None, evolution schedules won't be registered
+                              (but manual triggers still work).
+        """
         if not self._config.enabled:
             logger.info("EvolutionService: disabled, not starting")
             return
 
         self._engine = EvolutionEngine(self._config)
+        self._schedule_storage = schedule_storage
 
-        # Create CronService with our on_job callback
-        self._cron = CronService(
-            store_path=self._cron_store_path,
-            on_job=self._on_cron_job,
-        )
-
-        # Register evolution cron jobs (idempotent)
-        register_evolution_jobs(self._cron, _to_schema_config(self._config))
-
-        # Start the cron scheduler
-        await self._cron.start()
+        # Register evolution schedules via ScheduleStorage if available
+        if schedule_storage is not None:
+            self._register_evolution_schedules(schedule_storage)
 
         self._running = True
         logger.info(
             "EvolutionService started — evolve cron='{}', synthesis cron='{}'",
             self._config.cron_expr,
-            "0 12 * * *",
+            _get_memory_synthesis_cron(),
         )
 
     async def stop(self) -> None:
-        """Stop the cron scheduler."""
+        """Stop the evolution service."""
         self._running = False
-        if self._cron:
-            self._cron.stop()
-            logger.info("EvolutionService stopped")
+        logger.info("EvolutionService stopped")
+
+    # ─── Schedule Registration ──────────────────────────────
+
+    def _register_evolution_schedules(self, schedule_storage) -> None:
+        """Register (or sync) the two evolution schedules in ScheduleStorage.
+
+        This is idempotent — if a schedule with the same name already exists
+        with the correct cron expression, nothing changes.
+        """
+        synth_cron = _get_memory_synthesis_cron()
+
+        self._sync_or_register_schedule(
+            schedule_storage,
+            name=EVOLVE_SCHEDULE_NAME,
+            cron_expr=self._config.cron_expr,
+            evolution_phase="full",
+            description="Periodic self-evolution cycle",
+        )
+        self._sync_or_register_schedule(
+            schedule_storage,
+            name=MEMORY_SYNTH_SCHEDULE_NAME,
+            cron_expr=synth_cron,
+            evolution_phase="memory_synth",
+            description="Periodic memory synthesis (archive → active_learnings)",
+        )
+
+    def _sync_or_register_schedule(
+        self,
+        schedule_storage,
+        *,
+        name: str,
+        cron_expr: str,
+        evolution_phase: str,
+        description: str,
+    ) -> None:
+        """Ensure a schedule with the given name and cron_expr exists."""
+        existing = self._find_schedule_by_name(schedule_storage, name)
+
+        if existing:
+            # Check if the cron expression matches
+            if existing.cron_expression == cron_expr:
+                logger.info(
+                    "EvolutionService: schedule '{}' already registered with cron='{}'",
+                    name, cron_expr,
+                )
+                return
+
+            # Cron mismatch — delete and recreate
+            logger.info(
+                "EvolutionService: schedule '{}' cron mismatch ('{}' -> '{}'), recreating",
+                name, existing.cron_expression, cron_expr,
+            )
+            schedule_storage.delete_schedule(existing.id)
+
+        # Register new schedule
+        schedule = schedule_storage.add_schedule(
+            name=name,
+            description=description,
+            cron_expression=cron_expr,
+            schedule_kind="evolution",
+            evolution_phase=evolution_phase,
+            created_by="evolution_service",
+        )
+        logger.info(
+            "EvolutionService: registered schedule '{}' ({}), cron='{}'",
+            name, schedule.id, cron_expr,
+        )
+
+    @staticmethod
+    def _find_schedule_by_name(schedule_storage, name: str) -> Schedule | None:
+        """Find a schedule by name in ScheduleStorage."""
+        schedules, _ = schedule_storage.list_schedules(page_size=1000)
+        return next((s for s in schedules if s.name == name), None)
+
+    # ─── Callback for TaskScheduler ─────────────────────────
+
+    async def on_schedule_fired(self, schedule: Schedule) -> None:
+        """Called by TaskScheduler when an evolution schedule fires.
+
+        This replaces the old _on_cron_job callback from CronService.
+        """
+        if not self._config.enabled:
+            logger.warning("EvolutionService: schedule fired but evolution is disabled, ignoring")
+            return
+
+        phase = schedule.evolution_phase or "full"
+
+        if phase == "full":
+            await self._run_evolution_from_schedule(schedule)
+        elif phase == "memory_synth":
+            await self._run_synthesis_from_schedule(schedule)
+        else:
+            logger.warning(
+                "EvolutionService: unrecognized evolution_phase '{}' for schedule '{}'",
+                phase, schedule.name,
+            )
+
+    # ─── Manual Trigger API (unchanged) ────────────────────
 
     async def trigger_now(self, phase: str = "full") -> EvolutionSession | None:
         """Manually trigger an evolution cycle.
@@ -143,6 +236,28 @@ class EvolutionService:
 
     def get_status(self) -> dict[str, Any]:
         """Return current status of the evolution system."""
+        # Build schedule info from ScheduleStorage if available
+        schedule_info: dict[str, Any] = {}
+        if self._schedule_storage is not None:
+            try:
+                schedules, _ = self._schedule_storage.list_schedules(page_size=100)
+                evo_schedules = [
+                    s for s in schedules
+                    if s.schedule_kind == ScheduleKind.EVOLUTION.value
+                ]
+                for s in evo_schedules:
+                    schedule_info[s.name] = {
+                        "id": s.id,
+                        "cron_expression": s.cron_expression,
+                        "status": s.status,
+                        "run_count": s.run_count,
+                        "next_run_at": s.next_run_at.isoformat() if s.next_run_at else None,
+                        "last_run_at": s.last_run_at.isoformat() if s.last_run_at else None,
+                        "evolution_phase": s.evolution_phase,
+                    }
+            except Exception as e:
+                logger.warning("EvolutionService: failed to query schedule info: {}", e)
+
         return {
             "enabled": self._config.enabled,
             "running": self._running,
@@ -154,7 +269,7 @@ class EvolutionService:
             "codebuddy_path": self._config.codebuddy_path,
             "current_session": _session_summary(self._current_session),
             "recent_sessions": [_session_summary(s) for s in self._session_history[-5:]],
-            "cron_jobs": self._cron.status() if self._cron else {},
+            "schedules": schedule_info,
         }
 
     def get_memory_stats(self) -> dict[str, Any]:
@@ -185,23 +300,10 @@ class EvolutionService:
             logger.warning("EvolutionService: failed to read memory preview '{}': {}", filename, e)
             return ""
 
-    async def _on_cron_job(self, job: CronJob) -> str | None:
-        """Callback from CronService when a scheduled job fires."""
-        action = get_evolution_action(job)
-
-        if action == "evolve":
-            await self._run_evolution_from_cron(job)
-        elif action == "memory_synth":
-            await self._run_synthesis_from_cron(job)
-        else:
-            logger.warning("EvolutionService: unrecognized cron job '{}' ({})", job.name, job.id)
-
-        return None
-
-    async def _run_evolution_from_cron(self, job: CronJob) -> None:
+    async def _run_evolution_from_schedule(self, schedule: Schedule) -> None:
         """Handle the scheduled evolution trigger."""
         if self._lock.locked():
-            logger.info("EvolutionService: cron triggered but evolution already running, skipping")
+            logger.info("EvolutionService: schedule triggered but evolution already running, skipping")
             return
 
         if not self._engine:
@@ -209,20 +311,23 @@ class EvolutionService:
 
         async with self._lock:
             try:
-                logger.info("EvolutionService: cron triggered evolution (job_id={})", job.id)
+                logger.info(
+                    "EvolutionService: schedule triggered evolution (schedule_id={})",
+                    schedule.id,
+                )
                 session = await self._engine.run_full_cycle()
                 self._current_session = session
                 self._session_history.append(session)
                 self._session_history = self._session_history[-20:]
                 logger.info(
-                    "EvolutionService: cron evolution complete — {}/{} tasks succeeded",
+                    "EvolutionService: scheduled evolution complete — {}/{} tasks succeeded",
                     session.metrics.tasks_completed,
                     session.metrics.tasks_planned,
                 )
             except Exception as e:
-                logger.error("EvolutionService: cron evolution failed: {}", e)
+                logger.error("EvolutionService: scheduled evolution failed: {}", e)
 
-    async def _run_synthesis_from_cron(self, job: CronJob) -> None:
+    async def _run_synthesis_from_schedule(self, schedule: Schedule) -> None:
         """Handle the scheduled memory synthesis trigger."""
         if not self._engine:
             self._engine = EvolutionEngine(self._config)
@@ -266,22 +371,13 @@ def _load_evolution_config() -> EvolutionConfig:
         return EvolutionConfig()
 
 
-class _SchemaEvolutionConfigAdapter:
-    """Thin adapter to pass EvolutionConfig to register_evolution_jobs which expects schema config."""
-    def __init__(self, config: EvolutionConfig, memory_synthesis_cron: str = "0 12 * * *"):
-        self.enabled = config.enabled
-        self.cron_expr = config.cron_expr
-        self.interval_hours = config.interval_hours
-        self.memory_synthesis_cron = memory_synthesis_cron
-
-
-def _to_schema_config(config: EvolutionConfig) -> _SchemaEvolutionConfigAdapter:
+def _get_memory_synthesis_cron() -> str:
+    """Get the memory synthesis cron expression from settings."""
     try:
         from src.server.config import settings
-        synth_cron = settings.evolution_memory_synthesis_cron
+        return settings.evolution_memory_synthesis_cron
     except Exception:
-        synth_cron = "0 12 * * *"
-    return _SchemaEvolutionConfigAdapter(config, synth_cron)
+        return "0 12 * * *"
 
 
 def _session_summary(session: EvolutionSession | None) -> dict | None:

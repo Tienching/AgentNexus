@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from enum import Enum
 
-from ..models.schedule_models import Schedule, ScheduleStatus
+from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind
 from ..models.task_models import TaskPriority
 from ..stores.schedule_storage import ScheduleStorage
 from ..stores.task_storage import TaskQueue
@@ -61,6 +61,7 @@ class TaskScheduler:
         schedule_storage: ScheduleStorage,
         task_queue: TaskQueue,
         poll_interval: float = 15.0,
+        evolution_callback=None,
     ):
         self._schedule_storage = schedule_storage
         self._task_queue = task_queue
@@ -73,6 +74,11 @@ class TaskScheduler:
         self._watchdog_last_run: Optional[float] = None
         # First watchdog check runs _WATCHDOG_INITIAL_DELAY_SECONDS after start.
         self._watchdog_next_run: Optional[float] = None
+
+        # Evolution callback: when a schedule with schedule_kind="evolution" fires,
+        # this coroutine is called instead of creating a Task via TaskQueue.
+        # Signature: async callback(schedule: Schedule) -> None
+        self._evolution_callback = evolution_callback
 
         logger.info(f"TaskScheduler initialized (poll_interval={poll_interval}s)")
 
@@ -183,7 +189,32 @@ class TaskScheduler:
             logger.info("stale_task_watchdog: %s", result["message"])
 
     async def _fire_schedule(self, schedule: Schedule) -> None:
-        """Spawn a child task from the schedule template."""
+        """Dispatch a schedule firing — either as a Task or an evolution callback."""
+        # ── Evolution schedule: invoke callback directly ──
+        kind_val = schedule.schedule_kind if isinstance(schedule.schedule_kind, str) else schedule.schedule_kind.value
+        if kind_val == ScheduleKind.EVOLUTION.value:
+            if self._evolution_callback:
+                try:
+                    await self._evolution_callback(schedule)
+                except Exception as e:
+                    logger.error(
+                        f"Evolution callback failed for schedule {schedule.id}: {e}",
+                        exc_info=True,
+                    )
+                # Record the run in schedule storage (task_id = "evolution")
+                self._schedule_storage.record_run(schedule, "evolution")
+                logger.info(
+                    f"Schedule {schedule.id} ({schedule.name!r}) fired: "
+                    f"evolution phase={schedule.evolution_phase!r} (run #{schedule.run_count})"
+                )
+            else:
+                logger.warning(
+                    f"Schedule {schedule.id} ({schedule.name!r}) is evolution kind "
+                    f"but no evolution_callback registered — skipping"
+                )
+            return
+
+        # ── Default: spawn a child task from the schedule template ──
         # Build context linking back to the schedule
         context = dict(schedule.context or {})
         context["schedule_id"] = schedule.id
@@ -274,13 +305,23 @@ async def create_and_start_scheduler(
     schedule_storage: ScheduleStorage,
     task_queue: TaskQueue,
     poll_interval: float = 15.0,
+    evolution_callback=None,
 ) -> TaskScheduler:
     """Create and start a task scheduler.
+
+    Args:
+        evolution_callback: Optional async callback invoked when an evolution
+            schedule fires. Signature: async callback(Schedule) -> None.
 
     Returns:
         Started TaskScheduler instance.
     """
-    scheduler = TaskScheduler(schedule_storage, task_queue, poll_interval)
+    scheduler = TaskScheduler(
+        schedule_storage,
+        task_queue,
+        poll_interval,
+        evolution_callback=evolution_callback,
+    )
     await scheduler.start()
     set_scheduler(scheduler)
     return scheduler
