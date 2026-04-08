@@ -528,8 +528,9 @@ class StreamHandler:
                 detail="Missing required field: content (or messages for AG-UI)"
             )
         
-        # 如果有 response_url，启用超时回调模式
-        if response_url:
+        # 如果有 response_url 且 response_url_callback_enabled 已启用，进入超时回调模式
+        # 默认关闭：即使有 response_url 也走标准 AG-UI 流式处理，不主动断连、不主动通告
+        if response_url and settings.response_url_callback_enabled:
             return await self._stream_agui_with_callback(
                 request, request_model, agui_request, adapter, exec_user, executor, provider,
                 handoff_pending_target=handoff_pending_target,

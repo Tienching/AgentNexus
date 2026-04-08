@@ -23,6 +23,12 @@ class ServerSettings(BaseSettings):
     stream_delay_ms: int = 50  # 发送间隔毫秒数
     stream_buffer_size: int = 1000  # 缓冲区大小
 
+    # Response URL 超时回调配置
+    # 当启用时，AGUI 请求带有 response_url 会进入超时回调模式：
+    # SSE 流在 5分30秒时主动断开，剩余内容通过 response_url 回调发送。
+    # 默认关闭：即使有 response_url 也走标准 AG-UI 流式处理，不主动断连、不主动通告。
+    response_url_callback_enabled: bool = False
+
     # 调试模式
     debug: bool = False
 

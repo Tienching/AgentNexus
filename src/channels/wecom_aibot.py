@@ -89,7 +89,17 @@ def split_wecom_message_chunks(content: str, max_len: int) -> List[str]:
 
 
 # Maximum stream duration before falling back to response_url (seconds)
+# Only effective when response_url_callback_enabled is True
 STREAM_MAX_DURATION = 360  # 6 minutes
+
+
+def _is_response_url_callback_enabled() -> bool:
+    """Check if response_url callback mode is enabled via config."""
+    try:
+        from src.server.config import settings
+        return settings.response_url_callback_enabled
+    except Exception:
+        return False
 
 
 @dataclass
@@ -164,7 +174,13 @@ class StreamBuffer:
 
     @property
     def is_expired(self) -> bool:
-        """流是否已超过最大持续时间"""
+        """流是否已超过最大持续时间
+
+        当 response_url_callback_enabled=False（默认）时，流永不过期，
+        不会触发超时断连和 response_url 回退行为。
+        """
+        if not _is_response_url_callback_enabled():
+            return False
         return (time.time() - self.created_at) > STREAM_MAX_DURATION
 
 try:
@@ -1302,7 +1318,17 @@ class WeComChannel(BaseChannel):
     async def _send_remaining_via_response_url(
         self, buf: StreamBuffer
     ) -> None:
-        """流超时后，通过 response_url 发送完整内容"""
+        """流超时后，通过 response_url 发送完整内容
+
+        仅在 response_url_callback_enabled=True 时执行，
+        默认关闭时不主动通告剩余内容。
+        """
+        if not _is_response_url_callback_enabled():
+            logger.debug(
+                f"[{self.name}] response_url callback disabled, skipping remaining content delivery"
+            )
+            return
+
         if not buf.response_url or not self._http_client:
             logger.warning(
                 f"[{self.name}] Cannot send remaining content: "
