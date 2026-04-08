@@ -226,6 +226,7 @@ async def lifespan(app: FastAPI):
 
     # 启动定时调度器 (Cron Scheduler)
     scheduler = None
+    schedule_storage = None  # Shared with evolution_service
     if not startup_policy.start_task_scheduler:
         _record_startup_state(
             app,
@@ -277,11 +278,28 @@ async def lifespan(app: FastAPI):
             from src.runtime.execution.scheduler import create_and_start_scheduler
 
             schedule_storage = ScheduleStorage(exec_user=exec_user)
+
+            # Evolution callback: wired up later when evolution_service starts.
+            # We store a reference that can be updated after evolution_service init.
+            _evo_callback_ref = {"fn": None}
+
+            async def _evolution_schedule_callback(schedule):
+                """Bridge: TaskScheduler → EvolutionService.on_schedule_fired."""
+                if _evo_callback_ref["fn"] is not None:
+                    await _evo_callback_ref["fn"](schedule)
+                else:
+                    from loguru import logger as _l
+                    _l.warning("Evolution schedule {} fired but no callback registered yet", schedule.id)
+
             scheduler = await create_and_start_scheduler(
                 schedule_storage=schedule_storage,
                 task_queue=_task_queue,
                 poll_interval=app_settings.scheduler_poll_interval,
+                evolution_callback=_evolution_schedule_callback,
             )
+            # Store callback ref so evolution_service can wire itself in later
+            app.state._evo_callback_ref = _evo_callback_ref
+
             logger.info(f"Task scheduler started (poll_interval={app_settings.scheduler_poll_interval}s)")
             _record_startup_state(
                 app,
@@ -410,7 +428,12 @@ async def lifespan(app: FastAPI):
         try:
             from .services.evolution_service import EvolutionService
             evolution_service = EvolutionService.create()
-            await evolution_service.start()
+            # Pass schedule_storage so evolution schedules are registered in Redis
+            await evolution_service.start(schedule_storage=schedule_storage)
+            # Wire the evolution callback so TaskScheduler can invoke it
+            _evo_cb_ref = getattr(app.state, "_evo_callback_ref", None)
+            if _evo_cb_ref is not None:
+                _evo_cb_ref["fn"] = evolution_service.on_schedule_fired
             logger.info("Evolution service started")
             # Expose to routers via app state
             app.state.evolution_service = evolution_service

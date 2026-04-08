@@ -11,7 +11,7 @@ import json
 import logging
 from typing import List, Optional, Dict, Any, Tuple
 
-from ..models.schedule_models import Schedule, ScheduleStatus
+from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind
 from .redis_client import get_redis_client, RedisClient
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,8 @@ class ScheduleStorage:
         context: Optional[Dict[str, Any]] = None,
         max_runs: Optional[int] = None,
         created_by: Optional[str] = None,
+        schedule_kind: str = "task",
+        evolution_phase: Optional[str] = None,
     ) -> Schedule:
         """Create a new schedule definition (recurring cron or one-time run_at)."""
         schedule = Schedule(
@@ -91,6 +93,8 @@ class ScheduleStorage:
             context=context,
             max_runs=max_runs,
             created_by=created_by,
+            schedule_kind=ScheduleKind(schedule_kind),
+            evolution_phase=evolution_phase,
         )
 
         # Pre-compute next run

@@ -1,5 +1,15 @@
 """Evolution cron service - registers and manages evolution-specific cron jobs.
 
+.. deprecated::
+    This module is NO LONGER used by EvolutionService (which now registers
+    schedules via ScheduleStorage / TaskScheduler).  It is kept for backward
+    compatibility with the nanobot agent cron tool
+    (``src/nanobot/agent/tools/cron.py``) which may still reference these
+    constants and helpers.
+
+    For the canonical evolution schedule registration, see
+    ``src/server/services/evolution_service.py`` (``_register_evolution_schedules``).
+
 Registers two recurring jobs into the nanobot CronService:
   1. nexus-self-evolve  — runs a full evolution cycle every N hours
   2. nexus-memory-synth — synthesizes archive memories into active context daily

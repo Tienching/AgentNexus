@@ -32,6 +32,12 @@ class ScheduleStatus(str, Enum):
     CANCELLED = "cancelled"   # Schedule is permanently disabled
 
 
+class ScheduleKind(str, Enum):
+    """What the schedule produces when it fires."""
+    TASK = "task"              # Default: creates a Task via TaskQueue
+    EVOLUTION = "evolution"    # Triggers EvolutionEngine (evolve or memory_synth)
+
+
 class Schedule(BaseModel):
     """Schedule definition for periodic or one-time task creation.
 
@@ -56,6 +62,17 @@ class Schedule(BaseModel):
 
     # Schedule lifecycle
     status: ScheduleStatus = ScheduleStatus.ACTIVE
+
+    # Schedule kind — determines what happens when the schedule fires.
+    # "task" (default): creates a regular Task via TaskQueue.
+    # "evolution": triggers the EvolutionEngine directly (see evolution_phase).
+    schedule_kind: ScheduleKind = ScheduleKind.TASK
+
+    # Evolution-specific: which phase to run when schedule_kind == "evolution".
+    # "full"      — runs a full evolution cycle (EvolutionEngine.run_full_cycle)
+    # "memory_synth" — runs memory synthesis only (EvolutionEngine.run_memory_synthesis)
+    # Ignored when schedule_kind != "evolution".
+    evolution_phase: Optional[str] = None
 
     # ---- Task template fields (mirrors TaskQueue.add_task params) ----
     description: str
@@ -91,12 +108,18 @@ class Schedule(BaseModel):
     @model_validator(mode="after")
     def validate_trigger(self):
         """Require either cron_expression or run_at, not both."""
+        # Evolution schedules always use cron_expression; relax validation
+        # for other edge cases if needed in the future.
         if not self.cron_expression and not self.run_at:
             raise ValueError("Either cron_expression or run_at is required")
         if self.cron_expression and self.run_at:
             raise ValueError("Cannot set both cron_expression and run_at")
         if self.cron_expression and not croniter.is_valid(self.cron_expression):
             raise ValueError(f"Invalid cron expression: {self.cron_expression}")
+        if self.evolution_phase and self.schedule_kind != ScheduleKind.EVOLUTION.value:
+            raise ValueError("evolution_phase can only be set when schedule_kind is 'evolution'")
+        if self.schedule_kind == ScheduleKind.EVOLUTION.value and not self.evolution_phase:
+            raise ValueError("evolution_phase is required when schedule_kind is 'evolution'")
         return self
 
     def compute_next_run(self, base_time: Optional[datetime] = None) -> Optional[datetime]:
@@ -177,6 +200,8 @@ class Schedule(BaseModel):
                 parsed[key] = int(value) if value and value != "None" else None
             elif key == "status":
                 parsed[key] = ScheduleStatus(value)
+            elif key == "schedule_kind":
+                parsed[key] = ScheduleKind(value) if value else ScheduleKind.TASK
             else:
                 parsed[key] = value
 
