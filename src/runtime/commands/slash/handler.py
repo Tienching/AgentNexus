@@ -17,7 +17,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import logging
 
@@ -33,16 +33,87 @@ from .worktree import (
     WorktreeDirConflictError,
     WorktreeCommandError,
     WorktreeError,
+    WorktreeNotFoundError,
+    IsolationLevel,
+    WorktreeManager,
+    WorktreeGarbageCollector,
     ensure_task_worktree,
+    is_git_worktree,
+    get_repo_root,
 )
-from .parser import SlashCommandParseError, parse_slash_command, usage_for
+from .parser import (
+    SlashCommandParseError,
+    ParsedSlashCommand,
+    parse_slash_command,
+    usage_for,
+    get_known_slash_commands,
+    register_slash_command_specs,
+)
 
 logger = logging.getLogger(__name__)
 
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/exit"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/worktree", "/exit"]
+
+# Dynamic slash extension hooks (MC-062)
+SlashExtensionHandler = Callable[["SlashCommandHandler", ParsedSlashCommand, Dict[str, Any]], str]
+_SLASH_EXTENSION_HANDLERS: Dict[tuple[str, str], SlashExtensionHandler] = {}
+_SLASH_EXTENSION_LOADERS: List[Callable[[], None]] = []
+_SLASH_EXTENSION_LOADERS_RAN: bool = False
+
+
+def register_slash_command_handler(cmd: str, subcmd: str, handler: SlashExtensionHandler) -> None:
+    """Register a runtime slash handler for an existing/extended command spec."""
+    _SLASH_EXTENSION_HANDLERS[(cmd.strip().lower(), subcmd.strip().lower())] = handler
+
+
+def register_slash_extension_loader(loader: Callable[[], None]) -> None:
+    """Register a lazy loader that can register slash specs and handlers."""
+    _SLASH_EXTENSION_LOADERS.append(loader)
+
+
+def register_slash_command_extension(
+    *,
+    cmd: str,
+    subcmd: str,
+    handler: SlashExtensionHandler,
+    spec=None,
+    default_subcmd: Optional[str] = None,
+    infer_subcmd_from_options: Optional[Dict[str, str]] = None,
+) -> None:
+    """Register a slash extension including parser spec and runtime handler."""
+    normalized_cmd = cmd.strip().lower()
+    normalized_subcmd = subcmd.strip().lower()
+
+    if spec is not None:
+        register_slash_command_specs(
+            [spec],
+            command=normalized_cmd,
+            default_subcmd=default_subcmd,
+            infer_subcmd_from_options=infer_subcmd_from_options,
+        )
+
+    register_slash_command_handler(normalized_cmd, normalized_subcmd, handler)
+
+
+def _ensure_slash_extensions_loaded() -> None:
+    global _SLASH_EXTENSION_LOADERS_RAN
+    if _SLASH_EXTENSION_LOADERS_RAN:
+        return
+
+    for loader in list(_SLASH_EXTENSION_LOADERS):
+        loader()
+
+    try:
+        from src.nanobot.skills.registry import get_skill_registry
+
+        get_skill_registry().load_slash_extensions()
+    except Exception:
+        logger.debug("Skill-based slash extensions not loaded", exc_info=True)
+
+    _SLASH_EXTENSION_LOADERS_RAN = True
 
 
 def slugify_project(name: str) -> str:
@@ -115,8 +186,9 @@ class SlashCommandHandler:
 
     def is_slash_command(self, content: str) -> bool:
         """Check if content starts with a known slash command"""
+        _ensure_slash_extensions_loaded()
         content_lower = content.lower().strip()
-        for cmd in SLASH_COMMANDS:
+        for cmd in get_known_slash_commands():
             if content_lower == cmd or content_lower.startswith(cmd + " "):
                 return True
         return False
@@ -172,6 +244,8 @@ class SlashCommandHandler:
             return "## ❌ 命令已移除\n\n`/think` 命令已移除。"
         if lowered == "/log" or lowered.startswith("/log "):
             return "## ❌ 命令已移除\n\n`/log` 命令已移除。"
+
+        _ensure_slash_extensions_loaded()
 
         try:
             parsed = parse_slash_command(content)
@@ -313,6 +387,29 @@ class SlashCommandHandler:
 
             if parsed.cmd == "help" and parsed.subcmd == "show":
                 return self._handle_help()
+
+            if parsed.cmd == "worktree":
+                return self._handle_worktree(
+                    subcmd=parsed.subcmd,
+                    options=parsed.options,
+                    args=parsed.args,
+                )
+
+            extension_handler = _SLASH_EXTENSION_HANDLERS.get((parsed.cmd, parsed.subcmd))
+            if extension_handler:
+                return extension_handler(
+                    self,
+                    parsed,
+                    {
+                        "source_session_id": source_session_id,
+                        "response_url": response_url,
+                        "callback_msg_id": callback_msg_id,
+                        "callback_user": callback_user,
+                        "notification_sink_type": notification_sink_type,
+                        "notification_channel": notification_channel,
+                        "notification_chat_id": notification_chat_id,
+                    },
+                )
 
             return f"## ❌ Unknown Command\n\nUnknown command: `/{parsed.cmd} {parsed.subcmd}`\n\n输入 `/help show` 查看所有可用命令。"
 
@@ -2404,6 +2501,168 @@ class SlashCommandHandler:
             f"后续消息将在 `{project_path}` 下通过 `--resume {cli_session_id}` 恢复 CLI 会话。"
         )
 
+    # ---- Worktree management ----
+
+    @property
+    def _worktree_manager(self) -> WorktreeManager:
+        """Lazy-initialized WorktreeManager for the current workspace."""
+        if not hasattr(self, "_wt_manager_cache"):
+            cwd = Path.cwd()
+            try:
+                workspace = get_repo_root(cwd) if is_git_worktree(cwd) else cwd
+            except Exception:
+                workspace = cwd
+            self._wt_manager_cache = WorktreeManager(workspace)
+        return self._wt_manager_cache
+
+    def _handle_worktree(self, subcmd: str, options: Dict[str, Any], args: List[str]) -> str:
+        """Handle /worktree subcommands."""
+        if subcmd == "create":
+            return self._handle_worktree_create(options)
+        if subcmd == "list":
+            return self._handle_worktree_list(options)
+        if subcmd == "resume":
+            return self._handle_worktree_resume(options)
+        if subcmd == "gc":
+            return self._handle_worktree_gc(options)
+        if subcmd == "remove":
+            return self._handle_worktree_remove(options)
+        return f"## ❌ 未知子命令\n\n`/worktree {subcmd}` 不可用。\n\n可用: `create`, `list`, `resume`, `gc`, `remove`"
+
+    def _handle_worktree_create(self, options: Dict[str, Any]) -> str:
+        use_session = bool(options.get("session", False))
+        use_agent = bool(options.get("agent", False))
+        task_id = options.get("task")
+        key = options.get("key")
+
+        if use_session and use_agent:
+            return "## ❌ 参数冲突\n\n不能同时指定 `--session` 和 `--agent`。"
+
+        if not use_session and not use_agent:
+            return "## ❌ 缺少隔离级别\n\n请指定 `--session` 或 `--agent`。\n\n**Usage:** `/worktree create --session|--agent [-t <task>] [-k <key>]`"
+
+        isolation = IsolationLevel.SESSION if use_session else IsolationLevel.AGENT
+        session_key = key if use_session else None
+        agent_name = key if use_agent else None
+
+        try:
+            entry = self._worktree_manager.create_isolated(
+                isolation_level=isolation,
+                session_key=session_key,
+                agent_name=agent_name,
+                task_id=task_id,
+            )
+        except WorktreeError as e:
+            return f"## ❌ 创建 worktree 失败\n\n{e}"
+
+        lines = [
+            "## ✅ Worktree 已创建\n",
+            f"| 属性 | 值 |",
+            f"|---|---|",
+            f"| ID | `{entry.worktree_id}` |",
+            f"| 路径 | `{entry.path}` |",
+            f"| 分支 | `{entry.branch}` |",
+            f"| 隔离级别 | {entry.isolation_level.value} |",
+        ]
+        if entry.session_key:
+            lines.append(f"| 会话 | `{entry.session_key}` |")
+        if entry.agent_name:
+            lines.append(f"| Agent | `{entry.agent_name}` |")
+        if entry.task_id:
+            lines.append(f"| 任务 | `{entry.task_id}` |")
+
+        return "\n".join(lines)
+
+    def _handle_worktree_list(self, options: Dict[str, Any]) -> str:
+        show_active = bool(options.get("active", False))
+        show_stale = bool(options.get("stale", False))
+
+        if show_stale:
+            entries = self._worktree_manager.list_stale()
+            title = "Stale Worktrees"
+        elif show_active:
+            entries = self._worktree_manager.list_active()
+            title = "Active Worktrees"
+        else:
+            entries = self._worktree_manager.list_all()
+            title = "All Worktrees"
+
+        if not entries:
+            return f"## 📋 {title}\n\n暂无 worktree。"
+
+        lines = [f"## 📋 {title}\n"]
+        lines.append("| ID | 路径 | 分支 | 隔离 | 状态 | 上次访问 |")
+        lines.append("|---|---|---|---|---|---|")
+
+        for e in entries:
+            age_h = (time.time() - e.last_accessed) / 3600
+            binding = ""
+            if e.session_key:
+                binding = f"sess:{e.session_key}"
+            elif e.agent_name:
+                binding = f"agent:{e.agent_name}"
+            lines.append(
+                f"| `{e.worktree_id}` | `{e.path}` | `{e.branch}` | "
+                f"{e.isolation_level.value} | {e.status} | {age_h:.1f}h |"
+            )
+
+        return "\n".join(lines)
+
+    def _handle_worktree_resume(self, options: Dict[str, Any]) -> str:
+        session_key = options.get("session")
+        agent_name = options.get("agent")
+
+        if not session_key and not agent_name:
+            return "## ❌ 缺少参数\n\n请指定 `--session <key>` 或 `--agent <name>`。\n\n**Usage:** `/worktree resume --session KEY` 或 `--agent NAME`"
+
+        try:
+            if session_key:
+                entry = self._worktree_manager.resume_session(session_key)
+            else:
+                entry = self._worktree_manager.resume_agent(agent_name)
+        except WorktreeNotFoundError as e:
+            return f"## ❌ 恢复失败\n\n{e}"
+        except WorktreeError as e:
+            return f"## ❌ 恢复失败\n\n{e}"
+
+        return (
+            f"## ✅ Worktree 已恢复\n\n"
+            f"| 属性 | 值 |\n|---|---|\n"
+            f"| ID | `{entry.worktree_id}` |\n"
+            f"| 路径 | `{entry.path}` |\n"
+            f"| 分支 | `{entry.branch}` |\n"
+            f"| 隔离级别 | {entry.isolation_level.value} |"
+        )
+
+    def _handle_worktree_gc(self, options: Dict[str, Any]) -> str:
+        dry_run = bool(options.get("dry-run", False))
+        max_age = int(options.get("max-age", 24))
+
+        gc = WorktreeGarbageCollector(self._worktree_manager)
+        result = gc.collect(max_age_hours=max_age, dry_run=dry_run)
+
+        prefix = "🔍 GC 预览" if dry_run else "🧹 GC 结果"
+        lines = [f"## {prefix}\n"]
+        lines.append(f"| 类型 | 数量 | ID 列表 |")
+        lines.append(f"|---|---|---|")
+        lines.append(f"| 已删除 | {len(result.removed)} | {', '.join(f'`{x}`' for x in result.removed) or '-'} |")
+        lines.append(f"| 已 Stash | {len(result.stashed)} | {', '.join(f'`{x}`' for x in result.stashed) or '-'} |")
+        lines.append(f"| 已跳过 | {len(result.skipped)} | {', '.join(f'`{x}`' for x in result.skipped) or '-'} |")
+        lines.append(f"| 错误 | {len(result.errors)} | {'; '.join(result.errors) or '-'} |")
+
+        return "\n".join(lines)
+
+    def _handle_worktree_remove(self, options: Dict[str, Any]) -> str:
+        worktree_id = options.get("id")
+        if not worktree_id:
+            return "## ❌ 缺少参数\n\n请指定 `--id <worktree_id>`。\n\n**Usage:** `/worktree remove --id ID`"
+
+        gc = WorktreeGarbageCollector(self._worktree_manager)
+        ok = gc.force_remove(worktree_id)
+        if ok:
+            return f"## ✅ 已删除\n\nWorktree `{worktree_id}` 已成功删除。"
+        return f"## ❌ 删除失败\n\nWorktree `{worktree_id}` 未找到或删除失败。"
+
     def _handle_help(self) -> str:
         """Handle /help command - show all available commands"""
         return """## 📚 帮助 - 可用命令
@@ -2464,6 +2723,19 @@ class SlashCommandHandler:
 **`/exit`** - 退出
 ```
 /exit                   # 回退到初始目录
+```
+
+**`/worktree`** - Worktree 隔离编排
+```
+/worktree create --session [-t <task>] [-k <key>]   # 创建会话级 worktree
+/worktree create --agent [-t <task>] [-k <name>]     # 创建 Agent 级 worktree
+/worktree list                                       # 列出所有 worktree
+/worktree list --active                              # 仅列出活跃
+/worktree list --stale                               # 仅列出过期
+/worktree resume --session <key>                     # 恢复会话 worktree
+/worktree resume --agent <name>                      # 恢复 Agent worktree
+/worktree gc [--dry-run] [--max-age <hours>]         # 垃圾回收
+/worktree remove --id <worktree_id>                  # 强制删除
 ```
 
 **`/switch`** - 切换 Provider / Model（带上下文传递）

@@ -32,6 +32,7 @@ from .routers.nexus_evolution import router as nexus_evolution_router
 from .routers.nexus_features import router as nexus_features_router
 from .routers.nexus_permissions import router as nexus_permissions_router
 from .routers.nexus_agents import router as nexus_agents_router
+from .routers.nexus_teleport import router as nexus_teleport_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -637,6 +638,7 @@ def _configure_app(app: FastAPI, app_settings: Settings) -> None:
     app.include_router(nexus_features_router)
     app.include_router(nexus_permissions_router)
     app.include_router(nexus_agents_router)
+    app.include_router(nexus_teleport_router)
 
     # Mount static files for NexusHub Web UI (with cache-control middleware)
     static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
@@ -722,3 +724,18 @@ def create_app_with_overrides(
 
 # 创建FastAPI应用
 app = create_app()
+
+
+def get_agent_loop():
+    """Get the primary AgentLoop instance from the NanobotExecutor pool.
+
+    Returns the first available loop, or None if no loops are running.
+    """
+    try:
+        from src.providers.nanobot.executor import _LoopPool
+        instances = _LoopPool._instances
+        if instances:
+            return next(iter(instances.values()))
+    except Exception:
+        pass
+    return None

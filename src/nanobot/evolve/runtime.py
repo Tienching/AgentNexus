@@ -21,9 +21,11 @@ from src.nanobot.evolve.implementation import (
     get_current_sha as implementation_get_current_sha,
     get_git_diff_files as implementation_get_git_diff_files,
     get_worktree_commits as implementation_get_worktree_commits,
+    get_worktree_manager as implementation_get_worktree_manager,
     merge_worktree_results as implementation_merge_worktree_results,
     remove_worktree as implementation_remove_worktree,
     run_implementation as implementation_run_implementation,
+    run_implementation_isolated as implementation_run_implementation_isolated,
     run_implementation_parallel as implementation_run_implementation_parallel,
     run_implementation_serial as implementation_run_implementation_serial,
     run_shell as implementation_run_shell,
@@ -60,6 +62,7 @@ class EvolutionEngine:
         self._executor = CodeBuddyExecutor(config)
         self._identity = IdentityManager(config)
         self._memory = MemoryManager(config)
+        self._wt_manager = None  # Lazy-initialized WorktreeManager
 
     async def _log(self, msg: str, session: EvolutionSession | None = None) -> None:
         logger.info("Evolution: {}", msg)
@@ -373,3 +376,88 @@ class EvolutionEngine:
         logger.info("Evolution: running memory synthesis")
         self._memory.synthesize()
         logger.info("Evolution: memory synthesis complete")
+
+    # ------------------------------------------------------------------
+    # Session Resume & Isolated Worktree support
+    # ------------------------------------------------------------------
+
+    def get_worktree_manager(self):
+        """Get or lazily initialize the WorktreeManager for this engine."""
+        return implementation_get_worktree_manager(self)
+
+    async def resume_session(self, session_key: str) -> EvolutionSession | None:
+        """Resume a previously running session by looking up its worktree.
+
+        If the session has an active worktree bound via WorktreeManager,
+        switch the working directory to it and return a reconstructed
+        EvolutionSession. Returns None if the session key is not found.
+        """
+        from src.runtime.commands.slash.worktree import (
+            WorktreeNotFoundError,
+            IsolationLevel,
+        )
+
+        manager = self.get_worktree_manager()
+        try:
+            entry = manager.resume_session(session_key)
+        except WorktreeNotFoundError:
+            logger.warning("Evolution: no worktree for session_key={}", session_key)
+            return None
+
+        # Switch working dir to the resumed worktree
+        if entry.path.exists():
+            self._working_dir = entry.path
+            logger.info("Evolution: resumed session to worktree at {}", entry.path)
+
+        session_number = self._get_session_number()
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        session = EvolutionSession(
+            id=session_key,
+            day=session_number,
+            date=date_str,
+            status="running",
+            started_at_ms=_now_ms(),
+        )
+        return session
+
+    async def run_isolated_cycle(self) -> EvolutionSession:
+        """Run a full evolution cycle with AGENT-level isolated worktrees.
+
+        Uses WorktreeManager for lifecycle management instead of raw git
+        commands, providing session resume and garbage collection.
+        """
+        session_number = self._get_session_number()
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        session = EvolutionSession(
+            id=str(uuid.uuid4())[:8],
+            day=session_number,
+            date=date_str,
+            status="running",
+            started_at_ms=_now_ms(),
+        )
+
+        await self._log(f"=== Isolated Evolution Session {session_number} starting ({session.id}) ===", session)
+
+        try:
+            (self._working_dir / "session_plan").mkdir(parents=True, exist_ok=True)
+
+            await self.run_assessment(session)
+            await self.run_planning(session)
+            await implementation_run_implementation_isolated(self, session)
+
+            session.completed_at_ms = _now_ms()
+            await self.run_reflection(session)
+
+            session.status = "completed"
+            await self._log(
+                f"=== Isolated Session {session_number} complete: {session.metrics.tasks_completed}/{session.metrics.tasks_planned} tasks ===",
+                session,
+            )
+        except Exception as exc:
+            session.status = "failed"
+            session.error = str(exc)
+            session.completed_at_ms = _now_ms()
+            await self._log(f"Isolated session failed: {exc}", session)
+            logger.exception("Isolated evolution session {} failed", session.id)
+
+        return session

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import shlex
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -86,6 +86,7 @@ KNOWN_SLASH_COMMANDS = [
     "/config",
     "/switch",
     "/history",
+    "/worktree",
     "/exit",
 ]
 
@@ -104,6 +105,7 @@ DEFAULT_SUBCMD: Dict[str, Optional[str]] = {
     "config": "show",
     "switch": "now",
     "history": "list",
+    "worktree": "list",
     "exit": "now",
 }
 
@@ -115,7 +117,69 @@ INFER_SUBCMD_FROM_OPTIONS: Dict[str, Dict[str, str]] = {
     "chat": {"c": "continue"},
     "config": {"s": "set", "r": "reset", "c": "concurrency"},
     "history": {"s": "jsonl", "f": "fetch", "c": "continue"},
+    "worktree": {"s": "create", "a": "create", "l": "list", "g": "gc", "r": "remove"},
 }
+
+# Dynamic extension registry (MC-062)
+_EXTERNAL_SPECS: List[CommandSpec] = []
+_EXTERNAL_DEFAULT_SUBCMD: Dict[str, Optional[str]] = {}
+_EXTERNAL_INFER_SUBCMD: Dict[str, Dict[str, str]] = {}
+_SPEC_LOADERS: List[Callable[[], None]] = []
+_SPEC_LOADERS_RAN: bool = False
+
+
+def register_slash_command_specs(
+    specs: List[CommandSpec],
+    *,
+    command: Optional[str] = None,
+    default_subcmd: Optional[str] = None,
+    infer_subcmd_from_options: Optional[Dict[str, str]] = None,
+) -> None:
+    """Register additional slash command specs at runtime."""
+    global _EXTERNAL_SPECS
+    for spec in specs or []:
+        _EXTERNAL_SPECS.append(spec)
+    if command and default_subcmd is not None:
+        _EXTERNAL_DEFAULT_SUBCMD[command] = default_subcmd
+    if command and infer_subcmd_from_options:
+        _EXTERNAL_INFER_SUBCMD[command] = dict(infer_subcmd_from_options)
+
+
+def register_slash_spec_loader(loader: Callable[[], None]) -> None:
+    """Register a lazy loader that can inject slash command specs."""
+    _SPEC_LOADERS.append(loader)
+
+
+def _ensure_spec_loaders_ran() -> None:
+    global _SPEC_LOADERS_RAN
+    if _SPEC_LOADERS_RAN:
+        return
+    for loader in list(_SPEC_LOADERS):
+        loader()
+    _SPEC_LOADERS_RAN = True
+
+
+def _build_runtime_registry() -> Tuple[List[CommandSpec], Dict[Tuple[str, str], CommandSpec], Dict[str, Optional[str]], Dict[str, Dict[str, str]], List[str]]:
+    _ensure_spec_loaders_ran()
+
+    specs = list(SPECS) + list(_EXTERNAL_SPECS)
+    spec_by = _spec_index(specs)
+
+    defaults = dict(DEFAULT_SUBCMD)
+    defaults.update(_EXTERNAL_DEFAULT_SUBCMD)
+
+    infer_map = {k: dict(v) for k, v in INFER_SUBCMD_FROM_OPTIONS.items()}
+    for cmd, mapping in _EXTERNAL_INFER_SUBCMD.items():
+        infer_map[cmd] = dict(mapping)
+
+    known_commands = sorted({f"/{s.cmd}" for s in specs})
+    return specs, spec_by, defaults, infer_map, known_commands
+
+
+def get_known_slash_commands() -> List[str]:
+    """Return all built-in + dynamically registered slash commands."""
+    _, _, _, _, known_commands = _build_runtime_registry()
+    return known_commands
 
 
 def _spec_index(specs: List[CommandSpec]) -> Dict[Tuple[str, str], CommandSpec]:
@@ -308,6 +372,56 @@ SPECS: List[CommandSpec] = [
     ),
     # exit
     CommandSpec(cmd="exit", subcmd="now"),
+    # worktree
+    CommandSpec(
+        cmd="worktree",
+        subcmd="create",
+        options=(
+            OptionDef(short="s", long="session", type="boolean", required=False, default=False),
+            OptionDef(short="a", long="agent", type="boolean", required=False, default=False),
+            OptionDef(short="t", long="task", type="string", required=False),
+            OptionDef(short="k", long="key", type="string", required=False),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="worktree",
+        subcmd="list",
+        options=(
+            OptionDef(short="l", long="list", type="boolean", required=False, default=True),
+            OptionDef(short="a", long="active", type="boolean", required=False, default=False),
+            OptionDef(short="g", long="stale", type="boolean", required=False, default=False),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="worktree",
+        subcmd="resume",
+        options=(
+            OptionDef(short="s", long="session", type="string", required=False),
+            OptionDef(short="a", long="agent", type="string", required=False),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="worktree",
+        subcmd="gc",
+        options=(
+            OptionDef(short="g", long="gc", type="boolean", required=False, default=True),
+            OptionDef(short="d", long="dry-run", type="boolean", required=False, default=False),
+            OptionDef(short="m", long="max-age", type="number", required=False, default=24),
+        ),
+        allow_free_text=False,
+    ),
+    CommandSpec(
+        cmd="worktree",
+        subcmd="remove",
+        options=(
+            OptionDef(short="r", long="remove", type="boolean", required=False, default=True),
+            OptionDef(short="i", long="id", type="string", required=True),
+        ),
+        allow_free_text=False,
+    ),
 ]
 
 SPEC_BY_CMD_SUBCMD = _spec_index(SPECS)
@@ -315,15 +429,16 @@ SPEC_BY_CMD_SUBCMD = _spec_index(SPECS)
 
 def usage_for(cmd: str, subcmd: Optional[str] = None) -> str:
     """Generate a concise usage string."""
+    specs, spec_by, _, _, _ = _build_runtime_registry()
+
     if subcmd is None:
-        # list subcommands
-        subs = sorted({s.subcmd for s in SPECS if s.cmd == cmd})
+        subs = sorted({s.subcmd for s in specs if s.cmd == cmd})
         if not subs:
             return ""
         joined = " | ".join(subs)
         return f"/{cmd} <{joined}> [options...] -- <text>"
 
-    spec = SPEC_BY_CMD_SUBCMD.get((cmd, subcmd))
+    spec = spec_by.get((cmd, subcmd))
     if not spec:
         return ""
 
@@ -371,9 +486,10 @@ def _coerce_value(opt: OptionDef, raw: str) -> Any:
     return raw
 
 
-def _infer_subcmd_from_tokens(cmd: str, tokens: List[str]) -> Optional[str]:
+def _infer_subcmd_from_tokens(cmd: str, tokens: List[str], infer_registry: Optional[Dict[str, Dict[str, str]]] = None) -> Optional[str]:
     """Infer subcmd from option flags in tokens (e.g., -t -> task, -p -> project)."""
-    infer_map = INFER_SUBCMD_FROM_OPTIONS.get(cmd)
+    registry = infer_registry or INFER_SUBCMD_FROM_OPTIONS
+    infer_map = registry.get(cmd)
     if not infer_map:
         return None
     
@@ -412,19 +528,20 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
         raise SlashCommandParseError("不是 slash command")
 
     cmd = cmd_token[1:]
+    _, spec_by_cmd_subcmd, default_subcmds, infer_subcmd_map, known_slash_commands = _build_runtime_registry()
 
-    if ("/" + cmd) not in KNOWN_SLASH_COMMANDS:
+    if ("/" + cmd) not in known_slash_commands:
         raise SlashCommandParseError(f"未知命令: /{cmd}")
 
     # All tokens after command are options/free-text (no explicit subcommand)
     rest_tokens = tokens[1:]
-    
+
     # Infer subcmd from options, or use default
-    inferred = _infer_subcmd_from_tokens(cmd, rest_tokens)
+    inferred = _infer_subcmd_from_tokens(cmd, rest_tokens, infer_registry=infer_subcmd_map)
     if inferred:
         subcmd = inferred
     else:
-        default_sub = DEFAULT_SUBCMD.get(cmd)
+        default_sub = default_subcmds.get(cmd)
         if default_sub:
             subcmd = default_sub
         else:
@@ -433,7 +550,7 @@ def parse_slash_command(text: str) -> ParsedSlashCommand:
                 usage=usage_for(cmd),
             )
 
-    spec = SPEC_BY_CMD_SUBCMD.get((cmd, subcmd))
+    spec = spec_by_cmd_subcmd.get((cmd, subcmd))
     if not spec:
         raise SlashCommandParseError(
             f"命令 /{cmd} 内部错误: {subcmd}",

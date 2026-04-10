@@ -1,9 +1,14 @@
-"""Execution infrastructure for the self-evolution system."""
+"""Execution infrastructure for the self-evolution system.
+
+Enhanced with WorktreeManager integration for agent-level isolation,
+session resume, and garbage collection.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +18,12 @@ from loguru import logger
 from src.nanobot.evolve.prompts import (
     build_conflict_resolution_prompt,
     build_implementation_prompt,
+)
+from src.runtime.commands.slash.worktree import (
+    IsolationLevel,
+    WorktreeEntry,
+    WorktreeGarbageCollector,
+    WorktreeManager,
 )
 
 if TYPE_CHECKING:
@@ -420,3 +431,186 @@ async def run_implementation_serial(engine: "EvolutionEngine", session: "Evoluti
         session.metrics.tasks_completed += 1
         session.metrics.files_changed += len(changed_files)
         await engine._log(f"    ✓ Completed: {task.title}", session)
+
+
+# ---------------------------------------------------------------------------
+# Enhanced: WorktreeManager integration for agent-level isolation
+# ---------------------------------------------------------------------------
+
+def get_worktree_manager(engine: "EvolutionEngine") -> WorktreeManager:
+    """Get or create a WorktreeManager for the evolution engine's workspace."""
+    if not hasattr(engine, "_wt_manager") or engine._wt_manager is None:
+        engine._wt_manager = WorktreeManager(engine._working_dir)
+    return engine._wt_manager
+
+
+async def run_implementation_isolated(engine: "EvolutionEngine", session: "EvolutionSession") -> None:
+    """Phase B: Execute tasks in AGENT-isolated worktrees via WorktreeManager.
+
+    Each task gets its own worktree tracked by the WorktreeManager with
+    AGENT-level isolation. This provides full lifecycle management including
+    session resume and garbage collection.
+    """
+    await engine._log("Phase B: Isolated worktree implementation starting...", session)
+    session.phase = "implementation"
+
+    tasks = session.tasks
+    if not tasks:
+        await engine._log("No tasks to implement", session)
+        return
+
+    manager = get_worktree_manager(engine)
+    gc = WorktreeGarbageCollector(manager)
+
+    # Clean up stale worktrees from previous sessions
+    gc_result = gc.collect(max_age_hours=24, dry_run=False)
+    if gc_result.removed or gc_result.stashed:
+        await engine._log(
+            f"  GC: removed={len(gc_result.removed)}, stashed={len(gc_result.stashed)}",
+            session,
+        )
+
+    context = engine._build_context()
+    session_number = session.day
+    base_sha = engine._get_current_sha()
+    max_tasks = min(len(tasks), engine.config.max_tasks_per_session)
+    active_tasks = tasks[:max_tasks]
+
+    await engine._log(f"  Spawning {len(active_tasks)} isolated worktrees...", session)
+
+    # Create isolated worktree entries for each task
+    entries: list[tuple[EvolutionTask, WorktreeEntry]] = []
+    for task in active_tasks:
+        try:
+            entry = manager.create_isolated(
+                isolation_level=IsolationLevel.AGENT,
+                agent_name=f"evolve-{session.id}-{task.id}",
+                task_id=task.id,
+            )
+            entries.append((task, entry))
+            await engine._log(f"  [WT] {task.id}: worktree created at {entry.path}", session)
+        except Exception as exc:
+            task.status = "failed"
+            task.error = f"Failed to create worktree: {exc}"
+            session.metrics.tasks_failed += 1
+            await engine._log(f"  [WT] {task.id} FAILED: {exc}", session)
+
+    # Run tasks in parallel
+    results: list[WorktreeTaskResult] = await asyncio.gather(
+        *[
+            _run_task_in_isolated_worktree(
+                engine, task, session, context, session_number,
+                base_sha, entry.branch, Path(entry.path),
+            )
+            for task, entry in entries
+        ]
+    )
+
+    # Merge results
+    await engine._merge_worktree_results(results, session, session_number)
+
+    for result in results:
+        if result.merge_status == "merged":
+            session.metrics.tasks_completed += 1
+            session.metrics.files_changed += len(result.files_changed)
+            result.task.status = "completed"
+        elif result.merge_status in ("conflict", "failed"):
+            session.metrics.tasks_failed += 1
+            result.task.status = "failed"
+            result.task.error = result.error or f"Merge status: {result.merge_status}"
+        else:
+            session.metrics.tasks_failed += 1
+            result.task.status = "failed"
+            result.task.error = result.error or "Unknown error"
+
+
+async def _run_task_in_isolated_worktree(
+    engine: "EvolutionEngine",
+    task: "EvolutionTask",
+    session: "EvolutionSession",
+    context: str,
+    session_number: int,
+    base_sha: str,
+    branch_name: str,
+    worktree_path: Path,
+) -> WorktreeTaskResult:
+    """Execute a single task in a WorktreeManager-tracked worktree."""
+    result = WorktreeTaskResult(task=task, branch_name=branch_name, worktree_path=str(worktree_path))
+
+    manager = get_worktree_manager(engine)
+
+    # Verify the worktree exists; if not, create it
+    from src.runtime.commands.slash.worktree import is_git_worktree as _is_git_wt, _run_git as _run_git_raw
+
+    if not worktree_path.exists() or not _is_git_wt(worktree_path):
+        worktree_path.parent.mkdir(parents=True, exist_ok=True)
+        repo_root = engine._working_dir
+        res = _run_git_raw(repo_root, ["worktree", "add", "-b", branch_name, str(worktree_path)])
+        if res.returncode != 0:
+            stderr = (res.stderr or "").strip()
+            if "already exists" in stderr.lower() and "branch" in stderr.lower():
+                res2 = _run_git_raw(repo_root, ["worktree", "add", str(worktree_path), branch_name])
+                if res2.returncode != 0:
+                    result.error = f"Failed to create worktree: {(res2.stderr or '').strip()}"
+                    return result
+            else:
+                result.error = f"Failed to create worktree: {stderr}"
+                return result
+
+    task.status = "running"
+    await engine._log(f"  [WT] {task.id}: {task.title}", session)
+
+    # Touch the worktree to update access time
+    manager.touch(branch_name)
+
+    venv_python = engine._working_dir / ".venv" / "bin" / "python"
+    pytest_cmd = (
+        f"{venv_python} -m pytest tests/ -x -q --tb=short 2>&1 | head -30"
+        if venv_python.exists()
+        else "python -m pytest tests/ -x -q --tb=short 2>&1 | head -30"
+    )
+
+    prompt = build_implementation_prompt(
+        engine.config,
+        session_number=session_number,
+        context=context,
+        task=task,
+        branch_name=branch_name,
+        pytest_cmd=pytest_cmd,
+        working_dir=str(engine._working_dir),
+    )
+
+    exec_result = await engine._executor.execute(
+        prompt=prompt,
+        tools="Read,Write,Edit,MultiEdit,Bash,Grep,Glob",
+        timeout=engine.config.codebuddy_timeout,
+        working_dir=str(worktree_path),
+    )
+
+    if not exec_result.success:
+        result.error = exec_result.error or "CodeBuddy execution failed"
+        await engine._log(f"  [WT] {task.id} FAILED: {result.error}", session)
+        return result
+
+    commits = engine._get_worktree_commits(branch_name, base_sha)
+    if not commits:
+        result.error = "No commits produced"
+        await engine._log(f"  [WT] {task.id}: no commits — skipping", session)
+        return result
+
+    _, stdout, _ = engine._run_shell(
+        f"git diff --name-only {base_sha}..{branch_name} -- " + " ".join(engine.config.protected_files)
+    )
+    if stdout.strip():
+        result.error = f"Modified protected files: {stdout.strip()}"
+        await engine._log(f"  [WT] {task.id} BLOCKED: {result.error}", session)
+        return result
+
+    _, diff_out, _ = engine._run_shell(f"git diff --name-only {base_sha}..{branch_name}")
+    result.files_changed = [line.strip() for line in diff_out.splitlines() if line.strip()]
+    result.success = True
+    await engine._log(
+        f"  [WT] {task.id} ✓ ready ({len(commits)} commit(s), {len(result.files_changed)} file(s))",
+        session,
+    )
+    return result

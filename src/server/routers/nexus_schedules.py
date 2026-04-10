@@ -6,7 +6,7 @@ Provides REST API endpoints for managing cron-based scheduled tasks.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -45,6 +45,10 @@ class CreateScheduleRequest(BaseModel):
     exec_user: Optional[str] = Field(None, description="Execution user")
     context: Optional[Dict[str, Any]] = Field(None, description="Extra context for task creation")
     max_runs: Optional[int] = Field(None, ge=1, description="Max runs before auto-cancel (null = unlimited)")
+    durability_mode: str = Field("durable", description="durable | session_only")
+    session_id: Optional[str] = Field(None, description="Required when durability_mode=session_only")
+    ttl_seconds: Optional[int] = Field(None, ge=1, description="Optional schedule TTL in seconds")
+    jitter_seconds: int = Field(0, ge=0, le=3600, description="Deterministic jitter applied to next run")
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -64,6 +68,10 @@ class UpdateScheduleRequest(BaseModel):
     exec_user: Optional[str] = Field(None, description="Execution user")
     context: Optional[Dict[str, Any]] = Field(None, description="Extra context")
     max_runs: Optional[int] = Field(None, ge=1, description="Max runs")
+    durability_mode: Optional[str] = Field(None, description="durable | session_only")
+    session_id: Optional[str] = Field(None, description="Session binding for session_only schedules")
+    ttl_seconds: Optional[int] = Field(None, ge=1, description="TTL in seconds")
+    jitter_seconds: Optional[int] = Field(None, ge=0, le=3600, description="Deterministic jitter in seconds")
 
 
 class ScheduleItem(BaseModel):
@@ -86,6 +94,10 @@ class ScheduleItem(BaseModel):
     context: Optional[Dict[str, Any]] = None
     max_runs: Optional[int] = None
     run_count: int = 0
+    durability_mode: str = "durable"
+    session_id: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    jitter_seconds: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     last_run_at: Optional[datetime] = None
@@ -148,6 +160,10 @@ def _schedule_to_item(schedule) -> ScheduleItem:
         context=schedule.context,
         max_runs=schedule.max_runs,
         run_count=schedule.run_count,
+        durability_mode=(schedule.durability_mode if isinstance(schedule.durability_mode, str) else schedule.durability_mode.value),
+        session_id=schedule.session_id,
+        expires_at=schedule.expires_at,
+        jitter_seconds=int(getattr(schedule, "jitter_seconds", 0) or 0),
         created_at=schedule.created_at,
         updated_at=schedule.updated_at,
         last_run_at=schedule.last_run_at,
@@ -278,6 +294,10 @@ async def create_schedule(request: CreateScheduleRequest):
             exec_user=effective_exec_user,
             context=request.context,
             max_runs=max_runs,
+            durability_mode=(request.durability_mode or "durable").strip().lower(),
+            session_id=(request.session_id or "").strip() or None,
+            ttl_seconds=request.ttl_seconds,
+            jitter_seconds=request.jitter_seconds,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -351,6 +371,14 @@ async def update_schedule(schedule_id: str, request: UpdateScheduleRequest):
         schedule.context = request.context
     if request.max_runs is not None:
         schedule.max_runs = request.max_runs
+    if request.durability_mode is not None:
+        schedule.durability_mode = request.durability_mode.strip().lower()
+    if request.session_id is not None:
+        schedule.session_id = request.session_id.strip() or None
+    if request.jitter_seconds is not None:
+        schedule.jitter_seconds = request.jitter_seconds
+    if request.ttl_seconds is not None:
+        schedule.expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(request.ttl_seconds))
 
     # Re-compute next_run_at if trigger or timezone changed
     if request.cron_expression is not None or request.run_at is not None or request.timezone is not None:

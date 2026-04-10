@@ -1,0 +1,232 @@
+/* Streaming Tombstone & Withheld 样式 */
+
+/* ============================================================
+   Tombstone 样式 - 标记已被覆盖/失效的块
+   ============================================================ */
+
+.chunk-tombstone {
+    opacity: 0.5;
+    text-decoration: line-through;
+    transition: opacity 0.3s ease-out, text-decoration 0.3s ease-out;
+    position: relative;
+}
+
+/* Tombstone 动画效果 */
+.chunk-tombstone::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(
+        135deg,
+        transparent 0%,
+        rgba(128, 128, 128, 0.05) 50%,
+        transparent 100%
+    );
+    pointer-events: none;
+}
+
+/* Tombstone 悬停效果 */
+.chunk-tombstone:hover {
+    opacity: 0.7;
+}
+
+/* Tombstone 原因标记 */
+.chunk-tombstone[data-tombstone-reason="replaced"] {
+    border-left: 3px solid #9e9e9e;
+}
+
+.chunk-tombstone[data-tombstone-reason="rollback"] {
+    border-left: 3px solid #ff9800;
+}
+
+.chunk-tombstone[data-tombstone-reason="retry"] {
+    border-left: 3px solid #2196f3;
+}
+
+.chunk-tombstone[data-tombstone-reason="superseded"] {
+    border-left: 3px solid #9c27b0;
+}
+
+.chunk-tombstone[data-tombstone-reason="error"] {
+    border-left: 3px solid #f44336;
+}
+
+
+/* ============================================================
+   Withheld 状态样式 - 因可恢复错误被扣留的块
+   ============================================================ */
+
+.chunk-withheld {
+    background: rgba(255, 165, 0, 0.1);
+    border-left: 3px solid orange;
+    padding-left: 8px;
+    margin-left: -8px;
+    position: relative;
+}
+
+/* Withheld 原因标记 */
+.chunk-withheld[data-withheld-reason="temporary"] {
+    border-left-color: #2196f3;
+    background: rgba(33, 150, 243, 0.08);
+}
+
+.chunk-withheld[data-withheld-reason="rate_limit"] {
+    border-left-color: #ff9800;
+    background: rgba(255, 152, 0, 0.08);
+}
+
+.chunk-withheld[data-withheld-reason="validation"] {
+    border-left-color: #f44336;
+    background: rgba(244, 67, 54, 0.08);
+}
+
+.chunk-withheld[data-withheld-reason="unknown"] {
+    border-left-color: #9e9e9e;
+    background: rgba(158, 158, 158, 0.08);
+}
+
+/* ============================================================
+   恢复中动画
+   ============================================================ */
+
+.chunk-recovering {
+    animation: streaming-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes streaming-pulse {
+    0%, 100% {
+        opacity: 1;
+        background-color: rgba(255, 165, 0, 0.05);
+    }
+    50% {
+        opacity: 0.8;
+        background-color: rgba(255, 165, 0, 0.15);
+    }
+}
+
+/* 恢复成功动画 */
+.chunk-recovered {
+    animation: streaming-recovered 0.5s ease-out forwards;
+}
+
+@keyframes streaming-recovered {
+    0% {
+        background-color: rgba(76, 175, 80, 0.2);
+    }
+    100% {
+        background-color: transparent;
+        border-left-color: transparent;
+    }
+}
+
+
+/* ============================================================
+   重试状态指示器
+   ============================================================ */
+
+.chunk-retry-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.75em;
+    color: #ff9800;
+    margin-left: 8px;
+    padding: 2px 6px;
+    background: rgba(255, 152, 0, 0.1);
+    border-radius: 4px;
+}
+
+.chunk-retry-indicator::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border: 2px solid #ff9800;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: streaming-spin 1s linear infinite;
+}
+
+@keyframes streaming-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+
+/* ============================================================
+   块替换动画
+   ============================================================ */
+
+.chunk-replacing {
+    animation: streaming-fade-out 0.3s ease-out forwards;
+}
+
+@keyframes streaming-fade-out {
+    0% {
+        opacity: 1;
+        transform: translateX(0);
+    }
+    100% {
+        opacity: 0;
+        transform: translateX(-10px);
+    }
+}
+
+.chunk-replaced {
+    animation: streaming-fade-in 0.3s ease-out forwards;
+}
+
+@keyframes streaming-fade-in {
+    0% {
+        opacity: 0;
+        transform: translateX(10px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+
+/* ============================================================
+   工具类
+   ============================================================ */
+
+/* 清除 tombstone 状态 */
+.chunk-tombstone-clear {
+    opacity: 1;
+    text-decoration: none;
+    border-left: none;
+}
+
+/* 清除 withheld 状态 */
+.chunk-withheld-clear {
+    background: transparent;
+    border-left: none;
+    padding-left: 0;
+    margin-left: 0;
+    animation: none;
+}
+
+
+/* ============================================================
+   响应式调整
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+    .chunk-recovering,
+    .chunk-retry-indicator::before {
+        animation: none;
+    }
+
+    .chunk-tombstone,
+    .chunk-replacing,
+    .chunk-replaced {
+        transition: none;
+        animation: none;
+    }
+}

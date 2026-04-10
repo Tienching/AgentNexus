@@ -531,6 +531,76 @@ class NexusAPI {
         return response.json();
     }
 
+    static async getTaskQualityReviews(taskId, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/quality-reviews?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch task quality reviews: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    static async submitTaskQualityReview(taskId, payload = {}, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/quality-reviews?${params}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to submit quality review: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    static async getTaskComments(taskId, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/comments?${params}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch task comments: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
+    static async createTaskComment(taskId, payload = {}, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/comments?${params}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to create task comment: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    static async broadcastTask(taskId, payload = {}, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/broadcast?${params}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to broadcast task message: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     static async getTaskMessages(taskId, options = {}) {
         const params = new URLSearchParams({
             exec_user: options.execUser || _defaultExecUser,
@@ -1029,6 +1099,88 @@ class NexusAPI {
         const ct = response.headers.get('content-type') || '';
         if (ct.includes('text/csv') || (format && format.toLowerCase() === 'csv')) {
             return response.text();
+        }
+        return response.json();
+    }
+
+    // ============ Plan Mode API ============
+
+    /**
+     * Enter plan mode (read-only exploration)
+     * @returns {Promise<Object>} Plan action response
+     */
+    static async enterPlanMode() {
+        const response = await fetch(`${API_BASE}/plan/enter`, { method: 'POST' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to enter plan mode');
+        }
+        return response.json();
+    }
+
+    /**
+     * Submit a plan for approval
+     * @param {string} content - The plan content
+     * @returns {Promise<Object>} Plan action response
+     */
+    static async submitPlan(content) {
+        const response = await fetch(`${API_BASE}/plan/submit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content }),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to submit plan');
+        }
+        return response.json();
+    }
+
+    /**
+     * Approve the current plan
+     * @returns {Promise<Object>} Plan action response
+     */
+    static async approvePlan() {
+        const response = await fetch(`${API_BASE}/plan/approve`, { method: 'POST' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to approve plan');
+        }
+        return response.json();
+    }
+
+    /**
+     * Reject the current plan
+     * @returns {Promise<Object>} Plan action response
+     */
+    static async rejectPlan() {
+        const response = await fetch(`${API_BASE}/plan/reject`, { method: 'POST' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to reject plan');
+        }
+        return response.json();
+    }
+
+    /**
+     * Get current plan mode status
+     * @returns {Promise<Object>} Plan status response
+     */
+    static async getPlanStatus() {
+        const response = await fetch(`${API_BASE}/plan/status`);
+        if (!response.ok) throw new Error('Failed to get plan status');
+        return response.json();
+    }
+
+    /**
+     * Exit plan mode
+     * @returns {Promise<Object>} Plan action response
+     */
+    static async exitPlanMode() {
+        const response = await fetch(`${API_BASE}/plan/exit`, { method: 'POST' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to exit plan mode');
         }
         return response.json();
     }

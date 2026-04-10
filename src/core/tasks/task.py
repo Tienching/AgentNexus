@@ -56,9 +56,10 @@ class Task:
 
 class TaskManager:
     """任务管理器（内存实现，可扩展为持久化）"""
-    
+
     def __init__(self):
         self._tasks: Dict[str, Task] = {}
+        self._claims: Dict[str, str] = {}  # task_id -> agent_name
     
     def create(
         self,
@@ -133,3 +134,55 @@ class TaskManager:
         if provider:
             tasks = [t for t in tasks if t.provider == provider]
         return tasks
+
+    # -- Swarm task claiming --------------------------------------------------
+
+    def claim_task(self, agent_name: str, task_id: str) -> bool:
+        """Claim a pending task for an agent.
+
+        Returns True if the claim succeeded. A task can only be claimed
+        if it exists, is PENDING, and has not already been claimed.
+        """
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+        if task.status != TaskStatus.PENDING:
+            return False
+        if task_id in self._claims:
+            return False
+
+        self._claims[task_id] = agent_name
+        task.status = TaskStatus.RUNNING
+        task.started_at = time.time()
+        task.metadata["claimed_by"] = agent_name
+        return True
+
+    def release_task(self, agent_name: str, task_id: str) -> bool:
+        """Release a claimed task back to pending state.
+
+        Only the agent that claimed the task can release it.
+        Returns True if the release succeeded.
+        """
+        if self._claims.get(task_id) != agent_name:
+            return False
+
+        task = self._tasks.get(task_id)
+        if not task:
+            return False
+
+        del self._claims[task_id]
+        task.status = TaskStatus.PENDING
+        task.started_at = None
+        task.metadata.pop("claimed_by", None)
+        return True
+
+    def get_claimable_tasks(self) -> List[Task]:
+        """Return all tasks that can be claimed (PENDING and unclaimed)."""
+        return [
+            t for t in self._tasks.values()
+            if t.status == TaskStatus.PENDING and t.task_id not in self._claims
+        ]
+
+    def get_claimed_by(self, task_id: str) -> Optional[str]:
+        """Return the agent name that claimed a task, or None."""
+        return self._claims.get(task_id)

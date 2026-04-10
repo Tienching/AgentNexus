@@ -38,6 +38,12 @@ class ScheduleKind(str, Enum):
     EVOLUTION = "evolution"    # Triggers EvolutionEngine (evolve or memory_synth)
 
 
+class ScheduleDurabilityMode(str, Enum):
+    """Whether a schedule survives session lifecycle."""
+    DURABLE = "durable"
+    SESSION_ONLY = "session_only"
+
+
 class Schedule(BaseModel):
     """Schedule definition for periodic or one-time task creation.
 
@@ -68,6 +74,10 @@ class Schedule(BaseModel):
     # "evolution": triggers the EvolutionEngine directly (see evolution_phase).
     schedule_kind: ScheduleKind = ScheduleKind.TASK
 
+    # Durability mode
+    durability_mode: ScheduleDurabilityMode = ScheduleDurabilityMode.DURABLE
+    session_id: Optional[str] = None
+
     # Evolution-specific: which phase to run when schedule_kind == "evolution".
     # "full"      — runs a full evolution cycle (EvolutionEngine.run_full_cycle)
     # "memory_synth" — runs memory synthesis only (EvolutionEngine.run_memory_synthesis)
@@ -88,6 +98,10 @@ class Schedule(BaseModel):
     # Execution limits
     max_runs: Optional[int] = None   # None = unlimited
     run_count: int = 0               # Number of times fired so far
+
+    # Auto-expiry and deterministic jitter
+    expires_at: Optional[datetime] = None
+    jitter_seconds: int = 0
 
     # Timing metadata
     created_at: datetime = Field(default_factory=_utcnow)
@@ -120,6 +134,11 @@ class Schedule(BaseModel):
             raise ValueError("evolution_phase can only be set when schedule_kind is 'evolution'")
         if self.schedule_kind == ScheduleKind.EVOLUTION.value and not self.evolution_phase:
             raise ValueError("evolution_phase is required when schedule_kind is 'evolution'")
+
+        if self.durability_mode == ScheduleDurabilityMode.SESSION_ONLY.value and not self.session_id:
+            raise ValueError("session_id is required when durability_mode is 'session_only'")
+        if self.jitter_seconds < 0:
+            raise ValueError("jitter_seconds must be >= 0")
         return self
 
     def compute_next_run(self, base_time: Optional[datetime] = None) -> Optional[datetime]:
@@ -187,7 +206,7 @@ class Schedule(BaseModel):
         parsed = {}
         datetime_fields = (
             "created_at", "updated_at", "last_run_at", "next_run_at",
-            "paused_at", "cancelled_at", "run_at",
+            "paused_at", "cancelled_at", "run_at", "expires_at",
         )
         for key, value in data.items():
             if key in datetime_fields:
@@ -198,10 +217,14 @@ class Schedule(BaseModel):
                 parsed[key] = int(value)
             elif key == "max_runs":
                 parsed[key] = int(value) if value and value != "None" else None
+            elif key == "jitter_seconds":
+                parsed[key] = int(value) if value else 0
             elif key == "status":
                 parsed[key] = ScheduleStatus(value)
             elif key == "schedule_kind":
                 parsed[key] = ScheduleKind(value) if value else ScheduleKind.TASK
+            elif key == "durability_mode":
+                parsed[key] = ScheduleDurabilityMode(value) if value else ScheduleDurabilityMode.DURABLE
             else:
                 parsed[key] = value
 

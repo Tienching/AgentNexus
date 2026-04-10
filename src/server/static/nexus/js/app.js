@@ -89,6 +89,11 @@ class PageManager {
         if (page === 'chat' && this.app.refreshChatProviders) {
             this.app.refreshChatProviders();
         }
+
+        // Mount panels view when switching to panels page
+        if (page === 'panels' && this.app.panelLayoutManager) {
+            this.app.mountPanelsView();
+        }
     }
 
     apply() {
@@ -106,6 +111,12 @@ class PageManager {
         }
         if (this.settingsView) {
             this.settingsView.classList.toggle('active', this.currentPage === 'settings');
+        }
+
+        // Show/hide panels view
+        const panelsView = document.getElementById('panelsView');
+        if (panelsView) {
+            panelsView.style.display = this.currentPage === 'panels' ? '' : 'none';
         }
 
         // Show/hide chat-specific header elements
@@ -369,6 +380,11 @@ class ChatView {
         this._autoRefreshInterval = 5000; // 5s for session list
         this._lastSessionsHash = {}; // paneId -> hash of session list (for change detection)
         this._lastMessageCountBySession = {}; // sessionId -> last known message count
+
+        // Markdown renderer component (MC-035)
+        this.markdownRenderer = typeof window.MarkdownRenderer === 'function'
+            ? new window.MarkdownRenderer({ renderFn: (text) => this.renderMarkdown(text) })
+            : null;
     }
 
     _markPendingNewSession(paneId, sessionId) {
@@ -3489,7 +3505,11 @@ class ChatView {
 
     formatMessageContent(content) {
         if (content === undefined || content === null || content === '') return '';
-        return this.renderMarkdown(String(content));
+        const text = String(content);
+        if (this.markdownRenderer && typeof this.markdownRenderer.render === 'function') {
+            return this.markdownRenderer.render(text);
+        }
+        return this.renderMarkdown(text);
     }
 
     renderMarkdown(content) {
@@ -3986,6 +4006,7 @@ class TaskView {
         // SmartPoll instance for visibility-aware kanban refresh
         this._smartPoll = null;
         this._pollInterval = 10000; // 10s (SmartPoll default)
+        this._mentionInputsByPane = {}; // paneId -> MentionTextarea[]
     }
 
     _normalizeTaskStatus(status) {
@@ -4111,6 +4132,11 @@ class TaskView {
                             <!-- Terminal status columns (failed, cancelled) rendered dynamically -->
                         </div>
                     </div>
+                    <div id="expansionPanels-${paneId}" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 260px; overflow-y: auto;">
+                        <div class="empty-state" style="padding: 8px;">
+                            <div class="loading-spinner" style="width: 16px; height: 16px;"></div>
+                        </div>
+                    </div>
                 </div>
                 <div class="task-detail hidden" id="taskDetail-${paneId}">
                     <!-- Task detail will be rendered here -->
@@ -4199,6 +4225,11 @@ class TaskView {
                         </div>
                         <div class="kanban-terminal-columns" id="terminalColumns-${paneId}" style="display: none;">
                             <!-- Terminal status columns (failed, cancelled) rendered dynamically -->
+                        </div>
+                    </div>
+                    <div id="expansionPanels-${paneId}" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 260px; overflow-y: auto;">
+                        <div class="empty-state" style="padding: 8px;">
+                            <div class="loading-spinner" style="width: 16px; height: 16px;"></div>
                         </div>
                     </div>
                 </div>
@@ -4411,6 +4442,7 @@ class TaskView {
                 status: this._normalizeTaskStatus(task.status),
             }));
             this.renderKanban(paneId);
+            this.loadExpansionPanels(paneId);
 
             // Keep selected task detail synchronized with latest status/conversation availability
             const selectedId = this.selectedTask[paneId];
@@ -4454,6 +4486,32 @@ class TaskView {
                     `;
                 }
             });
+        }
+    }
+
+    async loadExpansionPanels(paneId) {
+        const root = document.getElementById(`expansionPanels-${paneId}`);
+        if (!root) return;
+
+        try {
+            const globalUserFilter = document.getElementById('globalUserFilter');
+            const username = globalUserFilter?.value || '';
+            const data = await NexusAPI.getSessions({
+                page: 1,
+                pageSize: 200,
+                username: username || undefined,
+            });
+            const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+
+            if (window.ExpansionPanels && typeof window.ExpansionPanels.render === 'function') {
+                window.ExpansionPanels.render(root, sessions);
+                return;
+            }
+
+            root.innerHTML = `<div style="font-size:12px;color:var(--text-muted);">Session monitor unavailable.</div>`;
+        } catch (error) {
+            console.error('Failed to load expansion panels:', error);
+            root.innerHTML = `<div style="font-size:12px;color:var(--error);">Failed to load session monitor</div>`;
         }
     }
 
@@ -4650,6 +4708,20 @@ class TaskView {
         const awaitingBadge = isAwaitingOwner && this._normalizeTaskStatus(task.status) !== 'awaiting_owner'
             ? '<span class="task-card-awaiting-badge">⚠ Needs Attention</span>' : '';
 
+        const githubUrl = this._resolveGitHubIssueUrl(task);
+        const githubLabel = this._resolveGitHubIssueLabel(task);
+        const githubState = String(task.github_state || '').trim().toLowerCase();
+        const githubStateColor = githubState === 'closed' ? 'var(--success)' : 'var(--primary-500)';
+        const githubBadge = githubLabel
+            ? (githubUrl
+                ? `<a href="${this.escapeHtml(githubUrl)}" target="_blank" rel="noopener noreferrer" title="Open GitHub issue" style="font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid ${githubStateColor}; color: ${githubStateColor}; text-decoration: none;">GH ${this.escapeHtml(githubLabel)}${githubState ? ` · ${this.escapeHtml(githubState)}` : ''}</a>`
+                : `<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid ${githubStateColor}; color: ${githubStateColor};">GH ${this.escapeHtml(githubLabel)}${githubState ? ` · ${this.escapeHtml(githubState)}` : ''}</span>`)
+            : '';
+
+        const aegisBadge = task.aegis_approved
+            ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(16,185,129,0.16); color: var(--success); font-weight: 600;">Aegis ✓</span>'
+            : '';
+
         return `
             <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''} ${isOverdue ? 'task-card-overdue-state' : ''} ${isAwaitingOwner ? 'task-card-needs-attention' : ''}" data-task-id="${task.id}" draggable="${!isInSelectionMode}" style="border-left: 3px solid ${priorityBarColor};">
                 ${isInSelectionMode ? `
@@ -4661,6 +4733,8 @@ class TaskView {
                     <div class="task-card-header">
                         <span class="task-card-id">#${task.id.slice(0, 8)}</span>
                         ${task.ticket_ref ? `<span class="task-card-ticket-ref" title="Project ticket">${this.escapeHtml(task.ticket_ref)}</span>` : ''}
+                        ${githubBadge}
+                        ${aegisBadge}
                         ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
                         ${task.loop_enabled ? `<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: ${task.loop_keyword_found ? 'var(--success, #22c55e)' : 'var(--accent, #6366f1)'}; color: #fff; font-weight: 600;">Loop ${task.loop_iteration || 0}/${task.loop_max_iterations || 1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
                         ${overdueHtml}
@@ -4698,6 +4772,32 @@ class TaskView {
             </div>
         `;
     }
+
+    _resolveGitHubIssueLabel(task) {
+        const issueNumber = task?.github_issue_number;
+        if (Number.isInteger(issueNumber)) {
+            return `#${issueNumber}`;
+        }
+        const ticketRef = String(task?.ticket_ref || '').trim();
+        const match = ticketRef.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+        if (match) {
+            return `${match[1]}#${match[2]}`;
+        }
+        return '';
+    }
+
+    _resolveGitHubIssueUrl(task) {
+        const direct = String(task?.github_url || '').trim();
+        if (direct) return direct;
+
+        const ticketRef = String(task?.ticket_ref || '').trim();
+        const match = ticketRef.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+        if (!match) return '';
+        const repo = match[1];
+        const issue = match[2];
+        return `https://github.com/${repo}/issues/${issue}`;
+    }
+
     async selectTask(paneId, taskId) {
         this.selectedTask[paneId] = taskId;
 
@@ -4783,6 +4883,20 @@ class TaskView {
                     </div>
                     <p style="margin: 6px 0 0; font-size: 13px; color: var(--text-secondary);">${this.escapeHtml(task.description || 'No description')}</p>
                     ${task.error_message ? `<p style="margin: 4px 0 0; font-size: 12px; color: var(--error);">${this.escapeHtml(task.error_message)}</p>` : ''}
+                    ${this._resolveGitHubIssueLabel(task) ? `
+                        <p style="margin: 6px 0 0; font-size: 12px; color: var(--text-secondary);">
+                            GitHub: ${this._resolveGitHubIssueUrl(task)
+                                ? `<a href="${this.escapeHtml(this._resolveGitHubIssueUrl(task))}" target="_blank" rel="noopener noreferrer" style="color: var(--primary-500);">${this.escapeHtml(this._resolveGitHubIssueLabel(task))}</a>`
+                                : this.escapeHtml(this._resolveGitHubIssueLabel(task))}
+                            ${task.github_state ? `<span style="margin-left: 6px; color: var(--text-muted);">(${this.escapeHtml(String(task.github_state))})</span>` : ''}
+                        </p>
+                    ` : ''}
+                    ${(task.aegis_status || task.aegis_approved) ? `
+                        <p style="margin: 4px 0 0; font-size: 12px; color: ${task.aegis_approved ? 'var(--success)' : 'var(--warning)'};">
+                            Aegis: ${task.aegis_approved ? 'Approved' : this.escapeHtml(String(task.aegis_status || 'pending'))}
+                            ${task.aegis_reason ? `<span style="color: var(--text-muted);"> · ${this.escapeHtml(task.aegis_reason)}</span>` : ''}
+                        </p>
+                    ` : ''}
                     ${task.loop_enabled ? `
                         <div style="margin-top: 8px; padding: 8px 10px; background: var(--bg-secondary); border-radius: 6px; font-size: 12px;">
                             <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
@@ -4799,16 +4913,41 @@ class TaskView {
                     ` : ''}
                 </div>
 
-                ${hasConversation ? `
-                    <div class="task-conversation" style="flex: 1; overflow-y: auto; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px;">
-                        <div class="chat-messages" id="taskConversation-${paneId}" style="padding: 0;">
-                            <div class="empty-state" style="padding: 24px;">
-                                <div class="loading-spinner"></div>
-                                <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p>
-                            </div>
+                <div class="task-conversation" style="flex: 1; overflow: hidden; border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; display: flex; flex-direction: column; gap: 8px;">
+                    <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <button class="action-btn task-detail-tab active" data-task-tab="details" data-pane-id="${paneId}" style="padding: 4px 10px;">Details</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="comments" data-pane-id="${paneId}" style="padding: 4px 10px;">Comments</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="quality" data-pane-id="${paneId}" style="padding: 4px 10px;">Quality</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="session" data-pane-id="${paneId}" style="padding: 4px 10px;">Session</button>
+                    </div>
+                    <div id="taskTabDetails-${paneId}" data-task-tab-pane="details" style="flex: 1; overflow-y: auto;">
+                        <div id="taskDetailsPanel-${paneId}" style="padding: 8px 4px; font-size: 12px; color: var(--text-secondary);"></div>
+                    </div>
+                    <div id="taskTabComments-${paneId}" data-task-tab-pane="comments" style="display: none; overflow-y: auto;">
+                        <div id="taskComments-${paneId}" style="padding: 8px 4px; font-size: 12px; color: var(--text-secondary);">
+                            <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
                         </div>
                     </div>
-                ` : ''}
+                    <div id="taskTabQuality-${paneId}" data-task-tab-pane="quality" style="display: none; overflow-y: auto;">
+                        <div id="taskQuality-${paneId}" style="padding: 8px 4px; font-size: 12px; color: var(--text-secondary);">
+                            <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
+                        </div>
+                    </div>
+                    <div id="taskTabSession-${paneId}" data-task-tab-pane="session" style="display: none; flex: 1; overflow-y: auto;">
+                        ${hasConversation ? `
+                            <div class="chat-messages" id="taskConversation-${paneId}" style="padding: 0;">
+                                <div class="empty-state" style="padding: 24px;">
+                                    <div class="loading-spinner"></div>
+                                    <p style="font-size: 12px; color: var(--text-muted); margin-top: 8px;">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p>
+                                </div>
+                            </div>
+                        ` : `
+                            <div class="empty-state" style="padding: 24px;">
+                                <p style="font-size: 12px; color: var(--text-muted);">Session view is available after task execution starts.</p>
+                            </div>
+                        `}
+                    </div>
+                </div>
 
                 <div class="task-detail-section" style="flex-shrink: 0; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);">
                     <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -4820,6 +4959,12 @@ class TaskView {
                                 Open Session
                             </button>
                         ` : ''}
+                        <button class="action-btn" data-action="broadcast-task" data-task-id="${task.id}" title="Broadcast to subscribers">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405C18.21 15.21 18 14.702 18 14.172V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.172c0 .53-.21 1.039-.595 1.423L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                            </svg>
+                            Broadcast
+                        </button>
                         <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color: var(--error);">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
@@ -4855,6 +5000,27 @@ class TaskView {
             });
         }
 
+        const broadcastBtn = detailPanel.querySelector('[data-action="broadcast-task"]');
+        if (broadcastBtn) {
+            broadcastBtn.addEventListener('click', async () => {
+                const message = window.prompt('Broadcast message to task subscribers:');
+                if (!message || !message.trim()) return;
+                const globalUserFilter = document.getElementById('globalUserFilter');
+                const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+                try {
+                    const result = await NexusAPI.broadcastTask(task.id, {
+                        message: message.trim(),
+                        sender: 'user',
+                        include_assignee: true,
+                    }, { execUser });
+                    this.app?.showToast?.(`Broadcast sent to ${result.delivered || 0} subscribers`, 'success');
+                } catch (error) {
+                    console.error('Failed to broadcast task message:', error);
+                    this.app?.showToast?.(error.message || 'Failed to broadcast', 'error');
+                }
+            });
+        }
+
         const viewSessionBtn = detailPanel.querySelector('[data-action="view-session"]');
         if (viewSessionBtn) {
             viewSessionBtn.addEventListener('click', () => {
@@ -4866,6 +5032,11 @@ class TaskView {
             });
         }
 
+        this._bindTaskDetailTabs(detailPanel, paneId);
+        this._loadTaskDetailsPanel(paneId, task);
+        this._loadTaskCommentsPanel(paneId, task.id);
+        this._loadTaskQualityPanel(paneId, task.id);
+
         // Load or stream conversation
         if (hasConversation) {
             if (isRunning) {
@@ -4873,6 +5044,300 @@ class TaskView {
             } else {
                 this._loadTaskConversation(paneId, task.id);
             }
+        }
+    }
+
+    _bindTaskDetailTabs(detailPanel, paneId) {
+        const buttons = detailPanel.querySelectorAll('.task-detail-tab');
+        const panes = {
+            details: detailPanel.querySelector(`#taskTabDetails-${paneId}`),
+            comments: detailPanel.querySelector(`#taskTabComments-${paneId}`),
+            quality: detailPanel.querySelector(`#taskTabQuality-${paneId}`),
+            session: detailPanel.querySelector(`#taskTabSession-${paneId}`),
+        };
+
+        buttons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const target = btn.getAttribute('data-task-tab') || 'details';
+                buttons.forEach((b) => b.classList.toggle('active', b === btn));
+                Object.entries(panes).forEach(([key, pane]) => {
+                    if (!pane) return;
+                    pane.style.display = key === target ? '' : 'none';
+                });
+            });
+        });
+    }
+
+    _loadTaskDetailsPanel(paneId, task) {
+        const detailsRoot = document.getElementById(`taskDetailsPanel-${paneId}`);
+        if (!detailsRoot) return;
+
+        const descHtml = this.app?.chatView?.formatMessageContent
+            ? this.app.chatView.formatMessageContent(task.description || '')
+            : this.escapeHtml(task.description || '');
+
+        detailsRoot.innerHTML = `
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:6px 10px;font-size:12px;">
+                <span style="color:var(--text-muted);">Task ID</span><span>${this.escapeHtml(task.id || '')}</span>
+                <span style="color:var(--text-muted);">Status</span><span>${this.escapeHtml(task.status || '')}</span>
+                <span style="color:var(--text-muted);">Priority</span><span>${this.escapeHtml(task.priority || '')}</span>
+                <span style="color:var(--text-muted);">Assignee</span><span>${this.escapeHtml(task.assigned_to || '-')}</span>
+                <span style="color:var(--text-muted);">Source Session</span><span>${this.escapeHtml(task.source_session_id || '-')}</span>
+                <span style="color:var(--text-muted);">Created</span><span>${this.escapeHtml(task.created_at ? new Date(task.created_at).toLocaleString() : '-')}</span>
+                <span style="color:var(--text-muted);">Updated</span><span>${this.escapeHtml(task.updated_at ? new Date(task.updated_at).toLocaleString() : '-')}</span>
+                <span style="color:var(--text-muted);">Depends On</span><span>${Array.isArray(task.depends_on) && task.depends_on.length ? this.escapeHtml(task.depends_on.join(', ')) : '-'}</span>
+            </div>
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Description (Markdown)</div>
+                <div class="message-text">${descHtml}</div>
+            </div>
+        `;
+    }
+
+    _renderTaskCommentNode(comment, depth = 0) {
+        const replies = Array.isArray(comment?.replies) ? comment.replies : [];
+        const margin = Math.min(depth * 14, 42);
+        const rawCommentId = String(comment?.id || '');
+        const domCommentId = rawCommentId.replace(/[^A-Za-z0-9_-]/g, '_');
+        const mentions = Array.isArray(comment?.mentions) && comment.mentions.length
+            ? `<div style="font-size:10px;color:var(--text-muted);margin-top:3px;">Mentions: ${this.escapeHtml(comment.mentions.map((m) => `@${m}`).join(' '))}</div>`
+            : '';
+        return `
+            <div style="margin-left:${margin}px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);display:flex;flex-direction:column;gap:6px;">
+                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+                    <span style="font-size:11px;font-weight:600;color:var(--text-primary);">${this.escapeHtml(comment.author || 'user')}</span>
+                    <span style="font-size:10px;color:var(--text-muted);">${this.formatTime((comment.created_at || 0) * 1000)}</span>
+                </div>
+                <div class="message-text" style="font-size:12px;">${this.app?.chatView?.formatMessageContent ? this.app.chatView.formatMessageContent(comment.content || '') : this.escapeHtml(comment.content || '')}</div>
+                ${mentions}
+                <div style="display:flex;gap:6px;">
+                    <button class="action-btn" data-action="reply-comment" data-comment-id="${this.escapeHtml(rawCommentId)}" data-comment-dom-id="${domCommentId}" style="padding:2px 8px;font-size:11px;">Reply</button>
+                </div>
+                <div id="replyForm-${domCommentId}" style="display:none;gap:6px;">
+                    <textarea id="replyInput-${domCommentId}" class="form-input" rows="2" placeholder="Write a reply... use @name for mentions"></textarea>
+                    <button class="action-btn primary" data-action="submit-reply" data-comment-id="${this.escapeHtml(rawCommentId)}" data-comment-dom-id="${domCommentId}" style="padding:4px 10px;font-size:11px;">Post Reply</button>
+                </div>
+                ${replies.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${replies.map((r) => this._renderTaskCommentNode(r, depth + 1)).join('')}</div>` : ''}
+            </div>
+        `;
+    }
+
+    _getMentionCandidates() {
+        const candidates = [];
+        const agents = this.app?.chatView?.getAvailableAgents ? this.app.chatView.getAvailableAgents('') : [];
+        const usernames = [...new Set((agents || []).map((a) => String(a?.username || '').trim()).filter(Boolean))];
+        const agentNames = [...new Set((agents || []).map((a) => String(a?.agent_type || '').trim()).filter(Boolean))];
+
+        usernames.forEach((username) => {
+            candidates.push({ id: `user:${username}`, label: username, type: 'user' });
+        });
+        agentNames.forEach((agent) => {
+            candidates.push({ id: `agent:${agent}`, label: agent, type: 'agent' });
+        });
+
+        if (typeof window.MentionTextarea === 'function' && typeof window.MentionTextarea.normalizeCandidates === 'function') {
+            return window.MentionTextarea.normalizeCandidates(candidates);
+        }
+        return candidates;
+    }
+
+    async _loadTaskCommentsPanel(paneId, taskId) {
+        const commentsRoot = document.getElementById(`taskComments-${paneId}`);
+        if (!commentsRoot) return;
+
+        const oldMentions = this._mentionInputsByPane[paneId] || [];
+        oldMentions.forEach((instance) => {
+            try { instance.destroy(); } catch {}
+        });
+        this._mentionInputsByPane[paneId] = [];
+
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+        try {
+            const data = await NexusAPI.getTaskComments(taskId, { execUser });
+            const comments = Array.isArray(data?.comments) ? data.comments : [];
+
+            commentsRoot.innerHTML = `
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                    <strong style="font-size:12px;color:var(--text-primary);">Comments</strong>
+                    <span style="font-size:11px;color:var(--text-muted);">${comments.length}</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;margin-bottom:10px;">
+                    ${comments.length ? comments.map((comment) => this._renderTaskCommentNode(comment, 0)).join('') : '<div style="font-size:11px;color:var(--text-muted);">No comments yet.</div>'}
+                </div>
+                <div style="border-top:1px solid var(--border);padding-top:8px;display:grid;gap:6px;">
+                    <label style="font-size:11px;color:var(--text-muted);">New comment</label>
+                    <textarea id="taskCommentInput-${paneId}" class="form-input" rows="3" placeholder="Write a comment... use @name for mentions"></textarea>
+                    <div style="display:flex;gap:6px;justify-content:flex-end;">
+                        <button class="action-btn primary" data-action="submit-comment" style="padding:4px 12px;">Post</button>
+                    </div>
+                </div>
+            `;
+
+            const submitBtn = commentsRoot.querySelector('[data-action="submit-comment"]');
+            if (submitBtn) {
+                submitBtn.addEventListener('click', async () => {
+                    const input = document.getElementById(`taskCommentInput-${paneId}`);
+                    const content = input?.value?.trim() || '';
+                    if (!content) {
+                        this.app?.showToast?.('Comment content is required', 'warning');
+                        return;
+                    }
+                    await NexusAPI.createTaskComment(taskId, { content, author: 'user' }, { execUser });
+                    if (input) input.value = '';
+                    await this._loadTaskCommentsPanel(paneId, taskId);
+                });
+            }
+
+            commentsRoot.querySelectorAll('[data-action="reply-comment"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const domId = btn.getAttribute('data-comment-dom-id') || '';
+                    const form = document.getElementById(`replyForm-${domId}`);
+                    if (!form) return;
+                    form.style.display = form.style.display === 'none' ? 'grid' : 'none';
+                });
+            });
+
+            commentsRoot.querySelectorAll('[data-action="submit-reply"]').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const commentId = btn.getAttribute('data-comment-id') || '';
+                    const domId = btn.getAttribute('data-comment-dom-id') || '';
+                    const input = document.getElementById(`replyInput-${domId}`);
+                    const content = input?.value?.trim() || '';
+                    if (!content) {
+                        this.app?.showToast?.('Reply content is required', 'warning');
+                        return;
+                    }
+                    await NexusAPI.createTaskComment(taskId, { content, author: 'user', parent_id: commentId }, { execUser });
+                    await this._loadTaskCommentsPanel(paneId, taskId);
+                });
+            });
+
+            if (typeof window.MentionTextarea === 'function') {
+                const mentionCandidates = this._getMentionCandidates();
+                const instances = [];
+                const mainInput = document.getElementById(`taskCommentInput-${paneId}`);
+                if (mainInput) {
+                    instances.push(new window.MentionTextarea(mainInput, { candidates: mentionCandidates, maxItems: 8 }));
+                }
+                commentsRoot.querySelectorAll('textarea[id^="replyInput-"]').forEach((textarea) => {
+                    instances.push(new window.MentionTextarea(textarea, { candidates: mentionCandidates, maxItems: 8 }));
+                });
+                this._mentionInputsByPane[paneId] = instances;
+            }
+        } catch (error) {
+            console.error('Failed to load task comments:', error);
+            commentsRoot.innerHTML = `<div style="font-size:12px;color:var(--error);">Failed to load comments</div>`;
+        }
+    }
+
+    async _loadTaskQualityPanel(paneId, taskId) {
+        const qualityRoot = document.getElementById(`taskQuality-${paneId}`);
+        if (!qualityRoot) return;
+
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+        try {
+            const data = await NexusAPI.getTaskQualityReviews(taskId, { execUser });
+            const latest = data?.latest_review;
+            const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
+            qualityRoot.innerHTML = `
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                    <strong style="font-size: 12px; color: var(--text-primary);">Aegis Quality</strong>
+                    <span style="font-size: 11px; color: ${data?.gate_allowed ? 'var(--success)' : 'var(--warning)'};">
+                        ${data?.gate_allowed ? 'Gate Passed' : 'Gate Blocked'}
+                    </span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">
+                    ${this.escapeHtml(data?.gate_reason || '')}
+                </div>
+                ${latest ? `
+                    <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 10px;">
+                        Latest: <strong>${this.escapeHtml(String(latest.status || ''))}</strong>
+                        by ${this.escapeHtml(String(latest.reviewer || 'unknown'))}
+                        · ${this.formatTime((latest.created_at || 0) * 1000)}
+                    </div>
+                ` : '<div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">No reviews yet.</div>'}
+                <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
+                    ${reviews.length ? reviews.map((review) => `
+                        <div style="border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg-secondary);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px;">
+                                <span style="font-size: 11px; font-weight: 600; color: var(--text-primary);">${this.escapeHtml(String(review.status || ''))}</span>
+                                <span style="font-size: 10px; color: var(--text-muted);">${this.formatTime((review.created_at || 0) * 1000)}</span>
+                            </div>
+                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Reviewer: ${this.escapeHtml(String(review.reviewer || 'unknown'))}</div>
+                            ${review.notes ? `<div class="message-text" style="font-size: 11px; color: var(--text-secondary);">${this.app?.chatView?.formatMessageContent ? this.app.chatView.formatMessageContent(String(review.notes)) : this.escapeHtml(String(review.notes))}</div>` : ''}
+                        </div>
+                    `).join('') : '<div style="font-size: 11px; color: var(--text-muted);">No history entries.</div>'}
+                </div>
+                <div style="border-top: 1px solid var(--border); padding-top: 10px; display: grid; gap: 6px;">
+                    <label style="font-size: 11px; color: var(--text-muted);">Reviewer</label>
+                    <input id="qualityReviewer-${paneId}" type="text" class="form-input" value="aegis" placeholder="reviewer">
+                    <label style="font-size: 11px; color: var(--text-muted);">Status</label>
+                    <select id="qualityStatus-${paneId}" class="form-input form-select">
+                        <option value="approved">approved</option>
+                        <option value="needs_changes">needs_changes</option>
+                        <option value="rejected">rejected</option>
+                    </select>
+                    <label style="font-size: 11px; color: var(--text-muted);">Notes (Markdown)</label>
+                    <textarea id="qualityNotes-${paneId}" class="form-input" rows="3" placeholder="Review notes"></textarea>
+                    <div style="display:flex;gap:6px;justify-content:flex-end;">
+                        <button class="action-btn" type="button" data-action="toggle-quality-preview" data-task-id="${taskId}" style="padding:4px 10px;">Preview</button>
+                        <button class="action-btn primary" data-action="submit-quality-review" data-task-id="${taskId}" style="justify-content: center;">Submit Review</button>
+                    </div>
+                    <div id="qualityPreview-${paneId}" style="display:none;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);">
+                        <div class="message-empty">Nothing to preview</div>
+                    </div>
+                </div>
+            `;
+
+            const submitBtn = qualityRoot.querySelector('[data-action="submit-quality-review"]');
+            if (submitBtn) {
+                submitBtn.addEventListener('click', async () => {
+                    await this._submitTaskQualityReview(paneId, taskId);
+                });
+            }
+
+            const previewBtn = qualityRoot.querySelector('[data-action="toggle-quality-preview"]');
+            if (previewBtn) {
+                previewBtn.addEventListener('click', () => {
+                    const preview = document.getElementById(`qualityPreview-${paneId}`);
+                    const notesValue = document.getElementById(`qualityNotes-${paneId}`)?.value || '';
+                    if (!preview) return;
+                    const shouldShow = preview.style.display === 'none';
+                    preview.style.display = shouldShow ? '' : 'none';
+                    if (!shouldShow) return;
+                    const renderer = this.app?.chatView?.markdownRenderer;
+                    if (renderer && typeof renderer.renderPreview === 'function') {
+                        renderer.renderPreview(notesValue, preview);
+                    } else {
+                        preview.innerHTML = `<div class="message-text">${this.app?.chatView?.formatMessageContent ? this.app.chatView.formatMessageContent(notesValue) : this.escapeHtml(notesValue)}</div>`;
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('Failed to load quality reviews:', error);
+            qualityRoot.innerHTML = `<div style="font-size: 12px; color: var(--error);">Failed to load quality reviews</div>`;
+        }
+    }
+
+    async _submitTaskQualityReview(paneId, taskId) {
+        const reviewer = document.getElementById(`qualityReviewer-${paneId}`)?.value?.trim() || 'aegis';
+        const status = document.getElementById(`qualityStatus-${paneId}`)?.value || 'approved';
+        const notes = document.getElementById(`qualityNotes-${paneId}`)?.value?.trim() || '';
+        const globalUserFilter = document.getElementById('globalUserFilter');
+        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+
+        try {
+            await NexusAPI.submitTaskQualityReview(taskId, { reviewer, status, notes }, { execUser });
+            this.app?.showToast?.('Quality review submitted', 'success');
+            await this.loadTasks(paneId);
+            await this.showTaskDetail(paneId, taskId);
+        } catch (error) {
+            console.error('Failed to submit quality review:', error);
+            this.app?.showToast?.(error.message || 'Failed to submit quality review', 'error');
         }
     }
 
@@ -6733,6 +7198,467 @@ class GlobalSearch {
 }
 
 // ============================================================
+// Plan Mode UI Components
+// ============================================================
+
+class PlanModeIndicator {
+    /** Top-bar indicator showing plan mode status */
+    constructor(app) {
+        this.app = app;
+        this.el = document.getElementById('planModeIndicator');
+        this.statusEl = document.getElementById('planModeStatus');
+        this.viewBtn = document.getElementById('planModeViewBtn');
+        this.exitBtn = document.getElementById('planModeExitBtn');
+        this._visible = false;
+        this._bindEvents();
+    }
+
+    _bindEvents() {
+        this.viewBtn?.addEventListener('click', () => this.app.planModePanel.toggle());
+        this.exitBtn?.addEventListener('click', async () => {
+            await this.app.planModeManager.exitPlanMode();
+        });
+    }
+
+    show(status = 'Exploring') {
+        this._visible = true;
+        if (this.el) this.el.style.display = 'inline-flex';
+        this.setStatus(status);
+    }
+
+    hide() {
+        this._visible = false;
+        if (this.el) this.el.style.display = 'none';
+    }
+
+    setStatus(status) {
+        if (this.statusEl) this.statusEl.textContent = `— ${status}`;
+    }
+
+    get visible() { return this._visible; }
+}
+
+class PlanEditor {
+    /** Plan content editor panel */
+    constructor(app) {
+        this.app = app;
+        this.container = document.getElementById('planEditorContainer');
+        this.textarea = document.getElementById('planEditor');
+        this.submitBtn = document.getElementById('planSubmitBtn');
+        this._bindEvents();
+    }
+
+    _bindEvents() {
+        this.submitBtn?.addEventListener('click', async () => {
+            const content = this.textarea?.value?.trim();
+            if (!content) return;
+            await this.app.planModeManager.submitPlan(content);
+        });
+    }
+
+    show() {
+        if (this.container) this.container.style.display = 'block';
+        if (this.textarea) this.textarea.focus();
+    }
+
+    hide() {
+        if (this.container) this.container.style.display = 'none';
+    }
+
+    clear() {
+        if (this.textarea) this.textarea.value = '';
+    }
+}
+
+class PlanApprovalWidget {
+    /** Approval/rejection buttons with plan content display */
+    constructor(app) {
+        this.app = app;
+        this.container = document.getElementById('planApprovalContainer');
+        this.contentDisplay = document.getElementById('planContentDisplay');
+        this.approveBtn = document.getElementById('planApproveBtn');
+        this.rejectBtn = document.getElementById('planRejectBtn');
+        this._bindEvents();
+    }
+
+    _bindEvents() {
+        this.approveBtn?.addEventListener('click', async () => {
+            await this.app.planModeManager.approvePlan();
+        });
+        this.rejectBtn?.addEventListener('click', async () => {
+            await this.app.planModeManager.rejectPlan();
+        });
+    }
+
+    show(content) {
+        if (this.container) this.container.style.display = 'block';
+        if (this.contentDisplay) this.contentDisplay.textContent = content;
+    }
+
+    hide() {
+        if (this.container) this.container.style.display = 'none';
+    }
+}
+
+class PlanModePanel {
+    /** Dropdown panel for plan editing/approval */
+    constructor(app) {
+        this.app = app;
+        this.el = document.getElementById('planModePanel');
+        this.closeBtn = document.getElementById('planPanelCloseBtn');
+        this._visible = false;
+        this._bindEvents();
+    }
+
+    _bindEvents() {
+        this.closeBtn?.addEventListener('click', () => this.hide());
+        // Close on click outside
+        document.addEventListener('click', (e) => {
+            if (this._visible && this.el && !this.el.contains(e.target) &&
+                !document.getElementById('planModeViewBtn')?.contains(e.target)) {
+                this.hide();
+            }
+        });
+    }
+
+    toggle() {
+        this._visible ? this.hide() : this.show();
+    }
+
+    show() {
+        this._visible = true;
+        if (this.el) this.el.style.display = 'block';
+    }
+
+    hide() {
+        this._visible = false;
+        if (this.el) this.el.style.display = 'none';
+    }
+
+    get visible() { return this._visible; }
+}
+
+class PlanModeManager {
+    /** Manages plan mode state and API interactions */
+    constructor(app) {
+        this.app = app;
+        this.indicator = new PlanModeIndicator(app);
+        this.editor = new PlanEditor(app);
+        this.approval = new PlanApprovalWidget(app);
+        this.panel = new PlanModePanel(app);
+        this._planMode = false;
+        this._planContent = null;
+    }
+
+    async enterPlanMode() {
+        try {
+            const resp = await fetch('/api/nexus/plan/enter', { method: 'POST' });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Failed to enter plan mode');
+            }
+            this._planMode = true;
+            this._planContent = null;
+            this.indicator.show('Exploring');
+            this.editor.show();
+            this.approval.hide();
+            this.panel.show();
+        } catch (e) {
+            console.error('Enter plan mode failed:', e);
+            alert(e.message);
+        }
+    }
+
+    async submitPlan(content) {
+        try {
+            const resp = await fetch('/api/nexus/plan/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content }),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Failed to submit plan');
+            }
+            this._planContent = content;
+            this.indicator.setStatus('Awaiting Approval');
+            this.editor.hide();
+            this.approval.show(content);
+        } catch (e) {
+            console.error('Submit plan failed:', e);
+            alert(e.message);
+        }
+    }
+
+    async approvePlan() {
+        try {
+            const resp = await fetch('/api/nexus/plan/approve', { method: 'POST' });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Failed to approve plan');
+            }
+            this._planMode = false;
+            this._planContent = null;
+            this.indicator.hide();
+            this.panel.hide();
+            this.editor.clear();
+        } catch (e) {
+            console.error('Approve plan failed:', e);
+            alert(e.message);
+        }
+    }
+
+    async rejectPlan() {
+        try {
+            const resp = await fetch('/api/nexus/plan/reject', { method: 'POST' });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Failed to reject plan');
+            }
+            this._planContent = null;
+            this.indicator.setStatus('Exploring');
+            this.approval.hide();
+            this.editor.clear();
+            this.editor.show();
+        } catch (e) {
+            console.error('Reject plan failed:', e);
+            alert(e.message);
+        }
+    }
+
+    async exitPlanMode() {
+        try {
+            const resp = await fetch('/api/nexus/plan/exit', { method: 'POST' });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                throw new Error(err.detail || 'Failed to exit plan mode');
+            }
+            this._planMode = false;
+            this._planContent = null;
+            this.indicator.hide();
+            this.panel.hide();
+            this.editor.clear();
+        } catch (e) {
+            console.error('Exit plan mode failed:', e);
+            alert(e.message);
+        }
+    }
+
+    async refreshStatus() {
+        try {
+            const resp = await fetch('/api/nexus/plan/status');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            this._planMode = data.plan_mode;
+            this._planContent = data.plan_content;
+            if (this._planMode) {
+                if (this._planContent) {
+                    this.indicator.show('Awaiting Approval');
+                    this.editor.hide();
+                    this.approval.show(this._planContent);
+                } else {
+                    this.indicator.show('Exploring');
+                    this.editor.show();
+                    this.approval.hide();
+                }
+            } else {
+                this.indicator.hide();
+            }
+        } catch (e) {
+            console.debug('Plan status refresh failed:', e);
+        }
+    }
+
+    get isPlanMode() { return this._planMode; }
+}
+
+// ============================================================
+// Panel Layout Manager — Sidebar + content for 32 feature panels
+// ============================================================
+class PanelLayoutManager {
+    constructor(app) {
+        this.app = app;
+        this.registry = window.PanelRegistry;
+        this._activePanelId = null;
+        this._container = null;
+        this._initialized = false;
+    }
+
+    /** Mount the panel layout into the panels view container. */
+    mount(container) {
+        this._container = container;
+        if (!this._initialized) {
+            this._buildLayout();
+            this._initialized = true;
+        }
+        this._renderSidebar();
+        // Restore last active panel or show first
+        const last = localStorage.getItem('nexus-active-panel');
+        if (last && this.registry.getDef(last)) {
+            this.showPanel(last);
+        } else {
+            const first = this.registry.getAllDefs()[0];
+            if (first) this.showPanel(first.id);
+        }
+    }
+
+    /** Show a specific panel by id (lazy-loads if needed). */
+    async showPanel(panelId) {
+        this._activePanelId = panelId;
+        localStorage.setItem('nexus-active-panel', panelId);
+        this._updateSidebarActive();
+
+        const content = this._container?.querySelector('.panel-content');
+        if (!content) return;
+
+        content.innerHTML = '<div class="panel-loading"><div class="spinner"></div><span>Loading…</span></div>';
+
+        try {
+            const panel = await this.registry.create(panelId);
+            panel.render(content);
+
+            // Wire up real-time events
+            if (this.app.realtimeHub) {
+                this.app.realtimeHub.off('*', this._onRealtimeEvent);
+                this.app.realtimeHub.on('*', this._onRealtimeEvent = (msg) => {
+                    panel.onRealtimeEvent(msg.type, msg.payload);
+                });
+            }
+        } catch (e) {
+            console.error('PanelLayoutManager: failed to create panel', panelId, e);
+            content.innerHTML = `<div class="panel-error"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>Failed to load panel: ${e.message}</span></div>`;
+        }
+    }
+
+    /** Build the grid layout with sidebar + content area. */
+    _buildLayout() {
+        if (!this._container) return;
+        this._container.innerHTML = `
+            <div class="panel-grid-layout">
+                <nav class="panel-sidebar"></nav>
+                <div class="panel-main">
+                    <div class="panel-content"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    /** Render sidebar items grouped by category. */
+    _renderSidebar() {
+        const sidebar = this._container?.querySelector('.panel-sidebar');
+        if (!sidebar) return;
+
+        const groups = this.registry.getDefsByCategory();
+        const categoryLabels = {
+            agent: 'Agent', task: 'Task', skill: 'Skill', scheduler: 'Scheduler',
+            activity: 'Activity', memory: 'Memory', security: 'Security',
+            integration: 'Integration', admin: 'Admin', general: 'General',
+        };
+
+        sidebar.innerHTML = Object.entries(groups).map(([cat, defs]) => `
+            <div class="panel-sidebar-section">
+                <div class="panel-sidebar-title">${categoryLabels[cat] || cat}</div>
+                ${defs.map(d => `
+                    <div class="panel-sidebar-item ${d.id === this._activePanelId ? 'active' : ''}" data-panel-id="${d.id}">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${d.icon || 'M4 6h16M4 12h16M4 18h16'}"/>
+                        </svg>
+                        <span>${d.title}</span>
+                    </div>
+                `).join('')}
+            </div>
+        `).join('');
+
+        // Bind clicks
+        sidebar.querySelectorAll('.panel-sidebar-item').forEach(el => {
+            el.addEventListener('click', () => {
+                this.showPanel(el.dataset.panelId);
+            });
+        });
+    }
+
+    /** Update active class on sidebar items without full re-render. */
+    _updateSidebarActive() {
+        const sidebar = this._container?.querySelector('.panel-sidebar');
+        if (!sidebar) return;
+        sidebar.querySelectorAll('.panel-sidebar-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.panelId === this._activePanelId);
+        });
+    }
+}
+
+// ============================================================
+// Real-time Hub — Unified entry point for WS/SSE → Panel dispatch
+// ============================================================
+class RealtimeHub {
+    constructor() {
+        this._handlers = new Map();
+        this._ws = null;
+        this._sse = null;
+        this._started = false;
+    }
+
+    start() {
+        if (this._started) return;
+        this._started = true;
+
+        // Prefer WebSocket, fall back to SSE
+        if (window.WebSocketManager) {
+            try {
+                this._ws = new WebSocketManager('/api/nexus/ws');
+                this._ws.on('*', (msg) => this._dispatch(msg.type || 'unknown', msg.payload || msg));
+                this._ws.connect();
+                return;
+            } catch (e) {
+                console.warn('RealtimeHub: WebSocket unavailable, falling back to SSE', e);
+            }
+        }
+
+        if (window.SSEHandler) {
+            this._sse = new SSEHandler('/api/nexus/events');
+            this._sse.on('*', (msg) => this._dispatch(msg.type || 'unknown', msg.payload || msg));
+            this._sse.connect();
+        }
+    }
+
+    stop() {
+        if (this._ws) { this._ws.destroy(); this._ws = null; }
+        if (this._sse) { this._sse.destroy(); this._sse = null; }
+        this._started = false;
+    }
+
+    on(eventType, handler) {
+        if (!this._handlers.has(eventType)) this._handlers.set(eventType, []);
+        this._handlers.get(eventType).push(handler);
+        return () => this.off(eventType, handler);
+    }
+
+    off(eventType, handler) {
+        const list = this._handlers.get(eventType);
+        if (list) {
+            const idx = list.indexOf(handler);
+            if (idx !== -1) list.splice(idx, 1);
+        }
+    }
+
+    _dispatch(eventType, payload) {
+        const handlers = this._handlers.get(eventType);
+        if (handlers) {
+            for (const fn of handlers) {
+                try { fn(payload); } catch (e) { console.error('RealtimeHub handler error:', e); }
+            }
+        }
+        // Also dispatch to wildcard
+        const wildcardHandlers = this._handlers.get('*');
+        if (wildcardHandlers) {
+            for (const fn of wildcardHandlers) {
+                try { fn({ type: eventType, payload }); } catch (e) { console.error('RealtimeHub handler error:', e); }
+            }
+        }
+    }
+}
+
+// ============================================================
 // Main Application
 // ============================================================
 class NexusApp {
@@ -6746,6 +7672,13 @@ class NexusApp {
         this.adminView = new AdminView(this);
         this.settingsView = new SettingsView(this);
         this.globalSearch = new GlobalSearch(this);
+        this.planModeManager = new PlanModeManager(this);
+        this.planModePanel = this.planModeManager.panel;
+        this.planModeIndicator = this.planModeManager.indicator;
+        this.planModeEditor = this.planModeManager.editor;
+        this.planModeApproval = this.planModeManager.approval;
+        this.panelLayoutManager = new PanelLayoutManager(this);
+        this.realtimeHub = new RealtimeHub();
         this.pageManager = new PageManager(this);
         this.availableAgents = [];
         this.customProviders = this.loadCustomProviders();
@@ -7010,16 +7943,47 @@ class NexusApp {
         // Bind global events
         this.bindEvents();
 
+        // Start real-time hub (WebSocket/SSE)
+        this.realtimeHub.start();
+
         // Trigger initial rendering for the current page (after refresh)
         const currentPage = this.pageManager.currentPage;
         if (currentPage === 'task' && this.taskView) {
             this.taskView.renderFullPage();
         } else if (currentPage === 'settings' && this.settingsView) {
             this.settingsView.refresh();
+        } else if (currentPage === 'panels') {
+            this.mountPanelsView();
         }
 
         // Start auto-refresh for session list and active messages
         this.chatView.startAutoRefresh();
+
+        // Check plan mode status on load
+        this.planModeManager.refreshStatus();
+    }
+
+    /**
+     * Mount the Panels view — lazy-creates container and delegates to PanelLayoutManager.
+     */
+    mountPanelsView() {
+        let container = document.getElementById('panelsView');
+        if (!container) {
+            // Create panels view container and insert it alongside other page views
+            container = document.createElement('div');
+            container.id = 'panelsView';
+            container.style.display = 'none';
+            // Insert after taskView
+            const taskView = document.getElementById('taskView');
+            if (taskView && taskView.parentNode) {
+                taskView.parentNode.insertBefore(container, taskView.nextSibling);
+            } else {
+                const appEl = document.getElementById('app');
+                if (appEl) appEl.appendChild(container);
+            }
+        }
+        container.style.display = '';
+        this.panelLayoutManager.mount(container);
     }
 
     /**
@@ -7143,6 +8107,11 @@ class NexusApp {
         const submitBtn = document.getElementById('submitTaskBtn');
         if (submitBtn) {
             submitBtn.addEventListener('click', () => this.submitTask());
+        }
+
+        const scheduleParseBtn = document.getElementById('scheduleNaturalParseBtn');
+        if (scheduleParseBtn) {
+            scheduleParseBtn.addEventListener('click', () => this.parseScheduleNaturalLanguage());
         }
 
         // Confirm delete button
@@ -7305,6 +8274,9 @@ class NexusApp {
                 ? currentModel
                 : (optionValues.includes(defaultPref) ? defaultPref : (optionValues[0] || 'claude'));
             modelSelect.value = selected;
+            this._loadTaskSourceSessionOptions(resolvedUser).catch(err => {
+                console.warn('Failed to refresh source sessions:', err);
+            });
         };
 
         updateSelectors('taskUser', 'taskProvider');
@@ -7325,6 +8297,11 @@ class NexusApp {
         if (taskWorkspace) taskWorkspace.value = '';
         const taskDependsOn = document.getElementById('taskDependsOn');
         if (taskDependsOn) taskDependsOn.value = '';
+        const taskSourceSession = document.getElementById('taskSourceSession');
+        if (taskSourceSession) {
+            taskSourceSession.innerHTML = '<option value="">None (new task session)</option>';
+            taskSourceSession.value = '';
+        }
 
         // Reset loop fields
         const normalRadio = document.querySelector('input[name="loopMode"][value="normal"]');
@@ -7357,6 +8334,13 @@ class NexusApp {
         if (scheduleTimezone) scheduleTimezone.value = 'UTC';
         const scheduleMaxRuns = document.getElementById('scheduleMaxRuns');
         if (scheduleMaxRuns) scheduleMaxRuns.value = '';
+        const scheduleNaturalInput = document.getElementById('scheduleNaturalInput');
+        if (scheduleNaturalInput) scheduleNaturalInput.value = '';
+        const scheduleNaturalResult = document.getElementById('scheduleNaturalResult');
+        if (scheduleNaturalResult) {
+            scheduleNaturalResult.textContent = '';
+            scheduleNaturalResult.style.color = 'var(--text-muted)';
+        }
 
         // Reset submit button text
         this._updateSubmitButtonText();
@@ -7407,6 +8391,9 @@ class NexusApp {
                 const optionValues = Array.from(modelSelect.options).map(opt => opt.value);
                 const selected = optionValues.includes(defaultModel) ? defaultModel : (optionValues[0] || 'claude');
                 modelSelect.value = selected;
+                this._loadTaskSourceSessionOptions(user).catch(err => {
+                    console.warn('Failed to load source sessions:', err);
+                });
             };
 
             if (userSelect) {
@@ -7425,6 +8412,87 @@ class NexusApp {
         setupAgentSelectors('taskUser', 'taskProvider');
 
         modal.classList.add('open');
+    }
+
+    async _loadTaskSourceSessionOptions(username) {
+        const sourceSelect = document.getElementById('taskSourceSession');
+        if (!sourceSelect) return;
+
+        const selected = sourceSelect.value || '';
+        sourceSelect.innerHTML = '<option value="">None (new task session)</option>';
+
+        try {
+            const data = await NexusAPI.getSessions({
+                username: username || undefined,
+                page: 1,
+                pageSize: 100,
+            });
+            const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+            sessions.forEach((session) => {
+                const sid = session?.id || '';
+                if (!sid) return;
+                const title = session?.title || sid;
+                const label = `${title} (${sid.slice(0, 8)})`;
+                sourceSelect.insertAdjacentHTML(
+                    'beforeend',
+                    `<option value="${this.chatView.escapeHtml(sid)}">${this.chatView.escapeHtml(label)}</option>`,
+                );
+            });
+            if (selected && sessions.some((s) => (s?.id || '') === selected)) {
+                sourceSelect.value = selected;
+            }
+        } catch (error) {
+            console.warn('Unable to load task source sessions', error);
+        }
+    }
+
+    async parseScheduleNaturalLanguage() {
+        const inputEl = document.getElementById('scheduleNaturalInput');
+        const resultEl = document.getElementById('scheduleNaturalResult');
+        const input = inputEl?.value?.trim();
+
+        if (!input) {
+            if (resultEl) {
+                resultEl.textContent = 'Enter a natural-language schedule first.';
+                resultEl.style.color = 'var(--warning)';
+            }
+            return;
+        }
+
+        try {
+            const parsed = await NexusAPI.parseSchedule(input);
+            const cronExpr = parsed?.cronExpr || parsed?.cron_expr;
+            const humanReadable = parsed?.humanReadable || parsed?.human_readable || '';
+
+            if (!cronExpr) {
+                if (resultEl) {
+                    resultEl.textContent = parsed?.error || 'Could not parse schedule expression.';
+                    resultEl.style.color = 'var(--error)';
+                }
+                return;
+            }
+
+            const cronInput = document.getElementById('scheduleCron');
+            if (cronInput) cronInput.value = cronExpr;
+
+            const cronRadio = document.querySelector('input[name="triggerMode"][value="cron"]');
+            if (cronRadio) {
+                cronRadio.checked = true;
+                cronRadio.dispatchEvent(new Event('change'));
+            }
+
+            if (resultEl) {
+                resultEl.textContent = humanReadable
+                    ? `${humanReadable} → ${cronExpr}`
+                    : `Parsed cron: ${cronExpr}`;
+                resultEl.style.color = 'var(--success)';
+            }
+        } catch (error) {
+            if (resultEl) {
+                resultEl.textContent = error.message || 'Failed to parse schedule expression.';
+                resultEl.style.color = 'var(--error)';
+            }
+        }
     }
 
     /** Update submit button text based on trigger mode */
@@ -7528,12 +8596,15 @@ class NexusApp {
             throw new Error('Description is required');
         }
 
+        const sourceSessionId = document.getElementById('taskSourceSession')?.value?.trim();
+
         const payload = {
             description,
             provider: selectedProvider,
             alias: aliasValue,
             model: this.resolveTaskModel(selectedProvider, aliasValue, llmModel),
             workspace: workspace || undefined,
+            source_session_id: sourceSessionId || undefined,
             depends_on: dependsOnStr ? dependsOnStr.split(',').map(s => s.trim()).filter(Boolean) : undefined,
             ...(loopConfig || {}),
         };

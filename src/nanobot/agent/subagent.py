@@ -47,6 +47,9 @@ class SubagentManager:
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
 
+        # Swarm team management
+        self._teams: dict[str, dict] = {}  # team_name -> {team_file, mailbox, coordinator, agents}
+
     async def spawn(
         self,
         task: str,
@@ -239,3 +242,183 @@ Tools like 'read_file' and 'web_fetch' can return native image content. Read vis
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
+
+    # -------------------------------------------------------------------------
+    # Swarm team management
+    # -------------------------------------------------------------------------
+
+    async def spawn_team(self, team_config: dict) -> str:
+        """Spawn a team of agents from a configuration dict.
+
+        Expected keys in *team_config*:
+          - name (str): Team name.
+          - lead (dict): {"name", "capabilities", "task"} for the lead agent.
+          - workers (list[dict]): Each with {"name", "capabilities", "task"}.
+
+        Returns a summary string.
+        """
+        from src.nanobot.swarm import TeamFile, TeamMember, SwarmMailbox, SwarmCoordinator
+
+        team_name = team_config["name"]
+        lead_cfg = team_config.get("lead", {})
+        worker_cfgs = team_config.get("workers", [])
+
+        # Create TeamFile
+        team_file = TeamFile(team_name=team_name, base_dir=self.workspace)
+
+        # Add lead member
+        lead_name = lead_cfg.get("name", "lead")
+        lead_member = TeamMember(
+            name=lead_name,
+            role="lead",
+            status="idle",
+            agent_id=f"agent-{uuid.uuid4().hex[:12]}",
+            capabilities=lead_cfg.get("capabilities", []),
+        )
+        team_file.add_member(lead_member)
+
+        # Add worker members
+        for wc in worker_cfgs:
+            worker_name = wc.get("name", f"worker-{uuid.uuid4().hex[:4]}")
+            worker_member = TeamMember(
+                name=worker_name,
+                role="worker",
+                status="idle",
+                agent_id=f"agent-{uuid.uuid4().hex[:12]}",
+                capabilities=wc.get("capabilities", []),
+            )
+            team_file.add_member(worker_member)
+
+        # Create mailbox and coordinator
+        mailbox = SwarmMailbox(team_name=team_name, base_dir=self.workspace)
+        coordinator = SwarmCoordinator(team_file=team_file, mailbox=mailbox)
+
+        # Spawn background tasks for each agent
+        agent_tasks: dict[str, str] = {}  # member_name -> subagent_task_id
+        all_cfgs = [("lead", lead_cfg)] + [("worker", wc) for wc in worker_cfgs]
+
+        for role, cfg in all_cfgs:
+            member = team_file.get_member(cfg.get("name", ""))
+            if not member:
+                continue
+            task_desc = cfg.get("task", f"Swarm team '{team_name}' {role}: {member.name}")
+            task_id = str(uuid.uuid4())[:8]
+
+            bg_task = asyncio.create_task(
+                self._run_subagent(
+                    task_id,
+                    task_desc,
+                    f"{team_name}/{member.name}",
+                    {"channel": "swarm", "chat_id": team_name},
+                )
+            )
+            self._running_tasks[task_id] = bg_task
+            agent_tasks[member.name] = task_id
+            logger.info("Spawned team agent [{}] {}: {}", task_id, member.name, role)
+
+        # Store team handle
+        self._teams[team_name] = {
+            "team_file": team_file,
+            "mailbox": mailbox,
+            "coordinator": coordinator,
+            "agent_tasks": agent_tasks,
+        }
+
+        return (
+            f"Team '{team_name}' spawned with {len(agent_tasks)} agents: "
+            f"{', '.join(agent_tasks.keys())}"
+        )
+
+    def get_team_status(self, team_name: str) -> dict:
+        """Return the current status of a team."""
+        handle = self._teams.get(team_name)
+        if not handle:
+            return {"error": f"Team not found: {team_name}"}
+
+        tf: TeamFile = handle["team_file"]
+        coordinator: SwarmCoordinator = handle["coordinator"]
+        mailbox: SwarmMailbox = handle["mailbox"]
+
+        members_status = []
+        for m in tf.members:
+            members_status.append({
+                "name": m.name,
+                "role": m.role,
+                "status": m.status,
+                "agent_id": m.agent_id,
+                "capabilities": m.capabilities,
+                "unread_mail": mailbox.get_unread_count(m.name),
+                "tasks": [e["task_id"] for e in coordinator.get_agent_tasks(m.name)],
+            })
+
+        return {
+            "team_name": tf.team_name,
+            "members": members_status,
+            "shared_state": tf.shared_state,
+            "task_assignments": tf.task_assignments,
+            "available_tasks": coordinator.get_available_tasks(),
+            "running_agents": [
+                tid for tid in handle["agent_tasks"].values()
+                if tid in self._running_tasks and not self._running_tasks[tid].done()
+            ],
+        }
+
+    async def shutdown_team(self, team_name: str, graceful: bool = True) -> str:
+        """Shut down a team.
+
+        If *graceful* is True, each agent's shutdown request goes through
+        the coordinator negotiation.  Otherwise, all agent tasks are
+        cancelled immediately.
+        """
+        handle = self._teams.get(team_name)
+        if not handle:
+            return f"Team not found: {team_name}"
+
+        coordinator: SwarmCoordinator = handle["coordinator"]
+        agent_tasks: dict[str, str] = handle["agent_tasks"]
+
+        if graceful:
+            # Request shutdown for each member
+            for member_name in agent_tasks:
+                coordinator.request_shutdown(member_name)
+                coordinator.approve_shutdown(member_name, "system")
+
+        # Cancel all running agent tasks
+        cancelled = 0
+        for name, tid in agent_tasks.items():
+            task = self._running_tasks.get(tid)
+            if task and not task.done():
+                task.cancel()
+                cancelled += 1
+
+        # Wait for cancellations
+        if cancelled:
+            await asyncio.gather(
+                *(
+                    self._running_tasks[tid]
+                    for tid in agent_tasks.values()
+                    if tid in self._running_tasks
+                ),
+                return_exceptions=True,
+            )
+
+        # Clean up
+        self._teams.pop(team_name, None)
+        logger.info("Team '{}' shut down (cancelled {} agents)", team_name, cancelled)
+        return f"Team '{team_name}' shut down. Cancelled {cancelled} agents."
+
+
+# Global singleton accessor
+
+_manager: SubagentManager | None = None
+
+
+def set_subagent_manager(manager: SubagentManager) -> None:
+    """Set the global SubagentManager instance."""
+    global _manager
+    _manager = manager
+
+
+def get_subagent_manager() -> SubagentManager | None:
+    """Get the global SubagentManager instance, or None if not set."""
+    return _manager

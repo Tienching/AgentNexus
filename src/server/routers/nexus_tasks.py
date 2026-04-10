@@ -32,6 +32,8 @@ from ..models import (
 )
 from ..services.user_directory import UserDirectoryManager
 from src.runtime.commands.slash.handler import slugify_project
+from src.core.quality.gates import ReviewStatus, get_quality_gate
+from src.core.notifications.broadcast import broadcast_to_recipients, normalize_recipients
 from ..providers import get_provider_registry
 from ..services.session_storage import get_session_storage
 from ..logger import get_logger
@@ -47,6 +49,7 @@ from .nexus_models import (
     BulkCreateTaskRequest,
     BulkCreateTaskResponse,
     UpdateTaskStatusRequest,
+    RequeueOrphanTaskRequest,
     UpdateTaskOutcomeRequest,
     TaskOutcomesResponse,
     TaskOutcomeSummary,
@@ -56,9 +59,15 @@ from .nexus_models import (
     TaskComment,
     TaskCommentsResponse,
     CreateCommentRequest,
+    QualityReviewItem,
+    TaskQualityReviewsResponse,
+    SubmitQualityReviewRequest,
+    BroadcastTaskRequest,
+    BroadcastTaskResponse,
     get_task_queue,
     normalize_task_status,
     task_to_item,
+    extract_mentions,
 )
 
 logger = get_logger(__name__)
@@ -215,11 +224,31 @@ async def list_tasks(
         search=search,
     )
 
+    quality_gate = get_quality_gate()
+    task_ids = [str(t.id) for t in tasks]
+    latest_reviews = quality_gate.get_latest_by_tasks(task_ids, workspace_id=1) if task_ids else {}
+
+    enriched_items: List[TaskItem] = []
+    for t in tasks:
+        latest = latest_reviews.get(str(t.id))
+        status_obj = getattr(latest, "status", None) if latest is not None else None
+        status_value = status_obj.value if hasattr(status_obj, "value") else (str(status_obj) if status_obj else None)
+        gate_allowed = status_value == ReviewStatus.APPROVED.value if status_value else False
+        gate_reason = "Quality review approved" if gate_allowed else (f"Latest quality review status: {status_value}" if status_value else "No quality review found")
+        enriched_items.append(
+            task_to_item(
+                t,
+                latest_quality_review=latest,
+                gate_allowed=gate_allowed,
+                gate_reason=gate_reason,
+            )
+        )
+
     return TaskListResponse(
         total=total,
         page=page,
         page_size=page_size,
-        tasks=[task_to_item(t) for t in tasks],
+        tasks=enriched_items,
     )
 
 
@@ -230,7 +259,14 @@ async def get_task(task_id: str, exec_user: str = Query(settings.exec_user, desc
     task = queue.get_task(task_id)
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
-    return task_to_item(task)
+
+    decision = get_quality_gate().check_completion_gate(task_id=str(task_id), workspace_id=1)
+    return task_to_item(
+        task,
+        latest_quality_review=decision.latest_review,
+        gate_allowed=decision.allowed,
+        gate_reason=decision.reason,
+    )
 
 
 @router.post("/tasks", response_model=TaskItem)
@@ -452,6 +488,25 @@ async def update_task_status(
         raise HTTPException(status_code=500, detail="Failed to update task status")
 
     return task_to_item(updated_task)
+
+
+@router.post("/tasks/{task_id}/requeue-orphan", response_model=TaskItem)
+async def requeue_orphan_task(
+    task_id: str,
+    request: RequeueOrphanTaskRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Requeue a task that was marked orphaned in runtime layer."""
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    updated = queue.requeue_orphan_task(task_id, reason=request.reason)
+    if not updated:
+        raise HTTPException(status_code=400, detail=f"Task {task_id} is not marked as orphaned")
+
+    return task_to_item(updated)
 
 
 # ============ Task Outcome API ============
@@ -866,6 +921,132 @@ async def get_task_agui_messages(
     return event.model_dump(exclude_none=True)
 
 
+def _to_quality_review_item(review) -> QualityReviewItem:
+    status_obj = getattr(review, "status", None)
+    status_value = status_obj.value if hasattr(status_obj, "value") else str(status_obj or "")
+    return QualityReviewItem(
+        id=int(getattr(review, "id", 0) or 0),
+        task_id=str(getattr(review, "task_id", "") or ""),
+        reviewer=str(getattr(review, "reviewer", "") or ""),
+        status=status_value,
+        notes=str(getattr(review, "notes", "") or ""),
+        created_at=float(getattr(review, "created_at", 0) or 0),
+    )
+
+
+@router.get("/tasks/{task_id}/quality-reviews", response_model=TaskQualityReviewsResponse)
+async def get_task_quality_reviews(
+    task_id: str,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Get Aegis quality review history and current gate result for a task."""
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    gate = get_quality_gate()
+    reviews = gate.get_reviews(task_id=str(task_id), workspace_id=1, limit=20)
+    decision = gate.check_completion_gate(task_id=str(task_id), workspace_id=1)
+
+    return TaskQualityReviewsResponse(
+        task_id=str(task_id),
+        gate_allowed=bool(decision.allowed),
+        gate_reason=decision.reason,
+        latest_review=_to_quality_review_item(decision.latest_review) if decision.latest_review else None,
+        reviews=[_to_quality_review_item(r) for r in reviews],
+    )
+
+
+@router.post("/tasks/{task_id}/quality-reviews", response_model=TaskQualityReviewsResponse)
+async def submit_task_quality_review(
+    task_id: str,
+    request: SubmitQualityReviewRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Submit Aegis quality review and return updated quality history."""
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    reviewer = (request.reviewer or "").strip() or "aegis"
+    status_raw = (request.status or "").strip().lower()
+    notes = (request.notes or "").strip()
+
+    try:
+        review_status = ReviewStatus(status_raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid review status. Use approved/rejected/needs_changes")
+
+    gate = get_quality_gate()
+    gate.submit_review(
+        task_id=str(task_id),
+        reviewer=reviewer,
+        status=review_status,
+        notes=notes,
+        workspace_id=1,
+    )
+
+    reviews = gate.get_reviews(task_id=str(task_id), workspace_id=1, limit=20)
+    decision = gate.check_completion_gate(task_id=str(task_id), workspace_id=1)
+
+    return TaskQualityReviewsResponse(
+        task_id=str(task_id),
+        gate_allowed=bool(decision.allowed),
+        gate_reason=decision.reason,
+        latest_review=_to_quality_review_item(decision.latest_review) if decision.latest_review else None,
+        reviews=[_to_quality_review_item(r) for r in reviews],
+    )
+
+
+@router.post("/tasks/{task_id}/broadcast", response_model=BroadcastTaskResponse)
+async def broadcast_task_message(
+    task_id: str,
+    request: BroadcastTaskRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Broadcast one message to all detected task subscribers."""
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    message = (request.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    sender = (request.sender or "").strip() or "user"
+    recipients_raw: List[str] = []
+
+    if bool(request.include_assignee) and getattr(task, "assigned_to", None):
+        recipients_raw.append(str(getattr(task, "assigned_to", "") or ""))
+
+    # Include task owner exec_user as fallback subscriber
+    if getattr(task, "exec_user", None):
+        recipients_raw.append(str(getattr(task, "exec_user", "") or ""))
+
+    # Collect subscribers from comment authors + mentions
+    try:
+        redis = queue._redis
+        comment_ids = redis.zrange(_comments_index_key(exec_user, task_id), 0, -1)
+        for cid in comment_ids:
+            comment = _load_comment(redis, exec_user, task_id, cid)
+            if not comment:
+                continue
+            if comment.author:
+                recipients_raw.append(str(comment.author))
+            for mention in (comment.mentions or []):
+                recipients_raw.append(str(mention))
+    except Exception:
+        pass
+
+    recipients = [r for r in normalize_recipients(recipients_raw) if r and r != sender]
+    delivered = broadcast_to_recipients(task_id=str(task_id), sender=sender, message=message, recipients=recipients)
+
+    return BroadcastTaskResponse(task_id=str(task_id), recipients=recipients, delivered=delivered)
+
+
 # ---------------------------------------------------------------------------
 # Task comments
 # Ported from mission-control GET/POST /api/tasks/[id]/comments (commit 4ef91d4).
@@ -890,6 +1071,14 @@ def _load_comment(redis, exec_user: str, task_id: str, comment_id: str) -> Optio
     data = redis.hgetall(_comment_key(exec_user, task_id, comment_id))
     if not data:
         return None
+    mentions_raw = data.get("mentions", "[]")
+    try:
+        mentions = json.loads(mentions_raw) if isinstance(mentions_raw, str) else []
+        if not isinstance(mentions, list):
+            mentions = []
+    except Exception:
+        mentions = []
+
     return TaskComment(
         id=data.get("id", comment_id),
         task_id=data.get("task_id", task_id),
@@ -897,6 +1086,7 @@ def _load_comment(redis, exec_user: str, task_id: str, comment_id: str) -> Optio
         content=data.get("content", ""),
         created_at=float(data.get("created_at", 0)),
         parent_id=data.get("parent_id") or None,
+        mentions=[str(m) for m in mentions],
     )
 
 
@@ -974,12 +1164,11 @@ async def create_task_comment(
         parent = _load_comment(redis, exec_user, task_id, request.parent_id)
         if not parent:
             raise HTTPException(status_code=400, detail="Parent comment not found")
-        # Only one level of nesting (MC-compatible: replies cannot have replies)
-        if parent.parent_id:
-            raise HTTPException(status_code=400, detail="Cannot reply to a reply")
 
     comment_id = str(uuid.uuid4())
     now = time.time()
+
+    mentions = extract_mentions(request.content)
 
     payload: Dict[str, str] = {
         "id": comment_id,
@@ -987,6 +1176,7 @@ async def create_task_comment(
         "author": request.author,
         "content": request.content,
         "created_at": str(now),
+        "mentions": json.dumps(mentions, ensure_ascii=False),
     }
     if request.parent_id:
         payload["parent_id"] = request.parent_id
@@ -1001,4 +1191,5 @@ async def create_task_comment(
         content=request.content,
         created_at=now,
         parent_id=request.parent_id,
+        mentions=mentions,
     )

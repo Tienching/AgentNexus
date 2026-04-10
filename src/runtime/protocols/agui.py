@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from .base import ProtocolType, ProtocolState
 from ..events import (
@@ -30,6 +30,9 @@ from ..events import (
     MessageEndEvent,
     ErrorEvent,
 )
+
+if TYPE_CHECKING:
+    from ...core.streaming.orchestrator import TombstoneRecord, StreamChunk
 
 
 @dataclass
@@ -152,6 +155,96 @@ class AGUIProtocol:
             results.append(self._format_sse({"type": "RUN_ERROR", "message": message, "code": code}))
 
         return "".join(results) if results else None
+
+    def create_tombstone_event(self, tombstone: "TombstoneRecord") -> Optional[str]:
+        """创建 tombstone 事件 SSE
+
+        Args:
+            tombstone: TombstoneRecord 对象
+
+        Returns:
+            SSE 格式字符串，如果 state 未初始化则返回 None
+        """
+        if not self.state:
+            return None
+
+        data = {
+            "type": "BLOCK_TOMBSTONE",
+            "blockId": tombstone.block_id,
+            "sequence": tombstone.sequence,
+            "reason": tombstone.reason,
+            "createdAt": tombstone.created_at,
+        }
+        if tombstone.parent_chunk_id:
+            data["parentChunkId"] = tombstone.parent_chunk_id
+
+        return self._format_sse(data)
+
+    def create_chunk_replace_event(self, old_id: str, new_id: str, content: str = "") -> Optional[str]:
+        """创建块替换事件 SSE
+
+        Args:
+            old_id: 被替换的旧块 ID
+            new_id: 新的块 ID
+            content: 初始内容（可选）
+
+        Returns:
+            SSE 格式字符串
+        """
+        if not self.state:
+            return None
+
+        data = {
+            "type": "CHUNK_REPLACE",
+            "oldBlockId": old_id,
+            "newBlockId": new_id,
+        }
+        if content:
+            data["content"] = content
+
+        return self._format_sse(data)
+
+    def create_chunk_hold_event(self, block_id: str, reason: str) -> Optional[str]:
+        """创建块扣留事件 SSE
+
+        Args:
+            block_id: 被扣留的块 ID
+            reason: 扣留原因（temporary/rate_limit/validation/unknown）
+
+        Returns:
+            SSE 格式字符串
+        """
+        if not self.state:
+            return None
+
+        data = {
+            "type": "CHUNK_HOLD",
+            "blockId": block_id,
+            "reason": reason,
+        }
+
+        return self._format_sse(data)
+
+    def create_chunk_release_event(self, block_id: str, content: str) -> Optional[str]:
+        """创建块释放事件 SSE
+
+        Args:
+            block_id: 被释放的块 ID
+            content: 块内容
+
+        Returns:
+            SSE 格式字符串
+        """
+        if not self.state:
+            return None
+
+        data = {
+            "type": "CHUNK_RELEASE",
+            "blockId": block_id,
+            "content": content,
+        }
+
+        return self._format_sse(data)
 
     def finalize(self) -> Optional[str]:
         if not self.state or self.state.run_finished:

@@ -21,9 +21,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from src.core.security import get_active_profile, set_active_profile
 from ..config import settings
 from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
@@ -65,6 +66,18 @@ class SecurityScanResult(BaseModel):
     score: int = Field(ge=0, le=100)
     timestamp: int
     categories: Dict[str, SecurityCategory]
+
+
+class HookProfileResponse(BaseModel):
+    level: Literal["minimal", "standard", "strict"]
+    scan_secrets: bool
+    audit_mcp_calls: bool
+    block_on_secret_detection: bool
+    rate_limit_multiplier: float
+
+
+class HookProfileUpdateRequest(BaseModel):
+    level: Literal["minimal", "standard", "strict"]
 
 
 # ---------------------------------------------------------------------------
@@ -507,4 +520,158 @@ async def security_scan():
     """
     return await asyncio.get_event_loop().run_in_executor(
         None, run_security_scan
+    )
+
+
+@router.get("/security/hook-profile", response_model=HookProfileResponse)
+async def get_hook_profile():
+    """Get active pre/post tool hook security profile."""
+    p = get_active_profile()
+    return HookProfileResponse(
+        level=p.level,
+        scan_secrets=p.scan_secrets,
+        audit_mcp_calls=p.audit_mcp_calls,
+        block_on_secret_detection=p.block_on_secret_detection,
+        rate_limit_multiplier=p.rate_limit_multiplier,
+    )
+
+
+@router.put("/security/hook-profile", response_model=HookProfileResponse)
+async def update_hook_profile(req: HookProfileUpdateRequest):
+    """Update active hook security profile (minimal/standard/strict)."""
+    p = set_active_profile(req.level)
+    return HookProfileResponse(
+        level=p.level,
+        scan_secrets=p.scan_secrets,
+        audit_mcp_calls=p.audit_mcp_calls,
+        block_on_secret_detection=p.block_on_secret_detection,
+        rate_limit_multiplier=p.rate_limit_multiplier,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Permission Sync Endpoints (MC-065: cross-agent permission synchronization)
+# ---------------------------------------------------------------------------
+
+class PermissionRequestSummary(BaseModel):
+    """Summary of a pending permission request."""
+    id: str
+    agent_name: str
+    tool_name: str
+    tool_args: dict[str, Any]
+    risk_level: str
+    status: str
+    created_at: float
+    approver: Optional[str] = None
+    scope: str = "once"
+    reason: Optional[str] = None
+
+
+class ApproveRequest(BaseModel):
+    """Request body for approving a permission request."""
+    approver: str = Field(..., description="Name of the approving agent (typically the lead)")
+    scope: Literal["once", "session", "permanent"] = Field(
+        default="once",
+        description="Approval scope: once, session, or permanent",
+    )
+
+
+class RejectRequest(BaseModel):
+    """Request body for rejecting a permission request."""
+    approver: str = Field(..., description="Name of the rejecting agent")
+    reason: str = Field(default="", description="Reason for rejection")
+
+
+class SyncTriggerRequest(BaseModel):
+    """Request body for triggering a permission sync."""
+    agent_name: str = Field(..., description="Agent name to sync permissions for")
+
+
+class PermissionCacheResponse(BaseModel):
+    """Response with the current permission cache snapshot."""
+    cache: Dict[str, Dict[str, bool]]
+    stats: Dict[str, Any]
+
+
+class PermissionActionResponse(BaseModel):
+    """Response after a permission action."""
+    success: bool
+    message: str
+
+
+def _get_permission_sync():
+    """Get the PermissionSyncService from the server runtime, if available."""
+    try:
+        from ..app import get_agent_loop
+        loop = get_agent_loop()
+        if loop is None:
+            return None
+        return loop.permission_sync
+    except Exception:
+        return None
+
+
+@router.get("/security/permissions/pending", response_model=list[PermissionRequestSummary])
+async def get_pending_permission_requests():
+    """Get all pending permission requests from worker agents."""
+    sync = _get_permission_sync()
+    if sync is None:
+        return []
+
+    requests = await sync.get_pending_requests()
+    return [PermissionRequestSummary(**r.to_dict()) for r in requests]
+
+
+@router.post("/security/permissions/{request_id}/approve", response_model=PermissionActionResponse)
+async def approve_permission_request(request_id: str, req: ApproveRequest):
+    """Approve a pending permission request."""
+    sync = _get_permission_sync()
+    if sync is None:
+        raise HTTPException(status_code=503, detail="Permission sync service not available")
+
+    await sync.approve_request(request_id, approver=req.approver, scope=req.scope)
+    return PermissionActionResponse(
+        success=True,
+        message=f"Permission request {request_id} approved by {req.approver} (scope={req.scope})",
+    )
+
+
+@router.post("/security/permissions/{request_id}/reject", response_model=PermissionActionResponse)
+async def reject_permission_request(request_id: str, req: RejectRequest):
+    """Reject a pending permission request."""
+    sync = _get_permission_sync()
+    if sync is None:
+        raise HTTPException(status_code=503, detail="Permission sync service not available")
+
+    await sync.reject_request(request_id, approver=req.approver, reason=req.reason)
+    return PermissionActionResponse(
+        success=True,
+        message=f"Permission request {request_id} rejected by {req.approver}",
+    )
+
+
+@router.get("/security/permissions/cache", response_model=PermissionCacheResponse)
+async def get_permission_cache():
+    """Get the current permission approval cache."""
+    sync = _get_permission_sync()
+    if sync is None:
+        return PermissionCacheResponse(cache={}, stats={})
+
+    return PermissionCacheResponse(
+        cache=sync.get_approval_cache_snapshot(),
+        stats=sync.get_stats(),
+    )
+
+
+@router.post("/security/permissions/sync", response_model=PermissionActionResponse)
+async def trigger_permission_sync(req: SyncTriggerRequest):
+    """Trigger a permission sync for a specific agent (back-propagate to lead)."""
+    sync = _get_permission_sync()
+    if sync is None:
+        raise HTTPException(status_code=503, detail="Permission sync service not available")
+
+    await sync.sync_permissions_to_lead(req.agent_name)
+    return PermissionActionResponse(
+        success=True,
+        message=f"Permission sync triggered for agent {req.agent_name}",
     )

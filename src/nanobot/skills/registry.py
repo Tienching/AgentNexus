@@ -20,14 +20,14 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
+import importlib
 import json
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from loguru import logger
+from src.nanobot.skills.security_scanner import SkillSecurityScanner
 
 
 class SkillStatus(str, Enum):
@@ -62,76 +62,13 @@ class Skill:
     updated_at: float = field(default_factory=time.time)
 
 
-class SkillSecurityScanner:
-    """Scans skills for security issues."""
-
-    # Patterns that indicate potential security issues
-    DANGEROUS_PATTERNS = [
-        (r"os\.system\s*\(", "Shell command execution via os.system"),
-        (r"subprocess\.", "Subprocess execution"),
-        (r"eval\s*\(", "Code evaluation via eval"),
-        (r"exec\s*\(", "Code execution via exec"),
-        (r"pickle\.loads?", "Pickle deserialization"),
-        (r"__import__\s*\(", "Dynamic module import"),
-        (r"open\s*\([^)]*['\"]w['\"].*\)", "File write operation"),
-        (r"requests\.(post|put)\([^)]*auth[^)]*\)", "HTTP auth in requests"),
-    ]
-
-    CREDENTIAL_PATTERNS = [
-        (r"api[_-]?key\s*=\s*['\"][a-zA-Z0-9]{20,}['\"]", "Hardcoded API key"),
-        (r"password\s*=\s*['\"][^'\"]{8,}['\"]", "Hardcoded password"),
-        (r"secret\s*=\s*['\"][^'\"]{16,}['\"]", "Hardcoded secret"),
-        (r"token\s*=\s*['\"][a-zA-Z0-9_-]{20,}['\"]", "Hardcoded token"),
-    ]
-
-    def scan(self, skill_code: str) -> Dict[str, Any]:
-        """Scan skill code for security issues.
-
-        Args:
-            skill_code: The skill's source code or config
-
-        Returns:
-            Dict with risk level and findings
-        """
-        findings = []
-        max_risk = SecurityRisk.LOW
-
-        import re
-
-        # Check dangerous patterns
-        for pattern, description in self.DANGEROUS_PATTERNS:
-            if re.search(pattern, skill_code):
-                findings.append({
-                    "pattern": pattern,
-                    "description": description,
-                    "risk": SecurityRisk.HIGH,
-                })
-                if max_risk != SecurityRisk.CRITICAL:
-                    max_risk = SecurityRisk.HIGH
-
-        # Check credential patterns
-        for pattern, description in self.CREDENTIAL_PATTERNS:
-            if re.search(pattern, skill_code):
-                findings.append({
-                    "pattern": pattern,
-                    "description": description,
-                    "risk": SecurityRisk.CRITICAL,
-                })
-                max_risk = SecurityRisk.CRITICAL
-
-        return {
-            "risk": max_risk,
-            "findings": findings,
-            "scanned_at": time.time(),
-        }
-
-
 class SkillRegistry:
     """Central registry for agent skills."""
 
     def __init__(self):
         self._skills: Dict[str, Skill] = {}
         self._security_scanner = SkillSecurityScanner()
+        self._loaded_slash_extensions: set[str] = set()
         self._register_default_skills()
 
     def _register_default_skills(self) -> None:
@@ -292,6 +229,127 @@ class SkillRegistry:
                 result.append(skill)
         return result
 
+    @staticmethod
+    def _resolve_dotted_callable(path: str):
+        """Resolve dotted path (<module>:<callable>) to a Python callable."""
+        if not path or ":" not in path:
+            raise ValueError("Handler path must be '<module>:<callable>'")
+        module_name, attr_name = path.split(":", 1)
+        module = importlib.import_module(module_name)
+        fn = getattr(module, attr_name, None)
+        if not callable(fn):
+            raise ValueError(f"Resolved object is not callable: {path}")
+        return fn
+
+    def register_slash_extension(
+        self,
+        *,
+        name: str,
+        description: str,
+        handler: str,
+        cmd: str,
+        subcmd: str,
+        options: Optional[List[Dict[str, Any]]] = None,
+        allow_free_text: bool = False,
+        free_text_required: bool = False,
+        default_subcmd: Optional[str] = None,
+        infer_subcmd_from_options: Optional[Dict[str, str]] = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Skill:
+        """Register a skill that also contributes a slash command extension."""
+        merged_metadata = dict(metadata or {})
+        merged_metadata["slash_extension"] = {
+            "cmd": (cmd or "").strip().lower(),
+            "subcmd": (subcmd or "").strip().lower(),
+            "handler": handler,
+            "options": list(options or []),
+            "allow_free_text": bool(allow_free_text),
+            "free_text_required": bool(free_text_required),
+            "default_subcmd": default_subcmd,
+            "infer_subcmd_from_options": dict(infer_subcmd_from_options or {}),
+        }
+        return self.register(
+            name=name,
+            description=description,
+            handler=handler,
+            tags=tags or ["slash-extension"],
+            metadata=merged_metadata,
+        )
+
+    def list_slash_extensions(self) -> List[Dict[str, Any]]:
+        """List slash extensions declared in skill metadata."""
+        out: List[Dict[str, Any]] = []
+        for skill in self._skills.values():
+            ext = (skill.metadata or {}).get("slash_extension") if skill.metadata else None
+            if not isinstance(ext, dict):
+                continue
+            payload = dict(ext)
+            payload["skill"] = skill.name
+            out.append(payload)
+        return out
+
+    def load_slash_extensions(self) -> int:
+        """Load slash extensions from registry into runtime parser/handler hooks."""
+        extensions = self.list_slash_extensions()
+        if not extensions:
+            return 0
+
+        try:
+            from src.runtime.commands.slash import CommandSpec, OptionDef, register_slash_command_extension
+        except Exception:
+            return 0
+
+        loaded = 0
+        for ext in extensions:
+            key = f"{ext.get('skill')}:{ext.get('cmd')}:{ext.get('subcmd')}"
+            if key in self._loaded_slash_extensions:
+                continue
+
+            options = ext.get("options") or []
+            option_defs = []
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                short = (opt.get("short") or "").strip()
+                long_name = (opt.get("long") or "").strip()
+                if not short or not long_name:
+                    continue
+                option_defs.append(
+                    OptionDef(
+                        short=short,
+                        long=long_name,
+                        type=(opt.get("type") or "string").strip(),
+                        required=bool(opt.get("required", False)),
+                        default=opt.get("default"),
+                    )
+                )
+
+            spec = CommandSpec(
+                cmd=(ext.get("cmd") or "").strip().lower(),
+                subcmd=(ext.get("subcmd") or "").strip().lower(),
+                options=tuple(option_defs),
+                allow_free_text=bool(ext.get("allow_free_text", False)),
+                free_text_required=bool(ext.get("free_text_required", False)),
+            )
+            handler_fn = self._resolve_dotted_callable(ext.get("handler") or "")
+
+            def _wrapped(runtime_handler, parsed, context, _fn=handler_fn):
+                return _fn(runtime_handler, parsed, context)
+
+            register_slash_command_extension(
+                cmd=spec.cmd,
+                subcmd=spec.subcmd,
+                handler=_wrapped,
+                spec=spec,
+                default_subcmd=ext.get("default_subcmd"),
+                infer_subcmd_from_options=ext.get("infer_subcmd_from_options") or None,
+            )
+            self._loaded_slash_extensions.add(key)
+            loaded += 1
+
+        return loaded
+
     def scan_skill(self, name: str, code: str) -> Dict[str, Any]:
         """Scan a skill for security issues.
 
@@ -309,8 +367,12 @@ class SkillRegistry:
         results = self._security_scanner.scan(code)
 
         # Update skill security info
-        skill.security_risk = results["risk"]
-        skill.security_notes = json.dumps(results["findings"])
+        raw_risk = str(results.get("risk", SecurityRisk.LOW.value)).lower()
+        try:
+            skill.security_risk = SecurityRisk(raw_risk)
+        except ValueError:
+            skill.security_risk = SecurityRisk.LOW
+        skill.security_notes = json.dumps(results.get("findings", []))
 
         return results
 

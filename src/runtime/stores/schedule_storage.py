@@ -8,12 +8,13 @@ per schedule) with a single `schedules` table + `schedule_history` table.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+import hashlib
 import json
 import logging
 from typing import List, Optional, Dict, Any, Tuple
 
-from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind
+from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind, ScheduleDurabilityMode
 from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,10 @@ def _schedule_to_row(s: Schedule, exec_user: str) -> dict:
         "context_json": json.dumps(s.context) if s.context else None,
         "max_runs": s.max_runs,
         "run_count": s.run_count,
+        "durability_mode": s.durability_mode if isinstance(s.durability_mode, str) else s.durability_mode.value,
+        "session_id": s.session_id,
+        "expires_at": _dt_to_ts(s.expires_at),
+        "jitter_seconds": s.jitter_seconds,
         "next_run_at": _dt_to_ts(s.next_run_at),
         "last_run_at": _dt_to_ts(s.last_run_at),
         "last_task_id": s.last_task_id,
@@ -90,6 +95,10 @@ def _row_to_schedule(row: dict) -> Schedule:
         context=json.loads(row["context_json"]) if row.get("context_json") else None,
         max_runs=row.get("max_runs"),
         run_count=row.get("run_count", 0),
+        durability_mode=ScheduleDurabilityMode(row.get("durability_mode") or "durable"),
+        session_id=row.get("session_id"),
+        expires_at=_ts_to_dt(row.get("expires_at")),
+        jitter_seconds=int(row.get("jitter_seconds") or 0),
         next_run_at=_ts_to_dt(row.get("next_run_at")),
         last_run_at=_ts_to_dt(row.get("last_run_at")),
         last_task_id=row.get("last_task_id"),
@@ -118,6 +127,21 @@ class ScheduleStorage:
         self._db = db or get_db()
         logger.info(f"ScheduleStorage initialized for exec_user: {exec_user}")
 
+    @staticmethod
+    def _compute_deterministic_jitter_seconds(schedule_id: str, run_count: int, jitter_seconds: int) -> int:
+        if jitter_seconds <= 0:
+            return 0
+        seed = f"{schedule_id}:{run_count}".encode("utf-8")
+        digest = hashlib.sha256(seed).hexdigest()
+        value = int(digest[:8], 16)
+        return (value % (2 * jitter_seconds + 1)) - jitter_seconds
+
+    def _session_exists(self, session_id: Optional[str]) -> bool:
+        if not session_id:
+            return False
+        row = self._db.execute_fetchone("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+        return bool(row)
+
     # ---- CRUD ----
 
     def add_schedule(
@@ -139,9 +163,17 @@ class ScheduleStorage:
         created_by: Optional[str] = None,
         schedule_kind: str = "task",
         evolution_phase: Optional[str] = None,
+        durability_mode: str = "durable",
+        session_id: Optional[str] = None,
+        ttl_seconds: Optional[int] = None,
+        jitter_seconds: int = 0,
     ) -> Schedule:
         """Create a new schedule definition (recurring cron or one-time run_at)."""
         eu = exec_user or self.exec_user
+        expires_at = None
+        if ttl_seconds and ttl_seconds > 0:
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(ttl_seconds))
+
         schedule = Schedule(
             name=name,
             cron_expression=cron_expression,
@@ -160,7 +192,14 @@ class ScheduleStorage:
             created_by=created_by,
             schedule_kind=ScheduleKind(schedule_kind),
             evolution_phase=evolution_phase,
+            durability_mode=ScheduleDurabilityMode(durability_mode),
+            session_id=session_id,
+            expires_at=expires_at,
+            jitter_seconds=max(0, int(jitter_seconds or 0)),
         )
+
+        if schedule.durability_mode == ScheduleDurabilityMode.SESSION_ONLY.value and not self._session_exists(schedule.session_id):
+            raise ValueError(f"session_id not found for session-only schedule: {schedule.session_id}")
 
         # Pre-compute next run
         schedule.next_run_at = schedule.compute_next_run()
@@ -299,16 +338,29 @@ class ScheduleStorage:
         now_ts = now.timestamp()
 
         rows = self._db.execute_fetchall(
-            "SELECT * FROM schedules WHERE exec_user = ? AND status = 'active' AND next_run_at <= ?",
-            (self.exec_user, now_ts),
+            "SELECT * FROM schedules WHERE exec_user = ? AND status = 'active' "
+            "AND next_run_at <= ? AND (expires_at IS NULL OR expires_at > ?)",
+            (self.exec_user, now_ts, now_ts),
         )
 
-        schedules = []
+        schedules: List[Schedule] = []
         for row in rows:
             try:
-                schedules.append(_row_to_schedule(row))
+                schedule = _row_to_schedule(row)
             except Exception as e:
                 logger.error(f"Failed to parse due schedule: {e}")
+                continue
+
+            if schedule.durability_mode == ScheduleDurabilityMode.SESSION_ONLY.value and not self._session_exists(schedule.session_id):
+                logger.info(
+                    "Auto-cancelling session-only schedule %s because session %s no longer exists",
+                    schedule.id,
+                    schedule.session_id,
+                )
+                self.cancel_schedule(schedule.id)
+                continue
+
+            schedules.append(schedule)
         return schedules
 
     def record_run(self, schedule: Schedule, task_id: str) -> None:
@@ -332,7 +384,20 @@ class ScheduleStorage:
 
             # Compute next run
             if schedule.status != ScheduleStatus.CANCELLED:
-                schedule.next_run_at = schedule.compute_next_run(base_time=now)
+                next_run = schedule.compute_next_run(base_time=now)
+                jitter = self._compute_deterministic_jitter_seconds(
+                    schedule.id,
+                    schedule.run_count,
+                    int(getattr(schedule, "jitter_seconds", 0) or 0),
+                )
+                if next_run is not None and jitter:
+                    next_run = next_run + timedelta(seconds=jitter)
+                if schedule.expires_at and next_run and next_run >= schedule.expires_at:
+                    schedule.status = ScheduleStatus.CANCELLED
+                    schedule.cancelled_at = now
+                    schedule.next_run_at = None
+                else:
+                    schedule.next_run_at = next_run
 
             # Update schedule row
             row = _schedule_to_row(schedule, eu)

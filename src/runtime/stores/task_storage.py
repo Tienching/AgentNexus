@@ -25,6 +25,11 @@ from .db import Database, get_db
 logger = logging.getLogger(__name__)
 
 
+def get_redis_client():
+    """Compatibility shim for legacy tests/mocks expecting Redis client accessor."""
+    return None
+
+
 def _dt_to_ts(dt) -> Optional[float]:
     if dt is None:
         return None
@@ -69,6 +74,10 @@ def _task_to_row(task: Task) -> dict:
         "context_json": json.dumps(task.context, ensure_ascii=False) if task.context else None,
         "attempt_count": task.attempt_count,
         "error_message": task.error_message,
+        "runtime_status": task.runtime_status if isinstance(task.runtime_status, str) else task.runtime_status.value,
+        "runtime_orphaned": 1 if task.runtime_orphaned else 0,
+        "runtime_orphaned_at": _dt_to_ts(task.runtime_orphaned_at),
+        "runtime_last_heartbeat": _dt_to_ts(task.runtime_last_heartbeat),
         "outcome": task.outcome,
         "resolution": task.resolution,
         "feedback_rating": task.feedback_rating,
@@ -138,6 +147,10 @@ def _row_to_task(row: dict) -> Task:
         context=ctx,
         attempt_count=row.get("attempt_count", 0),
         error_message=row.get("error_message"),
+        runtime_status=row.get("runtime_status") or "queued",
+        runtime_orphaned=bool(row.get("runtime_orphaned", 0)),
+        runtime_orphaned_at=_ts_to_dt(row.get("runtime_orphaned_at")),
+        runtime_last_heartbeat=_ts_to_dt(row.get("runtime_last_heartbeat")),
         outcome=row.get("outcome"),
         resolution=row.get("resolution"),
         feedback_rating=row.get("feedback_rating"),
@@ -382,20 +395,35 @@ class TaskQueue:
         return [_row_to_task(r) for r in rows if r]
 
     def _update_task_status(self, task: Task, new_status: TaskStatus) -> None:
-        """Update task status."""
+        """Update collaboration status and keep runtime layer in sync."""
         now = datetime.now(timezone.utc)
         task.status = new_status
 
         if new_status == TaskStatus.IN_PROGRESS:
             task.started_at = now
-        elif new_status in (TaskStatus.DONE, TaskStatus.FAILED):
+            task.runtime_status = "running"
+            task.runtime_orphaned = False
+            task.runtime_orphaned_at = None
+            task.runtime_last_heartbeat = now
+        elif new_status == TaskStatus.FAILED:
             if not task.completed_at:
                 task.completed_at = now
-        elif new_status == TaskStatus.ARCHIVED:
-            task.archived_at = now
-        elif new_status == TaskStatus.CANCELLED:
-            if not task.deleted_at:
+            task.runtime_status = "failed"
+        elif new_status in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ARCHIVED):
+            if new_status == TaskStatus.DONE and not task.completed_at:
+                task.completed_at = now
+            if new_status == TaskStatus.ARCHIVED:
+                task.archived_at = now
+            if new_status == TaskStatus.CANCELLED and not task.deleted_at:
                 task.deleted_at = now
+            task.runtime_status = "idle"
+            task.runtime_orphaned = False
+            task.runtime_orphaned_at = None
+            task.runtime_last_heartbeat = None
+        else:
+            if str(getattr(task, "runtime_status", "")) != "orphaned":
+                task.runtime_status = "queued"
+                task.runtime_last_heartbeat = None
 
         self.update_task(task)
 
@@ -777,6 +805,56 @@ class TaskQueue:
     def fail_stale_task(self, task_id: str, attempt_count: int, error_message: str) -> Optional[Task]:
         return self.fail_task(task_id, error_message=error_message, attempt_count=attempt_count)
 
+    def mark_runtime_heartbeat(self, task_id: str) -> Optional[Task]:
+        """Refresh runtime heartbeat for a running task."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        task.runtime_last_heartbeat = datetime.now(timezone.utc)
+        if str(getattr(task, "runtime_status", "")) != "orphaned":
+            task.runtime_status = "running"
+        self.update_task(task)
+        return task
+
+    def mark_task_orphaned(self, task_id: str, reason: Optional[str] = None) -> Optional[Task]:
+        """Mark a task as orphaned in runtime layer without losing collaboration status."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        now = datetime.now(timezone.utc)
+        task.runtime_status = "orphaned"
+        task.runtime_orphaned = True
+        task.runtime_orphaned_at = now
+        task.runtime_last_heartbeat = None
+        if reason:
+            task.error_message = reason
+        self.update_task(task)
+        return task
+
+    def requeue_orphan_task(self, task_id: str, reason: Optional[str] = None) -> Optional[Task]:
+        """Requeue an orphan task back to inbox and clear orphan runtime state."""
+        task = self.get_task(task_id)
+        if not task:
+            return None
+        if not bool(getattr(task, "runtime_orphaned", False)) and str(getattr(task, "runtime_status", "")) != "orphaned":
+            return None
+
+        if reason:
+            task.error_message = reason
+        task.runtime_orphaned = False
+        task.runtime_orphaned_at = None
+        task.runtime_status = "queued"
+        task.runtime_last_heartbeat = None
+        self._update_task_status(task, TaskStatus.INBOX)
+        return task
+
+    def list_orphan_tasks(self, limit: int = 100) -> List[Task]:
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? AND (runtime_orphaned = 1 OR runtime_status = 'orphaned') ORDER BY created_at DESC LIMIT ?",
+            (self.exec_user, limit),
+        )
+        return [_row_to_task(r) for r in rows if r]
+
     def get_executing_count(self, workspace: Optional[str] = None) -> int:
         """Get count of currently executing tasks for a workspace"""
         if workspace:
@@ -813,11 +891,17 @@ class TaskQueue:
         for row in rows:
             task = _row_to_task(row)
             new_attempts = (task.attempt_count or 0) + 1
+            orphan_reason = f"Orphan runtime detected after {timeout_seconds}s without completion"
+            self.mark_task_orphaned(task.id, reason=orphan_reason)
             if new_attempts >= self.MAX_DISPATCH_RETRIES:
-                self.fail_task(task.id, error_message=f"Permanently failed after {new_attempts} attempts.", attempt_count=new_attempts)
+                self.fail_task(task.id, error_message=f"Permanently failed after orphan retries ({new_attempts}).", attempt_count=new_attempts)
                 failed += 1
             else:
-                self.requeue_task(task.id, error_message=f"Requeued attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}.", attempt_count=new_attempts)
+                self.requeue_task(
+                    task.id,
+                    error_message=f"Requeued orphan attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}.",
+                    attempt_count=new_attempts,
+                )
                 requeued += 1
         total = requeued + failed
         if total:

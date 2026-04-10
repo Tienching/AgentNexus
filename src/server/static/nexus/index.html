@@ -21,6 +21,7 @@
     <link rel="stylesheet" href="css/theme.css?v=30">
     <link rel="stylesheet" href="css/layout.css?v=30">
     <link rel="stylesheet" href="css/styles.css?v=30">
+    <link rel="stylesheet" href="css/panels.css?v=31">
 </head>
 <body>
     <!-- Login Modal (shown when auth is required) -->
@@ -81,6 +82,12 @@
                         </svg>
                         <span>Settings</span>
                     </button>
+                    <button class="page-nav-btn" data-page="panels" title="Panels">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h4a1 1 0 011 1v5a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v2a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 12a1 1 0 011-1h4a1 1 0 011 1v7a1 1 0 01-1 1h-4a1 1 0 01-1-1v-7z"/>
+                        </svg>
+                        <span>Panels</span>
+                    </button>
                 </div>
             </div>
 
@@ -116,6 +123,33 @@
             </div>
 
             <div class="header-right" id="projectHeaderRight">
+                <!-- Plan Mode Indicator -->
+                <div id="planModeIndicator" class="plan-mode-indicator" style="display:none;">
+                    <span class="plan-mode-badge">PLAN MODE</span>
+                    <span id="planModeStatus" class="plan-mode-status"></span>
+                    <button id="planModeViewBtn" class="plan-mode-view-btn" title="View plan details">View</button>
+                    <button id="planModeExitBtn" class="plan-mode-exit-btn" title="Exit plan mode">Exit</button>
+                </div>
+
+                <!-- Plan Mode Panel (hidden by default) -->
+                <div id="planModePanel" class="plan-mode-panel" style="display:none;">
+                    <div class="plan-mode-panel-header">
+                        <h3>Plan Mode</h3>
+                        <button id="planPanelCloseBtn" class="plan-panel-close-btn">&times;</button>
+                    </div>
+                    <div id="planEditorContainer" class="plan-editor-container" style="display:none;">
+                        <textarea id="planEditor" class="plan-editor" placeholder="Enter your plan..."></textarea>
+                        <button id="planSubmitBtn" class="plan-action-btn plan-submit-btn">Submit Plan</button>
+                    </div>
+                    <div id="planApprovalContainer" class="plan-approval-container" style="display:none;">
+                        <div id="planContentDisplay" class="plan-content-display"></div>
+                        <div class="plan-approval-actions">
+                            <button id="planApproveBtn" class="plan-action-btn plan-approve-btn">Approve & Execute</button>
+                            <button id="planRejectBtn" class="plan-action-btn plan-reject-btn">Reject</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Global Search (Ctrl+K) -->
                 <button id="globalSearchBtn" class="global-search-btn" title="Search (Ctrl+K)">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -424,6 +458,13 @@
                     <input id="taskWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
                 </div>
                 <div class="form-group">
+                    <label class="form-label">Target Session</label>
+                    <select id="taskSourceSession" class="form-input form-select">
+                        <option value="">None (new task session)</option>
+                    </select>
+                    <p class="form-hint">Optional: run task against an existing session context</p>
+                </div>
+                <div class="form-group">
                     <label class="form-label">Depends On</label>
                     <input id="taskDependsOn" type="text" class="form-input" placeholder="task-id-1, task-id-2 (optional)">
                     <p class="form-hint">Comma-separated task IDs this task depends on</p>
@@ -482,6 +523,14 @@
                     </div>
                 </div>
                 <div id="scheduleExtraFields" style="display:none;">
+                    <div class="form-group">
+                        <label class="form-label">Natural Language</label>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <input id="scheduleNaturalInput" type="text" class="form-input" placeholder="e.g., every weekday at 9am">
+                            <button id="scheduleNaturalParseBtn" type="button" class="action-btn">Parse</button>
+                        </div>
+                        <p id="scheduleNaturalResult" class="form-hint"></p>
+                    </div>
                     <div class="form-group">
                         <label class="form-label">Timezone</label>
                         <input id="scheduleTimezone" type="text" class="form-input" placeholder="UTC" value="UTC">
@@ -628,9 +677,17 @@
     <!-- Scripts (timestamp cache-buster ensures browser always loads latest version) -->
     <script>var _cb=Date.now();</script>
     <script>document.write('<scr'+'ipt src="js/utils/smart-poll.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="js/utils/websocket-manager.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="js/utils/sse-handler.js?v='+_cb+'"></scr'+'ipt>');</script>
     <script>document.write('<scr'+'ipt src="js/components/agent-avatar.js?v='+_cb+'"></scr'+'ipt>');</script>
     <script>document.write('<scr'+'ipt src="js/components/kanban.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="js/components/markdown-renderer.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="js/components/mention-textarea.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="js/components/expansion-panels.js?v='+_cb+'"></scr'+'ipt>');</script>
     <script>document.write('<scr'+'ipt src="js/api.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="panels/base-panel.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="js/utils/panel-registry.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <script>document.write('<scr'+'ipt src="panels/panel-definitions.js?v='+_cb+'"></scr'+'ipt>');</script>
     <script>document.write('<scr'+'ipt src="js/app.js?v='+_cb+'"></scr'+'ipt>');</script>
 </body>
 </html>

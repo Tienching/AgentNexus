@@ -72,6 +72,11 @@ class ServerSettings(BaseSettings):
     # Scheduler configuration
     scheduler_enabled: bool = True
     scheduler_poll_interval: float = 15.0  # seconds between schedule checks
+
+    # Tool hook security profile
+    hook_profile_default: str = "standard"  # minimal | standard | strict
+    hook_enable_pre_checks: bool = True
+    hook_enable_post_audit: bool = True
     
     # Channel 服务配置
     channels_enabled: bool = True

@@ -92,6 +92,31 @@ class Session:
             out.append(entry)
         return out
 
+    def get_working_memory(self, max_messages: int = 500) -> list[dict[str, Any]]:
+        """Return the unconsolidated (working) memory window."""
+        working = self.messages[self.last_consolidated:]
+        if max_messages > 0:
+            return working[-max_messages:]
+        return working
+
+    def get_memory_partition_state(self) -> dict[str, int]:
+        """Expose current working-vs-consolidated memory split."""
+        total = len(self.messages)
+        consolidated = min(max(self.last_consolidated, 0), total)
+        return {
+            "total_messages": total,
+            "consolidated_messages": consolidated,
+            "working_messages": max(0, total - consolidated),
+        }
+
+    def restore_context_from_memory(self, context_text: str) -> bool:
+        """Inject a system message reconstructed from consolidated memory."""
+        text = (context_text or "").strip()
+        if not text:
+            return False
+        self.add_message("system", f"[Restored Context]\n{text}", memory_restored=True)
+        return True
+
     def clear(self) -> None:
         """Clear all messages and reset session to initial state."""
         self.messages = []

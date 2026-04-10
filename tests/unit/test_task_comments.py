@@ -49,8 +49,9 @@ class TestTaskCommentModel:
         c = TaskComment(id="c1", task_id="t1", author="alice", content="hello", created_at=1.0)
         assert c.parent_id is None
 
-    def test_replies_default_empty(self):
+    def test_mentions_and_replies_default_empty(self):
         c = TaskComment(id="c1", task_id="t1", author="alice", content="hello", created_at=1.0)
+        assert c.mentions == []
         assert c.replies == []
 
 
@@ -323,27 +324,24 @@ class TestCreateTaskCommentRoute:
             assert "not found" in exc.value.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_400_reply_to_reply_rejected(self):
-        """Cannot nest comments more than one level (MC-compatible)."""
-        from fastapi import HTTPException
+    async     def test_allows_reply_to_reply(self):
+        """Nested replies are supported by MC-005 requirement."""
         task = MagicMock()
         queue = self._make_queue(task=task)
-        # Parent is itself a reply (has parent_id set)
+        # Parent is itself a reply (has parent_id set) — should still be accepted
         queue._redis.hgetall.return_value = {
             "id": "child-id",
             "task_id": "t1",
             "author": "alice",
             "content": "I'm a reply",
             "created_at": "1.0",
-            "parent_id": "grandparent-id",  # this makes it a reply
+            "parent_id": "grandparent-id",
         }
         with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=queue):
-            with pytest.raises(HTTPException) as exc:
-                await create_task_comment(
-                    "t1", CreateCommentRequest(content="deep reply!", parent_id="child-id")
-                )
-            assert exc.value.status_code == 400
-            assert "reply" in exc.value.detail.lower()
+            result = await create_task_comment(
+                "t1", CreateCommentRequest(content="deep reply!", parent_id="child-id")
+            )
+        assert result.parent_id == "child-id"
 
     @pytest.mark.asyncio
     async def test_default_author_is_user(self):
@@ -362,3 +360,17 @@ class TestCreateTaskCommentRoute:
             result = await create_task_comment("t1", CreateCommentRequest(content="hi"))
         after = time.time()
         assert before <= result.created_at <= after
+
+    @pytest.mark.asyncio
+    async def test_extracts_mentions_and_persists_them(self):
+        task = MagicMock()
+        queue = self._make_queue(task=task)
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=queue):
+            result = await create_task_comment(
+                "t1", CreateCommentRequest(content="ping @alice and @bob and @alice")
+            )
+        assert result.mentions == ["alice", "bob"]
+        payload = queue._redis.hset.call_args[0][1]
+        assert "mentions" in payload
+        assert "alice" in payload["mentions"]
+        assert "bob" in payload["mentions"]

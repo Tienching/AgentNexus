@@ -35,6 +35,7 @@ from src.runtime.history.claude_parser import ClaudeHistoryParser
 from src.runtime.history.codex_parser import CodexHistoryParser
 from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
 from src.runtime.history.gemini_parser import GeminiHistoryParser
+from src.nanobot.agent.memory import MemoryStore
 
 logger = get_logger(__name__)
 
@@ -243,6 +244,19 @@ def _build_alias_config_map(
         pass
 
     return alias_map
+
+
+def _resolve_nanobot_workspace_path(workspace: Optional[str] = None) -> Path:
+    """Resolve nanobot workspace path used by persistent memory files."""
+    candidate = (workspace or "").strip()
+    if candidate:
+        return Path(candidate).expanduser().resolve()
+
+    configured = (settings.nanobot_workspace or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+
+    return (Path.home() / "Projects").resolve()
 
 
 @router.get("/projects")
@@ -486,6 +500,32 @@ class PromoteHistoryResponse(BaseModel):
     created: bool = True
 
 
+class MemoryStateResponse(BaseModel):
+    workspace: str
+    has_long_term_memory: bool
+    has_history: bool
+    long_term_chars: int
+    history_chars: int
+    history_entries: int
+
+
+class RestoreMemoryRequest(BaseModel):
+    workspace: Optional[str] = Field(default=None, description="Nanobot workspace path")
+    max_chars: int = Field(default=8000, ge=512, le=64000)
+    max_entries: int = Field(default=8, ge=1, le=100)
+    inject_message: bool = Field(default=True, description="Append restored context as a system message")
+    set_bootstrap: bool = Field(default=True, description="Set restored context as one-shot bootstrap context")
+
+
+class RestoreMemoryResponse(BaseModel):
+    session_id: str
+    workspace: str
+    restored_chars: int
+    restored_entries: int
+    injected_message: bool = False
+    bootstrap_updated: bool = False
+
+
 def _resolve_base_provider(provider_or_alias: str) -> str:
     p = (provider_or_alias or "").strip().lower()
     if p in _PROVIDER_CONFIG_DIRS:
@@ -529,6 +569,68 @@ def _build_bootstrap_context(detail: SessionMessagesResponse, mode: str = "full"
         lines.append(f"[{role}] {content}")
 
     return "\n\n".join(lines) if lines else "(历史会话没有可用消息)"
+
+
+@router.get("/memory/state", response_model=MemoryStateResponse)
+async def get_memory_state(
+    workspace: Optional[str] = Query(default=None, description="Nanobot workspace path"),
+):
+    """Expose long-term vs consolidated history memory state."""
+    resolved_workspace = _resolve_nanobot_workspace_path(workspace)
+    store = MemoryStore(resolved_workspace)
+    state = store.get_memory_state()
+    return MemoryStateResponse(
+        workspace=str(resolved_workspace),
+        has_long_term_memory=bool(state.get("has_long_term_memory", False)),
+        has_history=bool(state.get("has_history", False)),
+        long_term_chars=int(state.get("long_term_chars", 0) or 0),
+        history_chars=int(state.get("history_chars", 0) or 0),
+        history_entries=int(state.get("history_entries", 0) or 0),
+    )
+
+
+@router.post("/sessions/{session_id}/restore-memory", response_model=RestoreMemoryResponse)
+async def restore_memory_context(
+    session_id: str,
+    req: RestoreMemoryRequest,
+):
+    """Restore consolidated memory context into a runtime session."""
+    storage = get_session_storage()
+    meta = storage.get_session_meta(session_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Runtime session '{session_id}' not found")
+
+    resolved_workspace = _resolve_nanobot_workspace_path(req.workspace)
+    store = MemoryStore(resolved_workspace)
+    memory_state = store.get_memory_state()
+    restored_context = store.build_recovery_context(max_chars=req.max_chars, max_entries=req.max_entries)
+    if not restored_context.strip():
+        raise HTTPException(status_code=404, detail="No consolidated memory content available")
+
+    injected = False
+    if req.inject_message:
+        restored_message = StoredMessage(
+            id=f"memory-restore-{uuid.uuid4().hex[:12]}",
+            role="system",
+            content=f"[Recovered Memory Context]\n{restored_context}",
+            status=MessageStatus.COMPLETE,
+        )
+        injected = storage.add_session_message(session_id, restored_message)
+        if not injected:
+            raise HTTPException(status_code=500, detail="Failed to inject restored context message")
+
+    bootstrap_updated = False
+    if req.set_bootstrap:
+        bootstrap_updated = storage.set_history_bootstrap_context(session_id, restored_context)
+
+    return RestoreMemoryResponse(
+        session_id=session_id,
+        workspace=str(resolved_workspace),
+        restored_chars=len(restored_context),
+        restored_entries=min(int(memory_state.get("history_entries", 0) or 0), req.max_entries),
+        injected_message=injected,
+        bootstrap_updated=bootstrap_updated,
+    )
 
 
 @router.post("/sessions/{provider}/{session_id}/promote", response_model=PromoteHistoryResponse)

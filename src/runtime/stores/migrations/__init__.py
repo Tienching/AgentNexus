@@ -28,6 +28,9 @@ _MIGRATION_MODULES = [
     "src.runtime.stores.migrations.v007_task_workflow_columns",
     "src.runtime.stores.migrations.v008_activities_table",
     "src.runtime.stores.migrations.v009_security_tables",
+    "src.runtime.stores.migrations.v010_quality_reviews_table",
+    "src.runtime.stores.migrations.v011_task_runtime_state_columns",
+    "src.runtime.stores.migrations.v012_schedule_durability_and_lock",
 ]
 
 

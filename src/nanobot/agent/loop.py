@@ -15,6 +15,7 @@ from loguru import logger
 
 from src.nanobot.agent.context import ContextBuilder
 from src.nanobot.agent.permissions import PermissionGate, PermissionMode, create_permission_gate
+from src.nanobot.agent.hooks import ToolHooks
 from src.nanobot.agent.memory import MemoryConsolidator
 from src.nanobot.agent.subagent import SubagentManager
 from src.nanobot.agent.tools.cron import CronTool
@@ -35,6 +36,7 @@ from src.nanobot.session.manager import Session, SessionManager
 if TYPE_CHECKING:
     from src.nanobot.config.schema import ChannelsConfig, ExecToolConfig, WebSearchConfig
     from src.nanobot.cron.service import CronService
+    from src.nanobot.swarm.permission_sync import PermissionSyncService
 
 
 class AgentLoop:
@@ -89,6 +91,16 @@ class AgentLoop:
 
         # Permission gate for tool call approval
         self.permission_gate = create_permission_gate(mode=permission_mode)
+        self._previous_permission_mode: PermissionMode | None = None
+        self.tool_hooks = ToolHooks()
+
+        # Cross-agent permission sync (set when agent is part of a swarm team)
+        self._permission_sync: PermissionSyncService | None = None
+
+        # Plan mode state
+        self._plan_mode: bool = False
+        self._plan_content: str | None = None
+        self._plan_approved: bool = False
 
         self.context = ContextBuilder(workspace, timezone=timezone)
         self.sessions = session_manager or SessionManager(workspace)
@@ -143,6 +155,122 @@ class AgentLoop:
         self._register_default_tools()
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
+
+    # ------------------------------------------------------------------
+    # Plan mode lifecycle
+    # ------------------------------------------------------------------
+
+    def enter_plan_mode(self) -> None:
+        """Switch into plan mode: read-only exploration, no writes/exec."""
+        if self._plan_mode:
+            logger.warning("Already in plan mode — ignoring enter_plan_mode()")
+            return
+        self._previous_permission_mode = self.permission_gate.mode
+        self.permission_gate.mode = PermissionMode.PLAN
+        self._plan_mode = True
+        self._plan_content = None
+        self._plan_approved = False
+        logger.info("Entered plan mode (previous mode: {})", self._previous_permission_mode.value)
+
+    def exit_plan_mode(self) -> None:
+        """Exit plan mode and restore the previous permission mode."""
+        if not self._plan_mode:
+            logger.warning("Not in plan mode — ignoring exit_plan_mode()")
+            return
+        prev = self._previous_permission_mode or PermissionMode.AUTO
+        self.permission_gate.mode = prev
+        self._plan_mode = False
+        self._plan_content = None
+        self._plan_approved = False
+        self._previous_permission_mode = None
+        logger.info("Exited plan mode (restored mode: {})", prev.value)
+
+    def submit_plan(self, content: str) -> None:
+        """Submit a plan for approval."""
+        if not self._plan_mode:
+            raise RuntimeError("Cannot submit plan: not in plan mode")
+        self._plan_content = content
+        self._plan_approved = False
+        logger.info("Plan submitted ({} chars)", len(content))
+
+    def approve_plan(self) -> None:
+        """Approve the current plan and exit plan mode."""
+        if not self._plan_mode:
+            raise RuntimeError("Cannot approve plan: not in plan mode")
+        if self._plan_content is None:
+            raise RuntimeError("Cannot approve plan: no plan submitted")
+        self._plan_approved = True
+        logger.info("Plan approved — exiting plan mode")
+        self.exit_plan_mode()
+
+    def reject_plan(self) -> None:
+        """Reject the current plan. Stays in plan mode for revision."""
+        if not self._plan_mode:
+            raise RuntimeError("Cannot reject plan: not in plan mode")
+        self._plan_approved = False
+        self._plan_content = None
+        logger.info("Plan rejected — remaining in plan mode for revision")
+
+    def get_plan_status(self) -> dict:
+        """Return the current plan mode status."""
+        return {
+            "plan_mode": self._plan_mode,
+            "plan_content": self._plan_content,
+            "plan_approved": self._plan_approved,
+            "permission_mode": self.permission_gate.mode.value,
+        }
+
+    # ------------------------------------------------------------------
+    # Permission sync (swarm team mode)
+    # ------------------------------------------------------------------
+
+    def set_permission_sync(self, service: PermissionSyncService) -> None:
+        """Attach a PermissionSyncService for cross-agent permission routing.
+
+        When set, the agent loop routes permission requests through the sync
+        service (which talks to the team lead) instead of using the local
+        approval callback.
+        """
+        self._permission_sync = service
+        logger.info("PermissionSyncService attached to agent loop")
+
+    @property
+    def permission_sync(self) -> PermissionSyncService | None:
+        """The active PermissionSyncService, or None if not in team mode."""
+        return self._permission_sync
+
+    async def _check_sync_permission(
+        self, tool_name: str, tool_call_id: str, args: dict
+    ) -> bool:
+        """Check permission via the PermissionSyncService (swarm team mode).
+
+        Sends a permission request to the team lead and awaits the response.
+        Falls back to the local permission gate if the sync service is not set
+        or if the request times out.
+        """
+        from src.nanobot.swarm.permission_sync import PermissionSyncService
+        from src.nanobot.agent.permissions import classify_tool
+
+        assert self._permission_sync is not None
+        sync = self._permission_sync
+
+        # Determine agent name from team membership
+        agent_name = getattr(self, "_swarm_agent_name", "unknown")
+
+        risk_level = classify_tool(tool_name)
+        request = await sync.request_permission(
+            agent_name=agent_name,
+            tool_name=tool_name,
+            tool_args=args,
+            risk_level=risk_level,
+        )
+
+        if request.status == "approved":
+            return True
+
+        # Wait for the lead's decision
+        approved = await sync.wait_for_approval(request, timeout=120.0)
+        return approved
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -324,16 +452,38 @@ class AgentLoop:
 
                 # Permission-gated tool execution:
                 # Check each tool call against the permission gate before executing.
+                # When a PermissionSyncService is attached (swarm team mode),
+                # permission requests are routed through the sync service instead
+                # of the local approval callback.
                 # Denied calls return a permission error message instead of executing.
                 async def _execute_with_permission(tc):
-                    """Execute a tool call after checking permission gate."""
+                    """Execute a tool call after hook + permission checks."""
                     args = tc.arguments if isinstance(tc.arguments, dict) else {}
-                    approval = await self.permission_gate.check(tc.name, tc.id, args)
-                    if approval.approved:
-                        return await self.tools.execute(tc.name, tc.arguments)
+
+                    hook_decision = self.tool_hooks.before_tool(tc.name, args)
+                    if not hook_decision.allowed:
+                        logger.info("Hook denied for {}: {}", tc.name, hook_decision.reason)
+                        return f"Blocked by security hook: {hook_decision.reason}"
+
+                    # Route through PermissionSyncService when in team mode
+                    if self._permission_sync is not None:
+                        approved = await self._check_sync_permission(tc.name, tc.id, args)
+                        if not approved:
+                            logger.info("Sync permission denied for {}: {}", tc.name, "lead_rejected")
+                            return "Permission denied by team lead. Try a different approach or request a different permission scope."
                     else:
-                        logger.info("Permission denied for {}: {}", tc.name, approval.reason)
-                        return f"Permission denied: {approval.reason}. Try a different approach or ask the user to change the permission mode."
+                        approval = await self.permission_gate.check(tc.name, tc.id, args)
+                        if not approval.approved:
+                            logger.info("Permission denied for {}: {}", tc.name, approval.reason)
+                            return f"Permission denied: {approval.reason}. Try a different approach or ask the user to change the permission mode."
+
+                    try:
+                        output = await self.tools.execute(tc.name, tc.arguments)
+                        self.tool_hooks.after_tool(tc.name, args, output, error=None)
+                        return output
+                    except BaseException as e:
+                        self.tool_hooks.after_tool(tc.name, args, None, error=e)
+                        raise
 
                 # Execute all tool calls concurrently — the LLM batches
                 # independent calls in a single response on purpose.

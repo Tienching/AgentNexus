@@ -101,6 +101,19 @@ class TaskStatus(str, Enum):
         return new in allowed.get(current, set())
 
 
+class RuntimeTaskStatus(str, Enum):
+    """Ephemeral runtime state for executor orchestration.
+
+    This layer is intentionally separate from collaboration ``TaskStatus`` to
+    support dual-layer state management.
+    """
+    QUEUED = "queued"
+    RUNNING = "running"
+    IDLE = "idle"
+    ORPHANED = "orphaned"
+    FAILED = "failed"
+
+
 class Task(BaseModel):
     """Task model for Redis storage
     
@@ -127,6 +140,12 @@ class Task(BaseModel):
     # Execution details
     attempt_count: int = 0
     error_message: Optional[str] = None
+
+    # Runtime-layer execution status (separate from collaboration status)
+    runtime_status: RuntimeTaskStatus = RuntimeTaskStatus.QUEUED
+    runtime_orphaned: bool = False
+    runtime_orphaned_at: Optional[datetime] = None
+    runtime_last_heartbeat: Optional[datetime] = None
 
     # Outcome tracking — ported from mission-control commit 6cf4256
     # outcome: final result category set when task transitions to DONE/FAILED
@@ -222,7 +241,7 @@ class Task(BaseModel):
         
         parsed = {}
         for key, value in data.items():
-            if key in ("created_at", "started_at", "completed_at", "archived_at", "deleted_at", "due_date"):
+            if key in ("created_at", "started_at", "completed_at", "archived_at", "deleted_at", "due_date", "runtime_orphaned_at", "runtime_last_heartbeat"):
                 parsed[key] = datetime.fromisoformat(value) if value else None
             elif key == "context":
                 parsed[key] = json.loads(value) if value else None
@@ -235,7 +254,7 @@ class Task(BaseModel):
                     parsed[key] = None
             elif key in ("loop_iteration", "loop_max_iterations"):
                 parsed[key] = int(value)
-            elif key in ("loop_enabled", "loop_keyword_found"):
+            elif key in ("loop_enabled", "loop_keyword_found", "runtime_orphaned"):
                 parsed[key] = value.lower() in ("true", "1", "yes")
             elif key == "loop_keywords":
                 parsed[key] = json.loads(value) if value else []
@@ -243,6 +262,11 @@ class Task(BaseModel):
                 parsed[key] = TaskPriority(value)
             elif key == "status":
                 parsed[key] = TaskStatus.from_legacy(value)
+            elif key == "runtime_status":
+                try:
+                    parsed[key] = RuntimeTaskStatus(value)
+                except ValueError:
+                    parsed[key] = RuntimeTaskStatus.QUEUED
             else:
                 parsed[key] = value
 

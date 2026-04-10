@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
 from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from enum import Enum
@@ -62,6 +64,8 @@ class TaskScheduler:
         task_queue: TaskQueue,
         poll_interval: float = 15.0,
         evolution_callback=None,
+        lock_name: str = "task_scheduler",
+        lock_ttl_seconds: int = 90,
     ):
         self._schedule_storage = schedule_storage
         self._task_queue = task_queue
@@ -79,6 +83,12 @@ class TaskScheduler:
         # this coroutine is called instead of creating a Task via TaskQueue.
         # Signature: async callback(schedule: Schedule) -> None
         self._evolution_callback = evolution_callback
+
+        # Scheduler lock (durable/takeover-safe)
+        self._lock_name = lock_name
+        self._lock_ttl_seconds = max(15, int(lock_ttl_seconds or 90))
+        self._lock_owner_id = f"scheduler-{uuid.uuid4().hex[:12]}"
+        self._has_lock = False
 
         logger.info(f"TaskScheduler initialized (poll_interval={poll_interval}s)")
 
@@ -128,7 +138,53 @@ class TaskScheduler:
                     pass
 
         self._state = SchedulerState.STOPPED
+        self._release_scheduler_lock()
         logger.info("TaskScheduler stopped")
+
+    def _acquire_or_refresh_scheduler_lock(self) -> bool:
+        """Acquire scheduler lock or refresh heartbeat if already owner."""
+        now = time.time()
+        with self._schedule_storage._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT lock_name, owner_id, heartbeat_at, ttl_seconds FROM scheduler_locks WHERE lock_name = ?",
+                (self._lock_name,),
+            ).fetchone()
+
+            if row is None:
+                conn.execute(
+                    "INSERT INTO scheduler_locks (lock_name, owner_id, heartbeat_at, ttl_seconds, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    (self._lock_name, self._lock_owner_id, now, self._lock_ttl_seconds, now),
+                )
+                self._has_lock = True
+                return True
+
+            owner_id = row[1]
+            heartbeat_at = float(row[2] or 0)
+            ttl_seconds = int(row[3] or self._lock_ttl_seconds)
+            expired = (now - heartbeat_at) > ttl_seconds
+
+            if owner_id == self._lock_owner_id or expired:
+                conn.execute(
+                    "UPDATE scheduler_locks SET owner_id = ?, heartbeat_at = ?, ttl_seconds = ?, updated_at = ? WHERE lock_name = ?",
+                    (self._lock_owner_id, now, self._lock_ttl_seconds, now, self._lock_name),
+                )
+                self._has_lock = True
+                return True
+
+        self._has_lock = False
+        return False
+
+    def _release_scheduler_lock(self) -> None:
+        """Release scheduler lock if this process owns it."""
+        try:
+            with self._schedule_storage._db.transaction() as conn:
+                conn.execute(
+                    "DELETE FROM scheduler_locks WHERE lock_name = ? AND owner_id = ?",
+                    (self._lock_name, self._lock_owner_id),
+                )
+            self._has_lock = False
+        except Exception:
+            logger.warning("Failed to release scheduler lock", exc_info=True)
 
     async def _main_loop(self) -> None:
         """Main polling loop."""
@@ -137,7 +193,10 @@ class TaskScheduler:
 
         while not self._shutdown_event.is_set():
             try:
-                await self._check_and_fire()
+                if self._acquire_or_refresh_scheduler_lock():
+                    await self._check_and_fire()
+                else:
+                    logger.debug("Scheduler lock held by another instance, skipping this tick")
             except Exception as e:
                 logger.error(f"Scheduler loop error: {e}", exc_info=True)
 
@@ -282,6 +341,12 @@ class TaskScheduler:
                 "last_run": self._watchdog_last_run,
                 "next_run": self._watchdog_next_run,
             },
+            "lock": {
+                "name": self._lock_name,
+                "owner_id": self._lock_owner_id,
+                "ttl_seconds": self._lock_ttl_seconds,
+                "acquired": self._has_lock,
+            },
         }
 
 
@@ -306,6 +371,8 @@ async def create_and_start_scheduler(
     task_queue: TaskQueue,
     poll_interval: float = 15.0,
     evolution_callback=None,
+    lock_name: str = "task_scheduler",
+    lock_ttl_seconds: int = 90,
 ) -> TaskScheduler:
     """Create and start a task scheduler.
 
@@ -321,6 +388,8 @@ async def create_and_start_scheduler(
         task_queue,
         poll_interval,
         evolution_callback=evolution_callback,
+        lock_name=lock_name,
+        lock_ttl_seconds=lock_ttl_seconds,
     )
     await scheduler.start()
     set_scheduler(scheduler)

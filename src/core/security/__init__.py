@@ -26,6 +26,21 @@ from src.core.security.auditor import (
     log_security_event,
     run_security_scan,
 )
+from src.core.security.hook_profiles import (
+    HookProfile,
+    HookProfileLevel,
+    get_active_profile,
+    get_rate_limit_multiplier,
+    set_active_profile,
+    should_audit_mcp_calls,
+    should_block_on_secret_detection,
+    should_scan_secrets,
+)
+from src.core.security.trust_scoring import (
+    AgentTrustScoringService,
+    TrustScoreBreakdown,
+    get_trust_scoring_service,
+)
 
 __all__ = [
     "SecurityAuditor",
@@ -42,4 +57,15 @@ __all__ = [
     "log_security_event",
     "get_security_posture",
     "run_security_scan",
+    "HookProfile",
+    "HookProfileLevel",
+    "get_active_profile",
+    "set_active_profile",
+    "should_scan_secrets",
+    "should_audit_mcp_calls",
+    "should_block_on_secret_detection",
+    "get_rate_limit_multiplier",
+    "AgentTrustScoringService",
+    "TrustScoreBreakdown",
+    "get_trust_scoring_service",
 ]

@@ -9,6 +9,11 @@ Endpoints:
   - PATCH /api/nexus/agents/{id}/status — Update agent status
   - DELETE /api/nexus/agents/{id}       — Deregister an agent
   - GET  /api/nexus/agents/stats        — Agent count by status
+  - POST /api/nexus/agents/teams        — Create a swarm team
+  - GET  /api/nexus/agents/teams/{name} — Get team status
+  - POST /api/nexus/agents/teams/{name}/shutdown — Shutdown a team
+  - GET  /api/nexus/agents/teams/{name}/mailbox/{agent} — Get agent mailbox
+  - POST /api/nexus/agents/teams/{name}/tasks/claim — Claim a task
 """
 
 from __future__ import annotations
@@ -75,6 +80,37 @@ class AgentListResponse(BaseModel):
 class AgentStatsResponse(BaseModel):
     counts: dict
     total: int
+
+
+# ---------------------------------------------------------------------------
+# Swarm team request / response models
+# ---------------------------------------------------------------------------
+
+class TeamWorkerConfig(BaseModel):
+    name: str = Field(..., description="Worker name")
+    capabilities: List[str] = Field(default_factory=list, description="Worker capabilities")
+    task: str = Field("", description="Initial task description for the worker")
+
+
+class TeamLeadConfig(BaseModel):
+    name: str = Field("lead", description="Lead agent name")
+    capabilities: List[str] = Field(default_factory=list, description="Lead capabilities")
+    task: str = Field("", description="Initial task description for the lead")
+
+
+class TeamCreateRequest(BaseModel):
+    name: str = Field(..., description="Team name", min_length=1, max_length=100)
+    lead: TeamLeadConfig = Field(default_factory=TeamLeadConfig, description="Lead agent config")
+    workers: List[TeamWorkerConfig] = Field(default_factory=list, description="Worker agent configs")
+
+
+class TeamShutdownRequest(BaseModel):
+    graceful: bool = Field(True, description="Graceful shutdown (negotiate) vs immediate cancel")
+
+
+class TaskClaimRequest(BaseModel):
+    agent_name: str = Field(..., description="Agent claiming the task")
+    task_id: str = Field(..., description="Task ID to claim")
 
 
 # ---------------------------------------------------------------------------
@@ -194,3 +230,93 @@ async def deregister_agent(agent_id: str):
     if not reg.deregister(agent_id):
         raise HTTPException(404, detail=f"Agent not found: {agent_id}")
     return {"success": True, "agent_id": agent_id}
+
+
+# ---------------------------------------------------------------------------
+# Swarm team endpoints
+# ---------------------------------------------------------------------------
+
+def _get_subagent_manager():
+    """Resolve the global SubagentManager instance."""
+    from src.nanobot.agent.subagent import get_subagent_manager
+    mgr = get_subagent_manager()
+    if mgr is None:
+        raise HTTPException(503, detail="SubagentManager not available")
+    return mgr
+
+
+@router.post("/agents/teams", status_code=201)
+async def create_team(req: TeamCreateRequest):
+    """Create a swarm team with a lead and workers."""
+    mgr = _get_subagent_manager()
+
+    team_config = {
+        "name": req.name,
+        "lead": {
+            "name": req.lead.name,
+            "capabilities": req.lead.capabilities,
+            "task": req.lead.task,
+        },
+        "workers": [
+            {
+                "name": w.name,
+                "capabilities": w.capabilities,
+                "task": w.task,
+            }
+            for w in req.workers
+        ],
+    }
+
+    result = await mgr.spawn_team(team_config)
+    return {"success": True, "team_name": req.name, "detail": result}
+
+
+@router.get("/agents/teams/{team_name}")
+async def get_team_status(team_name: str):
+    """Get the current status of a swarm team."""
+    mgr = _get_subagent_manager()
+    status = mgr.get_team_status(team_name)
+    if "error" in status:
+        raise HTTPException(404, detail=status["error"])
+    return status
+
+
+@router.post("/agents/teams/{team_name}/shutdown")
+async def shutdown_team(team_name: str, req: TeamShutdownRequest):
+    """Shutdown a swarm team."""
+    mgr = _get_subagent_manager()
+    result = await mgr.shutdown_team(team_name, graceful=req.graceful)
+    return {"success": True, "detail": result}
+
+
+@router.get("/agents/teams/{team_name}/mailbox/{agent_name}")
+async def get_agent_mailbox(team_name: str, agent_name: str):
+    """Get mailbox messages for a specific agent in a team."""
+    mgr = _get_subagent_manager()
+    handle = mgr._teams.get(team_name)
+    if not handle:
+        raise HTTPException(404, detail=f"Team not found: {team_name}")
+
+    mailbox = handle["mailbox"]
+    messages = mailbox.receive(agent_name)
+    return {
+        "team_name": team_name,
+        "agent_name": agent_name,
+        "messages": [m.to_dict() for m in messages],
+        "unread_count": mailbox.get_unread_count(agent_name),
+    }
+
+
+@router.post("/agents/teams/{team_name}/tasks/claim")
+async def claim_team_task(team_name: str, req: TaskClaimRequest):
+    """Claim a task from the team task board."""
+    mgr = _get_subagent_manager()
+    handle = mgr._teams.get(team_name)
+    if not handle:
+        raise HTTPException(404, detail=f"Team not found: {team_name}")
+
+    coordinator = handle["coordinator"]
+    success = coordinator.claim_task(req.agent_name, req.task_id)
+    if not success:
+        raise HTTPException(409, detail=f"Task {req.task_id} not available for claiming")
+    return {"success": True, "task_id": req.task_id, "claimed_by": req.agent_name}

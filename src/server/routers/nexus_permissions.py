@@ -1,10 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Runtime permission mode management API.
+"""Runtime permission mode and plan mode management API.
 
-Endpoints:
-  - GET  /api/nexus/permissions         — current permission mode and stats
-  - PUT  /api/nexus/permissions/mode    — change the permission mode
-  - POST /api/nexus/permissions/cache/clear — clear the permission cache
+Permission Endpoints:
+  - GET  /api/nexus/permissions              — current permission mode and stats
+  - PUT  /api/nexus/permissions/mode         — change the permission mode
+  - POST /api/nexus/permissions/cache/clear  — clear the permission cache
+
+Plan Mode Endpoints:
+  - POST /api/nexus/plan/enter    — enter plan mode (read-only)
+  - POST /api/nexus/plan/submit   — submit a plan for approval
+  - POST /api/nexus/plan/approve  — approve plan, switch to execution
+  - POST /api/nexus/plan/reject   — reject plan, stay in plan mode
+  - GET  /api/nexus/plan/status   — current plan mode status
+  - POST /api/nexus/plan/exit     — exit plan mode without approving
 """
 
 from __future__ import annotations
@@ -54,26 +62,55 @@ class CacheClearResponse(BaseModel):
     message: str = "Permission cache cleared"
 
 
+class PlanSubmitRequest(BaseModel):
+    """Request body for submitting a plan."""
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="The plan content to submit for approval",
+    )
+
+
+class PlanStatusResponse(BaseModel):
+    """Response with current plan mode status."""
+    plan_mode: bool
+    plan_content: str | None = None
+    plan_approved: bool = False
+    permission_mode: str
+
+
+class PlanActionResponse(BaseModel):
+    """Response after a plan mode action."""
+    success: bool
+    message: str
+
+
 # ---------------------------------------------------------------------------
-# Helper — get the permission gate from the running agent loop
+# Helper — get the agent loop
 # ---------------------------------------------------------------------------
+
+def _get_agent_loop():
+    """Get the active AgentLoop from the server runtime.
+
+    Returns None if no loop is running.
+    """
+    try:
+        from ..app import get_agent_loop
+        return get_agent_loop()
+    except Exception:
+        return None
+
 
 def _get_permission_gate():
-    """Get the active PermissionGate from the server's agent loop.
-
-    The agent loop is stored on the app state during startup.
-    Returns None if the loop is not running.
-    """
-    # Import here to avoid circular imports
-    from ..app import get_agent_loop
-    loop = get_agent_loop()
+    """Get the active PermissionGate from the server's agent loop."""
+    loop = _get_agent_loop()
     if loop is None:
         return None
     return loop.permission_gate
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Permission Routes
 # ---------------------------------------------------------------------------
 
 @router.get("/permissions", response_model=PermissionModeResponse)
@@ -135,3 +172,172 @@ async def clear_permission_cache():
     logger.info("Permission cache cleared via API")
 
     return CacheClearResponse()
+
+
+# ---------------------------------------------------------------------------
+# Plan Mode Routes
+# ---------------------------------------------------------------------------
+
+@router.post("/plan/enter", response_model=PlanActionResponse)
+async def enter_plan_mode():
+    """Enter plan mode — only read-only tools are allowed.
+
+    The previous permission mode is saved and will be restored when plan mode
+    is exited (either via approve or explicit exit).
+    """
+    loop = _get_agent_loop()
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Agent loop not running")
+
+    if loop._plan_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Already in plan mode. Use /api/nexus/plan/exit to leave, "
+                   "or /api/nexus/plan/submit to submit a plan.",
+        )
+
+    loop.enter_plan_mode()
+    logger.info("Plan mode entered via API")
+
+    return PlanActionResponse(
+        success=True,
+        message="Entered plan mode. Only read-only tools are allowed. "
+                "Submit a plan for approval when ready.",
+    )
+
+
+@router.post("/plan/submit", response_model=PlanActionResponse)
+async def submit_plan(req: PlanSubmitRequest):
+    """Submit a plan for approval.
+
+    The plan content is stored and can be approved or rejected.
+    While in plan mode, only read-only exploration is allowed.
+    """
+    loop = _get_agent_loop()
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Agent loop not running")
+
+    if not loop._plan_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Not in plan mode. Use /api/nexus/plan/enter first.",
+        )
+
+    try:
+        loop.submit_plan(req.content)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    logger.info("Plan submitted via API ({} chars)", len(req.content))
+
+    return PlanActionResponse(
+        success=True,
+        message="Plan submitted. Use /api/nexus/plan/approve to approve "
+                "and switch to execution mode, or /api/nexus/plan/reject to revise.",
+    )
+
+
+@router.post("/plan/approve", response_model=PlanActionResponse)
+async def approve_plan():
+    """Approve the current plan and switch to execution mode.
+
+    Exits plan mode and restores the previous permission mode,
+    allowing full tool access for execution.
+    """
+    loop = _get_agent_loop()
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Agent loop not running")
+
+    if not loop._plan_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Not in plan mode.",
+        )
+
+    if loop._plan_content is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No plan has been submitted. Use /api/nexus/plan/submit first.",
+        )
+
+    try:
+        loop.approve_plan()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    logger.info("Plan approved via API — switched to execution mode")
+
+    return PlanActionResponse(
+        success=True,
+        message="Plan approved. Switched to execution mode with full tool access.",
+    )
+
+
+@router.post("/plan/reject", response_model=PlanActionResponse)
+async def reject_plan():
+    """Reject the current plan. Remains in plan mode for revision.
+
+    Clears the submitted plan content so a new one can be submitted.
+    """
+    loop = _get_agent_loop()
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Agent loop not running")
+
+    if not loop._plan_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Not in plan mode.",
+        )
+
+    try:
+        loop.reject_plan()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    logger.info("Plan rejected via API — remaining in plan mode")
+
+    return PlanActionResponse(
+        success=True,
+        message="Plan rejected. Revise and resubmit with /api/nexus/plan/submit.",
+    )
+
+
+@router.get("/plan/status", response_model=PlanStatusResponse)
+async def get_plan_status():
+    """Get the current plan mode status, including any submitted plan content."""
+    loop = _get_agent_loop()
+    if loop is None:
+        return PlanStatusResponse(
+            plan_mode=False,
+            plan_content=None,
+            plan_approved=False,
+            permission_mode="auto",
+        )
+
+    status = loop.get_plan_status()
+    return PlanStatusResponse(**status)
+
+
+@router.post("/plan/exit", response_model=PlanActionResponse)
+async def exit_plan_mode():
+    """Exit plan mode without approving a plan.
+
+    Restores the previous permission mode and discards any submitted plan.
+    """
+    loop = _get_agent_loop()
+    if loop is None:
+        raise HTTPException(status_code=503, detail="Agent loop not running")
+
+    if not loop._plan_mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Not in plan mode.",
+        )
+
+    loop.exit_plan_mode()
+    logger.info("Plan mode exited via API (no approval)")
+
+    return PlanActionResponse(
+        success=True,
+        message="Exited plan mode. Full tool access restored.",
+    )

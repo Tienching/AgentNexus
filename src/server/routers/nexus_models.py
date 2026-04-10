@@ -98,6 +98,10 @@ class TaskItem(BaseModel):
     updated_at: Optional[datetime] = None
     attempt_count: int = 0
     error_message: Optional[str] = None
+    runtime_status: Optional[str] = None
+    runtime_orphaned: bool = False
+    runtime_orphaned_at: Optional[datetime] = None
+    runtime_last_heartbeat: Optional[datetime] = None
     # Outcome tracking — ported from mission-control commit 6cf4256
     outcome: Optional[str] = None
     resolution: Optional[str] = None
@@ -105,7 +109,20 @@ class TaskItem(BaseModel):
     feedback_notes: Optional[str] = None
     exec_user: Optional[str] = None
     session_id: Optional[str] = None
+    source_session_id: Optional[str] = None
     depends_on: List[str] = Field(default_factory=list)
+    # GitHub linkage (MC-041)
+    github_repo: Optional[str] = None
+    github_issue_number: Optional[int] = None
+    github_url: Optional[str] = None
+    github_state: Optional[str] = None
+    # Aegis quality metadata (MC-044/MC-045)
+    aegis_approved: bool = False
+    aegis_status: Optional[str] = None
+    aegis_reviewer: Optional[str] = None
+    aegis_notes: Optional[str] = None
+    aegis_reviewed_at: Optional[float] = None
+    aegis_reason: Optional[str] = None
     # Ralph Loop fields
     loop_enabled: bool = False
     loop_iteration: int = 0
@@ -182,6 +199,10 @@ class BulkCreateTaskResponse(BaseModel):
 
 class UpdateTaskStatusRequest(BaseModel):
     status: str = Field(..., description="New task status (inbox/assigned/awaiting_owner/in_progress/review/quality_review/done/failed/cancelled/archived)")
+
+
+class RequeueOrphanTaskRequest(BaseModel):
+    reason: Optional[str] = Field(None, description="Optional requeue reason")
 
 
 class UpdateTaskOutcomeRequest(BaseModel):
@@ -402,6 +423,7 @@ class TaskComment(BaseModel):
     content: str
     created_at: float          # POSIX timestamp
     parent_id: Optional[str] = None
+    mentions: List[str] = Field(default_factory=list)
     replies: List["TaskComment"] = Field(default_factory=list)
 
 
@@ -417,13 +439,96 @@ class CreateCommentRequest(BaseModel):
     parent_id: Optional[str] = Field(None, description="ID of parent comment for replies")
 
 
-def task_to_item(task) -> TaskItem:
+class QualityReviewItem(BaseModel):
+    id: int
+    task_id: str
+    reviewer: str
+    status: str
+    notes: str = ""
+    created_at: float
+
+
+class TaskQualityReviewsResponse(BaseModel):
+    task_id: str
+    gate_allowed: bool = False
+    gate_reason: str = ""
+    latest_review: Optional[QualityReviewItem] = None
+    reviews: List[QualityReviewItem] = Field(default_factory=list)
+
+
+class SubmitQualityReviewRequest(BaseModel):
+    reviewer: str = Field(default="aegis", description="Reviewer identifier")
+    status: str = Field(..., description="approved | rejected | needs_changes")
+    notes: Optional[str] = Field(default="", description="Review notes")
+
+
+class BroadcastTaskRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="Broadcast message")
+    sender: str = Field(default="user", description="Sender identifier")
+    include_assignee: bool = Field(default=True, description="Include task assignee in recipients")
+
+
+class BroadcastTaskResponse(BaseModel):
+    task_id: str
+    recipients: List[str] = Field(default_factory=list)
+    delivered: int = 0
+
+
+def extract_mentions(content: str) -> List[str]:
+    """Extract @mentions from comment content, preserving order and uniqueness."""
+    if not content:
+        return []
+    hits = re.findall(r"(?:^|[\s\(\[\{])@([A-Za-z0-9_.-]{1,64})", content)
+    seen = set()
+    ordered: List[str] = []
+    for h in hits:
+        key = h.strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
+def task_to_item(task, latest_quality_review=None, gate_allowed: Optional[bool] = None, gate_reason: Optional[str] = None) -> TaskItem:
     """Convert a storage Task to a TaskItem response model."""
     status_val = task.status if isinstance(task.status, str) else task.status.value
     priority_val = task.priority if isinstance(task.priority, str) else task.priority.value
     session_id = getattr(task, "session_id", None) or f"task_{task.id}"
+    source_session_id = getattr(task, "source_session_id", None)
     depends_on = getattr(task, "depends_on", None) or []
     effective_status = "waiting_for_owner" if detect_waiting_for_owner(task) else None
+
+    context = getattr(task, "context", None)
+    if not isinstance(context, dict):
+        context = {}
+
+    github_repo = _str_or_none(context.get("github_repo"))
+    github_issue_number = _int_or_none(context.get("github_issue_number"))
+    github_url = _str_or_none(context.get("github_url"))
+    github_state = _str_or_none(context.get("github_state"))
+
+    aegis_status = None
+    aegis_reviewer = None
+    aegis_notes = None
+    aegis_reviewed_at = None
+    aegis_approved = False
+    if latest_quality_review is not None:
+        status_obj = getattr(latest_quality_review, "status", None)
+        aegis_status = status_obj.value if hasattr(status_obj, "value") else _str_or_none(status_obj)
+        aegis_reviewer = _str_or_none(getattr(latest_quality_review, "reviewer", None))
+        aegis_notes = _str_or_none(getattr(latest_quality_review, "notes", None))
+        try:
+            created_at_raw = getattr(latest_quality_review, "created_at", None)
+            aegis_reviewed_at = float(created_at_raw) if created_at_raw is not None else None
+        except Exception:
+            aegis_reviewed_at = None
+
+    if gate_allowed is not None:
+        aegis_approved = bool(gate_allowed)
+    elif aegis_status:
+        aegis_approved = aegis_status == "approved"
+
     return TaskItem(
         id=str(task.id),
         description=task.description,
@@ -444,13 +549,28 @@ def task_to_item(task) -> TaskItem:
         updated_at=task_updated_at(task),
         attempt_count=int(task.attempt_count or 0),
         error_message=task.error_message,
+        runtime_status=_str_or_none(getattr(task, "runtime_status", None)),
+        runtime_orphaned=bool(getattr(task, "runtime_orphaned", False)),
+        runtime_orphaned_at=getattr(task, "runtime_orphaned_at", None),
+        runtime_last_heartbeat=getattr(task, "runtime_last_heartbeat", None),
         outcome=_str_or_none(getattr(task, "outcome", None)),
         resolution=_str_or_none(getattr(task, "resolution", None)),
         feedback_rating=_int_or_none(getattr(task, "feedback_rating", None)),
         feedback_notes=_str_or_none(getattr(task, "feedback_notes", None)),
         exec_user=task.exec_user,
         session_id=session_id,
+        source_session_id=source_session_id,
         depends_on=depends_on,
+        github_repo=github_repo,
+        github_issue_number=github_issue_number,
+        github_url=github_url,
+        github_state=github_state,
+        aegis_approved=aegis_approved,
+        aegis_status=aegis_status,
+        aegis_reviewer=aegis_reviewer,
+        aegis_notes=aegis_notes,
+        aegis_reviewed_at=aegis_reviewed_at,
+        aegis_reason=gate_reason,
         loop_enabled=getattr(task, "loop_enabled", False),
         loop_iteration=getattr(task, "loop_iteration", 0),
         loop_max_iterations=getattr(task, "loop_max_iterations", 1),

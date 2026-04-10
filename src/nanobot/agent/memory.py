@@ -95,6 +95,51 @@ class MemoryStore:
         with open(self.history_file, "a", encoding="utf-8") as f:
             f.write(entry.rstrip() + "\n\n")
 
+    def read_history(self) -> str:
+        if self.history_file.exists():
+            return self.history_file.read_text(encoding="utf-8")
+        return ""
+
+    @staticmethod
+    def _split_history_entries(history_text: str) -> list[str]:
+        if not history_text:
+            return []
+        return [chunk.strip() for chunk in history_text.split("\n\n") if chunk.strip()]
+
+    def get_memory_state(self) -> dict[str, int | bool]:
+        long_term = self.read_long_term()
+        history_text = self.read_history()
+        entries = self._split_history_entries(history_text)
+        return {
+            "has_long_term_memory": bool(long_term.strip()),
+            "has_history": bool(history_text.strip()),
+            "long_term_chars": len(long_term),
+            "history_chars": len(history_text),
+            "history_entries": len(entries),
+        }
+
+    def build_recovery_context(self, max_chars: int = 8000, max_entries: int = 8) -> str:
+        """Build a compact recovery context from long-term memory + recent history."""
+        long_term = (self.read_long_term() or "").strip()
+        history_entries = self._split_history_entries(self.read_history())
+        tail_entries = history_entries[-max(1, max_entries):]
+
+        sections: list[str] = []
+        if long_term:
+            sections.append(f"## Long-term Memory\n{long_term}")
+        if tail_entries:
+            sections.append("## Recent Consolidated History\n" + "\n\n".join(tail_entries))
+
+        if not sections:
+            return ""
+
+        out = "\n\n".join(sections)
+        max_chars = max(512, int(max_chars or 0))
+        if len(out) > max_chars:
+            out = out[-max_chars:]
+            out = "…(truncated)\n" + out
+        return out
+
     def get_memory_context(self) -> str:
         long_term = self.read_long_term()
         return f"## Long-term Memory\n{long_term}" if long_term else ""
@@ -255,6 +300,10 @@ class MemoryConsolidator:
         """Archive a selected message chunk into persistent memory."""
         return await self.store.consolidate(messages, self.provider, self.model)
 
+    def build_restore_context(self, max_chars: int = 8000, max_entries: int = 8) -> str:
+        """Expose compact context rebuilt from consolidated memory files."""
+        return self.store.build_recovery_context(max_chars=max_chars, max_entries=max_entries)
+
     def pick_consolidation_boundary(
         self,
         session: Session,
@@ -359,6 +408,16 @@ class MemoryConsolidator:
                 if not await self.consolidate_messages(chunk):
                     return
                 session.last_consolidated = end_idx
+                try:
+                    memory_state = self.store.get_memory_state()
+                    session.metadata["memory_state"] = {
+                        **memory_state,
+                        "last_consolidated": session.last_consolidated,
+                        "working_messages": max(0, len(session.messages) - session.last_consolidated),
+                        "updated_at": datetime.now().isoformat(),
+                    }
+                except Exception:
+                    logger.exception("Failed to update session memory_state metadata")
                 self.sessions.save(session)
 
                 estimated, source = self.estimate_session_prompt_tokens(session)
