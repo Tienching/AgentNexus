@@ -117,7 +117,7 @@
       "dependencies": [
         "MC-009"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-011",
@@ -261,7 +261,7 @@
       "target_location": "src/core/evals/framework.py",
       "complexity": "high",
       "dependencies": [],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-024",
@@ -814,6 +814,6 @@
       "UI": 22,
       "Storage": 2
     },
-    "passed_tasks": 22
+    "passed_tasks": 24
   }
 }
