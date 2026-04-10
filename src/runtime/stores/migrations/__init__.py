@@ -26,6 +26,7 @@ _MIGRATION_MODULES = [
     "src.runtime.stores.migrations.v005_run_tables",
     "src.runtime.stores.migrations.v006_feature_flag_tables",
     "src.runtime.stores.migrations.v007_task_workflow_columns",
+    "src.runtime.stores.migrations.v008_activities_table",
 ]
 
 

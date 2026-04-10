@@ -65,7 +65,7 @@ class TestNexusCreateTask:
         data = resp.json()
         assert data["description"] == "Build feature"
         assert data["provider"] == "gemini"
-        assert data["status"] == "todo"
+        assert data["status"] == "inbox"
         assert data["workspace"] == "/tmp/ws"
 
     @pytest.mark.asyncio

@@ -443,6 +443,280 @@ async def diagnostics():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Doctor — User-friendly self-diagnosis and log bundling
+# ═══════════════════════════════════════════════════════════════════════════
+
+class DoctorCheck(BaseModel):
+    """A single diagnostic check result."""
+    name: str
+    status: str  # "pass", "fail", "warn"
+    message: str
+    detail: Optional[str] = None
+
+
+class DoctorResponse(BaseModel):
+    """User-friendly doctor/self-diagnosis response."""
+    healthy: bool
+    version: str
+    checks: List[DoctorCheck]
+    summary: str  # Human-readable summary
+
+
+@router.get("/doctor", response_model=DoctorResponse, summary="Run self-diagnosis")
+async def doctor():
+    """User-friendly self-diagnosis for troubleshooting.
+
+    Provides a simple pass/fail/warn status for common issues:
+    - Database connectivity
+    - Redis connectivity
+    - Authentication configured
+    - Environment variables
+    - Disk space
+    - Memory usage
+
+    Returns a summary and suggestion for next steps if issues are found.
+    """
+    import shutil
+    import asyncio
+
+    checks: List[DoctorCheck] = []
+    all_passed = True
+
+    # Check 1: Python environment
+    checks.append(DoctorCheck(
+        name="python",
+        status="pass",
+        message=f"Python {platform.python_version()} running correctly",
+    ))
+
+    # Check 2: Disk space
+    try:
+        usage = shutil.disk_usage("/")
+        free_gb = usage.free / (1024**3)
+        if free_gb < 1:
+            checks.append(DoctorCheck(
+                name="disk_space",
+                status="fail",
+                message=f"Low disk space: {free_gb:.1f}GB free",
+                detail="Less than 1GB free. Clean up old logs or data.",
+            ))
+            all_passed = False
+        elif free_gb < 5:
+            checks.append(DoctorCheck(
+                name="disk_space",
+                status="warn",
+                message=f"Disk space running low: {free_gb:.1f}GB free",
+                detail="Consider cleaning up old logs or data.",
+            ))
+        else:
+            checks.append(DoctorCheck(
+                name="disk_space",
+                status="pass",
+                message=f"Disk space OK: {free_gb:.1f}GB free",
+            ))
+    except Exception as e:
+        checks.append(DoctorCheck(
+            name="disk_space",
+            status="warn",
+            message="Could not check disk space",
+            detail=str(e),
+        ))
+
+    # Check 3: Memory usage
+    try:
+        mem = resource.getrusage(resource.RUSAGE_SELF)
+        mem_mb = mem.ru_maxrss / 1024  # KB to MB
+        if mem_mb > 1000:
+            checks.append(DoctorCheck(
+                name="memory",
+                status="warn",
+                message=f"High memory usage: {mem_mb:.0f}MB",
+                detail="Memory usage is high but within acceptable range.",
+            ))
+        else:
+            checks.append(DoctorCheck(
+                name="memory",
+                status="pass",
+                message=f"Memory OK: {mem_mb:.0f}MB used",
+            ))
+    except Exception as e:
+        checks.append(DoctorCheck(
+            name="memory",
+            status="warn",
+            message="Could not check memory usage",
+            detail=str(e),
+        ))
+
+    # Check 4: Database
+    try:
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        with db.conn() as conn:
+            conn.execute("SELECT 1")
+        checks.append(DoctorCheck(
+            name="database",
+            status="pass",
+            message="SQLite database connected",
+            detail=f"Database: {db.db_path}",
+        ))
+    except Exception as e:
+        checks.append(DoctorCheck(
+            name="database",
+            status="fail",
+            message="Database connection failed",
+            detail=str(e),
+        ))
+        all_passed = False
+
+    # Check 5: Redis
+    redis_connected = False
+    try:
+        rc = get_redis_client()
+        if rc.ping():
+            redis_connected = True
+            checks.append(DoctorCheck(
+                name="redis",
+                status="pass",
+                message="Redis connected",
+            ))
+        else:
+            checks.append(DoctorCheck(
+                name="redis",
+                status="warn",
+                message="Redis ping failed",
+                detail="Redis may be unavailable but app can still function.",
+            ))
+    except Exception as e:
+        checks.append(DoctorCheck(
+            name="redis",
+            status="warn",
+            message="Redis not configured",
+            detail="App will use in-memory fallback. Set REDIS_URL to enable full functionality.",
+        ))
+
+    # Check 6: Authentication
+    nexus_pw = getattr(settings, "nexus_password", None) or ""
+    if nexus_pw and len(nexus_pw) >= 8:
+        checks.append(DoctorCheck(
+            name="authentication",
+            status="pass",
+            message="Authentication configured",
+        ))
+    else:
+        checks.append(DoctorCheck(
+            name="authentication",
+            status="warn",
+            message="Authentication may not be configured",
+            detail="Set NEXUS_PASSWORD to protect the API.",
+        ))
+
+    # Check 7: Environment
+    env = os.environ.get("ENVIRONMENT", os.environ.get("ENV", "development"))
+    if env == "production":
+        checks.append(DoctorCheck(
+            name="environment",
+            status="pass",
+            message="Running in production mode",
+        ))
+    else:
+        checks.append(DoctorCheck(
+            name="environment",
+            status="warn",
+            message=f"Running in {env} mode",
+            detail="For production, set ENVIRONMENT=production.",
+        ))
+
+    # Check 8: API keys (optional but warned)
+    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
+    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    if has_openai or has_anthropic:
+        checks.append(DoctorCheck(
+            name="api_keys",
+            status="pass",
+            message="At least one API key configured",
+        ))
+    else:
+        checks.append(DoctorCheck(
+            name="api_keys",
+            status="warn",
+            message="No API keys found",
+            detail="Set OPENAI_API_KEY or ANTHROPIC_API_KEY to enable LLM features.",
+        ))
+
+    # Generate summary
+    fail_count = sum(1 for c in checks if c.status == "fail")
+    warn_count = sum(1 for c in checks if c.status == "warn")
+
+    if fail_count > 0:
+        summary = f"Found {fail_count} failure(s) and {warn_count} warning(s). See details for troubleshooting."
+        healthy = False
+    elif warn_count > 0:
+        summary = f"Healthy with {warn_count} warning(s). Review warnings for potential issues."
+        healthy = True
+    else:
+        summary = "All checks passed. System is healthy."
+        healthy = True
+
+    return DoctorResponse(
+        healthy=healthy,
+        version=getattr(settings, "version", "0.1.0") if hasattr(settings, "version") else "0.1.0",
+        checks=checks,
+        summary=summary,
+    )
+
+
+@router.get("/doctor/bundle", summary="Bundle diagnostic information for support")
+async def doctor_bundle():
+    """Bundle diagnostic information for support/debugging.
+
+    Returns a JSON object containing:
+    - System info
+    - Recent error logs (if available)
+    - Configuration (non-sensitive)
+    - Diagnostics output
+
+    This bundle can be shared with support to help diagnose issues.
+    """
+    from src.server.logger import get_logger
+
+    bundle: Dict[str, Any] = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "version": getattr(settings, "version", "0.1.0") if hasattr(settings, "version") else "0.1.0",
+    }
+
+    # Add system info
+    bundle["system"] = _get_system_info().model_dump()
+
+    # Add version info
+    bundle["version_info"] = _get_version_info().model_dump()
+
+    # Add diagnostics
+    try:
+        import asyncio
+        system = _get_system_info()
+        version = _get_version_info()
+        security = _get_security_info()
+        redis = await asyncio.get_event_loop().run_in_executor(None, _get_redis_info)
+        bundle["diagnostics"] = {
+            "security_score": security.score,
+            "redis_connected": redis.connected,
+            "system": system.model_dump(),
+        }
+    except Exception as e:
+        bundle["diagnostics_error"] = str(e)
+
+    # Add recent logs (last 50 lines from logger if available)
+    try:
+        logger_instance = get_logger()
+        # Get recent log entries if possible
+        bundle["logs"] = "Log retrieval not implemented - check server logs directly"
+    except Exception:
+        bundle["logs"] = "Logger not accessible"
+
+    return bundle
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Observability — telemetry, latency, cost metrics
 # ═══════════════════════════════════════════════════════════════════════════
 
