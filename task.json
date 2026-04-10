@@ -560,7 +560,7 @@
       "target_location": "src/core/stores/sqlite_backend.py",
       "complexity": "medium",
       "dependencies": [],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-049",
@@ -814,6 +814,6 @@
       "UI": 22,
       "Storage": 2
     },
-    "passed_tasks": 24
+    "passed_tasks": 25
   }
 }
