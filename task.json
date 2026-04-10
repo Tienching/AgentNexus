@@ -83,7 +83,7 @@
       "target_location": "src/nanobot/skills/registry.py",
       "complexity": "high",
       "dependencies": [],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-008",
@@ -814,6 +814,6 @@
       "UI": 22,
       "Storage": 2
     },
-    "passed_tasks": 27
+    "passed_tasks": 28
   }
 }
