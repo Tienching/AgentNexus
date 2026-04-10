@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Global alias -> provider registry.
 
-Stores alias-to-provider mappings in Redis Hash so that users can specify
+Stores alias-to-provider mappings in SQLite so that users can specify
 ``-l claude-internal`` without needing ``-r claude`` every time.
 
 Built-in aliases (e.g. ``claude-internal -> claude``) are always available
@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-from .redis_client import get_redis_client, RedisClient
+from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,7 @@ KNOWN_PROVIDERS = frozenset({"claude", "codex", "gemini", "codebuddy"})
 
 
 class AliasRegistry:
-    """Global alias -> provider mapping stored in Redis."""
-
-    REDIS_KEY = "alias:registry"
+    """Global alias -> provider mapping stored in SQLite."""
 
     # Built-in aliases that don't need explicit registration.
     # Keys are alias names, values are the canonical provider.
@@ -38,8 +36,8 @@ class AliasRegistry:
         "codebuddy": "codebuddy",
     }
 
-    def __init__(self, redis_client: Optional[RedisClient] = None):
-        self._redis = redis_client or get_redis_client()
+    def __init__(self, db: Optional[Database] = None):
+        self._db = db or get_db()
 
     # ------------------------------------------------------------------
     # Public API
@@ -48,7 +46,7 @@ class AliasRegistry:
     def register(self, alias: str, provider: str) -> bool:
         """Register an alias -> provider mapping.
 
-        Returns True on success, False on Redis failure.
+        Returns True on success, False on failure.
         Raises ValueError for invalid inputs.
         """
         alias = (alias or "").strip().lower()
@@ -63,7 +61,11 @@ class AliasRegistry:
                 f"Must be one of: {', '.join(sorted(KNOWN_PROVIDERS))}"
             )
         try:
-            self._redis.hset(self.REDIS_KEY, {alias: provider})
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO aliases (name, target) VALUES (?, ?)",
+                    (alias, provider),
+                )
             logger.info(f"Registered alias: {alias} -> {provider}")
             return True
         except Exception as e:
@@ -73,18 +75,20 @@ class AliasRegistry:
     def resolve(self, alias: str) -> Optional[str]:
         """Resolve alias to its provider.
 
-        Lookup order: Redis registry -> BUILTIN map.
+        Lookup order: SQLite registry -> BUILTIN map.
         Returns None if not found.
         """
         alias = (alias or "").strip().lower()
         if not alias:
             return None
 
-        # 1. Check Redis
+        # 1. Check SQLite
         try:
-            val = self._redis.hget(self.REDIS_KEY, alias)
-            if val:
-                return val
+            row = self._db.execute_fetchone(
+                "SELECT target FROM aliases WHERE name = ?", (alias,)
+            )
+            if row and row.get("target"):
+                return row["target"]
         except Exception as e:
             logger.warning(f"Failed to query alias registry: {e}")
 
@@ -104,8 +108,11 @@ class AliasRegistry:
             logger.warning(f"Cannot unregister built-in alias: {alias}")
             return False
         try:
-            removed = self._redis.hdel(self.REDIS_KEY, alias)
-            return removed > 0
+            with self._db.transaction() as conn:
+                cursor = conn.execute(
+                    "DELETE FROM aliases WHERE name = ?", (alias,)
+                )
+                return cursor.rowcount > 0
         except Exception as e:
             logger.error(f"Failed to unregister alias: {e}")
             return False
@@ -117,9 +124,9 @@ class AliasRegistry:
         """
         result = dict(self.BUILTIN)
         try:
-            registered = self._redis.hgetall(self.REDIS_KEY)
-            if registered:
-                result.update(registered)
+            rows = self._db.execute_fetchall("SELECT name, target FROM aliases")
+            for row in rows:
+                result[row["name"]] = row["target"]
         except Exception as e:
             logger.warning(f"Failed to list alias registry: {e}")
         return result

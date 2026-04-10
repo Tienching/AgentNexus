@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Redis schedule storage for cron-based periodic tasks.
+"""SQLite schedule storage for cron-based periodic tasks.
 
-Provides ScheduleStorage class for managing Schedule definitions in Redis.
+Provides ScheduleStorage class for managing Schedule definitions in SQLite.
+Replaces the multi-key Redis structure (1 hash + 3 sorted sets + 2 sets + 1 list
+per schedule) with a single `schedules` table + `schedule_history` table.
 """
 
 from __future__ import annotations
@@ -12,47 +14,109 @@ import logging
 from typing import List, Optional, Dict, Any, Tuple
 
 from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind
-from .redis_client import get_redis_client, RedisClient
+from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
 
-class ScheduleStorage:
-    """Schedule storage manager with Redis backend.
+def _dt_to_ts(dt: Optional[datetime]) -> Optional[float]:
+    """Convert datetime to Unix timestamp, None-safe."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
-    Redis key structure:
-    - schedule:{exec_user}:{schedule_id}                - Hash: schedule data
-    - schedules:{exec_user}:all                         - Sorted set (score = created_at)
-    - schedules:{exec_user}:by_status:{status}          - Set of schedule IDs
-    - schedules:{exec_user}:active_next_runs            - Sorted set (score = next_run_at timestamp)
-    - schedule:{exec_user}:{schedule_id}:history        - List of spawned task IDs (newest first)
-    """
+
+def _ts_to_dt(ts: Optional[float]) -> Optional[datetime]:
+    """Convert Unix timestamp to UTC datetime, None-safe."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def _schedule_to_row(s: Schedule, exec_user: str) -> dict:
+    """Convert Schedule model to a dict suitable for SQLite INSERT/UPDATE."""
+    return {
+        "id": s.id,
+        "exec_user": exec_user,
+        "name": s.name,
+        "description": s.description,
+        "cron_expression": s.cron_expression,
+        "run_at": _dt_to_ts(s.run_at),
+        "timezone_str": s.timezone,
+        "status": s.status if isinstance(s.status, str) else s.status.value,
+        "schedule_kind": s.schedule_kind if isinstance(s.schedule_kind, str) else s.schedule_kind.value,
+        "evolution_phase": s.evolution_phase,
+        "provider": s.provider,
+        "alias": s.alias,
+        "model": s.model,
+        "workspace": s.workspace,
+        "project_id": s.project_id,
+        "project_name": s.project_name,
+        "context_json": json.dumps(s.context) if s.context else None,
+        "max_runs": s.max_runs,
+        "run_count": s.run_count,
+        "next_run_at": _dt_to_ts(s.next_run_at),
+        "last_run_at": _dt_to_ts(s.last_run_at),
+        "last_task_id": s.last_task_id,
+        "created_at": _dt_to_ts(s.created_at),
+        "updated_at": _dt_to_ts(s.updated_at),
+        "paused_at": _dt_to_ts(s.paused_at),
+        "cancelled_at": _dt_to_ts(s.cancelled_at),
+        "created_by": s.created_by,
+    }
+
+
+def _row_to_schedule(row: dict) -> Schedule:
+    """Convert a SQLite row dict back to a Schedule model."""
+    return Schedule(
+        id=row["id"],
+        name=row["name"],
+        description=row["description"] or "",
+        cron_expression=row.get("cron_expression"),
+        run_at=_ts_to_dt(row.get("run_at")),
+        timezone=row.get("timezone_str", "UTC"),
+        status=ScheduleStatus(row.get("status", "active")),
+        schedule_kind=ScheduleKind(row.get("schedule_kind", "task")),
+        evolution_phase=row.get("evolution_phase"),
+        provider=row.get("provider", "claude"),
+        alias=row.get("alias"),
+        model=row.get("model"),
+        workspace=row.get("workspace"),
+        project_id=row.get("project_id"),
+        project_name=row.get("project_name"),
+        exec_user=row.get("exec_user"),
+        context=json.loads(row["context_json"]) if row.get("context_json") else None,
+        max_runs=row.get("max_runs"),
+        run_count=row.get("run_count", 0),
+        next_run_at=_ts_to_dt(row.get("next_run_at")),
+        last_run_at=_ts_to_dt(row.get("last_run_at")),
+        last_task_id=row.get("last_task_id"),
+        created_at=_ts_to_dt(row.get("created_at")) or datetime.now(timezone.utc),
+        updated_at=_ts_to_dt(row.get("updated_at")),
+        paused_at=_ts_to_dt(row.get("paused_at")),
+        cancelled_at=_ts_to_dt(row.get("cancelled_at")),
+        created_by=row.get("created_by"),
+    )
+
+
+_SCHEDULE_FIELDS = list(_schedule_to_row(Schedule(name="__schema__", description="", cron_expression="* * * * *"), "x").keys())
+_SCHEDULE_COLUMNS = ", ".join(_SCHEDULE_FIELDS)
+_SCHEDULE_PLACEHOLDERS = ", ".join(["?"] * len(_SCHEDULE_FIELDS))
+
+
+class ScheduleStorage:
+    """Schedule storage manager with SQLite backend."""
 
     def __init__(
         self,
         exec_user: str = "default",
-        redis_client: Optional[RedisClient] = None,
+        db: Optional[Database] = None,
     ):
         self.exec_user = exec_user
-        self._redis: RedisClient = redis_client or get_redis_client()
+        self._db = db or get_db()
         logger.info(f"ScheduleStorage initialized for exec_user: {exec_user}")
-
-    # ---- Key helpers ----
-
-    def _schedule_key(self, schedule_id: str) -> str:
-        return f"schedule:{self.exec_user}:{schedule_id}"
-
-    def _all_schedules_key(self) -> str:
-        return f"schedules:{self.exec_user}:all"
-
-    def _status_key(self, status: ScheduleStatus) -> str:
-        return f"schedules:{self.exec_user}:by_status:{status.value}"
-
-    def _active_next_runs_key(self) -> str:
-        return f"schedules:{self.exec_user}:active_next_runs"
-
-    def _history_key(self, schedule_id: str) -> str:
-        return f"schedule:{self.exec_user}:{schedule_id}:history"
 
     # ---- CRUD ----
 
@@ -77,6 +141,7 @@ class ScheduleStorage:
         evolution_phase: Optional[str] = None,
     ) -> Schedule:
         """Create a new schedule definition (recurring cron or one-time run_at)."""
+        eu = exec_user or self.exec_user
         schedule = Schedule(
             name=name,
             cron_expression=cron_expression,
@@ -89,7 +154,7 @@ class ScheduleStorage:
             workspace=workspace,
             project_id=project_id,
             project_name=project_name,
-            exec_user=exec_user or self.exec_user,
+            exec_user=eu,
             context=context,
             max_runs=max_runs,
             created_by=created_by,
@@ -100,21 +165,13 @@ class ScheduleStorage:
         # Pre-compute next run
         schedule.next_run_at = schedule.compute_next_run()
 
-        # Store schedule data
-        self._redis.hset(self._schedule_key(schedule.id), schedule.to_redis_hash())
+        row = _schedule_to_row(schedule, eu)
+        values = [row[k] for k in _SCHEDULE_FIELDS]
 
-        # Add to all schedules sorted set
-        timestamp = schedule.created_at.timestamp()
-        self._redis.zadd(self._all_schedules_key(), {schedule.id: timestamp})
-
-        # Add to status index
-        self._redis.sadd(self._status_key(ScheduleStatus.ACTIVE), schedule.id)
-
-        # Add to active_next_runs sorted set
-        if schedule.next_run_at:
-            self._redis.zadd(
-                self._active_next_runs_key(),
-                {schedule.id: schedule.next_run_at.timestamp()},
+        with self._db.transaction() as conn:
+            conn.execute(
+                f"INSERT INTO schedules ({_SCHEDULE_COLUMNS}) VALUES ({_SCHEDULE_PLACEHOLDERS})",
+                values,
             )
 
         trigger_info = f"cron={cron_expression!r}" if cron_expression else f"run_at={run_at!r}"
@@ -126,111 +183,77 @@ class ScheduleStorage:
 
     def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
         """Get schedule by ID."""
-        data = self._redis.hgetall(self._schedule_key(schedule_id))
-        if not data:
+        row = self._db.execute_fetchone(
+            "SELECT * FROM schedules WHERE exec_user = ? AND id = ?",
+            (self.exec_user, schedule_id),
+        )
+        if not row:
             return None
         try:
-            return Schedule.from_redis_hash(data)
+            return _row_to_schedule(row)
         except Exception as e:
             logger.error(f"Failed to parse schedule {schedule_id}: {e}")
             return None
 
     def update_schedule(self, schedule: Schedule) -> bool:
-        """Persist updated schedule fields to Redis.
+        """Persist updated schedule fields to SQLite.
 
         Does NOT change status/index membership -- use pause/resume/cancel for that.
         """
-        if not self._redis.exists(self._schedule_key(schedule.id)):
+        eu = schedule.exec_user or self.exec_user
+        exists = self._db.execute_fetchone(
+            "SELECT 1 FROM schedules WHERE exec_user = ? AND id = ?",
+            (eu, schedule.id),
+        )
+        if not exists:
             return False
 
         schedule.updated_at = datetime.now(timezone.utc)
-        self._redis.hset(self._schedule_key(schedule.id), schedule.to_redis_hash())
+        row = _schedule_to_row(schedule, eu)
+        update_cols = [k for k in _SCHEDULE_FIELDS if k not in ("id", "exec_user")]
+        set_clause = ", ".join(f"{k} = ?" for k in update_cols)
+        values = [row[k] for k in update_cols] + [eu, schedule.id]
 
-        # Update next_run_at in sorted set if schedule is active
-        status_val = schedule.status if isinstance(schedule.status, str) else schedule.status.value
-        if status_val == ScheduleStatus.ACTIVE.value and schedule.next_run_at:
-            self._redis.zadd(
-                self._active_next_runs_key(),
-                {schedule.id: schedule.next_run_at.timestamp()},
+        with self._db.transaction() as conn:
+            conn.execute(
+                f"UPDATE schedules SET {set_clause} WHERE exec_user = ? AND id = ?",
+                values,
             )
 
         return True
 
     def delete_schedule(self, schedule_id: str) -> bool:
-        """Hard delete a schedule and all related indexes."""
-        schedule = self.get_schedule(schedule_id)
-
-        # Remove from status index
-        for st in ScheduleStatus:
-            try:
-                self._redis.srem(self._status_key(st), schedule_id)
-            except Exception:
-                pass
-
-        # Remove from active_next_runs
-        try:
-            self._redis.zrem(self._active_next_runs_key(), schedule_id)
-        except Exception:
-            pass
-
-        # Remove from all schedules zset
-        try:
-            self._redis.zrem(self._all_schedules_key(), schedule_id)
-        except Exception:
-            pass
-
-        # Remove history list
-        try:
-            self._redis.delete(self._history_key(schedule_id))
-        except Exception:
-            pass
-
-        # Remove schedule hash
-        try:
-            self._redis.delete(self._schedule_key(schedule_id))
-        except Exception:
-            pass
-
+        """Hard delete a schedule and all related history."""
+        eu = self.exec_user
+        with self._db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM schedule_history WHERE exec_user = ? AND schedule_id = ?",
+                (eu, schedule_id),
+            )
+            conn.execute(
+                "DELETE FROM schedules WHERE exec_user = ? AND id = ?",
+                (eu, schedule_id),
+            )
         logger.info(f"Hard deleted schedule {schedule_id}")
         return True
 
     # ---- Status transitions ----
 
     def _update_status(self, schedule: Schedule, new_status: ScheduleStatus) -> None:
-        """Update schedule status and related indexes."""
-        old_status_val = schedule.status if isinstance(schedule.status, str) else schedule.status.value
-        try:
-            old_status = ScheduleStatus(old_status_val)
-        except ValueError:
-            old_status = ScheduleStatus.ACTIVE
-
-        # Remove from old status set
-        self._redis.srem(self._status_key(old_status), schedule.id)
-        # Add to new status set
-        self._redis.sadd(self._status_key(new_status), schedule.id)
-
-        schedule.status = new_status
+        """Update schedule status."""
         now = datetime.now(timezone.utc)
+        schedule.status = new_status
         schedule.updated_at = now
 
         if new_status == ScheduleStatus.PAUSED:
             schedule.paused_at = now
-            # Remove from active_next_runs (paused schedules don't fire)
-            self._redis.zrem(self._active_next_runs_key(), schedule.id)
         elif new_status == ScheduleStatus.CANCELLED:
             schedule.cancelled_at = now
-            self._redis.zrem(self._active_next_runs_key(), schedule.id)
         elif new_status == ScheduleStatus.ACTIVE:
             schedule.paused_at = None
-            # Re-compute and add to active_next_runs
             schedule.next_run_at = schedule.compute_next_run()
-            if schedule.next_run_at:
-                self._redis.zadd(
-                    self._active_next_runs_key(),
-                    {schedule.id: schedule.next_run_at.timestamp()},
-                )
 
-        self._redis.hset(self._schedule_key(schedule.id), schedule.to_redis_hash())
+        self.update_schedule(schedule)
 
     def pause_schedule(self, schedule_id: str) -> Optional[Schedule]:
         """Pause an active schedule."""
@@ -271,65 +294,69 @@ class ScheduleStorage:
     # ---- Scheduler engine support ----
 
     def get_due_schedules(self, now: Optional[datetime] = None) -> List[Schedule]:
-        """Get all active schedules whose next_run_at <= now.
-
-        Uses ZRANGEBYSCORE on the active_next_runs sorted set for efficiency.
-        """
+        """Get all active schedules whose next_run_at <= now."""
         now = now or datetime.now(timezone.utc)
         now_ts = now.timestamp()
 
-        schedule_ids = self._redis.zrangebyscore(
-            self._active_next_runs_key(), "-inf", str(now_ts)
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM schedules WHERE exec_user = ? AND status = 'active' AND next_run_at <= ?",
+            (self.exec_user, now_ts),
         )
 
         schedules = []
-        for sid in schedule_ids:
-            schedule = self.get_schedule(sid)
-            if schedule:
-                status_val = schedule.status if isinstance(schedule.status, str) else schedule.status.value
-                if status_val == ScheduleStatus.ACTIVE.value:
-                    schedules.append(schedule)
+        for row in rows:
+            try:
+                schedules.append(_row_to_schedule(row))
+            except Exception as e:
+                logger.error(f"Failed to parse due schedule: {e}")
         return schedules
 
     def record_run(self, schedule: Schedule, task_id: str) -> None:
-        """Record that the schedule fired and created a child task.
-
-        Updates:
-        1. Increments run_count
-        2. Sets last_run_at = now
-        3. Sets last_task_id = task_id
-        4. Computes next_run_at
-        5. If max_runs reached, auto-cancels
-        6. Updates active_next_runs sorted set
-        7. Appends task_id to history list
-        """
+        """Record that the schedule fired and created a child task."""
         now = datetime.now(timezone.utc)
+        eu = schedule.exec_user or self.exec_user
 
         schedule.run_count += 1
         schedule.last_run_at = now
         schedule.last_task_id = task_id
         schedule.updated_at = now
 
-        # Check max_runs limit
-        if schedule.max_runs and schedule.run_count >= schedule.max_runs:
-            logger.info(
-                f"Schedule {schedule.id} reached max_runs={schedule.max_runs}, auto-cancelling"
-            )
-            self._update_status(schedule, ScheduleStatus.CANCELLED)
-        else:
-            # Compute next run
-            schedule.next_run_at = schedule.compute_next_run(base_time=now)
-            if schedule.next_run_at:
-                self._redis.zadd(
-                    self._active_next_runs_key(),
-                    {schedule.id: schedule.next_run_at.timestamp()},
+        with self._db.transaction() as conn:
+            # Check max_runs limit
+            if schedule.max_runs and schedule.run_count >= schedule.max_runs:
+                logger.info(
+                    f"Schedule {schedule.id} reached max_runs={schedule.max_runs}, auto-cancelling"
                 )
-            # Persist
-            self._redis.hset(self._schedule_key(schedule.id), schedule.to_redis_hash())
+                schedule.status = ScheduleStatus.CANCELLED
+                schedule.cancelled_at = now
 
-        # Append to history (newest first, capped)
-        self._redis.lpush(self._history_key(schedule.id), task_id)
-        self._redis.ltrim(self._history_key(schedule.id), 0, 99)  # Keep last 100
+            # Compute next run
+            if schedule.status != ScheduleStatus.CANCELLED:
+                schedule.next_run_at = schedule.compute_next_run(base_time=now)
+
+            # Update schedule row
+            row = _schedule_to_row(schedule, eu)
+            update_cols = [k for k in _SCHEDULE_FIELDS if k not in ("id", "exec_user")]
+            set_clause = ", ".join(f"{k} = ?" for k in update_cols)
+            values = [row[k] for k in update_cols] + [eu, schedule.id]
+            conn.execute(
+                f"UPDATE schedules SET {set_clause} WHERE exec_user = ? AND id = ?",
+                values,
+            )
+
+            # Append to history (keep last 100)
+            conn.execute(
+                "INSERT INTO schedule_history (schedule_id, exec_user, task_id, run_at) VALUES (?, ?, ?, ?)",
+                (schedule.id, eu, task_id, now.timestamp()),
+            )
+            # Trim history to 100
+            conn.execute(
+                "DELETE FROM schedule_history WHERE id IN ("
+                "  SELECT id FROM schedule_history WHERE exec_user = ? AND schedule_id = ?"
+                "  ORDER BY id DESC LIMIT -1 OFFSET 100"
+                ")",
+                (eu, schedule.id),
+            )
 
     # ---- Listing ----
 
@@ -345,27 +372,44 @@ class ScheduleStorage:
         if page_size < 1:
             page_size = 20
 
-        all_ids = self._redis.zrange(self._all_schedules_key(), 0, -1)
-        all_ids = list(reversed(all_ids))  # Most recent first
-
         status_norm = status.lower().strip() if status else None
 
-        filtered: List[Schedule] = []
-        for sid in all_ids:
-            schedule = self.get_schedule(sid)
-            if not schedule:
-                continue
-            if status_norm:
-                s_val = schedule.status if isinstance(schedule.status, str) else schedule.status.value
-                if s_val != status_norm:
-                    continue
-            filtered.append(schedule)
+        if status_norm:
+            count_row = self._db.execute_fetchone(
+                "SELECT COUNT(*) as cnt FROM schedules WHERE exec_user = ? AND status = ?",
+                (self.exec_user, status_norm),
+            )
+            total = count_row["cnt"] if count_row else 0
 
-        total = len(filtered)
-        start = (page - 1) * page_size
-        end = start + page_size
-        return filtered[start:end], total
+            rows = self._db.execute_fetchall(
+                "SELECT * FROM schedules WHERE exec_user = ? AND status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (self.exec_user, status_norm, page_size, (page - 1) * page_size),
+            )
+        else:
+            count_row = self._db.execute_fetchone(
+                "SELECT COUNT(*) as cnt FROM schedules WHERE exec_user = ?",
+                (self.exec_user,),
+            )
+            total = count_row["cnt"] if count_row else 0
+
+            rows = self._db.execute_fetchall(
+                "SELECT * FROM schedules WHERE exec_user = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                (self.exec_user, page_size, (page - 1) * page_size),
+            )
+
+        schedules = []
+        for row in rows:
+            try:
+                schedules.append(_row_to_schedule(row))
+            except Exception as e:
+                logger.error(f"Failed to parse schedule in list: {e}")
+
+        return schedules, total
 
     def get_schedule_task_history(self, schedule_id: str, limit: int = 20) -> List[str]:
         """Return recent task IDs spawned by this schedule."""
-        return self._redis.lrange(self._history_key(schedule_id), 0, limit - 1)
+        rows = self._db.execute_fetchall(
+            "SELECT task_id FROM schedule_history WHERE exec_user = ? AND schedule_id = ? ORDER BY id DESC LIMIT ?",
+            (self.exec_user, schedule_id, limit),
+        )
+        return [row["task_id"] for row in rows]

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """Concurrency configuration store.
 
-Stores per-provider/alias and global concurrency limits in Redis.
+Stores per-provider/alias and global concurrency limits in SQLite.
 These settings control how many tasks can run in parallel for each
 provider/alias and globally.
 
-Redis keys:
+Replaces Redis keys:
 - ``concurrency:provider:<name>`` – max concurrency for a provider/alias (string int)
 - ``concurrency:global``          – global max concurrency (string int, 0 = unlimited)
 """
@@ -15,20 +15,16 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-from .redis_client import get_redis_client, RedisClient
+from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
-# Redis key constants
-_PROVIDER_PREFIX = "concurrency:provider:"
-_GLOBAL_KEY = "concurrency:global"
-
 
 class ConcurrencyConfigStore:
-    """Redis-backed concurrency configuration."""
+    """SQLite-backed concurrency configuration."""
 
-    def __init__(self, redis_client: Optional[RedisClient] = None):
-        self._redis = redis_client or get_redis_client()
+    def __init__(self, db: Optional[Database] = None):
+        self._db = db or get_db()
 
     # ------------------------------------------------------------------
     # Provider / Alias concurrency
@@ -51,13 +47,19 @@ class ConcurrencyConfigStore:
         if limit < 0:
             raise ValueError("limit must be >= 0")
 
-        key = f"{_PROVIDER_PREFIX}{name}"
         try:
-            if limit == 0:
-                # Remove override -> use default
-                self._redis.delete(key)
-            else:
-                self._redis.set(key, str(limit))
+            with self._db.transaction() as conn:
+                if limit == 0:
+                    # Remove override -> use default
+                    conn.execute(
+                        "DELETE FROM concurrency_config WHERE scope = ?",
+                        (f"provider:{name}",),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO concurrency_config (scope, max_concurrent) VALUES (?, ?)",
+                        (f"provider:{name}", limit),
+                    )
             logger.info(f"Set concurrency for '{name}' = {limit}")
             return True
         except Exception as e:
@@ -73,11 +75,13 @@ class ConcurrencyConfigStore:
         name = (name or "").strip().lower()
         if not name:
             return None
-        key = f"{_PROVIDER_PREFIX}{name}"
         try:
-            val = self._redis.get(key)
-            if val is not None:
-                return int(val)
+            row = self._db.execute_fetchone(
+                "SELECT max_concurrent FROM concurrency_config WHERE scope = ?",
+                (f"provider:{name}",),
+            )
+            if row and row.get("max_concurrent") is not None:
+                return int(row["max_concurrent"])
         except Exception as e:
             logger.warning(f"Failed to get concurrency for '{name}': {e}")
         return None
@@ -90,15 +94,12 @@ class ConcurrencyConfigStore:
         """
         result: Dict[str, int] = {}
         try:
-            keys = self._redis.keys(f"{_PROVIDER_PREFIX}*")
-            for key in (keys or []):
-                name = key[len(_PROVIDER_PREFIX):]
-                val = self._redis.get(key)
-                if val is not None:
-                    try:
-                        result[name] = int(val)
-                    except (ValueError, TypeError):
-                        pass
+            rows = self._db.execute_fetchall(
+                "SELECT scope, max_concurrent FROM concurrency_config WHERE scope LIKE 'provider:%'"
+            )
+            for row in rows:
+                name = row["scope"][len("provider:"):]
+                result[name] = int(row["max_concurrent"])
         except Exception as e:
             logger.warning(f"Failed to list provider concurrency: {e}")
         return result
@@ -108,9 +109,12 @@ class ConcurrencyConfigStore:
         name = (name or "").strip().lower()
         if not name:
             return False
-        key = f"{_PROVIDER_PREFIX}{name}"
         try:
-            self._redis.delete(key)
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "DELETE FROM concurrency_config WHERE scope = ?",
+                    (f"provider:{name}",),
+                )
             logger.info(f"Removed concurrency override for '{name}'")
             return True
         except Exception as e:
@@ -126,10 +130,16 @@ class ConcurrencyConfigStore:
         if limit < 0:
             raise ValueError("limit must be >= 0")
         try:
-            if limit == 0:
-                self._redis.delete(_GLOBAL_KEY)
-            else:
-                self._redis.set(_GLOBAL_KEY, str(limit))
+            with self._db.transaction() as conn:
+                if limit == 0:
+                    conn.execute(
+                        "DELETE FROM concurrency_config WHERE scope = 'global'"
+                    )
+                else:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO concurrency_config (scope, max_concurrent) VALUES ('global', ?)",
+                        (limit,),
+                    )
             logger.info(f"Set global concurrency = {limit}")
             return True
         except Exception as e:
@@ -139,9 +149,11 @@ class ConcurrencyConfigStore:
     def get_global_concurrency(self) -> int:
         """Get global max concurrency. Returns 0 if unlimited / not set."""
         try:
-            val = self._redis.get(_GLOBAL_KEY)
-            if val is not None:
-                return int(val)
+            row = self._db.execute_fetchone(
+                "SELECT max_concurrent FROM concurrency_config WHERE scope = 'global'"
+            )
+            if row and row.get("max_concurrent") is not None:
+                return int(row["max_concurrent"])
         except Exception as e:
             logger.warning(f"Failed to get global concurrency: {e}")
         return 0

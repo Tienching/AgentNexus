@@ -29,6 +29,9 @@ from .routers.nexus_runs import router as nexus_runs_router
 from .routers.nexus_runtimes import router as nexus_runtimes_router
 from .routers.nexus_missions import router as nexus_missions_router
 from .routers.nexus_evolution import router as nexus_evolution_router
+from .routers.nexus_features import router as nexus_features_router
+from .routers.nexus_permissions import router as nexus_permissions_router
+from .routers.nexus_agents import router as nexus_agents_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -631,6 +634,9 @@ def _configure_app(app: FastAPI, app_settings: Settings) -> None:
     app.include_router(nexus_runtimes_router)
     app.include_router(nexus_missions_router)
     app.include_router(nexus_evolution_router)
+    app.include_router(nexus_features_router)
+    app.include_router(nexus_permissions_router)
+    app.include_router(nexus_agents_router)
 
     # Mount static files for NexusHub Web UI (with cache-control middleware)
     static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")

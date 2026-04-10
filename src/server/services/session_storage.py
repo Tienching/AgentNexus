@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .redis_client import get_redis_client
 from src.runtime.stores.session_storage import (
     SessionStorage,
     SESSION_TTL,
@@ -23,5 +22,5 @@ _storage: Optional[SessionStorage] = None
 def get_session_storage() -> SessionStorage:
     global _storage
     if _storage is None:
-        _storage = SessionStorage(redis_client=get_redis_client())
+        _storage = SessionStorage()
     return _storage

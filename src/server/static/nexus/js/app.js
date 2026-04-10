@@ -3966,28 +3966,41 @@ class TaskView {
         this.selectionMode = {};  // paneId -> boolean
         this.selectedTaskIds = {}; // paneId -> Set<taskId>
         this.statusColumns = [
-            { key: 'todo', title: 'To Do', color: 'var(--status-todo)' },
-            { key: 'doing', title: 'Doing', color: 'var(--status-doing)' },
+            { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
+            { key: 'assigned', title: 'Assigned', color: 'var(--status-assigned)' },
+            { key: 'awaiting_owner', title: 'Awaiting Owner', color: 'var(--status-awaiting-owner)' },
+            { key: 'in_progress', title: 'In Progress', color: 'var(--status-in-progress)' },
+            { key: 'review', title: 'Review', color: 'var(--status-review)' },
+            { key: 'quality_review', title: 'QA', color: 'var(--status-quality-review)' },
             { key: 'done', title: 'Done', color: 'var(--status-done)' },
+        ];
+        // Terminal status columns (shown in collapsed/overflow area)
+        this.terminalColumns = [
             { key: 'failed', title: 'Failed', color: 'var(--status-failed)' },
             { key: 'cancelled', title: 'Cancelled', color: 'var(--status-cancelled)' },
-            { key: 'archived', title: 'Archived', color: 'var(--status-archived)' },
         ];
         // For standalone task page
         this.fullPageRendered = false;
         // Active SSE streams for task conversation (taskId -> EventSource)
         this._activeStreams = new Map();
-        // Auto-poll timer for kanban refresh when tasks are running
-        this._pollTimer = null;
-        this._pollInterval = 5000; // 5s
+        // SmartPoll instance for visibility-aware kanban refresh
+        this._smartPoll = null;
+        this._pollInterval = 10000; // 10s (SmartPoll default)
     }
 
     _normalizeTaskStatus(status) {
         const s = String(status || '').trim().toLowerCase();
-        if (s === 'pending') return 'todo';
-        if (s === 'in_progress' || s === 'running') return 'doing';
+        // Map legacy/alternative status values to the 7-column model
+        if (s === 'pending' || s === 'todo') return 'inbox';
+        if (s === 'in_progress' || s === 'running' || s === 'doing') return 'in_progress';
         if (s === 'completed') return 'done';
-        return s || 'todo';
+        // New statuses pass through
+        if (s === 'inbox' || s === 'assigned' || s === 'awaiting_owner' ||
+            s === 'review' || s === 'quality_review' || s === 'done' ||
+            s === 'failed' || s === 'cancelled' || s === 'archived') {
+            return s;
+        }
+        return 'inbox';
     }
 
     // Render task view as a standalone full-page view (not in a pane/tab)
@@ -4076,6 +4089,7 @@ class TaskView {
                         </div>
                     </div>
                     <div class="kanban-board" id="kanbanBoard-${paneId}">
+                        <div class="kanban-primary-columns">
                         ${this.statusColumns.map(col => `
                             <div class="kanban-column" data-status="${col.key}">
                                 <div class="kanban-column-header">
@@ -4092,6 +4106,10 @@ class TaskView {
                                 </div>
                             </div>
                         `).join('')}
+                        </div>
+                        <div class="kanban-terminal-columns" id="terminalColumns-${paneId}" style="display: none;">
+                            <!-- Terminal status columns (failed, cancelled) rendered dynamically -->
+                        </div>
                     </div>
                 </div>
                 <div class="task-detail hidden" id="taskDetail-${paneId}">
@@ -4161,6 +4179,7 @@ class TaskView {
                         </div>
                     </div>
                     <div class="kanban-board" id="kanbanBoard-${paneId}">
+                        <div class="kanban-primary-columns">
                         ${this.statusColumns.map(col => `
                             <div class="kanban-column" data-status="${col.key}">
                                 <div class="kanban-column-header">
@@ -4177,6 +4196,10 @@ class TaskView {
                                 </div>
                             </div>
                         `).join('')}
+                        </div>
+                        <div class="kanban-terminal-columns" id="terminalColumns-${paneId}" style="display: none;">
+                            <!-- Terminal status columns (failed, cancelled) rendered dynamically -->
+                        </div>
                     </div>
                 </div>
                 <div class="task-detail hidden" id="taskDetail-${paneId}">
@@ -4444,15 +4467,15 @@ class TaskView {
         });
 
         tasks.forEach(task => {
-            const status = (task.status || 'todo').toLowerCase();
+            const status = (task.status || 'inbox').toLowerCase();
             if (grouped[status]) {
                 grouped[status].push(task);
             } else {
-                grouped['todo'].push(task);
+                grouped['inbox'].push(task);
             }
         });
 
-        // Render each column
+        // Render each primary column
         this.statusColumns.forEach(col => {
             const items = grouped[col.key] || [];
             const container = document.getElementById(`items-${paneId}-${col.key}`);
@@ -4493,8 +4516,89 @@ class TaskView {
             }
         });
 
+        // Render terminal columns (failed, cancelled) — compact collapsed section
+        const terminalContainer = document.getElementById(`terminalColumns-${paneId}`);
+        if (terminalContainer) {
+            const terminalTasks = [];
+            this.terminalColumns.forEach(col => {
+                const items = tasks.filter(t => this._normalizeTaskStatus(t.status) === col.key);
+                if (items.length > 0) {
+                    terminalTasks.push({ col, items });
+                }
+            });
+
+            if (terminalTasks.length > 0) {
+                terminalContainer.style.display = 'flex';
+                terminalContainer.innerHTML = terminalTasks.map(({ col, items }) => `
+                    <div class="kanban-column kanban-column-terminal" data-status="${col.key}">
+                        <div class="kanban-column-header">
+                            <span class="kanban-column-title">
+                                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
+                                ${col.title}
+                            </span>
+                            <span class="kanban-column-count">${items.length}</span>
+                        </div>
+                        <div class="kanban-column-items">
+                            ${items.map(task => this.renderTaskCard(task, paneId)).join('')}
+                        </div>
+                    </div>
+                `).join('');
+
+                // Bind click events for terminal column cards
+                terminalContainer.querySelectorAll('.task-card').forEach(card => {
+                    card.addEventListener('click', (e) => {
+                        if (e.target.closest('.task-card-checkbox')) return;
+                        this.selectTask(paneId, card.dataset.taskId);
+                    });
+                });
+                terminalContainer.querySelectorAll('.task-card-checkbox').forEach(checkboxDiv => {
+                    checkboxDiv.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        this.toggleTaskSelection(paneId, checkboxDiv.dataset.taskId);
+                    });
+                });
+            } else {
+                terminalContainer.style.display = 'none';
+            }
+        }
+
+        this._bindKanbanDragDrop(paneId);
+
         // Ensure polling is active on task page so status transitions are picked up without manual refresh
         this._startAutoPolling(paneId);
+    }
+
+    _bindKanbanDragDrop(paneId) {
+        const board = document.getElementById(`kanbanBoard-${paneId}`);
+        if (!board || typeof KanbanDragDrop === 'undefined') return;
+
+        KanbanDragDrop.mount(board, {
+            getTaskStatus: (taskId) => {
+                const task = (this.tasks[paneId] || []).find((item) => item.id === taskId);
+                return task ? this._normalizeTaskStatus(task.status) : null;
+            },
+            onMove: async (taskId, toStatus, fromStatus) => {
+                const globalUserFilter = document.getElementById('globalUserFilter');
+                const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
+                try {
+                    await NexusAPI.updateTaskStatus(taskId, toStatus, { execUser });
+                    const localTask = (this.tasks[paneId] || []).find((item) => item.id === taskId);
+                    if (localTask) {
+                        localTask.status = toStatus;
+                    }
+                    this.renderKanban(paneId);
+                    if (this.selectedTask[paneId] === taskId) {
+                        const task = (this.tasks[paneId] || []).find((item) => item.id === taskId);
+                        if (task) this.renderTaskDetail(paneId, task);
+                    }
+                    this.app?.showToast?.(`Task moved: ${fromStatus} → ${toStatus}`, 'success');
+                } catch (error) {
+                    console.error('Failed to move task:', error);
+                    this.app?.showToast?.(`Move failed: ${error.message}`, 'error');
+                    await this.loadTasks(paneId);
+                }
+            },
+        });
     }
 
     renderTaskCard(task, paneId) {
@@ -4514,8 +4618,40 @@ class TaskView {
                 : (alias || provider),
         };
 
+        // Priority color bar (left border)
+        const priorityColors = {
+            critical: 'var(--error)',
+            serious: 'var(--warning)',
+            normal: 'var(--primary-500)',
+        };
+        const priorityBarColor = priorityColors[priorityClass] || 'transparent';
+
+        // Agent avatar
+        const agentName = task.assigned_to || alias || provider || '';
+        const agentAvatar = agentName ? AgentAvatar.render(agentName, { size: 'xs', status: this._normalizeTaskStatus(task.status) === 'in_progress' ? 'online' : 'none' }) : '';
+
+        // Tags display (up to 3 + count)
+        const tags = Array.isArray(task.tags) ? task.tags : [];
+        const visibleTags = tags.slice(0, 3);
+        const extraTagCount = tags.length > 3 ? tags.length - 3 : 0;
+        const tagsHtml = tags.length > 0 ? `
+            <div class="task-card-tags">
+                ${visibleTags.map(tag => `<span class="task-card-tag">${this.escapeHtml(tag)}</span>`).join('')}
+                ${extraTagCount > 0 ? `<span class="task-card-tag task-card-tag-more">+${extraTagCount}</span>` : ''}
+            </div>
+        ` : '';
+
+        // Overdue highlight
+        const isOverdue = task.due_date && (task.due_date * 1000 < Date.now()) && this._normalizeTaskStatus(task.status) !== 'done';
+        const overdueHtml = isOverdue ? '<span class="task-card-overdue">! Overdue</span>' : '';
+
+        // Awaiting owner detection
+        const isAwaitingOwner = this._detectAwaitingOwner(task);
+        const awaitingBadge = isAwaitingOwner && this._normalizeTaskStatus(task.status) !== 'awaiting_owner'
+            ? '<span class="task-card-awaiting-badge">⚠ Needs Attention</span>' : '';
+
         return `
-            <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''}" data-task-id="${task.id}">
+            <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''} ${isOverdue ? 'task-card-overdue-state' : ''} ${isAwaitingOwner ? 'task-card-needs-attention' : ''}" data-task-id="${task.id}" draggable="${!isInSelectionMode}" style="border-left: 3px solid ${priorityBarColor};">
                 ${isInSelectionMode ? `
                     <div class="task-card-checkbox" data-task-id="${task.id}">
                         <input type="checkbox" ${isChecked ? 'checked' : ''}>
@@ -4524,11 +4660,16 @@ class TaskView {
                 <div class="task-card-content">
                     <div class="task-card-header">
                         <span class="task-card-id">#${task.id.slice(0, 8)}</span>
+                        ${task.ticket_ref ? `<span class="task-card-ticket-ref" title="Project ticket">${this.escapeHtml(task.ticket_ref)}</span>` : ''}
                         ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
-                        ${task.loop_enabled ? `<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: ${task.loop_keyword_found ? 'var(--success, #22c55e)' : 'var(--accent, #6366f1)'}; color: #fff; font-weight: 600;">Loop ${task.loop_iteration || 0}/${task.loop_max_iterations || 1}${task.loop_keyword_found ? ' \u2713' : ''}</span>` : ''}
+                        ${task.loop_enabled ? `<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: ${task.loop_keyword_found ? 'var(--success, #22c55e)' : 'var(--accent, #6366f1)'}; color: #fff; font-weight: 600;">Loop ${task.loop_iteration || 0}/${task.loop_max_iterations || 1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
+                        ${overdueHtml}
+                        ${awaitingBadge}
                     </div>
                     <p class="task-card-title">${this.escapeHtml(task.description || 'No description')}</p>
+                    ${tagsHtml}
                     <div class="task-card-meta">
+                        ${agentAvatar ? `<span class="task-card-meta-item">${agentAvatar}</span>` : ''}
                         <span class="task-card-meta-item">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
@@ -4557,7 +4698,6 @@ class TaskView {
             </div>
         `;
     }
-
     async selectTask(paneId, taskId) {
         this.selectedTask[paneId] = taskId;
 
@@ -4606,7 +4746,7 @@ class TaskView {
         this._closeTaskStream(this.selectedTask[paneId]);
 
         const statusClass = this._normalizeTaskStatus(task.status);
-        const isRunning = statusClass === 'doing';
+        const isRunning = statusClass === 'in_progress';
         const hasConversation = isRunning || statusClass === 'done' || statusClass === 'completed' || statusClass === 'failed';
         const alias = String(task?.alias || '').trim();
         const provider = String(task?.provider || '').trim();
@@ -4975,29 +5115,62 @@ class TaskView {
      * Start auto-polling task board
      */
     _startAutoPolling(paneId) {
-        if (this._pollTimer) return;
-        this._pollTimer = setInterval(async () => {
+        if (this._smartPoll) return; // Already running
+        this._smartPoll = new SmartPoll(async () => {
             if (this.app.pageManager?.currentPage !== 'task') return;
 
             await this.loadTasks(paneId);
 
             // Refresh sessions list only when there are running tasks
             const tasks = this.tasks[paneId] || [];
-            const hasRunning = tasks.some(t => this._normalizeTaskStatus(t.status) === 'doing');
+            const hasRunning = tasks.some(t => this._normalizeTaskStatus(t.status) === 'in_progress');
             if (hasRunning) {
                 this.app.chatView.loadSessions(0);
             }
-        }, this._pollInterval);
+        }, { intervalMs: this._pollInterval });
+        this._smartPoll.start();
     }
 
     /**
      * Stop auto-polling
      */
     _stopAutoPolling() {
-        if (this._pollTimer) {
-            clearInterval(this._pollTimer);
-            this._pollTimer = null;
+        if (this._smartPoll) {
+            this._smartPoll.destroy();
+            this._smartPoll = null;
         }
+    }
+
+    /**
+     * Detect if a task is awaiting owner intervention.
+     * A task needs human attention when:
+     * - Its metadata contains awaiting_human flag
+     * - It has been in in_progress for over 30 minutes with no recent activity
+     * - Its status or description contains "awaiting" or "blocked" keywords
+     * @param {Object} task - Task object
+     * @returns {boolean} True if the task likely needs human intervention
+     */
+    _detectAwaitingOwner(task) {
+        if (!task) return false;
+
+        // Explicit flag in metadata
+        if (task.metadata?.awaiting_human) return true;
+
+        // Status already set to awaiting_owner
+        if (this._normalizeTaskStatus(task.status) === 'awaiting_owner') return true;
+
+        // Keyword detection in status
+        const statusLower = String(task.status || '').toLowerCase();
+        if (statusLower.includes('awaiting') || statusLower.includes('blocked')) return true;
+
+        // Stale in-progress check: no update for > 30 minutes
+        if (this._normalizeTaskStatus(task.status) === 'in_progress' && task.updated_at) {
+            const lastUpdate = new Date(task.updated_at).getTime();
+            const thirtyMinutes = 30 * 60 * 1000;
+            if (Date.now() - lastUpdate > thirtyMinutes) return true;
+        }
+
+        return false;
     }
 
     async deleteTask(paneId, taskId) {
@@ -5246,12 +5419,20 @@ class TaskView {
             triggerBadge = `<code class="schedule-cron-badge">${this._escapeHtml(schedule.cron_expression || '-')}</code>`;
         }
 
+        // Kind badge — show "evolution" type with distinctive styling
+        const kindBadge = schedule.schedule_kind === 'evolution'
+            ? `<span class="schedule-kind-badge evolution" title="Evolution schedule (${schedule.evolution_phase || 'full'})">♻ ${this._escapeHtml(schedule.evolution_phase || 'evolve')}</span>`
+            : '';
+        // Hide edit/delete buttons for evolution schedules (managed by system)
+        const isSystemSchedule = schedule.schedule_kind === 'evolution';
+
         return `
             <div class="schedule-card" data-schedule-id="${schedule.id}">
                 <div class="schedule-card-header">
                     <div class="schedule-card-info">
                         <span class="schedule-status-dot" style="background: ${statusColor};"></span>
                         <span class="schedule-card-name">${this._escapeHtml(schedule.name)}</span>
+                        ${kindBadge}
                         ${triggerBadge}
                     </div>
                     <div class="schedule-card-actions">
@@ -5273,10 +5454,10 @@ class TaskView {
                                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             </button>
                         ` : ''}
-                        <button class="schedule-action-btn" data-action="edit-schedule" title="Edit">
+                        <button class="schedule-action-btn" data-action="edit-schedule" title="Edit" style="${isSystemSchedule ? 'display:none' : ''}">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                         </button>
-                        <button class="schedule-action-btn danger" data-action="delete-schedule" title="Delete">
+                        <button class="schedule-action-btn danger" data-action="delete-schedule" title="Delete" style="${isSystemSchedule ? 'display:none' : ''}">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                         </button>
                     </div>

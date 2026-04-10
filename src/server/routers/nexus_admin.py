@@ -440,3 +440,24 @@ async def diagnostics():
         retention=retention,
         audit_events_count=audit_count,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Observability — telemetry, latency, cost metrics
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/metrics", summary="Get observability metrics snapshot")
+async def get_metrics(path_prefix: str = Query("", description="Filter latency by path prefix")):
+    """Return a snapshot of telemetry metrics: latency, token usage, cost, events.
+
+    Query params:
+      - path_prefix: Optional prefix to filter latency stats (e.g. "/api/nexus/tasks")
+    """
+    from ..services.observability import telemetry
+
+    if path_prefix:
+        snapshot = telemetry.snapshot()
+        snapshot["latency"] = telemetry.latency_for_path(path_prefix)
+        return snapshot
+
+    return telemetry.snapshot()

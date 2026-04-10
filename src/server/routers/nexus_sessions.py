@@ -490,3 +490,64 @@ async def get_tmux_command(session_id: str):
         "provider": provider,
         "cli_session_id": cli_session_id,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Session Recovery — interrupted turns, DAG chains, orphan detection
+# ═══════════════════════════════════════════════════════════════════════════
+
+@router.get("/sessions/{session_id}/interrupted", summary="Get interrupted turns for a session")
+async def get_interrupted_turns(session_id: str):
+    """Find all interrupted turns in a session that can be resumed."""
+    storage = get_session_storage()
+    session = storage.get_session_meta(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    interrupted = storage.get_interrupted_turns(session_id)
+    return {"session_id": session_id, "interrupted_turns": interrupted, "count": len(interrupted)}
+
+
+@router.get("/sessions/{session_id}/chain/{message_id}", summary="Get DAG message chain")
+async def get_message_chain(session_id: str, message_id: str):
+    """Reconstruct the DAG message chain from a specific message back to root."""
+    storage = get_session_storage()
+    chain = storage.get_message_chain(session_id, message_id)
+    if not chain:
+        raise HTTPException(status_code=404, detail=f"Message chain not found for: {message_id}")
+
+    return {
+        "session_id": session_id,
+        "message_id": message_id,
+        "chain_length": len(chain),
+        "messages": [m.model_dump() for m in chain],
+    }
+
+
+@router.post("/sessions/{session_id}/recover/{message_id}", summary="Recover an interrupted turn")
+async def recover_interrupted_turn(session_id: str, message_id: str):
+    """Attempt to recover an interrupted turn by replaying the DAG chain."""
+    storage = get_session_storage()
+    chain = storage.recover_interrupted_turn(session_id, message_id)
+    if chain is None:
+        raise HTTPException(status_code=400, detail=f"Cannot recover turn for message: {message_id}")
+
+    return {
+        "session_id": session_id,
+        "message_id": message_id,
+        "recovered": True,
+        "chain_length": len(chain),
+        "messages": [m.model_dump() for m in chain],
+    }
+
+
+@router.get("/sessions/{session_id}/orphans", summary="Find orphan tool results")
+async def find_orphan_tool_results(session_id: str):
+    """Find tool result messages without matching assistant tool_calls."""
+    storage = get_session_storage()
+    session = storage.get_session_meta(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    orphans = storage.find_orphan_tool_results(session_id)
+    return {"session_id": session_id, "orphan_ids": orphans, "count": len(orphans)}

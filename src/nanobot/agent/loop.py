@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from loguru import logger
 
 from src.nanobot.agent.context import ContextBuilder
+from src.nanobot.agent.permissions import PermissionGate, PermissionMode, create_permission_gate
 from src.nanobot.agent.memory import MemoryConsolidator
 from src.nanobot.agent.subagent import SubagentManager
 from src.nanobot.agent.tools.cron import CronTool
@@ -67,6 +68,7 @@ class AgentLoop:
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
         timezone: str | None = None,
+        permission_mode: str = "auto",
     ):
         from src.nanobot.config.schema import ExecToolConfig, WebSearchConfig
 
@@ -84,6 +86,9 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
+
+        # Permission gate for tool call approval
+        self.permission_gate = create_permission_gate(mode=permission_mode)
 
         self.context = ContextBuilder(workspace, timezone=timezone)
         self.sessions = session_manager or SessionManager(workspace)
@@ -317,12 +322,25 @@ class AgentLoop:
                         except Exception:
                             logger.warning("on_tool_start callback failed for {}", tc.name, exc_info=True)
 
+                # Permission-gated tool execution:
+                # Check each tool call against the permission gate before executing.
+                # Denied calls return a permission error message instead of executing.
+                async def _execute_with_permission(tc):
+                    """Execute a tool call after checking permission gate."""
+                    args = tc.arguments if isinstance(tc.arguments, dict) else {}
+                    approval = await self.permission_gate.check(tc.name, tc.id, args)
+                    if approval.approved:
+                        return await self.tools.execute(tc.name, tc.arguments)
+                    else:
+                        logger.info("Permission denied for {}: {}", tc.name, approval.reason)
+                        return f"Permission denied: {approval.reason}. Try a different approach or ask the user to change the permission mode."
+
                 # Execute all tool calls concurrently — the LLM batches
                 # independent calls in a single response on purpose.
                 # return_exceptions=True ensures all results are collected
                 # even if one tool is cancelled or raises BaseException.
                 results = await asyncio.gather(*(
-                    self.tools.execute(tc.name, tc.arguments)
+                    _execute_with_permission(tc)
                     for tc in response.tool_calls
                 ), return_exceptions=True)
 

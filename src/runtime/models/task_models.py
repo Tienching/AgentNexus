@@ -33,41 +33,72 @@ class TaskPriority(str, Enum):
 
 
 class TaskStatus(str, Enum):
-    """Task status states
-    
-    Status names updated for clarity:
-    - TODO: Task is waiting to be processed
-    - DOING: Task is currently being executed
-    - DONE: Task completed successfully
-    - FAILED: Task execution failed
-    - CANCELLED: Task was cancelled (soft delete)
-    - ARCHIVED: Task was archived (hidden from main board, shown in Archived column)
+    """Task status states.
+
+    Canonical workflow:
+    inbox -> assigned -> awaiting_owner -> in_progress -> review -> quality_review -> done
+
+    Additional terminal / utility states:
+    failed, cancelled, archived
     """
-    TODO = "todo"           # Renamed from PENDING
-    DOING = "doing"         # Renamed from IN_PROGRESS
-    DONE = "done"           # Renamed from COMPLETED
+    INBOX = "inbox"
+    ASSIGNED = "assigned"
+    AWAITING_OWNER = "awaiting_owner"
+    IN_PROGRESS = "in_progress"
+    REVIEW = "review"
+    QUALITY_REVIEW = "quality_review"
+    DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
     ARCHIVED = "archived"
-    
-    # Aliases for backward compatibility
+
+    # Backward-compatible aliases
+    TODO = "inbox"
+    DOING = "in_progress"
+
     @classmethod
     def from_legacy(cls, value: str) -> "TaskStatus":
-        """Convert legacy status values to new format"""
+        """Convert legacy status values to canonical workflow statuses."""
+        normalized = (value or "").strip().lower()
         legacy_map = {
-            "pending": cls.TODO,
-            "in_progress": cls.DOING,
+            "pending": cls.INBOX,
+            "todo": cls.INBOX,
+            "inbox": cls.INBOX,
+            "assigned": cls.ASSIGNED,
+            "awaiting_owner": cls.AWAITING_OWNER,
+            "in_progress": cls.IN_PROGRESS,
+            "doing": cls.IN_PROGRESS,
+            "running": cls.IN_PROGRESS,
+            "review": cls.REVIEW,
+            "quality_review": cls.QUALITY_REVIEW,
             "completed": cls.DONE,
+            "done": cls.DONE,
             "failed": cls.FAILED,
             "cancelled": cls.CANCELLED,
+            "archived": cls.ARCHIVED,
         }
-        if value in legacy_map:
-            return legacy_map[value]
-        # Try to find by value
-        for status in cls:
-            if status.value == value:
-                return status
+        if normalized in legacy_map:
+            return legacy_map[normalized]
         raise ValueError(f"Unknown status: {value}")
+
+    @classmethod
+    def can_transition(cls, current: "TaskStatus", new: "TaskStatus") -> bool:
+        """Return True when a transition between statuses is allowed."""
+        if current == new:
+            return True
+        allowed = {
+            cls.INBOX: {cls.ASSIGNED, cls.IN_PROGRESS, cls.CANCELLED, cls.ARCHIVED},
+            cls.ASSIGNED: {cls.AWAITING_OWNER, cls.IN_PROGRESS, cls.CANCELLED, cls.ARCHIVED},
+            cls.AWAITING_OWNER: {cls.ASSIGNED, cls.IN_PROGRESS, cls.CANCELLED, cls.ARCHIVED},
+            cls.IN_PROGRESS: {cls.REVIEW, cls.AWAITING_OWNER, cls.FAILED, cls.CANCELLED},
+            cls.REVIEW: {cls.QUALITY_REVIEW, cls.IN_PROGRESS, cls.FAILED, cls.CANCELLED},
+            cls.QUALITY_REVIEW: {cls.DONE, cls.REVIEW, cls.IN_PROGRESS, cls.FAILED, cls.CANCELLED},
+            cls.DONE: {cls.ARCHIVED},
+            cls.FAILED: {cls.INBOX, cls.ASSIGNED, cls.ARCHIVED},
+            cls.CANCELLED: {cls.INBOX, cls.ARCHIVED},
+            cls.ARCHIVED: {cls.INBOX, cls.DONE},
+        }
+        return new in allowed.get(current, set())
 
 
 class Task(BaseModel):
@@ -78,8 +109,14 @@ class Task(BaseModel):
     id: str = Field(default_factory=_generate_task_id)
     description: str
     priority: TaskPriority = TaskPriority.THOUGHT
-    status: TaskStatus = TaskStatus.TODO
-    
+    status: TaskStatus = TaskStatus.INBOX
+
+    # Collaboration / board metadata
+    assigned_to: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    due_date: Optional[datetime] = None
+    ticket_ref: Optional[str] = None
+
     # Timing
     created_at: datetime = Field(default_factory=_utcnow)
     started_at: Optional[datetime] = None
@@ -185,11 +222,11 @@ class Task(BaseModel):
         
         parsed = {}
         for key, value in data.items():
-            if key in ("created_at", "started_at", "completed_at", "archived_at", "deleted_at"):
+            if key in ("created_at", "started_at", "completed_at", "archived_at", "deleted_at", "due_date"):
                 parsed[key] = datetime.fromisoformat(value) if value else None
             elif key == "context":
                 parsed[key] = json.loads(value) if value else None
-            elif key == "depends_on":
+            elif key in ("depends_on", "tags"):
                 parsed[key] = json.loads(value) if value else []
             elif key in ("attempt_count", "feedback_rating"):
                 try:
@@ -205,11 +242,7 @@ class Task(BaseModel):
             elif key == "priority":
                 parsed[key] = TaskPriority(value)
             elif key == "status":
-                # Handle legacy status values
-                try:
-                    parsed[key] = TaskStatus(value)
-                except ValueError:
-                    parsed[key] = TaskStatus.from_legacy(value)
+                parsed[key] = TaskStatus.from_legacy(value)
             else:
                 parsed[key] = value
 

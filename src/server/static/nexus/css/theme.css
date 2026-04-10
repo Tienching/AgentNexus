@@ -33,13 +33,20 @@
     --error-light: #f87171;
     --info: #3b82f6;
 
-    /* Status Colors */
-    --status-todo: #71717a;
-    --status-doing: #f59e0b;
+    /* Status Colors — 7-column kanban model */
+    --status-inbox: #6b7280;
+    --status-assigned: #3b82f6;
+    --status-awaiting-owner: #f97316;
+    --status-in-progress: #eab308;
+    --status-review: #a855f7;
+    --status-quality-review: #6366f1;
     --status-done: #22c55e;
     --status-failed: #ef4444;
     --status-cancelled: #71717a;
     --status-archived: #3f3f46;
+    /* Legacy aliases (for backward compat in schedules, etc.) */
+    --status-todo: var(--status-inbox);
+    --status-doing: var(--status-in-progress);
 
     /* Typography — readable sizes */
     --font-family: 'Geist Sans', 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

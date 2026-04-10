@@ -42,6 +42,10 @@ class AgentDefaults(Base):
     max_tool_iterations: int = 40
     reasoning_effort: str | None = None  # low / medium / high - enables LLM thinking mode
     timezone: str = "UTC"  # IANA timezone, e.g. "Asia/Shanghai", "America/New_York"
+    permission_mode: str = "auto"  # auto / ask / plan / bypass — runtime tool execution permission mode
+    context_budget_micro_threshold: float = 0.60  # Fraction triggering MicroCompact
+    context_budget_summary_threshold: float = 0.75  # Fraction triggering LLM summarization
+    context_budget_emergency_threshold: float = 0.90  # Fraction triggering emergency truncation
 
 
 class AgentsConfig(Base):

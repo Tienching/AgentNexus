@@ -1,10 +1,37 @@
-Title: Fix evolve assessment prompt pytest command
-Files: src/nanobot/evolve/prompts.py, tests/evolve/test_prompts.py
+Title: Remove inline DEFAULT_TEMPLATES from prompts.py
+Files: src/nanobot/evolve/prompts.py
 Issue: none
 
-Update `DEFAULT_TEMPLATES["assessment"]` in `src/nanobot/evolve/prompts.py` so the embedded verification step uses the supported interpreter and preserves pytest's exit status. Replace the current `python -m pytest ... | head -50` instruction with a direct `python3 -m pytest tests/ -x -q --tb=short` command, and keep the prompt wording explicit that the agent must report pass/fail and the first failure accurately.
+## Problem
 
-Extend `tests/evolve/test_prompts.py` to assert that `build_assessment_prompt()` renders the `python3 -m pytest` command and no longer includes the masking `| head -50` pipeline.
+The `prompts.py` file contains both inline `DEFAULT_TEMPLATES` (lines 19-24) and logic to load from external files. The external files already exist in `evolve/prompts/`:
+- assessment.md
+- planning.md
+- implementation.md
+- conflict_resolution.md
+- skill.md
+- reflection.md
 
-Verify with:
-`python3 -m pytest tests/evolve/test_prompts.py -q`
+The `load_prompt_template()` function loads external files first, then falls back to inline templates. The inline templates are now redundant and make the file harder to maintain.
+
+## Solution
+
+1. Remove the `DEFAULT_TEMPLATES` dict (lines 19-24) from `src/nanobot/evolve/prompts.py`
+2. Update `load_prompt_template()` to raise a clear `FileNotFoundError` with the attempted paths if no prompt file is found
+3. Keep `LEGACY_PROMPT_FILES` mapping for backward compatibility with old paths
+
+This simplifies the code and ensures all prompts are externalized in `evolve/prompts/` where they can be easily edited.
+
+## Verification
+
+Run: `python3 -m pytest tests/evolve/test_prompts.py -v`
+
+Tests should pass. Verify that loading each prompt works:
+```python
+from src.nanobot.evolve.prompts import load_prompt_template
+from src.nanobot.evolve.models import EvolutionConfig
+config = EvolutionConfig(working_dir=".")
+for name in ["assessment", "planning", "implementation", "conflict_resolution"]:
+    content = load_prompt_template(config, name)
+    assert len(content) > 100  # Loaded from file, not empty
+```

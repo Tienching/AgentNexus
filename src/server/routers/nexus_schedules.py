@@ -73,6 +73,8 @@ class ScheduleItem(BaseModel):
     run_at: Optional[datetime] = None
     timezone: str = "UTC"
     status: str
+    schedule_kind: str = "task"
+    evolution_phase: Optional[str] = None
     description: str
     provider: str = "claude"
     alias: Optional[str] = None
@@ -125,6 +127,7 @@ def _get_schedule_storage():
 def _schedule_to_item(schedule) -> ScheduleItem:
     """Convert a Schedule model to API response item."""
     status_val = schedule.status if isinstance(schedule.status, str) else schedule.status.value
+    kind_val = schedule.schedule_kind if isinstance(schedule.schedule_kind, str) else schedule.schedule_kind.value
     return ScheduleItem(
         id=schedule.id,
         name=schedule.name,
@@ -132,6 +135,8 @@ def _schedule_to_item(schedule) -> ScheduleItem:
         run_at=schedule.run_at,
         timezone=schedule.timezone,
         status=status_val,
+        schedule_kind=kind_val,
+        evolution_phase=schedule.evolution_phase,
         description=schedule.description,
         provider=schedule.provider,
         alias=schedule.alias,

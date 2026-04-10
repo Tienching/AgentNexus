@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Redis task storage for slash commands
+"""SQLite task storage for slash commands
 
-Provides TaskQueue class for managing tasks in Redis.
+Provides TaskQueue class for managing tasks in SQLite.
+Replaces the multi-key Redis structure with a single `tasks` table
+plus SQL indexes for status, project, workspace, session lookups.
+
+Queue semantics (LPUSH/RPOP) are replaced by SELECT ... ORDER BY
+with status-based filtering and atomic UPDATE within transactions.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import uuid
 from typing import List, Optional, Dict, Any
@@ -14,90 +20,175 @@ from typing import List, Optional, Dict, Any
 import logging
 
 from ..models.task_models import Task, TaskPriority, TaskStatus
-from .redis_client import get_redis_client, RedisClient
+from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
 
+def _dt_to_ts(dt) -> Optional[float]:
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _ts_to_dt(ts) -> Optional[datetime]:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def _task_to_row(task: Task) -> dict:
+    """Convert Task model to SQLite row dict."""
+    ws_hash = ""
+    if task.workspace:
+        ws_hash = hashlib.md5(task.workspace.encode("utf-8")).hexdigest()[:8]
+
+    return {
+        "id": task.id,
+        "exec_user": task.exec_user or "default",
+        "description": task.description,
+        "priority": task.priority if isinstance(task.priority, str) else task.priority.value,
+        "status": task.status if isinstance(task.status, str) else task.status.value,
+        "assigned_to": task.assigned_to,
+        "tags_json": json.dumps(task.tags, ensure_ascii=False) if task.tags else None,
+        "due_date": _dt_to_ts(task.due_date),
+        "ticket_ref": task.ticket_ref,
+        "project_id": task.project_id,
+        "project_name": task.project_name,
+        "workspace": task.workspace,
+        "workspace_hash": ws_hash,
+        "session_id": task.session_id,
+        "source_session_id": task.source_session_id,
+        "provider": task.provider,
+        "alias": task.alias,
+        "model": task.model,
+        "context_json": json.dumps(task.context, ensure_ascii=False) if task.context else None,
+        "attempt_count": task.attempt_count,
+        "error_message": task.error_message,
+        "outcome": task.outcome,
+        "resolution": task.resolution,
+        "feedback_rating": task.feedback_rating,
+        "feedback_notes": task.feedback_notes,
+        "response_url": task.response_url,
+        "callback_msg_id": task.callback_msg_id,
+        "callback_user": task.callback_user,
+        "notification_sink_type": task.notification_sink_type,
+        "notification_channel": task.notification_channel,
+        "notification_chat_id": task.notification_chat_id,
+        "notification_message_id": getattr(task, "notification_message_id", None),
+        "loop_enabled": 1 if task.loop_enabled else 0,
+        "loop_max_iterations": task.loop_max_iterations,
+        "loop_iteration": task.loop_iteration,
+        "loop_keywords_json": json.dumps(task.loop_keywords) if task.loop_keywords else None,
+        "loop_keyword_found": 1 if task.loop_keyword_found else 0,
+        "schedule_id": getattr(task, "schedule_id", None),
+        "created_at": _dt_to_ts(task.created_at),
+        "started_at": _dt_to_ts(task.started_at),
+        "completed_at": _dt_to_ts(task.completed_at),
+        "archived_at": _dt_to_ts(task.archived_at),
+        "deleted_at": _dt_to_ts(task.deleted_at),
+    }
+
+
+def _row_to_task(row: dict) -> Task:
+    """Convert SQLite row dict to Task model."""
+    ctx = None
+    if row.get("context_json"):
+        try:
+            ctx = json.loads(row["context_json"])
+        except Exception:
+            pass
+
+    loop_kw = []
+    if row.get("loop_keywords_json"):
+        try:
+            loop_kw = json.loads(row["loop_keywords_json"])
+        except Exception:
+            pass
+
+    tags = []
+    if row.get("tags_json"):
+        try:
+            tags = json.loads(row["tags_json"])
+        except Exception:
+            pass
+
+    return Task(
+        id=row["id"],
+        description=row["description"] or "",
+        priority=TaskPriority(row.get("priority", "thought")),
+        status=TaskStatus.from_legacy(row.get("status", "inbox")),
+        assigned_to=row.get("assigned_to"),
+        tags=tags,
+        due_date=_ts_to_dt(row.get("due_date")),
+        ticket_ref=row.get("ticket_ref"),
+        project_id=row.get("project_id"),
+        project_name=row.get("project_name"),
+        workspace=row.get("workspace"),
+        exec_user=row.get("exec_user", "default"),
+        provider=row.get("provider", "claude"),
+        alias=row.get("alias"),
+        model=row.get("model"),
+        session_id=row.get("session_id"),
+        source_session_id=row.get("source_session_id"),
+        context=ctx,
+        attempt_count=row.get("attempt_count", 0),
+        error_message=row.get("error_message"),
+        outcome=row.get("outcome"),
+        resolution=row.get("resolution"),
+        feedback_rating=row.get("feedback_rating"),
+        feedback_notes=row.get("feedback_notes"),
+        response_url=row.get("response_url"),
+        callback_msg_id=row.get("callback_msg_id"),
+        callback_user=row.get("callback_user"),
+        notification_sink_type=row.get("notification_sink_type"),
+        notification_channel=row.get("notification_channel"),
+        notification_chat_id=row.get("notification_chat_id"),
+        loop_enabled=bool(row.get("loop_enabled", 0)),
+        loop_max_iterations=row.get("loop_max_iterations", 1),
+        loop_iteration=row.get("loop_iteration", 0),
+        loop_keywords=loop_kw,
+        loop_keyword_found=bool(row.get("loop_keyword_found", 0)),
+        schedule_id=row.get("schedule_id"),
+        created_at=_ts_to_dt(row.get("created_at")) or datetime.now(timezone.utc),
+        started_at=_ts_to_dt(row.get("started_at")),
+        completed_at=_ts_to_dt(row.get("completed_at")),
+        archived_at=_ts_to_dt(row.get("archived_at")),
+        deleted_at=_ts_to_dt(row.get("deleted_at")),
+    )
+
+
+_TASK_FIELDS = list(_task_to_row(Task(id="__schema__", description="__schema__")).keys())
+_TASK_COLUMNS = ", ".join(_TASK_FIELDS)
+_TASK_PLACEHOLDERS = ", ".join(["?"] * len(_TASK_FIELDS))
+
+
 class TaskQueue:
-    """Task queue manager with Redis backend
-    
-    Redis key structure:
-    - task:{exec_user}:{task_id} - Task hash data
-    - tasks:{exec_user}:all - Sorted set of all task IDs (score = created_at timestamp)
-    - tasks:{exec_user}:by_status:{status} - Set of task IDs by status
-    - tasks:{exec_user}:by_project:{project_id} - Set of task IDs by project
-    - tasks:{exec_user}:by_workspace:{workspace_hash} - Set of task IDs by workspace
-    - queue:{exec_user}:{workspace_hash}:todo - List of TODO task IDs (queue for execution)
-    - executing:{exec_user}:{workspace_hash} - Set of currently executing task IDs
+    """Task queue manager with SQLite backend.
+
+    The constructor signature is backward-compatible with the Redis version:
+    ``db_path`` is accepted but ignored, ``redis_client`` is ignored.
     """
 
     def __init__(
         self,
         db_path: str = None,
         exec_user: str = "default",
-        redis_client: Optional[RedisClient] = None,
+        redis_client=None,
+        db: Optional[Database] = None,
     ):
-        """Initialize task queue with Redis
-
-        Args:
-            db_path: Ignored, kept for backward compatibility
-            exec_user: Exec user name for task isolation
-            redis_client: Optional injected Redis client (for tests/hosts)
-        """
         self.exec_user = exec_user
-        self._redis: RedisClient = redis_client or get_redis_client()
+        self._db = db or get_db()
         logger.info(f"TaskQueue initialized for exec_user: {exec_user}")
 
-    def _task_key(self, task_id: str, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for task data"""
-        eu = exec_user or self.exec_user
-        return f"task:{eu}:{task_id}"
-    
-    def _all_tasks_key(self, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for all tasks sorted set"""
-        eu = exec_user or self.exec_user
-        return f"tasks:{eu}:all"
-    
-    def _status_key(self, status: TaskStatus, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for tasks by status"""
-        eu = exec_user or self.exec_user
-        return f"tasks:{eu}:by_status:{status.value}"
-    
-    def _project_key(self, project_id: str, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for tasks by project"""
-        eu = exec_user or self.exec_user
-        return f"tasks:{eu}:by_project:{project_id}"
-    
-    def _workspace_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for tasks by workspace"""
-        eu = exec_user or self.exec_user
-        # Use stable hash for shorter keys
-        import hashlib
-        ws_str = (workspace or "default").encode("utf-8")
-        workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"tasks:{eu}:by_workspace:{workspace_hash}"
-
-    def _session_index_key(self, session_id: str, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for session_id → task_id index (O(1) lookup)"""
-        eu = exec_user or self.exec_user
-        return f"tasks:{eu}:by_session:{session_id}"
-
-    def _queue_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for workspace TODO queue"""
-        eu = exec_user or self.exec_user
-        import hashlib
-        ws_str = (workspace or "default").encode("utf-8")
-        workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"queue:{eu}:{workspace_hash}:todo"
-
-    def _executing_key(self, workspace: str, exec_user: Optional[str] = None) -> str:
-        """Get Redis key for executing tasks set"""
-        eu = exec_user or self.exec_user
-        import hashlib
-        ws_str = (workspace or "default").encode("utf-8")
-        workspace_hash = hashlib.md5(ws_str).hexdigest()[:8]
-        return f"executing:{eu}:{workspace_hash}"
+    def _ws_hash(self, workspace: Optional[str]) -> str:
+        if not workspace:
+            return ""
+        return hashlib.md5(workspace.encode("utf-8")).hexdigest()[:8]
 
     def add_task(
         self,
@@ -113,47 +204,28 @@ class TaskQueue:
         task_id: Optional[str] = None,
         source_session_id: Optional[str] = None,
         exec_user: Optional[str] = None,
+        assigned_to: Optional[str] = None,
+        tags: Optional[list] = None,
+        due_date: Optional[datetime] = None,
+        ticket_ref: Optional[str] = None,
         depends_on: Optional[list] = None,
         response_url: Optional[str] = None,
         callback_msg_id: Optional[str] = None,
         callback_user: Optional[str] = None,
-        # Unified notification target (for non-webhook channels like WeCom WS)
         notification_sink_type: Optional[str] = None,
         notification_channel: Optional[str] = None,
         notification_chat_id: Optional[str] = None,
-        # Ralph Loop
         loop_enabled: bool = False,
         loop_max_iterations: int = 1,
         loop_keywords: Optional[list] = None,
     ) -> Task:
-        """Add new task to queue
-
-        Args:
-            source_session_id: Optional session ID from the source context (e.g., chat session).
-                              If provided, task session_id will be {source_session_id}_{task_id}.
-                              Otherwise, defaults to task_{task_id}.
-            exec_user: Optional exec_user for task execution.
-                       If not provided, uses self.exec_user (the queue's default exec_user).
-            response_url: Optional callback URL for task completion notification.
-            callback_msg_id: Optional message ID to pass back in callback.
-            callback_user: Optional user identifier for callback.
-            notification_sink_type: Unified notification sink type (e.g. "wecom", "telegram").
-                                    Takes priority over response_url when set.
-            notification_channel: Channel name for unified notification.
-            notification_chat_id: Chat/channel ID for unified notification.
-        """
-        # Generate task_id first if not provided
+        """Add new task to queue."""
         actual_task_id = str(task_id) if task_id else str(uuid.uuid4())[:8]
-        
-        # Use provided exec_user or fallback to queue's default
         effective_exec_user = exec_user or self.exec_user
-        
-        # Generate session_id based on source_session_id
+
         from src.server.utils.ids import gen_session_id
-        logger.info(f"add_task called with source_session_id={source_session_id!r}, task_id={actual_task_id}, exec_user={effective_exec_user}")
         session_id = gen_session_id()
-        logger.info(f"Generated session_id={session_id}")
-        
+
         normalized_provider = (provider or "").strip().lower() or "claude"
         alias_value = (alias or "").strip() or normalized_provider
 
@@ -166,6 +238,10 @@ class TaskQueue:
             project_name=project_name,
             workspace=workspace,
             exec_user=effective_exec_user,
+            assigned_to=(assigned_to or "").strip() or None,
+            tags=tags or [],
+            due_date=due_date,
+            ticket_ref=(ticket_ref or "").strip() or None,
             provider=normalized_provider,
             alias=alias_value,
             model=(model or "").strip() or None,
@@ -182,42 +258,19 @@ class TaskQueue:
             loop_max_iterations=loop_max_iterations,
             loop_keywords=loop_keywords or [],
         )
-        
-        # Store task data
-        self._redis.hset(self._task_key(task.id, effective_exec_user), task.to_redis_hash())
-        
-        # Add to all tasks sorted set (score = timestamp for ordering)
-        timestamp = task.created_at.timestamp()
-        self._redis.zadd(self._all_tasks_key(effective_exec_user), {task.id: timestamp})
-        
-        # Add to status index
-        self._redis.sadd(self._status_key(TaskStatus.TODO, effective_exec_user), task.id)
-        
-        # Add to project index if applicable
-        if project_id:
-            self._redis.sadd(self._project_key(project_id, effective_exec_user), task.id)
-        
-        # Add to workspace index
-        self._redis.sadd(self._workspace_key(workspace, effective_exec_user), task.id)
 
-        # Add to session_id → task_id index for O(1) lookup
-        if session_id:
-            self._redis.set(
-                self._session_index_key(session_id, effective_exec_user),
-                task.id,
+        row = _task_to_row(task)
+        values = [row[k] for k in _TASK_FIELDS]
+
+        with self._db.transaction() as conn:
+            conn.execute(
+                f"INSERT INTO tasks ({_TASK_COLUMNS}) VALUES ({_TASK_PLACEHOLDERS})",
+                values,
             )
 
-        # Add to TODO queue for execution
-        # Priority: PROJECT tasks go to front, others to back
-        if priority == TaskPriority.PROJECT:
-            self._redis.lpush(self._queue_key(workspace, effective_exec_user), task.id)
-        else:
-            self._redis.rpush(self._queue_key(workspace, effective_exec_user), task.id)
-        
         project_info = f" [Project: {project_name}]" if project_name else ""
         workspace_info = f" [Workspace: {workspace}]" if workspace else ""
         logger.info(f"Added task {task.id}: {description[:50]}...{project_info}{workspace_info}")
-        
         return task
 
     def enqueue_chat_continue(
@@ -232,28 +285,14 @@ class TaskQueue:
         notification_channel: Optional[str] = None,
         notification_chat_id: Optional[str] = None,
     ) -> Optional[Task]:
-        """Re-enqueue an existing task as a background chat-continue run.
-
-        This keeps the same task id and session id (`task_<id>`), but updates task.context
-        with the latest user message for the next run.
-
-        Rules:
-        - If task is DOING, do not enqueue.
-        - If task is CANCELLED, do not enqueue.
-        - Avoid duplicating task id in the TODO queue.
-
-        Args:
-            response_url: Optional callback URL for completion notification.
-            callback_msg_id: Optional message ID to pass back in callback.
-            callback_user: Optional user identifier for callback.
-        """
+        """Re-enqueue an existing task as a background chat-continue run."""
         task_id = str(task_id)
         task = self.get_task(task_id)
         if not task:
             return None
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val == TaskStatus.DOING.value:
+        if status_val == TaskStatus.IN_PROGRESS.value:
             return task
         if status_val == TaskStatus.CANCELLED.value:
             raise ValueError("Task is cancelled")
@@ -262,182 +301,103 @@ class TaskQueue:
         if not msg:
             raise ValueError("Empty message")
 
-        # Update context for next run
         ctx: Dict[str, Any] = task.context or {}
         ctx["next_user_message"] = msg
         ctx["next_user_message_id"] = f"continue-{uuid.uuid4().hex[:8]}"
         ctx["next_run_kind"] = "chat_continue"
         task.context = ctx
 
-        # Update callback info for this run (may differ from original task creation)
-        updates: Dict[str, str] = {"context": json.dumps(ctx, ensure_ascii=False)}
         if response_url:
             task.response_url = response_url
-            updates["response_url"] = response_url
         if callback_msg_id:
             task.callback_msg_id = callback_msg_id
-            updates["callback_msg_id"] = callback_msg_id
         if callback_user:
             task.callback_user = callback_user
-            updates["callback_user"] = callback_user
         if notification_sink_type:
             task.notification_sink_type = notification_sink_type
-            updates["notification_sink_type"] = notification_sink_type
         if notification_channel:
             task.notification_channel = notification_channel
-            updates["notification_channel"] = notification_channel
         if notification_chat_id:
             task.notification_chat_id = notification_chat_id
-            updates["notification_chat_id"] = notification_chat_id
 
-        # Update model if specified (allows switching model on continue)
         effective_model = (model or "").strip()
         if effective_model:
             task.model = effective_model
-            updates["model"] = effective_model
 
-        self._redis.hset(self._task_key(task.id, task.exec_user), updates)
-
-        # Move status to TODO (from DONE/FAILED/etc.)
         try:
-            self._update_task_status(task, TaskStatus.TODO)
-        except Exception:
-            # best-effort
-            pass
-
-        # Ensure task appears only once in the queue
-        try:
-            self._redis.lrem(self._queue_key(task.workspace, task.exec_user), 0, task.id)
+            self._update_task_status(task, TaskStatus.INBOX)
         except Exception:
             pass
 
-        try:
-            if task.priority == TaskPriority.SERIOUS:
-                self._redis.lpush(self._queue_key(task.workspace, task.exec_user), task.id)
-            else:
-                self._redis.rpush(self._queue_key(task.workspace, task.exec_user), task.id)
-            logger.info(f"Enqueued chat_continue for task {task.id}", extra={
-                "task_id": task.id,
-                "workspace": task.workspace,
-                "user_message": message[:50] if message else "",
-            })
-        except Exception as e:
-            logger.error(f"Failed to enqueue chat_continue for task {task.id}: {e}")
-
+        self.update_task(task)
+        logger.info(f"Enqueued chat_continue for task {task.id}")
         return task
 
     def get_task(self, task_id: str) -> Optional[Task]:
-        """Get task by ID"""
-        # Support both string and int IDs for backward compatibility
+        """Get task by ID."""
         task_id = str(task_id)
-        data = self._redis.hgetall(self._task_key(task_id))
-        if not data:
+        row = self._db.execute_fetchone(
+            "SELECT * FROM tasks WHERE id = ? LIMIT 1",
+            (task_id,),
+        )
+        if not row:
             return None
         try:
-            return Task.from_redis_hash(data)
+            return _row_to_task(row)
         except Exception as e:
             logger.error(f"Failed to parse task {task_id}: {e}")
             return None
 
     def find_task_by_session_id(self, session_id: str) -> Optional[Task]:
-        """Find a task whose session_id matches the given value.
-
-        Uses an O(1) Redis index (``tasks:{eu}:by_session:{session_id}``).
-        Falls back to a full scan for backward compatibility with tasks
-        created before the index existed, and lazily backfills the index.
-
-        Returns:
-            The matching Task, or None.
-        """
+        """Find a task whose session_id matches the given value."""
         if not session_id:
             return None
-
-        # 1. O(1) index lookup
-        task_id = self._redis.get(self._session_index_key(session_id))
-        if task_id:
-            task = self.get_task(task_id)
-            if task and (
-                (task.session_id if isinstance(task.session_id, str) else None)
-                == session_id
-            ):
-                return task
-            # Stale index entry — clean up
-            self._redis.delete(self._session_index_key(session_id))
-
-        # 2. Fallback: full scan (backward compat for pre-index tasks)
-        all_task_ids = self._redis.zrange(self._all_tasks_key(), 0, -1)
-        for tid in all_task_ids:
+        row = self._db.execute_fetchone(
+            "SELECT * FROM tasks WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        )
+        if row:
             try:
-                stored_sid = self._redis.hget(self._task_key(tid), "session_id")
-                if stored_sid == session_id:
-                    # Backfill index for future O(1) lookups
-                    self._redis.set(
-                        self._session_index_key(session_id), tid
-                    )
-                    return self.get_task(tid)
+                return _row_to_task(row)
             except Exception:
-                continue
+                pass
         return None
 
     def get_pending_tasks(self, limit: int = 10) -> List[Task]:
-        """Get TODO tasks sorted by priority (SERIOUS first, then by creation time)"""
-        task_ids = self._redis.smembers(self._status_key(TaskStatus.TODO))
-        if not task_ids:
-            return []
-        
-        tasks = []
-        for task_id in task_ids:
-            task = self.get_task(task_id)
-            if task:
-                tasks.append(task)
-        
-        # Sort: SERIOUS first, then by created_at
-        def sort_key(t: Task):
-            priority_order = 0 if t.priority == TaskPriority.SERIOUS else 1
-            return (priority_order, t.created_at)
-        
-        tasks.sort(key=sort_key)
-        return tasks[:limit]
+        """Get ready-to-run inbox tasks sorted by priority."""
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? AND status = 'inbox' "
+            "ORDER BY CASE priority WHEN 'project' THEN 0 WHEN 'serious' THEN 1 ELSE 2 END, created_at ASC "
+            "LIMIT ?",
+            (self.exec_user, limit),
+        )
+        return [_row_to_task(r) for r in rows if r]
 
     def get_in_progress_tasks(self) -> List[Task]:
-        """Get all DOING tasks"""
-        task_ids = self._redis.smembers(self._status_key(TaskStatus.DOING))
-        tasks = []
-        for task_id in task_ids:
-            task = self.get_task(task_id)
-            if task:
-                tasks.append(task)
-        return tasks
+        """Get all in-progress tasks."""
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? AND status = 'in_progress'",
+            (self.exec_user,),
+        )
+        return [_row_to_task(r) for r in rows if r]
 
     def _update_task_status(self, task: Task, new_status: TaskStatus) -> None:
-        """Update task status and related indexes"""
-        eu = getattr(task, "exec_user", None)
-        old_status = TaskStatus(task.status) if isinstance(task.status, str) else task.status
-        
-        # Remove from old status set
-        self._redis.srem(self._status_key(old_status, eu), task.id)
-        
-        # Add to new status set
-        self._redis.sadd(self._status_key(new_status, eu), task.id)
-        
-        # Update task data
-        task.status = new_status
+        """Update task status."""
         now = datetime.now(timezone.utc)
-        if new_status == TaskStatus.DOING:
-            # Prefer reflecting the latest attempt start time
+        task.status = new_status
+
+        if new_status == TaskStatus.IN_PROGRESS:
             task.started_at = now
         elif new_status in (TaskStatus.DONE, TaskStatus.FAILED):
-            # Preserve completion time if already set (e.g. unarchive back to DONE)
             if not task.completed_at:
                 task.completed_at = now
         elif new_status == TaskStatus.ARCHIVED:
-            # Archived time is used as updated_at for grouping in UI
             task.archived_at = now
         elif new_status == TaskStatus.CANCELLED:
             if not task.deleted_at:
                 task.deleted_at = now
-        
-        self._redis.hset(self._task_key(task.id, eu), task.to_redis_hash())
+
+        self.update_task(task)
 
     def cancel_task(self, task_id: str) -> Optional[Task]:
         """Cancel TODO task (soft delete)"""
@@ -445,190 +405,159 @@ class TaskQueue:
         task = self.get_task(task_id)
         if not task:
             return None
-        
-        if task.status == TaskStatus.TODO.value or task.status == TaskStatus.TODO:
-            eu = getattr(task, "exec_user", None)
-            # Remove from TODO queue
-            self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
-
-            # Update status
+        status_val = task.status if isinstance(task.status, str) else task.status.value
+        if status_val in (TaskStatus.INBOX.value, TaskStatus.ASSIGNED.value, TaskStatus.AWAITING_OWNER.value):
             self._update_task_status(task, TaskStatus.CANCELLED)
             logger.info(f"Task {task_id} cancelled and moved to trash")
-
         return task
 
     def update_task_status(self, task_id: str, new_status: TaskStatus) -> Optional[Task]:
-        """Manually update task status.
-
-        Used to unblock dependent tasks or change task state manually.
-        Handles queue membership changes based on status transitions.
-        """
+        """Manually update task status."""
         task_id = str(task_id)
         task = self.get_task(task_id)
         if not task:
             return None
-        
-        old_status_val = task.status if isinstance(task.status, str) else task.status.value
-        old_status = TaskStatus(old_status_val)
-        
-        eu = getattr(task, "exec_user", None)
-        # Handle queue transitions
-        if old_status == TaskStatus.TODO and new_status != TaskStatus.TODO:
-            # Remove from TODO queue if leaving TODO
-            self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
-        elif old_status != TaskStatus.TODO and new_status == TaskStatus.TODO:
-            # Add back to TODO queue if returning to TODO
-            self._redis.rpush(self._queue_key(task.workspace, eu), task.id)
-        
-        # Handle executing set
-        if old_status == TaskStatus.DOING and new_status != TaskStatus.DOING:
-            self._redis.srem(self._executing_key(task.workspace, eu), task.id)
-        elif old_status != TaskStatus.DOING and new_status == TaskStatus.DOING:
-            self._redis.sadd(self._executing_key(task.workspace, eu), task.id)
-        
+        old_status = TaskStatus.from_legacy(task.status if isinstance(task.status, str) else task.status.value)
+        if not TaskStatus.can_transition(old_status, new_status):
+            logger.warning(f"Invalid task status transition: {task_id} {old_status.value} -> {new_status.value}")
+            return None
         self._update_task_status(task, new_status)
-        logger.info(f"Task {task_id} status manually updated: {old_status_val} -> {new_status.value}")
-        
+        logger.info(f"Task {task_id} status manually updated: {old_status.value} -> {new_status.value}")
         return task
 
     def get_queue_status(self) -> dict:
         """Get overall queue status"""
-        todo = self._redis.scard(self._status_key(TaskStatus.TODO))
-        doing = self._redis.scard(self._status_key(TaskStatus.DOING))
-        done = self._redis.scard(self._status_key(TaskStatus.DONE))
-        failed = self._redis.scard(self._status_key(TaskStatus.FAILED))
-        cancelled = self._redis.scard(self._status_key(TaskStatus.CANCELLED))
-        archived = self._redis.scard(self._status_key(TaskStatus.ARCHIVED))
-
+        rows = self._db.execute_fetchall(
+            "SELECT status, COUNT(*) as cnt FROM tasks WHERE exec_user = ? GROUP BY status",
+            (self.exec_user,),
+        )
+        counts = {r["status"]: r["cnt"] for r in rows}
+        inbox = counts.get("inbox", 0)
+        assigned = counts.get("assigned", 0)
+        awaiting_owner = counts.get("awaiting_owner", 0)
+        in_progress = counts.get("in_progress", 0)
+        review = counts.get("review", 0)
+        quality_review = counts.get("quality_review", 0)
+        done = counts.get("done", 0)
+        failed = counts.get("failed", 0)
+        cancelled = counts.get("cancelled", 0)
+        archived = counts.get("archived", 0)
         return {
-            "total": todo + doing + done + failed + cancelled + archived,
-            "todo": todo,
-            "doing": doing,
+            "total": inbox + assigned + awaiting_owner + in_progress + review + quality_review + done + failed + cancelled + archived,
+            "inbox": inbox,
+            "assigned": assigned,
+            "awaiting_owner": awaiting_owner,
+            "in_progress": in_progress,
+            "review": review,
+            "quality_review": quality_review,
             "done": done,
             "failed": failed,
             "cancelled": cancelled,
             "archived": archived,
-            # Backward compatibility aliases
-            "pending": todo,
-            "in_progress": doing,
+            # backward-compatible aliases
+            "todo": inbox,
+            "doing": in_progress,
+            "pending": inbox,
             "completed": done,
         }
 
     def update_task(self, task: Task) -> bool:
-        """Update task data in Redis.
+        """Update task data in SQLite."""
+        row = _task_to_row(task)
+        update_cols = [k for k in _TASK_FIELDS if k not in ("id", "exec_user")]
+        set_clause = ", ".join(f"{k} = ?" for k in update_cols)
+        values = [row[k] for k in update_cols] + [task.exec_user or self.exec_user, task.id]
 
-        This saves all task fields including claude_session_id.
-        Also maintains the session_id → task_id index when session_id
-        changes.  Does not change queue membership or status indices.
-
-        Args:
-            task: Task object with updated fields
-
-        Returns:
-            True if successful, False if task doesn't exist
-        """
-        if not self._redis.exists(self._task_key(task.id)):
-            logger.warning(f"Task {task.id} not found for update")
-            return False
-
-        # Maintain session_id index when session_id changes
-        try:
-            old_session_id = self._redis.hget(self._task_key(task.id), "session_id")
-            new_session_id = task.session_id if isinstance(task.session_id, str) else None
-            if new_session_id != old_session_id:
-                if old_session_id:
-                    self._redis.delete(self._session_index_key(old_session_id))
-                if new_session_id:
-                    self._redis.set(self._session_index_key(new_session_id), task.id)
-        except Exception as e:
-            logger.warning(f"Failed to update session index for task {task.id}: {e}")
-
-        self._redis.hset(self._task_key(task.id), task.to_redis_hash())
+        with self._db.transaction() as conn:
+            cursor = conn.execute(
+                f"UPDATE tasks SET {set_clause} WHERE exec_user = ? AND id = ?",
+                values,
+            )
+            if cursor.rowcount == 0:
+                logger.warning(f"Task {task.id} not found for update")
+                return False
         logger.debug(f"Updated task {task.id}")
         return True
 
     def get_projects(self) -> List[dict]:
         """Get all projects with task counts and status"""
-        # Find all project keys
-        project_keys = list(self._redis.scan_iter(f"tasks:{self.exec_user}:by_project:*"))
-        
-        result = []
-        for key in project_keys:
-            # Extract project_id from key
-            project_id = key.split(":")[-1]
-            task_ids = self._redis.smembers(key)
-            
-            if not task_ids:
-                continue
-            
-            # Count tasks by status
-            todo = doing = done = 0
-            project_name = None
-            
-            for task_id in task_ids:
-                task = self.get_task(task_id)
-                if task:
-                    if not project_name:
-                        project_name = task.project_name
-                    status = task.status if isinstance(task.status, str) else task.status.value
-                    if status == TaskStatus.TODO.value:
-                        todo += 1
-                    elif status == TaskStatus.DOING.value:
-                        doing += 1
-                    elif status == TaskStatus.DONE.value:
-                        done += 1
-            
-            result.append({
-                "project_id": project_id,
-                "project_name": project_name or project_id,
-                "total_tasks": len(task_ids),
-                "pending": todo,  # backward compatibility
-                "todo": todo,
-                "in_progress": doing,  # backward compatibility
-                "doing": doing,
-                "completed": done,  # backward compatibility
-                "done": done,
-            })
-        
-        return sorted(result, key=lambda x: x["project_id"])
+        rows = self._db.execute_fetchall(
+            "SELECT project_id, project_name, status, COUNT(*) as cnt "
+            "FROM tasks WHERE exec_user = ? AND project_id IS NOT NULL "
+            "GROUP BY project_id, project_name, status",
+            (self.exec_user,),
+        )
+        projects: Dict[str, dict] = {}
+        for r in rows:
+            pid = r["project_id"]
+            if pid not in projects:
+                projects[pid] = {
+                    "project_id": pid,
+                    "project_name": r["project_name"] or pid,
+                    "total_tasks": 0,
+                    "inbox": 0,
+                    "assigned": 0,
+                    "awaiting_owner": 0,
+                    "in_progress": 0,
+                    "review": 0,
+                    "quality_review": 0,
+                    "done": 0,
+                    # backward-compatible aliases
+                    "todo": 0,
+                    "doing": 0,
+                    "pending": 0,
+                    "completed": 0,
+                }
+            projects[pid]["total_tasks"] += r["cnt"]
+            st = r["status"]
+            if st in projects[pid]:
+                projects[pid][st] += r["cnt"]
+            if st == "inbox":
+                projects[pid]["todo"] += r["cnt"]
+                projects[pid]["pending"] += r["cnt"]
+            elif st == "in_progress":
+                projects[pid]["doing"] += r["cnt"]
+            elif st == "done":
+                projects[pid]["completed"] += r["cnt"]
+        return sorted(projects.values(), key=lambda x: x["project_id"])
 
     def get_project_by_id(self, project_id: str) -> Optional[dict]:
         """Get project info by ID"""
-        task_ids = self._redis.smembers(self._project_key(project_id))
-        if not task_ids:
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? AND project_id = ?",
+            (self.exec_user, project_id),
+        )
+        if not rows:
             return None
-        
-        tasks = []
-        for task_id in task_ids:
-            task = self.get_task(task_id)
-            if task:
-                tasks.append(task)
-        
-        if not tasks:
-            return None
-        
+        tasks = [_row_to_task(r) for r in rows]
         first_task = tasks[0]
-        todo = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == TaskStatus.TODO.value)
-        doing = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == TaskStatus.DOING.value)
-        done = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == TaskStatus.DONE.value)
-        failed = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == TaskStatus.FAILED.value)
-        
+        inbox = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "inbox")
+        assigned = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "assigned")
+        awaiting_owner = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "awaiting_owner")
+        in_progress = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "in_progress")
+        review = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "review")
+        quality_review = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "quality_review")
+        done = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "done")
+        failed = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "failed")
         return {
             "project_id": project_id,
             "project_name": first_task.project_name or project_id,
             "total_tasks": len(tasks),
-            "pending": todo,
-            "todo": todo,
-            "in_progress": doing,
-            "doing": doing,
-            "completed": done,
+            "inbox": inbox,
+            "assigned": assigned,
+            "awaiting_owner": awaiting_owner,
+            "in_progress": in_progress,
+            "review": review,
+            "quality_review": quality_review,
             "done": done,
+            "pending": inbox, "todo": inbox,
+            "doing": in_progress,
+            "completed": done,
             "failed": failed,
             "created_at": min(t.created_at for t in tasks),
             "tasks": [
                 {
-                    "id": t.id,
-                    "description": t.description[:50],
+                    "id": t.id, "description": t.description[:50],
                     "status": t.status if isinstance(t.status, str) else t.status.value,
                     "priority": t.priority if isinstance(t.priority, str) else t.priority.value,
                     "created_at": t.created_at.isoformat(),
@@ -639,17 +568,11 @@ class TaskQueue:
 
     def get_recent_tasks(self, limit: int = 10) -> List[Task]:
         """Get the most recent tasks"""
-        # Get task IDs from sorted set (most recent first)
-        task_ids = self._redis.zrange(self._all_tasks_key(), -limit, -1)
-        task_ids = list(reversed(task_ids))  # Most recent first
-        
-        tasks = []
-        for task_id in task_ids:
-            task = self.get_task(task_id)
-            if task:
-                tasks.append(task)
-        
-        return tasks
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? ORDER BY created_at DESC LIMIT ?",
+            (self.exec_user, limit),
+        )
+        return [_row_to_task(r) for r in rows if r]
 
     def list_tasks(
         self,
@@ -660,633 +583,243 @@ class TaskQueue:
         workspace: Optional[str] = None,
         search: Optional[str] = None,
     ) -> tuple[List[Task], int]:
-        """List tasks with server-side filtering and pagination.
-
-        Strategy:
-        - No filter: use ZSET range directly (most efficient path)
-        - Single filter (status/project/workspace): use the corresponding
-          Redis SET index to narrow candidates before loading task data
-        - Multiple non-search filters: intersect the relevant SETs
-        - search filter: requires content inspection (loads candidates)
-
-        Only the tasks for the requested *page* are fully deserialized,
-        avoiding the old O(n × hgetall) cost.
-
-        Returns:
-            (tasks_for_page, total_matching_count)
-        """
+        """List tasks with server-side filtering and pagination."""
         if page < 1:
             page = 1
         if page_size < 1:
             page_size = 20
 
-        status_norm = status.lower().strip() if status else None
-        project_norm = project_id.strip() if project_id else None
-        workspace_norm = workspace.strip() if workspace else None
-        search_norm = search.lower().strip() if search else None
+        conditions = ["exec_user = ?"]
+        params: list = [self.exec_user]
 
-        # ── Step 1: Determine candidate task IDs via indexes ──
-        candidate_ids = self._resolve_candidate_ids(
-            status_norm=status_norm,
-            project_id=project_norm,
-            workspace=workspace_norm,
-        )
-
-        # ── Step 2: Order candidates by creation time (newest first) ──
-        if candidate_ids is not None:
-            ordered = self._order_by_creation(candidate_ids)
-        else:
-            # No structural filter — use full ZSET directly (already ordered)
-            ordered = list(reversed(
-                self._redis.zrange(self._all_tasks_key(), 0, -1)
-            ))
-
-        # ── Step 3: Search filter (requires loading task data) ──
-        if search_norm:
-            filtered = []
-            for tid in ordered:
-                task = self.get_task(tid)
-                if task and self._matches_search(task, search_norm):
-                    filtered.append(tid)
-            ordered = filtered
-
-        # ── Step 4: Paginate ──
-        total = len(ordered)
-        start = (page - 1) * page_size
-        page_ids = ordered[start:start + page_size]
-
-        # ── Step 5: Load only the page's tasks ──
-        tasks = []
-        for tid in page_ids:
-            task = self.get_task(tid)
-            if task:
-                tasks.append(task)
-
-        return tasks, total
-
-    # ── list_tasks helpers ────────────────────────────────────────────
-
-    def _resolve_candidate_ids(
-        self,
-        status_norm: Optional[str] = None,
-        project_id: Optional[str] = None,
-        workspace: Optional[str] = None,
-    ) -> Optional[set]:
-        """Use existing Redis SET indexes to narrow candidate task IDs.
-
-        Returns ``None`` when no structural filter is applied (caller should
-        use the full sorted set instead).
-        """
-        sets_to_intersect: List[set] = []
-
-        if status_norm:
-            try:
-                st = TaskStatus(status_norm)
-                members = self._redis.smembers(self._status_key(st))
-                sets_to_intersect.append(set(members))
-            except ValueError:
-                # Unknown status → no matches
-                return set()
-
+        if status:
+            conditions.append("status = ?")
+            params.append(status.lower().strip())
         if project_id:
-            members = self._redis.smembers(self._project_key(project_id))
-            sets_to_intersect.append(set(members))
-
+            conditions.append("project_id = ?")
+            params.append(project_id.strip())
         if workspace:
-            members = self._redis.smembers(self._workspace_key(workspace))
-            sets_to_intersect.append(set(members))
+            ws_hash = self._ws_hash(workspace.strip())
+            conditions.append("workspace_hash = ?")
+            params.append(ws_hash)
+        if search:
+            conditions.append("(description LIKE ? OR id LIKE ? OR project_name LIKE ?)")
+            s = f"%{search.lower().strip()}%"
+            params.extend([s, s, s])
 
-        if not sets_to_intersect:
-            return None  # No structural filter
+        where = " AND ".join(conditions)
+        count_row = self._db.execute_fetchone(
+            f"SELECT COUNT(*) as cnt FROM tasks WHERE {where}", params
+        )
+        total = count_row["cnt"] if count_row else 0
 
-        # Intersect all sets
-        result = sets_to_intersect[0]
-        for s in sets_to_intersect[1:]:
-            result = result & s
-        return result
-
-    def _order_by_creation(self, candidate_ids: set) -> list:
-        """Order a set of task IDs by creation time (newest first).
-
-        Uses the 'all tasks' sorted set scores (timestamps) to determine
-        ordering without loading full task objects.
-        """
-        if not candidate_ids:
-            return []
-
-        # Get all members with scores from the sorted set
-        all_scored = self._redis.zrange(self._all_tasks_key(), 0, -1, withscores=True)
-
-        # Filter to candidates and sort by score descending
-        scored = [
-            (tid, score) for tid, score in all_scored
-            if tid in candidate_ids
-        ]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [tid for tid, _ in scored]
-
-    @staticmethod
-    def _matches_search(task: Task, search_norm: str) -> bool:
-        """Check if task matches search text."""
-        task_status = task.status if isinstance(task.status, str) else task.status.value
-        hay = " ".join(filter(None, [
-            task.id or "",
-            task.description or "",
-            task.project_id or "",
-            task.project_name or "",
-            task.workspace or "",
-            task_status or "",
-        ])).lower()
-        return search_norm in hay
+        rows = self._db.execute_fetchall(
+            f"SELECT * FROM tasks WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            params + [page_size, (page - 1) * page_size],
+        )
+        tasks = []
+        for r in rows:
+            try:
+                tasks.append(_row_to_task(r))
+            except Exception as e:
+                logger.error(f"Failed to parse task in list: {e}")
+        return tasks, total
 
     def get_failed_tasks(self, limit: int = 10) -> List[Task]:
         """Get the most recent failed tasks"""
-        task_ids = self._redis.smembers(self._status_key(TaskStatus.FAILED))
-        
-        tasks = []
-        for task_id in task_ids:
-            task = self.get_task(task_id)
-            if task:
-                tasks.append(task)
-        
-        # Sort by created_at descending
-        tasks.sort(key=lambda t: t.created_at, reverse=True)
-        return tasks[:limit]
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? AND status = 'failed' ORDER BY created_at DESC LIMIT ?",
+            (self.exec_user, limit),
+        )
+        return [_row_to_task(r) for r in rows if r]
 
     def delete_project(self, project_id: str) -> int:
-        """Soft delete all tasks in a project (mark as CANCELLED). Returns count of affected tasks."""
-        task_ids = self._redis.smembers(self._project_key(project_id))
-        count = 0
-
-        for task_id in task_ids:
-            task = self.get_task(task_id)
-            if task and (task.status == TaskStatus.TODO.value or task.status == TaskStatus.TODO):
-                eu = getattr(task, "exec_user", None)
-                # Remove from TODO queue
-                self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
-                # Update status
-                self._update_task_status(task, TaskStatus.CANCELLED)
-                count += 1
-
+        """Soft delete all tasks in a project."""
+        with self._db.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'cancelled', deleted_at = ? "
+                "WHERE exec_user = ? AND project_id = ? AND status IN ('inbox', 'assigned', 'awaiting_owner')",
+                (datetime.now(timezone.utc).timestamp(), self.exec_user, project_id),
+            )
+            count = cursor.rowcount
         if count:
             logger.info(f"Soft deleted project {project_id}: {count} tasks moved to trash")
-
         return count
 
     def archive_tasks(self, task_ids: List[str]) -> Dict[str, Any]:
-        """Batch archive tasks.
-
-        Rules:
-        - Only DONE tasks can be archived.
-        - Archived tasks move to TaskStatus.ARCHIVED.
-
-        Returns:
-            {"count": int, "archived": [ids], "skipped": {id: reason}}
-        """
-        archived: List[str] = []
-        skipped: Dict[str, str] = {}
-
+        """Batch archive DONE tasks."""
+        archived, skipped = [], {}
         for raw_id in task_ids or []:
             task_id = str(raw_id)
             task = self.get_task(task_id)
             if not task:
-                skipped[task_id] = "not_found"
-                continue
-
+                skipped[task_id] = "not_found"; continue
             status_val = task.status if isinstance(task.status, str) else task.status.value
             if status_val != TaskStatus.DONE.value:
-                skipped[task_id] = f"invalid_status:{status_val}"
-                continue
-
-            # Best-effort: ensure it is not in execution queues
-            eu = getattr(task, "exec_user", None)
-            try:
-                self._redis.lrem(self._queue_key(task.workspace, eu), 0, task.id)
-            except Exception:
-                pass
-            try:
-                self._redis.srem(self._executing_key(task.workspace, eu), task.id)
-            except Exception:
-                pass
-
+                skipped[task_id] = f"invalid_status:{status_val}"; continue
             self._update_task_status(task, TaskStatus.ARCHIVED)
             archived.append(task_id)
-
         return {"count": len(archived), "archived": archived, "skipped": skipped}
 
     def unarchive_tasks(self, task_ids: List[str]) -> Dict[str, Any]:
-        """Batch unarchive tasks.
-
-        Rules:
-        - Only ARCHIVED tasks can be unarchived.
-        - Unarchive moves task back to DONE.
-
-        Returns:
-            {"count": int, "unarchived": [ids], "skipped": {id: reason}}
-        """
-        unarchived: List[str] = []
-        skipped: Dict[str, str] = {}
-
+        """Batch unarchive ARCHIVED tasks back to DONE."""
+        unarchived, skipped = [], {}
         for raw_id in task_ids or []:
             task_id = str(raw_id)
             task = self.get_task(task_id)
             if not task:
-                skipped[task_id] = "not_found"
-                continue
-
+                skipped[task_id] = "not_found"; continue
             status_val = task.status if isinstance(task.status, str) else task.status.value
             if status_val != TaskStatus.ARCHIVED.value:
-                skipped[task_id] = f"invalid_status:{status_val}"
-                continue
-
-            # Clear archived marker
-            try:
-                task.archived_at = None
-            except Exception:
-                pass
-
+                skipped[task_id] = f"invalid_status:{status_val}"; continue
+            task.archived_at = None
             self._update_task_status(task, TaskStatus.DONE)
-
-            # Ensure archived_at field is removed from Redis hash
-            try:
-                self._redis.hdel(self._task_key(task.id), "archived_at")
-            except Exception:
-                pass
-
             unarchived.append(task_id)
-
         return {"count": len(unarchived), "unarchived": unarchived, "skipped": skipped}
 
     def clear_tasks(self, task_ids: List[str]) -> Dict[str, Any]:
-        """Batch hard delete tasks.
-
-        Intended for clearing ARCHIVED tasks from UI.
-
-        Returns:
-            {"count": int, "cleared": [ids], "skipped": {id: reason}}
-        """
-        cleared: List[str] = []
-        skipped: Dict[str, str] = {}
-
+        """Batch hard delete ARCHIVED tasks."""
+        cleared, skipped = [], {}
         for raw_id in task_ids or []:
             task_id = str(raw_id)
             task = self.get_task(task_id)
             if not task:
-                skipped[task_id] = "not_found"
-                continue
-
+                skipped[task_id] = "not_found"; continue
             status_val = task.status if isinstance(task.status, str) else task.status.value
             if status_val != TaskStatus.ARCHIVED.value:
-                skipped[task_id] = f"invalid_status:{status_val}"
-                continue
-
+                skipped[task_id] = f"invalid_status:{status_val}"; continue
             try:
                 self.delete_task_hard(task_id)
                 cleared.append(task_id)
             except Exception as e:
                 skipped[task_id] = f"error:{e}"
-
         return {"count": len(cleared), "cleared": cleared, "skipped": skipped}
 
     def delete_task_hard(self, task_id: str) -> bool:
-        """Hard delete a task and all related indexes.
-
-        This removes the task from:
-        - task hash
-        - all tasks zset
-        - status/project/workspace indexes
-        - session_id index
-        - todo queue / executing set (best effort)
-
-        The operation is idempotent.
-        """
+        """Hard delete a task."""
         task_id = str(task_id)
-
-        # Best-effort cleanups even if task is missing
-        removed_any = False
-
-        task = self.get_task(task_id)
-        if task:
-            # Remove from session_id index
-            if task.session_id:
-                try:
-                    self._redis.delete(
-                        self._session_index_key(task.session_id)
-                    )
-                except Exception:
-                    pass
-
-            # Remove from status index
-            try:
-                status_val = task.status if isinstance(task.status, str) else task.status.value
-                try:
-                    st = TaskStatus(status_val)
-                    if self._redis.srem(self._status_key(st), task_id):
-                        removed_any = True
-                except Exception:
-                    # fallback: remove from all known status sets
-                    for st in TaskStatus:
-                        if self._redis.srem(self._status_key(st), task_id):
-                            removed_any = True
-            except Exception:
-                pass
-
-            # Remove from project index
-            if task.project_id:
-                try:
-                    if self._redis.srem(self._project_key(task.project_id), task_id):
-                        removed_any = True
-                except Exception:
-                    pass
-
-            # Remove from workspace index + queues
-            try:
-                if self._redis.srem(self._workspace_key(task.workspace), task_id):
-                    removed_any = True
-            except Exception:
-                pass
-
-            try:
-                # Remove from TODO queue if present
-                if self._redis.lrem(self._queue_key(task.workspace), 0, task_id):
-                    removed_any = True
-            except Exception:
-                pass
-
-            try:
-                if self._redis.srem(self._executing_key(task.workspace), task_id):
-                    removed_any = True
-            except Exception:
-                pass
-        else:
-            # If task meta is missing, still try to remove from common indexes
-            try:
-                for st in TaskStatus:
-                    if self._redis.srem(self._status_key(st), task_id):
-                        removed_any = True
-            except Exception:
-                pass
-
-        # Remove from global zset
-        try:
-            if self._redis.zrem(self._all_tasks_key(), task_id):
-                removed_any = True
-        except Exception:
-            pass
-
-        # Remove the task hash
-        try:
-            if self._redis.delete(self._task_key(task_id)):
-                removed_any = True
-        except Exception:
-            pass
-
-        if removed_any:
-            logger.info(f"Hard deleted task {task_id}")
-
+        with self._db.transaction() as conn:
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        logger.info(f"Hard deleted task {task_id}")
         return True
 
     # ============ Executor Support Methods ============
-    
+
     def get_next_todo_task(self, workspace: Optional[str] = None) -> Optional[Task]:
-        """Get next TODO task from queue for execution
-        
-        Args:
-            workspace: Workspace to get task from. If None, checks all workspaces.
-        
-        Returns:
-            Next task to execute, or None if queue is empty
-        """
+        """Get next TODO task from queue for execution"""
         if workspace is not None:
-            task_id = self._redis.lpop(self._queue_key(workspace))
-            if task_id:
-                return self.get_task(task_id)
-            return None
-        
-        # Check all workspace queues
-        queue_keys = list(self._redis.scan_iter(f"queue:{self.exec_user}:*:todo"))
-        for key in queue_keys:
-            # Remove prefix to get actual key
-            task_id = self._redis.lpop(key.replace(self._redis._prefix, ""))
-            if task_id:
-                return self.get_task(task_id)
-        
-        return None
-    
+            ws_hash = self._ws_hash(workspace)
+            row = self._db.execute_fetchone(
+                "SELECT * FROM tasks WHERE exec_user = ? AND workspace_hash = ? AND status = 'inbox' "
+                "ORDER BY CASE priority WHEN 'project' THEN 0 WHEN 'serious' THEN 1 ELSE 2 END, created_at ASC LIMIT 1", 
+                (self.exec_user, ws_hash),
+            )
+        else:
+            row = self._db.execute_fetchone(
+                "SELECT * FROM tasks WHERE exec_user = ? AND status = 'inbox' "
+                "ORDER BY CASE priority WHEN 'project' THEN 0 WHEN 'serious' THEN 1 ELSE 2 END, created_at ASC LIMIT 1", 
+                (self.exec_user,),
+            )
+        return _row_to_task(row) if row else None
+
     def start_task(self, task_id: str) -> Optional[Task]:
-        """Mark task as DOING and add to executing set"""
+        """Mark task as in progress."""
         task = self.get_task(task_id)
         if not task:
             return None
-        
-        if task.status != TaskStatus.TODO.value and task.status != TaskStatus.TODO:
-            logger.warning(f"Task {task_id} is not in TODO status, cannot start")
+        status_val = task.status if isinstance(task.status, str) else task.status.value
+        if status_val not in (TaskStatus.INBOX.value, TaskStatus.ASSIGNED.value):
+            logger.warning(f"Task {task_id} is not ready to start, cannot start")
             return None
-        
-        # Update status
-        self._update_task_status(task, TaskStatus.DOING)
         task.attempt_count += 1
-        self._redis.hset(self._task_key(task.id), {"attempt_count": str(task.attempt_count)})
-        
-        # Add to executing set
-        self._redis.sadd(self._executing_key(task.workspace), task.id)
-        
+        self._update_task_status(task, TaskStatus.IN_PROGRESS)
         logger.info(f"Task {task_id} started (attempt {task.attempt_count})")
         return task
-    
+
     def complete_task(self, task_id: str, error_message: Optional[str] = None) -> Optional[Task]:
         """Mark task as DONE or FAILED"""
         task = self.get_task(task_id)
         if not task:
             return None
-        
-        # Remove from executing set
-        self._redis.srem(self._executing_key(task.workspace), task.id)
-        
         if error_message:
-            failed_task = self.fail_task(task_id, error_message=error_message)
-            if failed_task:
-                logger.error(f"Task {task_id} failed: {error_message}")
-            return failed_task
-
+            return self.fail_task(task_id, error_message=error_message)
         self._update_task_status(task, TaskStatus.DONE)
         logger.info(f"Task {task_id} completed successfully")
-        
         return task
 
-    def requeue_task(
-        self,
-        task_id: str,
-        error_message: Optional[str] = None,
-        attempt_count: Optional[int] = None,
-    ) -> Optional[Task]:
-        """Move a task back to TODO while keeping queue bookkeeping consistent."""
+    def requeue_task(self, task_id: str, error_message: Optional[str] = None, attempt_count: Optional[int] = None) -> Optional[Task]:
+        """Move a task back to TODO."""
         task = self.get_task(task_id)
         if not task:
             return None
-
-        eu = getattr(task, "exec_user", None)
-        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
-
-        updates = {}
         if attempt_count is not None:
             task.attempt_count = attempt_count
-            updates["attempt_count"] = str(attempt_count)
         if error_message is not None:
             task.error_message = error_message
-            updates["error_message"] = error_message
-        if updates:
-            self._redis.hset(self._task_key(task.id, eu), updates)
-
-        self._update_task_status(task, TaskStatus.TODO)
-        self._redis.rpush(self._queue_key(task.workspace, eu), task.id)
+        self._update_task_status(task, TaskStatus.INBOX)
         return task
 
-    def fail_task(
-        self,
-        task_id: str,
-        error_message: Optional[str],
-        attempt_count: Optional[int] = None,
-    ) -> Optional[Task]:
-        """Move a task to FAILED while keeping queue bookkeeping consistent."""
+    def fail_task(self, task_id: str, error_message: Optional[str], attempt_count: Optional[int] = None) -> Optional[Task]:
+        """Move a task to FAILED."""
         task = self.get_task(task_id)
         if not task:
             return None
-
-        eu = getattr(task, "exec_user", None)
-        self._redis.srem(self._executing_key(task.workspace, eu), task.id)
-
-        updates = {}
         if attempt_count is not None:
             task.attempt_count = attempt_count
-            updates["attempt_count"] = str(attempt_count)
         if error_message is not None:
             task.error_message = error_message
-            updates["error_message"] = error_message
-        if updates:
-            self._redis.hset(self._task_key(task.id, eu), updates)
-
         self._update_task_status(task, TaskStatus.FAILED)
         return task
 
-    def requeue_stale_task(
-        self,
-        task_id: str,
-        attempt_count: int,
-        error_message: str,
-    ) -> Optional[Task]:
-        """Move a stale DOING task back to TODO with updated retry metadata."""
-        return self.requeue_task(
-            task_id,
-            error_message=error_message,
-            attempt_count=attempt_count,
-        )
+    def requeue_stale_task(self, task_id: str, attempt_count: int, error_message: str) -> Optional[Task]:
+        return self.requeue_task(task_id, error_message=error_message, attempt_count=attempt_count)
 
-    def fail_stale_task(
-        self,
-        task_id: str,
-        attempt_count: int,
-        error_message: str,
-    ) -> Optional[Task]:
-        """Permanently fail a stale DOING task with updated retry metadata."""
-        return self.fail_task(
-            task_id,
-            error_message=error_message,
-            attempt_count=attempt_count,
-        )
-    
+    def fail_stale_task(self, task_id: str, attempt_count: int, error_message: str) -> Optional[Task]:
+        return self.fail_task(task_id, error_message=error_message, attempt_count=attempt_count)
+
     def get_executing_count(self, workspace: Optional[str] = None) -> int:
         """Get count of currently executing tasks for a workspace"""
-        return self._redis.scard(self._executing_key(workspace))
-    
+        if workspace:
+            ws_hash = self._ws_hash(workspace)
+            row = self._db.execute_fetchone(
+                "SELECT COUNT(*) as cnt FROM tasks WHERE exec_user = ? AND workspace_hash = ? AND status = 'in_progress'",
+                (self.exec_user, ws_hash),
+            )
+        else:
+            row = self._db.execute_fetchone(
+                "SELECT COUNT(*) as cnt FROM tasks WHERE exec_user = ? AND status = 'in_progress'",
+                (self.exec_user,),
+            )
+        return row["cnt"] if row else 0
+
     def get_all_workspaces(self) -> List[str]:
-        """Get all unique workspaces with tasks"""
-        workspace_keys = list(self._redis.scan_iter(f"tasks:{self.exec_user}:by_workspace:*"))
-        workspaces = []
-        for key in workspace_keys:
-            workspace_hash = key.split(":")[-1]
-            workspaces.append(workspace_hash)
-        return workspaces
-    
-    # Maximum number of times a stuck/stale task may be requeued before it is
-    # permanently moved to FAILED.  Prevents infinite retry loops when the
-    # underlying problem (crashed executor, bad workspace, etc.) is permanent.
-    # Ported from mission-control src/lib/task-dispatch.ts (commit 2d171ad).
+        """Get all unique workspace hashes with tasks"""
+        rows = self._db.execute_fetchall(
+            "SELECT DISTINCT workspace_hash FROM tasks WHERE exec_user = ? AND workspace_hash != ''",
+            (self.exec_user,),
+        )
+        return [r["workspace_hash"] for r in rows]
+
     MAX_DISPATCH_RETRIES: int = 5
 
     def requeue_stuck_tasks(self, timeout_seconds: int = 3600) -> int:
-        """Requeue tasks that have been DOING for too long.
-
-        Tasks whose ``attempt_count`` has already reached
-        :attr:`MAX_DISPATCH_RETRIES` are moved to FAILED instead of being
-        requeued, preventing infinite retry loops.
-
-        Ported from mission-control ``requeueStaleTasks()`` (commit 2d171ad):
-        - Respect a max-retry cap (5 attempts) before permanently failing.
-        - Persist a human-readable ``error_message`` on the task so operators
-          can understand why it was failed without digging through logs.
-
-        Returns:
-            Total number of tasks acted on (requeued + failed).
-        """
-        doing_task_ids = self._redis.smembers(self._status_key(TaskStatus.DOING))
-        requeued = 0
-        failed = 0
-        now = datetime.now(timezone.utc)
-
-        for task_id in doing_task_ids:
-            task = self.get_task(task_id)
-            if not (task and task.started_at):
-                continue
-
-            started_at = task.started_at
-            if started_at.tzinfo is None:
-                started_at = started_at.replace(tzinfo=timezone.utc)
-
-            elapsed = (now - started_at).total_seconds()
-            if elapsed <= timeout_seconds:
-                continue
-
+        """Requeue tasks that have been in progress for too long."""
+        cutoff = datetime.now(timezone.utc).timestamp() - timeout_seconds
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM tasks WHERE exec_user = ? AND status = 'in_progress' AND started_at < ?",
+            (self.exec_user, cutoff),
+        )
+        requeued, failed = 0, 0
+        for row in rows:
+            task = _row_to_task(row)
             new_attempts = (task.attempt_count or 0) + 1
-
             if new_attempts >= self.MAX_DISPATCH_RETRIES:
-                # Too many retries — give up and fail the task permanently.
-                error_msg = (
-                    f"Task stuck in DOING for {elapsed:.0f}s and has been requeued "
-                    f"{new_attempts} time(s) — permanently failing after "
-                    f"{self.MAX_DISPATCH_RETRIES} attempts."
-                )
-                self.fail_task(
-                    task.id,
-                    error_message=error_msg,
-                    attempt_count=new_attempts,
-                )
-                logger.error(
-                    f"Task {task_id} permanently failed after {new_attempts} stuck-requeue attempts "
-                    f"({elapsed:.0f}s elapsed)"
-                )
+                self.fail_task(task.id, error_message=f"Permanently failed after {new_attempts} attempts.", attempt_count=new_attempts)
                 failed += 1
             else:
-                # Still within retry budget — put it back in the queue.
-                error_msg = (
-                    f"Task requeued (attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}): "
-                    f"was stuck in DOING for {elapsed:.0f}s."
-                )
-                self.requeue_task(
-                    task.id,
-                    error_message=error_msg,
-                    attempt_count=new_attempts,
-                )
-                logger.warning(
-                    f"Task {task_id} requeued (attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}) "
-                    f"after {elapsed:.0f}s timeout"
-                )
+                self.requeue_task(task.id, error_message=f"Requeued attempt {new_attempts}/{self.MAX_DISPATCH_RETRIES}.", attempt_count=new_attempts)
                 requeued += 1
-
         total = requeued + failed
         if total:
-            logger.info(
-                f"requeue_stuck_tasks: requeued={requeued}, failed={failed} "
-                f"of {total} stuck task(s)"
-            )
+            logger.info(f"requeue_stuck_tasks: requeued={requeued}, failed={failed}")
         return total

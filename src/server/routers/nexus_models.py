@@ -83,6 +83,10 @@ class TaskItem(BaseModel):
     description: str
     status: str
     priority: str
+    assigned_to: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    due_date: Optional[datetime] = None
+    ticket_ref: Optional[str] = None
     project_id: Optional[str] = None
     project_name: Optional[str] = None
     workspace: Optional[str] = None
@@ -153,6 +157,10 @@ class CreateTaskRequest(BaseModel):
     project_id: Optional[str] = Field(None, description="Optional project id (slug)")
     exec_user: Optional[str] = Field(None, description="Execution user (optional)")
     source_session_id: Optional[str] = Field(None, description="Optional source session id")
+    assigned_to: Optional[str] = Field(None, description="Optional assignee")
+    tags: Optional[List[str]] = Field(None, description="Task tags")
+    due_date: Optional[datetime] = Field(None, description="Optional due date")
+    ticket_ref: Optional[str] = Field(None, description="External ticket reference")
     depends_on: Optional[List[str]] = Field(None, description="List of task IDs this task depends on")
     # Ralph Loop configuration
     loop_enabled: Optional[bool] = Field(False, description="Enable Ralph Loop mode")
@@ -173,7 +181,7 @@ class BulkCreateTaskResponse(BaseModel):
 
 
 class UpdateTaskStatusRequest(BaseModel):
-    status: str = Field(..., description="New task status (todo/doing/done/failed/cancelled/archived)")
+    status: str = Field(..., description="New task status (inbox/assigned/awaiting_owner/in_progress/review/quality_review/done/failed/cancelled/archived)")
 
 
 class UpdateTaskOutcomeRequest(BaseModel):
@@ -284,7 +292,15 @@ def get_task_queue(exec_user: str):
 
 
 def normalize_task_status(status_str: str) -> str:
-    return status_str.strip().lower()
+    normalized = status_str.strip().lower()
+    legacy_map = {
+        "pending": "inbox",
+        "todo": "inbox",
+        "doing": "in_progress",
+        "running": "in_progress",
+        "completed": "done",
+    }
+    return legacy_map.get(normalized, normalized)
 
 
 def task_updated_at(task) -> Optional[datetime]:
@@ -346,7 +362,7 @@ _WAITING_FOR_OWNER_KEYWORDS = [
     "needs owner",
 ]
 
-_ACTIVE_STATUSES = {"todo", "doing"}
+_ACTIVE_STATUSES = {"inbox", "assigned", "awaiting_owner", "in_progress", "review", "quality_review"}
 
 
 def detect_waiting_for_owner(task) -> bool:
@@ -413,6 +429,10 @@ def task_to_item(task) -> TaskItem:
         description=task.description,
         status=status_val,
         priority=priority_val,
+        assigned_to=getattr(task, "assigned_to", None),
+        tags=getattr(task, "tags", []) or [],
+        due_date=getattr(task, "due_date", None),
+        ticket_ref=getattr(task, "ticket_ref", None),
         project_id=task.project_id,
         project_name=task.project_name,
         workspace=task.workspace,

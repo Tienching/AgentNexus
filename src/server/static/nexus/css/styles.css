@@ -1130,7 +1130,7 @@
 
 .kanban-column {
     flex-shrink: 0;
-    width: 272px;
+    width: 240px;
     display: flex;
     flex-direction: column;
     background: var(--surface-1);
@@ -1175,6 +1175,16 @@
     flex: 1;
     padding: var(--spacing-xs);
     overflow-y: auto;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.kanban-column.kanban-drop-target {
+    border-color: var(--primary-500);
+    box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
+.kanban-column.kanban-drop-target .kanban-column-items {
+    background: rgba(59, 130, 246, 0.05);
 }
 
 /* ========== Task Card ========== */
@@ -1193,7 +1203,21 @@
     background: var(--bg-hover);
 }
 
+.task-card[draggable="true"] {
+    cursor: grab;
+}
+
+.task-card[draggable="true"]:active {
+    cursor: grabbing;
+}
+
+.task-card.task-card-dragging {
+    opacity: 0.55;
+    transform: rotate(1deg);
+}
+
 .task-card.selected {
+
     border-color: var(--primary-500);
     background: rgba(59, 130, 246, 0.04);
 }
@@ -1210,6 +1234,18 @@
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-disabled);
+}
+
+.task-card-ticket-ref {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--primary-400);
+    font-size: 10px;
+    font-weight: 600;
+    font-family: var(--font-mono);
 }
 
 .task-card-priority {
@@ -1278,6 +1314,148 @@
     width: 11px;
     height: 11px;
 }
+
+/* Task Card Tags */
+.task-card-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-top: 4px;
+}
+
+.task-card-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--primary-400);
+    font-size: 10px;
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+.task-card-tag-more {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+}
+
+/* ========== Agent Avatar ========== */
+.agent-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-full);
+    position: relative;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.agent-avatar-initials {
+    color: white;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    text-transform: uppercase;
+}
+
+.agent-avatar-xs {
+    width: 20px;
+    height: 20px;
+}
+
+.agent-avatar-xs .agent-avatar-initials {
+    font-size: 8px;
+}
+
+.agent-avatar-sm {
+    width: 24px;
+    height: 24px;
+}
+
+.agent-avatar-sm .agent-avatar-initials {
+    font-size: 9px;
+}
+
+.agent-avatar-md {
+    width: 28px;
+    height: 28px;
+}
+
+.agent-avatar-md .agent-avatar-initials {
+    font-size: 10px;
+}
+
+.agent-avatar-lg {
+    width: 36px;
+    height: 36px;
+}
+
+.agent-avatar-lg .agent-avatar-initials {
+    font-size: 13px;
+}
+
+.agent-avatar-status {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-full);
+    border: 1.5px solid var(--bg-primary);
+}
+
+.agent-avatar-xs .agent-avatar-status {
+    width: 6px;
+    height: 6px;
+    border-width: 1px;
+}
+
+.agent-avatar-status-online {
+    background: var(--success);
+}
+
+.agent-avatar-status-busy {
+    background: var(--warning);
+}
+
+.agent-avatar-status-offline {
+    background: var(--text-disabled);
+}
+
+/* Overdue State */
+.task-card-overdue {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--error);
+    margin-left: 4px;
+}
+
+.task-card-overdue-state {
+    border-color: var(--error) !important;
+    background: rgba(239, 68, 68, 0.04);
+}
+
+/* Awaiting Owner Attention */
+.task-card-awaiting-badge {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--warning);
+    margin-left: 4px;
+}
+
+.task-card-needs-attention {
+    border-color: var(--warning) !important;
+}
+
+/* Status badge colors — 7-column workflow */
+.status-badge.inbox { background: rgba(113, 113, 122, 0.15); color: var(--status-inbox); }
+.status-badge.assigned { background: rgba(139, 92, 246, 0.15); color: var(--status-assigned); }
+.status-badge.awaiting_owner { background: rgba(249, 115, 22, 0.15); color: var(--status-awaiting-owner); }
+.status-badge.in_progress { background: rgba(245, 158, 11, 0.15); color: var(--status-in-progress); }
+.status-badge.review { background: rgba(59, 130, 246, 0.15); color: var(--status-review); }
+.status-badge.quality_review { background: rgba(6, 182, 212, 0.15); color: var(--status-quality-review); }
+.status-badge.done { background: rgba(34, 197, 94, 0.15); color: var(--status-done); }
 
 /* Task Dependencies */
 .task-card-deps {
@@ -2925,6 +3103,18 @@
     white-space: nowrap;
 }
 
+.schedule-kind-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    font-weight: 600;
+}
+.schedule-kind-badge.evolution {
+    background: rgba(16, 185, 129, 0.12);
+    color: #10b981;
+}
+
 .schedule-card-meta {
     display: flex;
     flex-wrap: wrap;
@@ -3198,3 +3388,173 @@
 .admin-tool-result { margin-top:var(--spacing-md); padding:var(--spacing-md); background:var(--surface-1); border:1px solid var(--border-primary); border-radius:var(--radius-lg); font-family:'JetBrains Mono',monospace; font-size:var(--text-sm); color:var(--text-primary); white-space:pre-wrap; word-break:break-all; max-height:300px; overflow-y:auto; }
 .admin-loading { display:flex; align-items:center; justify-content:center; padding:var(--spacing-xl); color:var(--text-tertiary); font-size:var(--text-sm); }
 .admin-error { padding:var(--spacing-lg); background:rgba(239,68,68,0.1); border:1px solid rgba(239,68,68,0.3); border-radius:var(--radius-lg); color:#ef4444; font-size:var(--text-sm); text-align:center; }
+
+/* ========== Kanban Primary/Terminal Columns ========== */
+.kanban-primary-columns {
+    display: flex;
+    gap: var(--spacing-md);
+    flex: 1;
+}
+
+.kanban-terminal-columns {
+    display: flex;
+    gap: var(--spacing-md);
+    border-left: 1px solid var(--border-primary);
+    padding-left: var(--spacing-md);
+    margin-left: var(--spacing-sm);
+}
+
+.kanban-column-terminal {
+    opacity: 0.85;
+    width: 220px;
+}
+
+/* ========== Agent Avatar ========== */
+.agent-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-full);
+    position: relative;
+    flex-shrink: 0;
+    user-select: none;
+}
+
+.agent-avatar-initials {
+    color: white;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    text-transform: uppercase;
+}
+
+.agent-avatar-xs {
+    width: 20px;
+    height: 20px;
+}
+.agent-avatar-xs .agent-avatar-initials {
+    font-size: 8px;
+}
+
+.agent-avatar-sm {
+    width: 24px;
+    height: 24px;
+}
+.agent-avatar-sm .agent-avatar-initials {
+    font-size: 9px;
+}
+
+.agent-avatar-md {
+    width: 28px;
+    height: 28px;
+}
+.agent-avatar-md .agent-avatar-initials {
+    font-size: 10px;
+}
+
+.agent-avatar-lg {
+    width: 36px;
+    height: 36px;
+}
+.agent-avatar-lg .agent-avatar-initials {
+    font-size: 13px;
+}
+
+.agent-avatar-status {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-full);
+    border: 1.5px solid var(--bg-primary);
+}
+
+.agent-avatar-xs .agent-avatar-status {
+    width: 6px;
+    height: 6px;
+    border-width: 1px;
+}
+
+.agent-avatar-status-online {
+    background: var(--success);
+}
+
+.agent-avatar-status-busy {
+    background: var(--warning);
+}
+
+.agent-avatar-status-offline {
+    background: var(--text-disabled);
+}
+
+/* ========== Task Card — Enhanced Visuals ========== */
+.task-card-overdue-state {
+    border-left-color: var(--error) !important;
+}
+
+.task-card-overdue {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--error);
+    padding: 1px 5px;
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: var(--radius-sm);
+}
+
+.task-card-needs-attention {
+    animation: subtlePulse 2s ease-in-out infinite;
+}
+
+.task-card-awaiting-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--status-awaiting-owner);
+    padding: 1px 5px;
+    background: rgba(249, 115, 22, 0.1);
+    border-radius: var(--radius-sm);
+}
+
+@keyframes subtlePulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0); }
+    50% { box-shadow: 0 0 0 2px rgba(249, 115, 22, 0.15); }
+}
+
+/* Task Card Tags */
+.task-card-tags {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: var(--spacing-xs);
+    flex-wrap: wrap;
+}
+
+.task-card-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.task-card-tag-more {
+    background: var(--primary-600);
+    color: white;
+}
+
+/* ========== Status Badge — New Statuses ========== */
+.status-badge.inbox { background: rgba(107, 114, 128, 0.15); color: var(--status-inbox); }
+.status-badge.assigned { background: rgba(59, 130, 246, 0.15); color: var(--status-assigned); }
+.status-badge.awaiting_owner { background: rgba(249, 115, 22, 0.15); color: var(--status-awaiting-owner); }
+.status-badge.in_progress { background: rgba(234, 179, 8, 0.15); color: var(--status-in-progress); }
+.status-badge.review { background: rgba(168, 85, 247, 0.15); color: var(--status-review); }
+.status-badge.quality_review { background: rgba(99, 102, 241, 0.15); color: var(--status-quality-review); }

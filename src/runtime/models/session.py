@@ -97,12 +97,17 @@ class ContentSegment(BaseModel):
 class StoredMessage(BaseModel):
     """Message stored in Redis List"""
     id: str = Field(..., description="Message ID")
-    role: Literal["user", "assistant", "system"] = Field(..., description="Message role")
+    role: Literal["user", "assistant", "system", "tool"] = Field(..., description="Message role")
     content: str = Field("", description="Message content")
     timestamp: int = Field(default_factory=lambda: int(time.time() * 1000), description="Timestamp (ms)")
     status: MessageStatus = Field(MessageStatus.PENDING, description="Message status")
     tool_call_ids: Optional[List[str]] = Field(None, description="Associated tool call IDs")
     content_segments: Optional[List[ContentSegment]] = Field(None, description="Content segments for ordering text and tool calls")
+    # DAG chain fields (Claude Code ch30)
+    parent_uuid: Optional[str] = Field(None, description="Parent message UUID for DAG chain reconstruction")
+    # Interrupted turn recovery
+    is_interrupted: bool = Field(False, description="Whether this message was part of an interrupted turn")
+    interrupted_reason: Optional[str] = Field(None, description="Reason for interruption (e.g. 'user_cancel', 'error', 'budget_exceeded')")
 
     def to_json(self) -> str:
         """Serialize to JSON string for Redis storage"""
@@ -162,3 +167,17 @@ class SessionMessagesResponse(BaseModel):
     tool_calls: List[StoredToolCall] = Field(default_factory=list, description="Tool call list")
     session: Optional[SessionMeta] = Field(None, description="Session metadata")
     cli_session_id: Optional[str] = Field(None, description="Associated CLI session ID (if promoted from history)")
+    # Recovery metadata
+    interrupted_turns: List[Dict[str, Any]] = Field(default_factory=list, description="Interrupted turns that can be resumed")
+    orphan_tool_results: List[str] = Field(default_factory=list, description="Tool result IDs without matching tool_calls")
+
+
+class InterruptedTurn(BaseModel):
+    """Represents an interrupted agent turn that can be resumed."""
+    session_id: str = Field(..., description="Session ID")
+    message_id: str = Field(..., description="Last message ID before interruption")
+    parent_uuid: Optional[str] = Field(None, description="Parent UUID for DAG chain")
+    reason: str = Field(..., description="Interruption reason")
+    pending_tool_calls: List[str] = Field(default_factory=list, description="Tool call IDs that were pending")
+    timestamp: int = Field(default_factory=lambda: int(time.time() * 1000), description="Timestamp of interruption (ms)")
+    recoverable: bool = Field(True, description="Whether this turn can be auto-recovered")

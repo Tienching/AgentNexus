@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """User-level config storage
 
-Stores per-user preferences in Redis (hash) for slash /config.
+Stores per-user preferences in SQLite for slash /config.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-from .redis_client import get_redis_client, RedisClient
+from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -22,27 +22,24 @@ def normalize_config_key(key: str) -> str:
 
 
 class UserConfigStore:
-    """User-level config stored in Redis hash."""
+    """User-level config stored in SQLite."""
 
-    def __init__(self, redis_client: Optional[RedisClient] = None):
-        self._redis = redis_client or get_redis_client()
-
-    def _key(self, user_id: str) -> str:
-        return f"user:{user_id}:config"
+    def __init__(self, db: Optional[Database] = None):
+        self._db = db or get_db()
 
     def get_all(self, user_id: str) -> Dict[str, str]:
         if not user_id:
             return {}
         try:
-            data = self._redis.hgetall(self._key(user_id))
-            if not data:
-                return {}
-            # Only return known keys (normalize model -> exec_user)
+            rows = self._db.execute_fetchall(
+                "SELECT key, value FROM user_config WHERE user_id = ?",
+                (user_id,),
+            )
             out: Dict[str, str] = {}
-            for k, v in data.items():
-                nk = normalize_config_key(k)
+            for row in rows:
+                nk = normalize_config_key(row["key"])
                 if nk in {"provider", "exec_user", "alias"}:
-                    out[nk] = (v or "").strip()
+                    out[nk] = (row["value"] or "").strip()
             return out
         except Exception as e:
             logger.error(f"Failed to get user config: {e}")
@@ -61,7 +58,11 @@ class UserConfigStore:
         if not val:
             raise ValueError("value cannot be empty")
         try:
-            self._redis.hset(self._key(user_id), {normalized: val})
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO user_config (user_id, key, value) VALUES (?, ?, ?)",
+                    (user_id, normalized, val),
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to set user config: {e}")
@@ -71,7 +72,8 @@ class UserConfigStore:
         if not user_id:
             return False
         try:
-            self._redis.delete(self._key(user_id))
+            with self._db.transaction() as conn:
+                conn.execute("DELETE FROM user_config WHERE user_id = ?", (user_id,))
             return True
         except Exception as e:
             logger.error(f"Failed to reset user config: {e}")

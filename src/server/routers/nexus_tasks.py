@@ -288,6 +288,10 @@ async def create_task(
         model=(request.llm_model or "").strip() or None,
         source_session_id=(request.source_session_id or "").strip() or None,
         exec_user=effective_exec_user,
+        assigned_to=(request.assigned_to or "").strip() or None,
+        tags=request.tags or [],
+        due_date=request.due_date,
+        ticket_ref=(request.ticket_ref or "").strip() or None,
         depends_on=request.depends_on or [],
         loop_enabled=bool(request.loop_enabled),
         loop_max_iterations=request.loop_max_iterations or 1,
@@ -368,6 +372,10 @@ async def bulk_create_tasks(
                 alias=alias_value,
                 source_session_id=(task_req.source_session_id or "").strip() or None,
                 exec_user=effective_exec_user,
+                assigned_to=(task_req.assigned_to or "").strip() or None,
+                tags=task_req.tags or [],
+                due_date=task_req.due_date,
+                ticket_ref=(task_req.ticket_ref or "").strip() or None,
                 depends_on=depends_on,
             )
 
@@ -431,9 +439,9 @@ async def update_task_status(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
 
-    new_status = request.status.strip().lower()
+    new_status = normalize_task_status(request.status)
     try:
-        new_status_enum = TaskStatus(new_status)
+        new_status_enum = TaskStatus.from_legacy(new_status)
     except ValueError:
         valid_statuses = [s.value for s in TaskStatus]
         raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}. Must be one of: {valid_statuses}")

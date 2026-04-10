@@ -90,6 +90,10 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
         self.metrics["requests_active"] += 1
         self.metrics["requests_total"] += 1
 
+        # Track latency start time
+        import time as _time
+        _start = _time.monotonic()
+
         try:
             # 处理请求
             response = await call_next(request)
@@ -101,6 +105,20 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
 
             # 添加关联ID到响应头
             response.headers["X-Correlation-ID"] = correlation_id
+
+            # Track latency in observability pipeline
+            _duration_ms = (_time.monotonic() - _start) * 1000
+            try:
+                from ..services.observability import track_api_latency
+                track_api_latency(
+                    method=request.method,
+                    path=path,
+                    status_code=response.status_code,
+                    duration_ms=_duration_ms,
+                )
+            except Exception:
+                pass  # Observability should never break the request
+
             return response
 
         except Exception as e:
@@ -109,6 +127,20 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
                 status_code=500,
                 error=e,
             )
+
+            # Track error latency
+            _duration_ms = (_time.monotonic() - _start) * 1000
+            try:
+                from ..services.observability import track_api_latency
+                track_api_latency(
+                    method=request.method,
+                    path=path,
+                    status_code=500,
+                    duration_ms=_duration_ms,
+                )
+            except Exception:
+                pass
+
             raise
 
         finally:

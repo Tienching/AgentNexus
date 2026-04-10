@@ -243,9 +243,46 @@ class NexusSettings(BaseSettings):
     }
 
 
+class FeatureFlagSettings(BaseSettings):
+    """Feature Flag 配置 — 通过环境变量覆盖 feature flag 默认值。
+
+    格式: NEXUS_FEATURE_<FLAG_NAME>=true/false
+    例如: NEXUS_FEATURE_PERSISTENT_CLI=true
+    """
+
+    # 常用 feature flag 的环境变量快捷方式
+    feature_persistent_cli: bool | None = None
+    feature_evolution_mode: bool | None = None
+    feature_dag_message_chains: bool | None = None
+    feature_interrupted_turn_recovery: bool | None = None
+    feature_parallel_tool_completion: bool | None = None
+    feature_observability_pipeline: bool | None = None
+    feature_cost_metrics: bool | None = None
+    feature_advanced_tool_search: bool | None = None
+    feature_quality_gates: bool | None = None
+    feature_mcp_dynamic_tools: bool | None = None
+    feature_kanban_ui: bool | None = None
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",
+    }
+
+    def to_flag_overrides(self) -> dict:
+        """Convert non-None settings to flag override dict."""
+        overrides = {}
+        for field_name, value in self:
+            if value is not None and field_name.startswith("feature_"):
+                flag_name = field_name[len("feature_"):]
+                overrides[flag_name] = value
+        return overrides
+
+
 # 合并配置
-class Settings(ServerSettings, ProviderSettings, NexusSettings, EvolutionSettings):
-    """完整配置（包含服务器、Provider 和进化配置）"""
+class Settings(ServerSettings, ProviderSettings, NexusSettings, EvolutionSettings, FeatureFlagSettings):
+    """完整配置（包含服务器、Provider、进化和 Feature Flag 配置）"""
 
     model_config = {
         "env_file": ".env",
