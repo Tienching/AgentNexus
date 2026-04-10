@@ -149,7 +149,7 @@
       "target_location": "src/core/cost/tracker.py",
       "complexity": "medium",
       "dependencies": [],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-014",
@@ -215,7 +215,7 @@
       "target_location": "src/core/webhooks/service.py",
       "complexity": "medium",
       "dependencies": [],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-020",
@@ -814,6 +814,6 @@
       "UI": 22,
       "Storage": 2
     },
-    "passed_tasks": 19
+    "passed_tasks": 21
   }
 }
