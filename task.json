@@ -139,7 +139,7 @@
       "dependencies": [
         "MC-011"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": "MC-013",
@@ -814,6 +814,6 @@
       "UI": 22,
       "Storage": 2
     },
-    "passed_tasks": 25
+    "passed_tasks": 26
   }
 }
