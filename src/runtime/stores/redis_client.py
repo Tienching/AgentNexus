@@ -9,15 +9,27 @@ import os
 from typing import Optional, Dict, Any, List
 from contextlib import contextmanager
 
-import redis
-from redis import Redis, ConnectionPool
+try:
+    import redis
+    from redis import Redis, ConnectionPool
+    _REDIS_AVAILABLE = True
+except ImportError:
+    _REDIS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
 
+def is_redis_available() -> bool:
+    """Check if redis package is installed"""
+    return _REDIS_AVAILABLE
+
 class RedisClient:
     """Redis client wrapper with connection pool management"""
     
+    def __init__(self, *args, **kwargs):
+        if not _REDIS_AVAILABLE:
+            raise ImportError("redis package not installed. Install with: pip install redis")
+
     _instance: Optional["RedisClient"] = None
     _pool: Optional[ConnectionPool] = None
     _connection_logged: bool = False

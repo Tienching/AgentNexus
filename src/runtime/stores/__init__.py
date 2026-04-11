@@ -4,7 +4,10 @@ from .db import Database, get_db
 from .alias_registry import AliasRegistry, get_alias_registry
 from .user_config import UserConfigStore
 from .concurrency_config import ConcurrencyConfigStore, get_concurrency_config_store
-from .redis_client import RedisClient
+try:
+    from .redis_client import RedisClient
+except ImportError:
+    RedisClient = None
 from .session_storage import SessionStorage
 from .task_storage import TaskQueue
 

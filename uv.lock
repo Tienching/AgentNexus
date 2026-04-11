@@ -29,7 +29,6 @@ dependencies = [
     { name = "python-json-logger" },
     { name = "qrcode" },
     { name = "readability-lxml" },
-    { name = "redis" },
     { name = "sse-starlette" },
     { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
@@ -54,6 +53,9 @@ dev = [
 ]
 discord = [
     { name = "discord-py" },
+]
+mission = [
+    { name = "redis" },
 ]
 slack = [
     { name = "aiohttp" },
@@ -110,7 +112,7 @@ requires-dist = [
     { name = "python-telegram-bot", marker = "extra == 'telegram'", specifier = ">=20.0" },
     { name = "qrcode", specifier = ">=7.0" },
     { name = "readability-lxml", specifier = ">=0.8.4" },
-    { name = "redis", specifier = ">=5.0.0" },
+    { name = "redis", marker = "extra == 'mission'", specifier = ">=5.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.6" },
     { name = "slack-sdk", marker = "extra == 'all-channels'", specifier = ">=3.0.0" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.0.0" },
