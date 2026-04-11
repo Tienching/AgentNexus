@@ -24,6 +24,25 @@ class TaskBoardPanel extends BasePanel {
         this._mentionInputs = [];
         this._schedulePanelOpen = false;
         this._paneId = 'global'; // fixed pane id for fullscreen mode
+        this._sortField = localStorage.getItem('nexus-kanban-sortField') || 'position';
+        this._sortDirection = localStorage.getItem('nexus-kanban-sortDir') || 'asc';
+
+        // K-008: Done column infinite scroll state
+        this._donePageSize = 20;
+        this._doneLoadedCount = 20;
+        this._doneAllTasks = [];
+        this._doneLoading = false;
+        this._doneObserver = null;
+
+        // K-002: Drag state freeze
+        this._isDragging = false;
+        this._dragSnapshot = null; // frozen task list during drag
+        this._pendingUpdates = []; // queued backend updates during drag
+
+        // K-005: View mode
+        this._viewMode = localStorage.getItem('nexus-kanban-viewMode') || 'board';
+        this._listView = null;
+        this._filterPanel = null;
 
         this.statusColumns = [
             { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
@@ -47,10 +66,16 @@ class TaskBoardPanel extends BasePanel {
     async init() {
         await super.init();
         this.subscribeData('tasks', (data) => {
-            this._tasks = (data.tasks || []).map(t => ({
+            const newTasks = (data.tasks || []).map(t => ({
                 ...t,
                 status: this._normalizeTaskStatus(t.status),
             }));
+            // K-002: If dragging, queue the update instead of applying
+            if (this._isDragging) {
+                this._pendingUpdates.push(newTasks);
+                return;
+            }
+            this._tasks = newTasks;
             if (this.container) this._renderKanban();
         });
     }
@@ -94,6 +119,23 @@ class TaskBoardPanel extends BasePanel {
                             </div>
                         </div>
                         <div class="task-toolbar-right">
+                            <div class="view-toggle-group" style="display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-right:8px;">
+                                <button class="view-toggle-btn ${this._viewMode === 'board' ? 'active' : ''}" data-action="set-view" data-view="board" title="Board view" style="padding:4px 10px;font-size:12px;border:none;background:${this._viewMode === 'board' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'board' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">Board</button>
+                                <button class="view-toggle-btn ${this._viewMode === 'list' ? 'active' : ''}" data-action="set-view" data-view="list" title="List view" style="padding:4px 10px;font-size:12px;border:none;border-left:1px solid var(--border);background:${this._viewMode === 'list' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'list' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">List</button>
+                            </div>
+                            <button class="action-btn" data-action="toggle-filters" title="Toggle filters" style="margin-right:8px;">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
+                                </svg>
+                                <span>Filter</span>
+                            </button>
+                            <select class="form-input form-select" id="sortFieldSelect-${pid}" style="width:130px;height:28px;font-size:12px;margin-right:4px;" title="Sort by">
+                                <option value="position" ${this._sortField === 'position' ? 'selected' : ''}>Position</option>
+                                <option value="priority" ${this._sortField === 'priority' ? 'selected' : ''}>Priority</option>
+                                <option value="due_date" ${this._sortField === 'due_date' ? 'selected' : ''}>Due Date</option>
+                                <option value="created_at" ${this._sortField === 'created_at' ? 'selected' : ''}>Created</option>
+                            </select>
+                            <button class="action-btn" data-action="toggle-sort-dir" title="Sort direction" style="padding:4px 6px;margin-right:8px;font-size:12px;">${this._sortDirection === 'asc' ? '&#9650;' : '&#9660;'}</button>
                             <select class="form-input form-select" style="width: 150px; margin-right: 8px;" id="taskProjectFilter-${pid}">
                                 <option value="">All Projects</option>
                             </select>
@@ -124,30 +166,36 @@ class TaskBoardPanel extends BasePanel {
                             </div>
                         </div>
                     </div>
-                    <div class="kanban-board" id="kanbanBoard-${pid}">
-                        <div class="kanban-primary-columns">
-                        ${this.statusColumns.map(col => `
-                            <div class="kanban-column" data-status="${col.key}">
-                                <div class="kanban-column-header">
-                                    <span class="kanban-column-title">
-                                        <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
-                                        ${col.title}
-                                    </span>
-                                    <span class="kanban-column-count" id="count-${pid}-${col.key}">0</span>
-                                </div>
-                                <div class="kanban-column-items" id="items-${pid}-${col.key}">
-                                    <div class="empty-state" style="padding: 24px 16px;">
-                                        <div class="loading-spinner" style="width: 20px; height: 20px;"></div>
+                    <div style="display:flex;flex:1;overflow:hidden;">
+                        <div class="filter-sidebar" id="filterSidebar-${pid}" style="display:none;width:220px;border-right:1px solid var(--border);overflow-y:auto;flex-shrink:0;padding:8px;"></div>
+                        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+                            <div class="kanban-board" id="kanbanBoard-${pid}" style="${this._viewMode === 'board' ? '' : 'display:none;'}">
+                                <div class="kanban-primary-columns">
+                                ${this.statusColumns.map(col => `
+                                    <div class="kanban-column" data-status="${col.key}">
+                                        <div class="kanban-column-header">
+                                            <span class="kanban-column-title">
+                                                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
+                                                ${col.title}
+                                            </span>
+                                            <span class="kanban-column-count" id="count-${pid}-${col.key}">0</span>
+                                        </div>
+                                        <div class="kanban-column-items" id="items-${pid}-${col.key}">
+                                            <div class="empty-state" style="padding: 24px 16px;">
+                                                <div class="loading-spinner" style="width: 20px; height: 20px;"></div>
+                                            </div>
+                                        </div>
                                     </div>
+                                `).join('')}
+                                </div>
+                                <div class="kanban-terminal-columns" id="terminalColumns-${pid}" style="display: none;"></div>
+                            </div>
+                            <div class="list-view-container" id="listViewContainer-${pid}" style="${this._viewMode === 'list' ? '' : 'display:none;'}flex:1;overflow-y:auto;"></div>
+                            <div id="expansionPanels-${pid}" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 260px; overflow-y: auto;">
+                                <div class="empty-state" style="padding: 8px;">
+                                    <div class="loading-spinner" style="width: 16px; height: 16px;"></div>
                                 </div>
                             </div>
-                        `).join('')}
-                        </div>
-                        <div class="kanban-terminal-columns" id="terminalColumns-${pid}" style="display: none;"></div>
-                    </div>
-                    <div id="expansionPanels-${pid}" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 260px; overflow-y: auto;">
-                        <div class="empty-state" style="padding: 8px;">
-                            <div class="loading-spinner" style="width: 16px; height: 16px;"></div>
                         </div>
                     </div>
                 </div>
@@ -156,6 +204,8 @@ class TaskBoardPanel extends BasePanel {
         `;
 
         this._bindToolbarEvents();
+        this._initFilterPanel();
+        this._initListView();
         this._loadTasks();
         this._startAutoPolling();
     }
@@ -167,6 +217,10 @@ class TaskBoardPanel extends BasePanel {
 
     async destroy() {
         this._stopAutoPolling();
+        if (this._doneObserver) {
+            this._doneObserver.disconnect();
+            this._doneObserver = null;
+        }
         for (const [taskId] of this._activeStreams) {
             this._closeTaskStream(taskId);
         }
@@ -176,7 +230,7 @@ class TaskBoardPanel extends BasePanel {
     }
 
     onRealtimeEvent(eventType) {
-        if (eventType.startsWith('task.')) this.refresh();
+        if (eventType.startsWith('task.') && !this._isDragging) this.refresh();
     }
 
     // ------------------------------------------------------------------
@@ -238,6 +292,7 @@ class TaskBoardPanel extends BasePanel {
                 ...t,
                 status: this._normalizeTaskStatus(t.status),
             }));
+            this._ensurePositions();
             this._renderKanban();
             this._loadExpansionPanels();
             this._syncSelectedTaskDetail();
@@ -273,7 +328,7 @@ class TaskBoardPanel extends BasePanel {
 
     _renderKanban() {
         const pid = this._paneId;
-        const tasks = this._tasks;
+        const tasks = this._getFilteredTasks();
         const grouped = {};
         this.statusColumns.forEach(col => { grouped[col.key] = []; });
         tasks.forEach(t => {
@@ -282,16 +337,31 @@ class TaskBoardPanel extends BasePanel {
         });
 
         this.statusColumns.forEach(col => {
-            const items = grouped[col.key] || [];
+            const allItems = this._sortTasks(grouped[col.key] || []);
             const el = document.getElementById(`items-${pid}-${col.key}`);
             const countEl = document.getElementById(`count-${pid}-${col.key}`);
-            if (countEl) countEl.textContent = items.length;
+            if (countEl) countEl.textContent = allItems.length;
+
+            // K-008: Done column infinite scroll — only render first N items
+            let items = allItems;
+            if (col.key === 'done') {
+                this._doneAllTasks = allItems;
+                items = allItems.slice(0, this._doneLoadedCount);
+            }
+
             if (el) {
-                if (items.length === 0) {
+                if (allItems.length === 0) {
                     el.innerHTML = '<div class="empty-state" style="padding: 24px 16px;"><p style="font-size: 12px; color: var(--text-muted);">No tasks</p></div>';
                 } else {
-                    el.innerHTML = items.map(t => this._renderTaskCard(t)).join('');
+                    let html = items.map(t => this._renderTaskCard(t)).join('');
+                    // Add sentinel for infinite scroll on Done column
+                    if (col.key === 'done' && items.length < allItems.length) {
+                        html += '<div class="done-scroll-sentinel" id="doneScrollSentinel-' + pid + '" style="padding:12px;text-align:center;"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto;"></div><p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Loading more...</p></div>';
+                    }
+                    el.innerHTML = html;
                     this._bindCardEvents(el);
+                    // Set up Intersection Observer for Done column
+                    if (col.key === 'done') this._setupDoneInfiniteScroll(pid);
                 }
             }
         });
@@ -327,6 +397,16 @@ class TaskBoardPanel extends BasePanel {
         }
 
         this._bindKanbanDragDrop();
+
+        // Update filter panel counts
+        if (this._filterPanel) {
+            this._filterPanel.updateCounts(this._tasks);
+        }
+
+        // Update list view if active
+        if (this._viewMode === 'list' && this._listView) {
+            this._listView.updateTasks(this._getFilteredTasks());
+        }
     }
 
     _renderTaskCard(task) {
@@ -365,14 +445,14 @@ class TaskBoardPanel extends BasePanel {
                         <span class="task-card-id">#${task.id.slice(0, 8)}</span>
                         ${task.ticket_ref ? `<span class="task-card-ticket-ref" title="Project ticket">${this._esc(task.ticket_ref)}</span>` : ''}
                         ${ghBadge}${aegisBadge}
-                        ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
+                        ${task.priority ? `<span class="task-card-priority ${priorityClass}" data-inline-edit="priority" data-current-value="${this._esc(task.priority || 'normal')}" style="cursor:pointer;" title="Click to change priority">${task.priority}</span>` : ''}
                         ${task.loop_enabled ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;">Loop ${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
                         ${overdueHtml}${awaitingBadge}
                     </div>
                     <p class="task-card-title">${this._esc(task.description || 'No description')}</p>
                     ${tagsHtml}
                     <div class="task-card-meta">
-                        ${agentAvatar ? `<span class="task-card-meta-item">${agentAvatar}</span>` : ''}
+                        ${agentAvatar ? `<span class="task-card-meta-item" data-inline-edit="assignee" data-current-value="${this._esc(agentName)}" style="cursor:pointer;" title="Click to change assignee">${agentAvatar}</span>` : ''}
                         <span class="task-card-meta-item">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             ${timeStr}
@@ -389,6 +469,7 @@ class TaskBoardPanel extends BasePanel {
         root.querySelectorAll('.task-card').forEach(card => {
             card.addEventListener('click', (e) => {
                 if (e.target.closest('.task-card-checkbox')) return;
+                if (e.target.closest('[data-inline-edit]')) return;
                 this._selectTask(card.dataset.taskId);
             });
         });
@@ -398,6 +479,44 @@ class TaskBoardPanel extends BasePanel {
                 this._toggleTaskSelection(cb.dataset.taskId);
             });
         });
+        // K-007: Inline picker
+        if (typeof InlinePicker !== 'undefined') {
+            InlinePicker.attachAll(root, {
+                getStatusColumns: () => this.statusColumns.map(c => ({ key: c.key, label: c.title, color: c.color })),
+                getAssigneeOptions: () => {
+                    const names = new Set();
+                    this._tasks.forEach(t => {
+                        if (t.assigned_to) names.add(t.assigned_to);
+                        if (t.alias) names.add(t.alias);
+                    });
+                    return Array.from(names).sort().map(n => ({ key: n, label: n, color: null }));
+                },
+                onSelect: async (taskId, field, value) => {
+                    try {
+                        const update = {};
+                        if (field === 'status') {
+                            await this.api.updateTaskStatus(taskId, value, { execUser: this._getExecUser() });
+                        } else {
+                            if (field === 'priority') update.priority = value;
+                            if (field === 'assignee') update.assigned_to = value;
+                            await this.api.updateTask(taskId, update, { execUser: this._getExecUser() });
+                        }
+                        // Optimistic local update
+                        const local = this._tasks.find(t => t.id === taskId);
+                        if (local) {
+                            if (field === 'status') local.status = this._normalizeTaskStatus(value);
+                            if (field === 'priority') local.priority = value;
+                            if (field === 'assignee') local.assigned_to = value;
+                        }
+                        this._renderKanban();
+                        this._getApp()?.showToast?.(`Updated ${field}`, 'success');
+                    } catch (e) {
+                        this._getApp()?.showToast?.(`Update failed: ${e.message}`, 'error');
+                        await this._loadTasks();
+                    }
+                },
+            });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -847,6 +966,28 @@ class TaskBoardPanel extends BasePanel {
         c.querySelector('[data-action="toggle-schedules"]')?.addEventListener('click', () => this._toggleSchedulePanel());
         c.querySelector('[data-action="refresh-schedules"]')?.addEventListener('click', () => this._loadSchedules());
 
+        // K-005: View toggle
+        c.querySelectorAll('[data-action="set-view"]').forEach(btn => {
+            btn.addEventListener('click', () => this._setViewMode(btn.dataset.view));
+        });
+
+        // K-003: Filter toggle
+        c.querySelector('[data-action="toggle-filters"]')?.addEventListener('click', () => this._toggleFilterPanel());
+
+        // K-006: Sort controls
+        document.getElementById(`sortFieldSelect-${pid}`)?.addEventListener('change', (e) => {
+            this._sortField = e.target.value;
+            localStorage.setItem('nexus-kanban-sortField', this._sortField);
+            this._renderKanban();
+        });
+        c.querySelector('[data-action="toggle-sort-dir"]')?.addEventListener('click', () => {
+            this._sortDirection = this._sortDirection === 'asc' ? 'desc' : 'asc';
+            localStorage.setItem('nexus-kanban-sortDir', this._sortDirection);
+            const btn = c.querySelector('[data-action="toggle-sort-dir"]');
+            if (btn) btn.innerHTML = this._sortDirection === 'asc' ? '&#9650;' : '&#9660;';
+            this._renderKanban();
+        });
+
         const searchInput = document.getElementById(`taskSearch-${pid}`);
         if (searchInput) {
             let t;
@@ -953,11 +1094,40 @@ class TaskBoardPanel extends BasePanel {
                 const task = this._tasks.find(t => t.id === taskId);
                 return task ? this._normalizeTaskStatus(task.status) : null;
             },
-            onMove: async (taskId, toStatus, fromStatus) => {
+            getTaskPosition: (taskId) => {
+                const task = this._tasks.find(t => t.id === taskId);
+                return task?.position ?? 0;
+            },
+            onDragStart: () => {
+                this._isDragging = true;
+                this._dragSnapshot = this._tasks.map(t => ({ ...t }));
+                this._pendingUpdates = [];
+            },
+            onDragEnd: () => {
+                this._isDragging = false;
+                // Merge any queued updates
+                if (this._pendingUpdates.length > 0) {
+                    const latest = this._pendingUpdates[this._pendingUpdates.length - 1];
+                    // Preserve local position overrides from the drag
+                    const posMap = new Map();
+                    this._tasks.forEach(t => { if (t.position != null) posMap.set(t.id, t.position); });
+                    this._tasks = latest.map(t => ({
+                        ...t,
+                        position: posMap.has(t.id) ? posMap.get(t.id) : t.position,
+                    }));
+                }
+                this._pendingUpdates = [];
+                this._dragSnapshot = null;
+                this._renderKanban();
+            },
+            onMove: async (taskId, toStatus, fromStatus, newPosition) => {
                 try {
                     await this.api.updateTaskStatus(taskId, toStatus, { execUser: this._getExecUser() });
                     const local = this._tasks.find(t => t.id === taskId);
-                    if (local) local.status = toStatus;
+                    if (local) {
+                        local.status = toStatus;
+                        local.position = newPosition;
+                    }
                     this._renderKanban();
                     if (this._selectedTask === taskId) {
                         const task = this._tasks.find(t => t.id === taskId);
@@ -969,7 +1139,113 @@ class TaskBoardPanel extends BasePanel {
                     await this._loadTasks();
                 }
             },
+            onReorder: async (taskId, status, newPosition) => {
+                const local = this._tasks.find(t => t.id === taskId);
+                if (local) local.position = newPosition;
+                this._renderKanban();
+                try {
+                    await this.api.updateTask(taskId, { position: newPosition }, { execUser: this._getExecUser() });
+                } catch (e) {
+                    this._getApp()?.showToast?.(`Reorder failed: ${e.message}`, 'error');
+                    await this._loadTasks();
+                }
+            },
         });
+    }
+
+    // ------------------------------------------------------------------
+    // View mode (K-005) & Filter panel (K-003)
+    // ------------------------------------------------------------------
+
+    _setViewMode(mode) {
+        if (mode === this._viewMode) return;
+        this._viewMode = mode;
+        localStorage.setItem('nexus-kanban-viewMode', mode);
+        const pid = this._paneId;
+        const board = document.getElementById(`kanbanBoard-${pid}`);
+        const listContainer = document.getElementById(`listViewContainer-${pid}`);
+        if (board) board.style.display = mode === 'board' ? '' : 'none';
+        if (listContainer) listContainer.style.display = mode === 'list' ? '' : 'none';
+
+        // Update toggle button styles
+        this.container?.querySelectorAll('[data-action="set-view"]').forEach(btn => {
+            const active = btn.dataset.view === mode;
+            btn.style.background = active ? 'var(--primary-500)' : 'transparent';
+            btn.style.color = active ? '#fff' : 'var(--text-secondary)';
+        });
+
+        if (mode === 'list' && this._listView) {
+            this._listView.updateTasks(this._getFilteredTasks());
+        }
+    }
+
+    _toggleFilterPanel() {
+        const pid = this._paneId;
+        const sidebar = document.getElementById(`filterSidebar-${pid}`);
+        if (!sidebar) return;
+        const isVisible = sidebar.style.display !== 'none';
+        sidebar.style.display = isVisible ? 'none' : '';
+    }
+
+    _initFilterPanel() {
+        const pid = this._paneId;
+        const sidebar = document.getElementById(`filterSidebar-${pid}`);
+        if (!sidebar || typeof FilterPanel === 'undefined') return;
+        this._filterPanel = new FilterPanel({
+            container: sidebar,
+            getStatusColumns: () => this.statusColumns,
+            onFilterChange: () => {
+                this._renderKanban();
+                if (this._viewMode === 'list' && this._listView) {
+                    this._listView.updateTasks(this._getFilteredTasks());
+                }
+            },
+        });
+        this._filterPanel.render();
+    }
+
+    _initListView() {
+        const pid = this._paneId;
+        const container = document.getElementById(`listViewContainer-${pid}`);
+        if (!container || typeof ListView === 'undefined') return;
+        this._listView = new ListView({
+            container,
+            tasks: [],
+            statusColumns: this.statusColumns,
+            onTaskClick: (taskId) => this._selectTask(taskId),
+            onBatchStatusChange: async (ids, newStatus) => {
+                try {
+                    for (const id of ids) {
+                        await this.api.updateTaskStatus(id, newStatus, { execUser: this._getExecUser() });
+                    }
+                    this._getApp()?.showToast?.(`Updated ${ids.length} tasks`, 'success');
+                    await this._loadTasks();
+                } catch (e) {
+                    this._getApp()?.showToast?.(`Batch update failed: ${e.message}`, 'error');
+                }
+            },
+            onDeleteTasks: async (ids) => {
+                this._getApp()?.showDeleteModal?.('tasks', `${ids.length} tasks`, async () => {
+                    try {
+                        await this.api.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
+                        this._getApp()?.showToast?.(`Deleted ${ids.length} tasks`, 'success');
+                        await this._loadTasks();
+                    } catch (e) {
+                        this._getApp()?.showToast?.('Failed to delete tasks', 'error');
+                    }
+                });
+            },
+        });
+    }
+
+    /**
+     * Get tasks after applying the filter panel.
+     */
+    _getFilteredTasks() {
+        if (this._filterPanel && this._filterPanel.hasActiveFilters) {
+            return this._filterPanel.apply(this._tasks);
+        }
+        return this._tasks;
     }
 
     // ------------------------------------------------------------------
@@ -1118,6 +1394,131 @@ class TaskBoardPanel extends BasePanel {
             const isStreaming = this._activeStreams.has(this._selectedTask);
             if ((renderedId !== this._selectedTask || renderedStatus !== latestStatus || (shouldHaveConv && !hasConvDom)) && !isStreaming) {
                 this._renderTaskDetail(latest);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Done column infinite scroll (K-008)
+    // ------------------------------------------------------------------
+
+    _setupDoneInfiniteScroll(pid) {
+        // Disconnect previous observer
+        if (this._doneObserver) {
+            this._doneObserver.disconnect();
+            this._doneObserver = null;
+        }
+        const sentinel = document.getElementById(`doneScrollSentinel-${pid}`);
+        if (!sentinel) return;
+
+        this._doneObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting && !this._doneLoading) {
+                    this._loadMoreDoneTasks(pid);
+                }
+            });
+        }, { root: sentinel.closest('.kanban-column-items'), threshold: 0.1 });
+
+        this._doneObserver.observe(sentinel);
+    }
+
+    _loadMoreDoneTasks(pid) {
+        if (this._doneLoading) return;
+        if (this._doneLoadedCount >= this._doneAllTasks.length) return;
+
+        this._doneLoading = true;
+        const nextBatch = this._doneAllTasks.slice(
+            this._doneLoadedCount,
+            this._doneLoadedCount + this._donePageSize
+        );
+        this._doneLoadedCount += nextBatch.length;
+
+        const el = document.getElementById(`items-${pid}-done`);
+        if (!el) { this._doneLoading = false; return; }
+
+        // Remove old sentinel
+        const oldSentinel = document.getElementById(`doneScrollSentinel-${pid}`);
+        if (oldSentinel) oldSentinel.remove();
+
+        // Append new cards
+        const fragment = document.createDocumentFragment();
+        const temp = document.createElement('div');
+        temp.innerHTML = nextBatch.map(t => this._renderTaskCard(t)).join('');
+        while (temp.firstChild) fragment.appendChild(temp.firstChild);
+
+        // Add new sentinel if more remain
+        if (this._doneLoadedCount < this._doneAllTasks.length) {
+            const sentinel = document.createElement('div');
+            sentinel.className = 'done-scroll-sentinel';
+            sentinel.id = `doneScrollSentinel-${pid}`;
+            sentinel.style.cssText = 'padding:12px;text-align:center;';
+            sentinel.innerHTML = '<div class="loading-spinner" style="width:16px;height:16px;margin:0 auto;"></div><p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Loading more...</p>';
+            fragment.appendChild(sentinel);
+        }
+
+        el.appendChild(fragment);
+        this._bindCardEvents(el);
+        this._doneLoading = false;
+
+        // Re-observe new sentinel
+        if (this._doneLoadedCount < this._doneAllTasks.length) {
+            this._setupDoneInfiniteScroll(pid);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Sorting
+    // ------------------------------------------------------------------
+
+    _sortTasks(tasks) {
+        const dir = this._sortDirection === 'desc' ? -1 : 1;
+        return [...tasks].sort((a, b) => {
+            switch (this._sortField) {
+                case 'priority': {
+                    const order = { critical: 0, serious: 1, normal: 2 };
+                    const pa = order[a.priority] ?? 2;
+                    const pb = order[b.priority] ?? 2;
+                    return (pa - pb) * dir;
+                }
+                case 'due_date': {
+                    const da = a.due_date || Infinity;
+                    const db = b.due_date || Infinity;
+                    return (da - db) * dir;
+                }
+                case 'created_at': {
+                    const ca = new Date(a.created_at || 0).getTime();
+                    const cb = new Date(b.created_at || 0).getTime();
+                    return (ca - cb) * dir;
+                }
+                case 'position':
+                default: {
+                    const pa = a.position ?? 0;
+                    const pb = b.position ?? 0;
+                    return (pa - pb) * dir;
+                }
+            }
+        });
+    }
+
+    /**
+     * Assign initial float positions to tasks that lack a position field.
+     * Uses 65536 gap (same as KanbanDragDrop.POSITION_GAP).
+     */
+    _ensurePositions() {
+        const GAP = 65536;
+        const grouped = {};
+        this._tasks.forEach(t => {
+            const s = this._normalizeTaskStatus(t.status);
+            (grouped[s] = grouped[s] || []).push(t);
+        });
+        for (const tasks of Object.values(grouped)) {
+            let needsAssign = tasks.some(t => t.position == null || t.position === 0);
+            if (needsAssign) {
+                tasks.forEach((t, i) => {
+                    if (t.position == null || t.position === 0) {
+                        t.position = (i + 1) * GAP;
+                    }
+                });
             }
         }
     }
