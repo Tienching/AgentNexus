@@ -1147,6 +1147,30 @@ class TaskBoardPanel {
                     this._getApp()?.showToast?.(`Batch update failed: ${e.message}`, 'error');
                 }
             },
+            onBatchPriorityChange: async (ids, newPriority) => {
+                try {
+                    for (const id of ids) {
+                        await NexusAPI.updateTask(id, { priority: newPriority }, { execUser: this._getExecUser() });
+                    }
+                    this._getApp()?.showToast?.(`Updated priority for ${ids.length} tasks`, 'success');
+                    if (this._dataStore) this._dataStore.invalidate('tasks');
+                    await this._loadTasks();
+                } catch (e) {
+                    this._getApp()?.showToast?.(`Batch priority update failed: ${e.message}`, 'error');
+                }
+            },
+            onBatchAssign: async (ids, assignee) => {
+                try {
+                    for (const id of ids) {
+                        await NexusAPI.updateTask(id, { assigned_to: assignee }, { execUser: this._getExecUser() });
+                    }
+                    this._getApp()?.showToast?.(`Assigned ${ids.length} tasks to ${assignee}`, 'success');
+                    if (this._dataStore) this._dataStore.invalidate('tasks');
+                    await this._loadTasks();
+                } catch (e) {
+                    this._getApp()?.showToast?.(`Batch assign failed: ${e.message}`, 'error');
+                }
+            },
             onDeleteTasks: async (ids) => {
                 this._getApp()?.showDeleteModal?.('tasks', `${ids.length} tasks`, async () => {
                     try {
