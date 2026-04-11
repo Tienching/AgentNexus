@@ -23,6 +23,8 @@ class KanbanDragDrop {
         this.board = board;
         this.onMove = options.onMove || (async () => {});
         this.onReorder = options.onReorder || (async () => {});
+        this.onDragStart = options.onDragStart || (() => {});
+        this.onDragEnd = options.onDragEnd || (() => {});
         this.getTaskStatus = options.getTaskStatus || (() => null);
         this.getTaskPosition = options.getTaskPosition || (() => 0);
         this.dragState = null;
@@ -53,6 +55,7 @@ class KanbanDragDrop {
         const fromStatus = this.getTaskStatus(taskId) || card.closest('.kanban-column')?.dataset.status || '';
         this.dragState = { taskId, fromStatus };
         card.classList.add('task-card-dragging');
+        this.onDragStart(taskId, fromStatus);
         if (event.dataTransfer) {
             event.dataTransfer.effectAllowed = 'move';
             event.dataTransfer.setData('text/plain', JSON.stringify(this.dragState));
@@ -63,7 +66,9 @@ class KanbanDragDrop {
         this.board.querySelectorAll('.task-card-dragging').forEach((el) => el.classList.remove('task-card-dragging'));
         this.board.querySelectorAll('.kanban-drop-target').forEach((el) => el.classList.remove('kanban-drop-target'));
         this._removeDropIndicator();
+        const wasState = this.dragState;
         this.dragState = null;
+        this.onDragEnd(wasState?.taskId, wasState?.fromStatus);
     }
 
     handleDragOver(event, items, column) {
