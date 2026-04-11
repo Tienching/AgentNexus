@@ -2,16 +2,20 @@
  * TaskBoardPanel - Full-featured task management panel.
  *
  * Serves as the single entry point for the Tasks page, replacing the old TaskView.
- * Features: Kanban board, task create modal, task detail (4-tab), editing,
+ * Features: Kanban board, task create modal, task detail (5-tab), editing,
  * status transitions via drag-drop, filtering/search, schedules, batch operations,
  * SSE streaming for live task conversations.
  *
- * Extends BasePanel for lifecycle & AppDataStore integration.
+ * Standalone class — no BasePanel dependency. Uses NexusAPI directly.
  */
 
-class TaskBoardPanel extends BasePanel {
+class TaskBoardPanel {
     constructor(id, def, opts) {
-        super(id, def, opts);
+        this.id = id;
+        this.def = def;
+        this.opts = opts || {};
+        this.container = null;
+        this._destroyed = false;
         this._tasks = [];
         this._filter = '';
         this._projectFilter = '';
@@ -64,20 +68,13 @@ class TaskBoardPanel extends BasePanel {
     // ------------------------------------------------------------------
 
     async init() {
-        await super.init();
-        this.subscribeData('tasks', (data) => {
-            const newTasks = (data.tasks || []).map(t => ({
-                ...t,
-                status: this._normalizeTaskStatus(t.status),
-            }));
-            // K-002: If dragging, queue the update instead of applying
-            if (this._isDragging) {
-                this._pendingUpdates.push(newTasks);
-                return;
-            }
-            this._tasks = newTasks;
-            if (this.container) this._renderKanban();
-        });
+        // Start auto-refresh if configured
+        if (this.def.refreshMs > 0 && typeof SmartPoll !== 'undefined') {
+            this._poll = new SmartPoll(() => this.refresh(), { intervalMs: this.def.refreshMs });
+            this._poll.start();
+        }
+        // Load initial tasks directly via NexusAPI
+        await this._loadTasks();
     }
 
     render(container) {
@@ -216,7 +213,9 @@ class TaskBoardPanel extends BasePanel {
     }
 
     async destroy() {
+        this._destroyed = true;
         this._stopAutoPolling();
+        if (this._poll) { this._poll.destroy(); this._poll = null; }
         if (this._doneObserver) {
             this._doneObserver.disconnect();
             this._doneObserver = null;
@@ -226,7 +225,7 @@ class TaskBoardPanel extends BasePanel {
         }
         this._mentionInputs.forEach(m => { try { m.destroy(); } catch {} });
         this._mentionInputs = [];
-        await super.destroy();
+        this.container = null;
     }
 
     onRealtimeEvent(eventType) {
@@ -255,7 +254,7 @@ class TaskBoardPanel extends BasePanel {
         const filterEl = document.getElementById(`taskProjectFilter-${pid}`);
         if (!filterEl) return;
         try {
-            const projects = await this.api.getProjects({
+            const projects = await NexusAPI.getProjects({
                 execUser: this._getExecUser()
             });
             const current = filterEl.value;
@@ -282,7 +281,7 @@ class TaskBoardPanel extends BasePanel {
             if (projectFilter && projectFilter.options.length <= 1) {
                 await this._loadProjects();
             }
-            const data = await this.api.getTasks({
+            const data = await NexusAPI.getTasks({
                 execUser: this._getExecUser(),
                 pageSize: 100,
                 search: searchInput?.value || '',
@@ -310,7 +309,7 @@ class TaskBoardPanel extends BasePanel {
         const root = document.getElementById(`expansionPanels-${pid}`);
         if (!root) return;
         try {
-            const data = await this.api.getSessions({ page: 1, pageSize: 200, username: this._getUsername() || undefined });
+            const data = await NexusAPI.getSessions({ page: 1, pageSize: 200, username: this._getUsername() || undefined });
             const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
             if (window.ExpansionPanels?.render) {
                 window.ExpansionPanels.render(root, sessions);
@@ -495,11 +494,11 @@ class TaskBoardPanel extends BasePanel {
                     try {
                         const update = {};
                         if (field === 'status') {
-                            await this.api.updateTaskStatus(taskId, value, { execUser: this._getExecUser() });
+                            await NexusAPI.updateTaskStatus(taskId, value, { execUser: this._getExecUser() });
                         } else {
                             if (field === 'priority') update.priority = value;
                             if (field === 'assignee') update.assigned_to = value;
-                            await this.api.updateTask(taskId, update, { execUser: this._getExecUser() });
+                            await NexusAPI.updateTask(taskId, update, { execUser: this._getExecUser() });
                         }
                         // Optimistic local update
                         const local = this._tasks.find(t => t.id === taskId);
@@ -537,7 +536,7 @@ class TaskBoardPanel extends BasePanel {
         detailPanel.classList.remove('hidden');
         detailPanel.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div></div>';
         try {
-            const task = await this.api.getTask(taskId, { execUser: this._getExecUser() });
+            const task = await NexusAPI.getTask(taskId, { execUser: this._getExecUser() });
             this._renderTaskDetail(task);
         } catch (e) {
             detailPanel.innerHTML = '<div class="empty-state"><p style="color: var(--error);">Failed to load task details</p></div>';
@@ -587,6 +586,7 @@ class TaskBoardPanel extends BasePanel {
                         <button class="action-btn task-detail-tab active" data-task-tab="details" style="padding:4px 10px;">Details</button>
                         <button class="action-btn task-detail-tab" data-task-tab="comments" style="padding:4px 10px;">Comments</button>
                         <button class="action-btn task-detail-tab" data-task-tab="quality" style="padding:4px 10px;">Quality</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="timeline" style="padding:4px 10px;">Timeline</button>
                         <button class="action-btn task-detail-tab" data-task-tab="session" style="padding:4px 10px;">Session</button>
                     </div>
                     <div id="taskTabDetails-${pid}" data-task-tab-pane="details" style="flex:1;overflow-y:auto;">
@@ -597,6 +597,9 @@ class TaskBoardPanel extends BasePanel {
                     </div>
                     <div id="taskTabQuality-${pid}" data-task-tab-pane="quality" style="display:none;overflow-y:auto;">
                         <div id="taskQuality-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
+                    </div>
+                    <div id="taskTabTimeline-${pid}" data-task-tab-pane="timeline" style="display:none;overflow-y:auto;">
+                        <div id="taskTimeline-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
                     </div>
                     <div id="taskTabSession-${pid}" data-task-tab-pane="session" style="display:none;flex:1;overflow-y:auto;">
                         ${hasConversation ? `<div class="chat-messages" id="taskConversation-${pid}" style="padding:0;"><div class="empty-state" style="padding:24px;"><div class="loading-spinner"></div><p style="font-size:12px;color:var(--text-muted);margin-top:8px;">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p></div></div>` : `<div class="empty-state" style="padding:24px;"><p style="font-size:12px;color:var(--text-muted);">Session view is available after task execution starts.</p></div>`}
@@ -617,6 +620,7 @@ class TaskBoardPanel extends BasePanel {
         this._loadDetailsTab(task);
         this._loadCommentsTab(task.id);
         this._loadQualityTab(task.id);
+        this._loadTimelineTab(task.id);
         if (hasConversation) {
             if (isRunning) this._streamTaskConversation(task.id);
             else this._streamTaskConversation(task.id, true);
@@ -638,7 +642,7 @@ class TaskBoardPanel extends BasePanel {
             const message = window.prompt('Broadcast message to task subscribers:');
             if (!message?.trim()) return;
             try {
-                const result = await this.api.broadcastTask(task.id, { message: message.trim(), sender: 'user', include_assignee: true }, { execUser: this._getExecUser() });
+                const result = await NexusAPI.broadcastTask(task.id, { message: message.trim(), sender: 'user', include_assignee: true }, { execUser: this._getExecUser() });
                 this._getApp()?.showToast?.(`Broadcast sent to ${result.delivered || 0} subscribers`, 'success');
             } catch (e) {
                 this._getApp()?.showToast?.(e.message || 'Failed to broadcast', 'error');
@@ -659,6 +663,7 @@ class TaskBoardPanel extends BasePanel {
             details: panel.querySelector(`#taskTabDetails-${pid}`),
             comments: panel.querySelector(`#taskTabComments-${pid}`),
             quality: panel.querySelector(`#taskTabQuality-${pid}`),
+            timeline: panel.querySelector(`#taskTabTimeline-${pid}`),
             session: panel.querySelector(`#taskTabSession-${pid}`),
         };
         buttons.forEach(btn => {
@@ -695,139 +700,38 @@ class TaskBoardPanel extends BasePanel {
     }
 
     async _loadCommentsTab(taskId) {
+        if (typeof TaskComponents?.renderTaskComments !== 'function') return;
         const pid = this._paneId;
-        const root = document.getElementById(`taskComments-${pid}`);
-        if (!root) return;
+        const container = document.getElementById(`taskComments-${pid}`);
+        if (!container) return;
         this._mentionInputs.forEach(m => { try { m.destroy(); } catch {} });
         this._mentionInputs = [];
-        const execUser = this._getExecUser();
-        try {
-            const data = await this.api.getTaskComments(taskId, { execUser });
-            const comments = Array.isArray(data?.comments) ? data.comments : [];
-            root.innerHTML = `
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                    <strong style="font-size:12px;color:var(--text-primary);">Comments</strong>
-                    <span style="font-size:11px;color:var(--text-muted);">${comments.length}</span>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;margin-bottom:10px;">
-                    ${comments.length ? comments.map(c => this._renderCommentNode(c, 0)).join('') : '<div style="font-size:11px;color:var(--text-muted);">No comments yet.</div>'}
-                </div>
-                <div style="border-top:1px solid var(--border);padding-top:8px;display:grid;gap:6px;">
-                    <label style="font-size:11px;color:var(--text-muted);">New comment</label>
-                    <textarea id="taskCommentInput-${pid}" class="form-input" rows="3" placeholder="Write a comment..."></textarea>
-                    <div style="display:flex;gap:6px;justify-content:flex-end;">
-                        <button class="action-btn primary" data-action="submit-comment" style="padding:4px 12px;">Post</button>
-                    </div>
-                </div>
-            `;
-            root.querySelector('[data-action="submit-comment"]')?.addEventListener('click', async () => {
-                const input = document.getElementById(`taskCommentInput-${pid}`);
-                const content = input?.value?.trim();
-                if (!content) { this._getApp()?.showToast?.('Comment is required', 'warning'); return; }
-                await this.api.createTaskComment(taskId, { content, author: 'user' }, { execUser });
-                if (input) input.value = '';
-                await this._loadCommentsTab(taskId);
-            });
-            root.querySelectorAll('[data-action="reply-comment"]').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    const domId = btn.dataset.commentDomId;
-                    const form = document.getElementById(`replyForm-${domId}`);
-                    if (form) form.style.display = form.style.display === 'none' ? 'grid' : 'none';
-                });
-            });
-            root.querySelectorAll('[data-action="submit-reply"]').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const commentId = btn.dataset.commentId;
-                    const domId = btn.dataset.commentDomId;
-                    const input = document.getElementById(`replyInput-${domId}`);
-                    const content = input?.value?.trim();
-                    if (!content) { this._getApp()?.showToast?.('Reply is required', 'warning'); return; }
-                    await this.api.createTaskComment(taskId, { content, author: 'user', parent_id: commentId }, { execUser });
-                    await this._loadCommentsTab(taskId);
-                });
-            });
-        } catch (e) {
-            root.innerHTML = '<div style="font-size:12px;color:var(--error);">Failed to load comments</div>';
-        }
-    }
-
-    _renderCommentNode(comment, depth) {
-        const replies = Array.isArray(comment?.replies) ? comment.replies : [];
-        const margin = Math.min(depth * 14, 42);
-        const rawId = String(comment?.id || '');
-        const domId = rawId.replace(/[^A-Za-z0-9_-]/g, '_');
-        const app = this._getApp();
-        const contentHtml = app?.chatView?.formatMessageContent ? app.chatView.formatMessageContent(comment.content || '') : this._esc(comment.content || '');
-        return `
-            <div style="margin-left:${margin}px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);display:flex;flex-direction:column;gap:6px;">
-                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
-                    <span style="font-size:11px;font-weight:600;color:var(--text-primary);">${this._esc(comment.author || 'user')}</span>
-                    <span style="font-size:10px;color:var(--text-muted);">${this._formatTime((comment.created_at || 0) * 1000)}</span>
-                </div>
-                <div class="message-text" style="font-size:12px;">${contentHtml}</div>
-                <div style="display:flex;gap:6px;">
-                    <button class="action-btn" data-action="reply-comment" data-comment-id="${this._esc(rawId)}" data-comment-dom-id="${domId}" style="padding:2px 8px;font-size:11px;">Reply</button>
-                </div>
-                <div id="replyForm-${domId}" style="display:none;gap:6px;">
-                    <textarea id="replyInput-${domId}" class="form-input" rows="2" placeholder="Write a reply..."></textarea>
-                    <button class="action-btn primary" data-action="submit-reply" data-comment-id="${this._esc(rawId)}" data-comment-dom-id="${domId}" style="padding:4px 10px;font-size:11px;">Post Reply</button>
-                </div>
-                ${replies.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${replies.map(r => this._renderCommentNode(r, depth + 1)).join('')}</div>` : ''}
-            </div>
-        `;
+        await TaskComponents.renderTaskComments(container, taskId, {
+            paneId: pid,
+            mentionInputsByPane: { [pid]: this._mentionInputs },
+        });
     }
 
     async _loadQualityTab(taskId) {
+        if (typeof TaskComponents?.renderQualityGate !== 'function') return;
         const pid = this._paneId;
-        const root = document.getElementById(`taskQuality-${pid}`);
-        if (!root) return;
-        const execUser = this._getExecUser();
-        try {
-            const data = await this.api.getTaskQualityReviews(taskId, { execUser });
-            const latest = data?.latest_review;
-            const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
-            root.innerHTML = `
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                    <strong style="font-size:12px;color:var(--text-primary);">Aegis Quality</strong>
-                    <span style="font-size:11px;color:${data?.gate_allowed ? 'var(--success)' : 'var(--warning)'};">${data?.gate_allowed ? 'Gate Passed' : 'Gate Blocked'}</span>
-                </div>
-                <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">${this._esc(data?.gate_reason || '')}</div>
-                ${latest ? `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;">Latest: <strong>${this._esc(String(latest.status||''))}</strong> by ${this._esc(String(latest.reviewer||'unknown'))} · ${this._formatTime((latest.created_at||0)*1000)}</div>` : '<div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">No reviews yet.</div>'}
-                <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;max-height:180px;overflow-y:auto;">
-                    ${reviews.length ? reviews.map(r => `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);"><div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;"><span style="font-size:11px;font-weight:600;color:var(--text-primary);">${this._esc(String(r.status||''))}</span><span style="font-size:10px;color:var(--text-muted);">${this._formatTime((r.created_at||0)*1000)}</span></div><div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">Reviewer: ${this._esc(String(r.reviewer||'unknown'))}</div>${r.notes ? `<div class="message-text" style="font-size:11px;color:var(--text-secondary);">${this._esc(String(r.notes))}</div>` : ''}</div>`).join('') : '<div style="font-size:11px;color:var(--text-muted);">No history entries.</div>'}
-                </div>
-                <div style="border-top:1px solid var(--border);padding-top:10px;display:grid;gap:6px;">
-                    <label style="font-size:11px;color:var(--text-muted);">Reviewer</label>
-                    <input id="qualityReviewer-${pid}" type="text" class="form-input" value="aegis" placeholder="reviewer">
-                    <label style="font-size:11px;color:var(--text-muted);">Status</label>
-                    <select id="qualityStatus-${pid}" class="form-input form-select">
-                        <option value="approved">approved</option>
-                        <option value="needs_changes">needs_changes</option>
-                        <option value="rejected">rejected</option>
-                    </select>
-                    <label style="font-size:11px;color:var(--text-muted);">Notes</label>
-                    <textarea id="qualityNotes-${pid}" class="form-input" rows="3" placeholder="Review notes"></textarea>
-                    <div style="display:flex;gap:6px;justify-content:flex-end;">
-                        <button class="action-btn primary" data-action="submit-quality-review" style="justify-content:center;">Submit Review</button>
-                    </div>
-                </div>
-            `;
-            root.querySelector('[data-action="submit-quality-review"]')?.addEventListener('click', async () => {
-                const reviewer = document.getElementById(`qualityReviewer-${pid}`)?.value?.trim() || 'aegis';
-                const status = document.getElementById(`qualityStatus-${pid}`)?.value || 'approved';
-                const notes = document.getElementById(`qualityNotes-${pid}`)?.value?.trim() || '';
-                try {
-                    await this.api.submitTaskQualityReview(taskId, { reviewer, status, notes }, { execUser });
-                    this._getApp()?.showToast?.('Quality review submitted', 'success');
-                    await this._loadTasks();
-                    await this._showTaskDetail(taskId);
-                } catch (e) {
-                    this._getApp()?.showToast?.(e.message || 'Failed to submit', 'error');
-                }
-            });
-        } catch (e) {
-            root.innerHTML = '<div style="font-size:12px;color:var(--error);">Failed to load quality reviews</div>';
-        }
+        const container = document.getElementById(`taskQuality-${pid}`);
+        if (!container) return;
+        await TaskComponents.renderQualityGate(container, taskId, {
+            paneId: pid,
+            onRefresh: async (tid) => {
+                await this._loadTasks();
+                await this._showTaskDetail(tid);
+            },
+        });
+    }
+
+    async _loadTimelineTab(taskId) {
+        if (typeof TaskComponents?.renderTaskTimeline !== 'function') return;
+        const pid = this._paneId;
+        const container = document.getElementById(`taskTimeline-${pid}`);
+        if (!container) return;
+        await TaskComponents.renderTaskTimeline(container, taskId, { paneId: pid });
     }
 
     // ------------------------------------------------------------------
@@ -839,7 +743,7 @@ class TaskBoardPanel extends BasePanel {
         const pid = this._paneId;
         const container = document.getElementById(`taskConversation-${pid}`);
         if (!container) return;
-        const es = this.api.streamTaskMessages(taskId, { execUser: this._getExecUser(), tail: 5000 });
+        const es = NexusAPI.streamTaskMessages(taskId, { execUser: this._getExecUser(), tail: 5000 });
         this._activeStreams.set(taskId, es);
         let bubbleEl = null, currentTextEl = null, currentTextContent = '', textSegmentIndex = 0;
         const streamingToolCalls = new Map();
@@ -1058,7 +962,7 @@ class TaskBoardPanel extends BasePanel {
         if (ids.length === 0) { this._getApp()?.showToast?.('No tasks selected', 'warning'); return; }
         this._getApp()?.showDeleteModal?.('tasks', `${ids.length} tasks`, async () => {
             try {
-                const result = await this.api.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
+                const result = await NexusAPI.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
                 this._getApp()?.showToast?.(`Deleted ${result.result?.count || ids.length} tasks`, 'success');
                 this._selectedTaskIds = new Set();
                 this._updateDeleteBtnCount();
@@ -1071,7 +975,7 @@ class TaskBoardPanel extends BasePanel {
 
     async _deleteTask(taskId) {
         try {
-            await this.api.deleteTask(taskId, { execUser: this._getExecUser() });
+            await NexusAPI.deleteTask(taskId, { execUser: this._getExecUser() });
             this._getApp()?.showToast?.('Task deleted', 'success');
             this._selectedTask = null;
             document.getElementById(`taskDetail-${this._paneId}`)?.classList.add('hidden');
@@ -1122,7 +1026,7 @@ class TaskBoardPanel extends BasePanel {
             },
             onMove: async (taskId, toStatus, fromStatus, newPosition) => {
                 try {
-                    await this.api.updateTaskStatus(taskId, toStatus, { execUser: this._getExecUser() });
+                    await NexusAPI.updateTaskStatus(taskId, toStatus, { execUser: this._getExecUser() });
                     const local = this._tasks.find(t => t.id === taskId);
                     if (local) {
                         local.status = toStatus;
@@ -1144,7 +1048,7 @@ class TaskBoardPanel extends BasePanel {
                 if (local) local.position = newPosition;
                 this._renderKanban();
                 try {
-                    await this.api.updateTask(taskId, { position: newPosition }, { execUser: this._getExecUser() });
+                    await NexusAPI.updateTask(taskId, { position: newPosition }, { execUser: this._getExecUser() });
                 } catch (e) {
                     this._getApp()?.showToast?.(`Reorder failed: ${e.message}`, 'error');
                     await this._loadTasks();
@@ -1216,7 +1120,7 @@ class TaskBoardPanel extends BasePanel {
             onBatchStatusChange: async (ids, newStatus) => {
                 try {
                     for (const id of ids) {
-                        await this.api.updateTaskStatus(id, newStatus, { execUser: this._getExecUser() });
+                        await NexusAPI.updateTaskStatus(id, newStatus, { execUser: this._getExecUser() });
                     }
                     this._getApp()?.showToast?.(`Updated ${ids.length} tasks`, 'success');
                     await this._loadTasks();
@@ -1227,7 +1131,7 @@ class TaskBoardPanel extends BasePanel {
             onDeleteTasks: async (ids) => {
                 this._getApp()?.showDeleteModal?.('tasks', `${ids.length} tasks`, async () => {
                     try {
-                        await this.api.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
+                        await NexusAPI.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
                         this._getApp()?.showToast?.(`Deleted ${ids.length} tasks`, 'success');
                         await this._loadTasks();
                     } catch (e) {
@@ -1267,7 +1171,7 @@ class TaskBoardPanel extends BasePanel {
         if (!listEl) return;
         const statusFilter = document.getElementById(`scheduleStatusFilter-${pid}`)?.value || '';
         try {
-            const data = await this.api.getSchedules({ status: statusFilter || undefined, pageSize: 100 });
+            const data = await NexusAPI.getSchedules({ status: statusFilter || undefined, pageSize: 100 });
             const schedules = data.schedules || [];
             if (schedules.length === 0) {
                 listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--text-muted);font-size:13px;">No schedules found</p></div>';
@@ -1330,14 +1234,14 @@ class TaskBoardPanel extends BasePanel {
         `;
     }
 
-    async _triggerSchedule(id) { try { await this.api.triggerSchedule(id); this._getApp()?.showToast?.('Schedule triggered', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
-    async _pauseSchedule(id) { try { await this.api.pauseSchedule(id); this._getApp()?.showToast?.('Schedule paused', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
-    async _resumeSchedule(id) { try { await this.api.resumeSchedule(id); this._getApp()?.showToast?.('Schedule resumed', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
-    async _cancelSchedule(id) { if (!confirm('Cancel this schedule permanently?')) return; try { await this.api.cancelSchedule(id); this._getApp()?.showToast?.('Schedule cancelled', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
-    async _deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; try { await this.api.deleteSchedule(id); this._getApp()?.showToast?.('Schedule deleted', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _triggerSchedule(id) { try { await NexusAPI.triggerSchedule(id); this._getApp()?.showToast?.('Schedule triggered', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _pauseSchedule(id) { try { await NexusAPI.pauseSchedule(id); this._getApp()?.showToast?.('Schedule paused', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _resumeSchedule(id) { try { await NexusAPI.resumeSchedule(id); this._getApp()?.showToast?.('Schedule resumed', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _cancelSchedule(id) { if (!confirm('Cancel this schedule permanently?')) return; try { await NexusAPI.cancelSchedule(id); this._getApp()?.showToast?.('Schedule cancelled', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; try { await NexusAPI.deleteSchedule(id); this._getApp()?.showToast?.('Schedule deleted', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _showEditScheduleModal(id) {
         try {
-            const s = await this.api.getSchedule(id);
+            const s = await NexusAPI.getSchedule(id);
             const modal = document.getElementById('editScheduleModal');
             if (!modal) return;
             document.getElementById('editScheduleId').value = s.id;

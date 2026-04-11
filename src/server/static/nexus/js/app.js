@@ -4917,6 +4917,7 @@ class TaskView {
                         <button class="action-btn task-detail-tab active" data-task-tab="details" data-pane-id="${paneId}" style="padding: 4px 10px;">Details</button>
                         <button class="action-btn task-detail-tab" data-task-tab="comments" data-pane-id="${paneId}" style="padding: 4px 10px;">Comments</button>
                         <button class="action-btn task-detail-tab" data-task-tab="quality" data-pane-id="${paneId}" style="padding: 4px 10px;">Quality</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="timeline" data-pane-id="${paneId}" style="padding: 4px 10px;">Timeline</button>
                         <button class="action-btn task-detail-tab" data-task-tab="session" data-pane-id="${paneId}" style="padding: 4px 10px;">Session</button>
                     </div>
                     <div id="taskTabDetails-${paneId}" data-task-tab-pane="details" style="flex: 1; overflow-y: auto;">
@@ -4929,6 +4930,11 @@ class TaskView {
                     </div>
                     <div id="taskTabQuality-${paneId}" data-task-tab-pane="quality" style="display: none; overflow-y: auto;">
                         <div id="taskQuality-${paneId}" style="padding: 8px 4px; font-size: 12px; color: var(--text-secondary);">
+                            <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
+                        </div>
+                    </div>
+                    <div id="taskTabTimeline-${paneId}" data-task-tab-pane="timeline" style="display: none; overflow-y: auto;">
+                        <div id="taskTimeline-${paneId}" style="padding: 8px 4px; font-size: 12px; color: var(--text-secondary);">
                             <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
                         </div>
                     </div>
@@ -5035,6 +5041,7 @@ class TaskView {
         this._loadTaskDetailsPanel(paneId, task);
         this._loadTaskCommentsPanel(paneId, task.id);
         this._loadTaskQualityPanel(paneId, task.id);
+        this._loadTaskTimelinePanel(paneId, task.id);
 
         // Load or stream conversation
         if (hasConversation) {
@@ -5052,6 +5059,7 @@ class TaskView {
             details: detailPanel.querySelector(`#taskTabDetails-${paneId}`),
             comments: detailPanel.querySelector(`#taskTabComments-${paneId}`),
             quality: detailPanel.querySelector(`#taskTabQuality-${paneId}`),
+            timeline: detailPanel.querySelector(`#taskTabTimeline-${paneId}`),
             session: detailPanel.querySelector(`#taskTabSession-${paneId}`),
         };
 
@@ -5093,251 +5101,35 @@ class TaskView {
         `;
     }
 
-    _renderTaskCommentNode(comment, depth = 0) {
-        const replies = Array.isArray(comment?.replies) ? comment.replies : [];
-        const margin = Math.min(depth * 14, 42);
-        const rawCommentId = String(comment?.id || '');
-        const domCommentId = rawCommentId.replace(/[^A-Za-z0-9_-]/g, '_');
-        const mentions = Array.isArray(comment?.mentions) && comment.mentions.length
-            ? `<div style="font-size:10px;color:var(--text-muted);margin-top:3px;">Mentions: ${this.escapeHtml(comment.mentions.map((m) => `@${m}`).join(' '))}</div>`
-            : '';
-        return `
-            <div style="margin-left:${margin}px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);display:flex;flex-direction:column;gap:6px;">
-                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
-                    <span style="font-size:11px;font-weight:600;color:var(--text-primary);">${this.escapeHtml(comment.author || 'user')}</span>
-                    <span style="font-size:10px;color:var(--text-muted);">${this.formatTime((comment.created_at || 0) * 1000)}</span>
-                </div>
-                <div class="message-text" style="font-size:12px;">${this.app?.chatView?.formatMessageContent ? this.app.chatView.formatMessageContent(comment.content || '') : this.escapeHtml(comment.content || '')}</div>
-                ${mentions}
-                <div style="display:flex;gap:6px;">
-                    <button class="action-btn" data-action="reply-comment" data-comment-id="${this.escapeHtml(rawCommentId)}" data-comment-dom-id="${domCommentId}" style="padding:2px 8px;font-size:11px;">Reply</button>
-                </div>
-                <div id="replyForm-${domCommentId}" style="display:none;gap:6px;">
-                    <textarea id="replyInput-${domCommentId}" class="form-input" rows="2" placeholder="Write a reply... use @name for mentions"></textarea>
-                    <button class="action-btn primary" data-action="submit-reply" data-comment-id="${this.escapeHtml(rawCommentId)}" data-comment-dom-id="${domCommentId}" style="padding:4px 10px;font-size:11px;">Post Reply</button>
-                </div>
-                ${replies.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${replies.map((r) => this._renderTaskCommentNode(r, depth + 1)).join('')}</div>` : ''}
-            </div>
-        `;
-    }
-
-    _getMentionCandidates() {
-        const candidates = [];
-        const agents = this.app?.chatView?.getAvailableAgents ? this.app.chatView.getAvailableAgents('') : [];
-        const usernames = [...new Set((agents || []).map((a) => String(a?.username || '').trim()).filter(Boolean))];
-        const agentNames = [...new Set((agents || []).map((a) => String(a?.agent_type || '').trim()).filter(Boolean))];
-
-        usernames.forEach((username) => {
-            candidates.push({ id: `user:${username}`, label: username, type: 'user' });
-        });
-        agentNames.forEach((agent) => {
-            candidates.push({ id: `agent:${agent}`, label: agent, type: 'agent' });
-        });
-
-        if (typeof window.MentionTextarea === 'function' && typeof window.MentionTextarea.normalizeCandidates === 'function') {
-            return window.MentionTextarea.normalizeCandidates(candidates);
-        }
-        return candidates;
-    }
 
     async _loadTaskCommentsPanel(paneId, taskId) {
-        const commentsRoot = document.getElementById(`taskComments-${paneId}`);
-        if (!commentsRoot) return;
-
-        const oldMentions = this._mentionInputsByPane[paneId] || [];
-        oldMentions.forEach((instance) => {
-            try { instance.destroy(); } catch {}
+        if (typeof TaskComponents?.renderTaskComments !== 'function') return;
+        const container = document.getElementById(`taskComments-${paneId}`);
+        if (!container) return;
+        await TaskComponents.renderTaskComments(container, taskId, {
+            paneId,
+            mentionInputsByPane: this._mentionInputsByPane,
         });
-        this._mentionInputsByPane[paneId] = [];
-
-        const globalUserFilter = document.getElementById('globalUserFilter');
-        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
-
-        try {
-            const data = await NexusAPI.getTaskComments(taskId, { execUser });
-            const comments = Array.isArray(data?.comments) ? data.comments : [];
-
-            commentsRoot.innerHTML = `
-                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                    <strong style="font-size:12px;color:var(--text-primary);">Comments</strong>
-                    <span style="font-size:11px;color:var(--text-muted);">${comments.length}</span>
-                </div>
-                <div style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;margin-bottom:10px;">
-                    ${comments.length ? comments.map((comment) => this._renderTaskCommentNode(comment, 0)).join('') : '<div style="font-size:11px;color:var(--text-muted);">No comments yet.</div>'}
-                </div>
-                <div style="border-top:1px solid var(--border);padding-top:8px;display:grid;gap:6px;">
-                    <label style="font-size:11px;color:var(--text-muted);">New comment</label>
-                    <textarea id="taskCommentInput-${paneId}" class="form-input" rows="3" placeholder="Write a comment... use @name for mentions"></textarea>
-                    <div style="display:flex;gap:6px;justify-content:flex-end;">
-                        <button class="action-btn primary" data-action="submit-comment" style="padding:4px 12px;">Post</button>
-                    </div>
-                </div>
-            `;
-
-            const submitBtn = commentsRoot.querySelector('[data-action="submit-comment"]');
-            if (submitBtn) {
-                submitBtn.addEventListener('click', async () => {
-                    const input = document.getElementById(`taskCommentInput-${paneId}`);
-                    const content = input?.value?.trim() || '';
-                    if (!content) {
-                        this.app?.showToast?.('Comment content is required', 'warning');
-                        return;
-                    }
-                    await NexusAPI.createTaskComment(taskId, { content, author: 'user' }, { execUser });
-                    if (input) input.value = '';
-                    await this._loadTaskCommentsPanel(paneId, taskId);
-                });
-            }
-
-            commentsRoot.querySelectorAll('[data-action="reply-comment"]').forEach((btn) => {
-                btn.addEventListener('click', () => {
-                    const domId = btn.getAttribute('data-comment-dom-id') || '';
-                    const form = document.getElementById(`replyForm-${domId}`);
-                    if (!form) return;
-                    form.style.display = form.style.display === 'none' ? 'grid' : 'none';
-                });
-            });
-
-            commentsRoot.querySelectorAll('[data-action="submit-reply"]').forEach((btn) => {
-                btn.addEventListener('click', async () => {
-                    const commentId = btn.getAttribute('data-comment-id') || '';
-                    const domId = btn.getAttribute('data-comment-dom-id') || '';
-                    const input = document.getElementById(`replyInput-${domId}`);
-                    const content = input?.value?.trim() || '';
-                    if (!content) {
-                        this.app?.showToast?.('Reply content is required', 'warning');
-                        return;
-                    }
-                    await NexusAPI.createTaskComment(taskId, { content, author: 'user', parent_id: commentId }, { execUser });
-                    await this._loadTaskCommentsPanel(paneId, taskId);
-                });
-            });
-
-            if (typeof window.MentionTextarea === 'function') {
-                const mentionCandidates = this._getMentionCandidates();
-                const instances = [];
-                const mainInput = document.getElementById(`taskCommentInput-${paneId}`);
-                if (mainInput) {
-                    instances.push(new window.MentionTextarea(mainInput, { candidates: mentionCandidates, maxItems: 8 }));
-                }
-                commentsRoot.querySelectorAll('textarea[id^="replyInput-"]').forEach((textarea) => {
-                    instances.push(new window.MentionTextarea(textarea, { candidates: mentionCandidates, maxItems: 8 }));
-                });
-                this._mentionInputsByPane[paneId] = instances;
-            }
-        } catch (error) {
-            console.error('Failed to load task comments:', error);
-            commentsRoot.innerHTML = `<div style="font-size:12px;color:var(--error);">Failed to load comments</div>`;
-        }
     }
 
     async _loadTaskQualityPanel(paneId, taskId) {
-        const qualityRoot = document.getElementById(`taskQuality-${paneId}`);
-        if (!qualityRoot) return;
-
-        const globalUserFilter = document.getElementById('globalUserFilter');
-        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
-
-        try {
-            const data = await NexusAPI.getTaskQualityReviews(taskId, { execUser });
-            const latest = data?.latest_review;
-            const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
-            qualityRoot.innerHTML = `
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-                    <strong style="font-size: 12px; color: var(--text-primary);">Aegis Quality</strong>
-                    <span style="font-size: 11px; color: ${data?.gate_allowed ? 'var(--success)' : 'var(--warning)'};">
-                        ${data?.gate_allowed ? 'Gate Passed' : 'Gate Blocked'}
-                    </span>
-                </div>
-                <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">
-                    ${this.escapeHtml(data?.gate_reason || '')}
-                </div>
-                ${latest ? `
-                    <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 10px;">
-                        Latest: <strong>${this.escapeHtml(String(latest.status || ''))}</strong>
-                        by ${this.escapeHtml(String(latest.reviewer || 'unknown'))}
-                        · ${this.formatTime((latest.created_at || 0) * 1000)}
-                    </div>
-                ` : '<div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">No reviews yet.</div>'}
-                <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
-                    ${reviews.length ? reviews.map((review) => `
-                        <div style="border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg-secondary);">
-                            <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px;">
-                                <span style="font-size: 11px; font-weight: 600; color: var(--text-primary);">${this.escapeHtml(String(review.status || ''))}</span>
-                                <span style="font-size: 10px; color: var(--text-muted);">${this.formatTime((review.created_at || 0) * 1000)}</span>
-                            </div>
-                            <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Reviewer: ${this.escapeHtml(String(review.reviewer || 'unknown'))}</div>
-                            ${review.notes ? `<div class="message-text" style="font-size: 11px; color: var(--text-secondary);">${this.app?.chatView?.formatMessageContent ? this.app.chatView.formatMessageContent(String(review.notes)) : this.escapeHtml(String(review.notes))}</div>` : ''}
-                        </div>
-                    `).join('') : '<div style="font-size: 11px; color: var(--text-muted);">No history entries.</div>'}
-                </div>
-                <div style="border-top: 1px solid var(--border); padding-top: 10px; display: grid; gap: 6px;">
-                    <label style="font-size: 11px; color: var(--text-muted);">Reviewer</label>
-                    <input id="qualityReviewer-${paneId}" type="text" class="form-input" value="aegis" placeholder="reviewer">
-                    <label style="font-size: 11px; color: var(--text-muted);">Status</label>
-                    <select id="qualityStatus-${paneId}" class="form-input form-select">
-                        <option value="approved">approved</option>
-                        <option value="needs_changes">needs_changes</option>
-                        <option value="rejected">rejected</option>
-                    </select>
-                    <label style="font-size: 11px; color: var(--text-muted);">Notes (Markdown)</label>
-                    <textarea id="qualityNotes-${paneId}" class="form-input" rows="3" placeholder="Review notes"></textarea>
-                    <div style="display:flex;gap:6px;justify-content:flex-end;">
-                        <button class="action-btn" type="button" data-action="toggle-quality-preview" data-task-id="${taskId}" style="padding:4px 10px;">Preview</button>
-                        <button class="action-btn primary" data-action="submit-quality-review" data-task-id="${taskId}" style="justify-content: center;">Submit Review</button>
-                    </div>
-                    <div id="qualityPreview-${paneId}" style="display:none;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);">
-                        <div class="message-empty">Nothing to preview</div>
-                    </div>
-                </div>
-            `;
-
-            const submitBtn = qualityRoot.querySelector('[data-action="submit-quality-review"]');
-            if (submitBtn) {
-                submitBtn.addEventListener('click', async () => {
-                    await this._submitTaskQualityReview(paneId, taskId);
-                });
-            }
-
-            const previewBtn = qualityRoot.querySelector('[data-action="toggle-quality-preview"]');
-            if (previewBtn) {
-                previewBtn.addEventListener('click', () => {
-                    const preview = document.getElementById(`qualityPreview-${paneId}`);
-                    const notesValue = document.getElementById(`qualityNotes-${paneId}`)?.value || '';
-                    if (!preview) return;
-                    const shouldShow = preview.style.display === 'none';
-                    preview.style.display = shouldShow ? '' : 'none';
-                    if (!shouldShow) return;
-                    const renderer = this.app?.chatView?.markdownRenderer;
-                    if (renderer && typeof renderer.renderPreview === 'function') {
-                        renderer.renderPreview(notesValue, preview);
-                    } else {
-                        preview.innerHTML = `<div class="message-text">${this.app?.chatView?.formatMessageContent ? this.app.chatView.formatMessageContent(notesValue) : this.escapeHtml(notesValue)}</div>`;
-                    }
-                });
-            }
-        } catch (error) {
-            console.error('Failed to load quality reviews:', error);
-            qualityRoot.innerHTML = `<div style="font-size: 12px; color: var(--error);">Failed to load quality reviews</div>`;
-        }
+        if (typeof TaskComponents?.renderQualityGate !== 'function') return;
+        const container = document.getElementById(`taskQuality-${paneId}`);
+        if (!container) return;
+        await TaskComponents.renderQualityGate(container, taskId, {
+            paneId,
+            onRefresh: async (tid) => {
+                await this.loadTasks(paneId);
+                await this.showTaskDetail(paneId, tid);
+            },
+        });
     }
 
-    async _submitTaskQualityReview(paneId, taskId) {
-        const reviewer = document.getElementById(`qualityReviewer-${paneId}`)?.value?.trim() || 'aegis';
-        const status = document.getElementById(`qualityStatus-${paneId}`)?.value || 'approved';
-        const notes = document.getElementById(`qualityNotes-${paneId}`)?.value?.trim() || '';
-        const globalUserFilter = document.getElementById('globalUserFilter');
-        const execUser = globalUserFilter?.value || NexusAPI.getDefaultExecUser();
-
-        try {
-            await NexusAPI.submitTaskQualityReview(taskId, { reviewer, status, notes }, { execUser });
-            this.app?.showToast?.('Quality review submitted', 'success');
-            await this.loadTasks(paneId);
-            await this.showTaskDetail(paneId, taskId);
-        } catch (error) {
-            console.error('Failed to submit quality review:', error);
-            this.app?.showToast?.(error.message || 'Failed to submit quality review', 'error');
-        }
+    async _loadTaskTimelinePanel(paneId, taskId) {
+        if (typeof TaskComponents?.renderTaskTimeline !== 'function') return;
+        const container = document.getElementById(`taskTimeline-${paneId}`);
+        if (!container) return;
+        await TaskComponents.renderTaskTimeline(container, taskId, { paneId });
     }
 
     /**
