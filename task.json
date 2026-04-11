@@ -1,17 +1,21 @@
 {
   "project": "agent-nexus",
-  "description": "从 mission-control 与 Claude Code 概要提炼的可移植功能清单",
+  "description": "Agent-Nexus 全量任务清单 - Phase 1 (MC-*) 已完成，Phase 2 (R-*/U-*/K-*) 为重构优化",
   "source_reference": "~/Projects/mission-control",
   "additional_sources": [
-    "markdown.zip (~/Projects/claude-code 概要文档)"
+    "markdown.zip (~/Projects/claude-code 概要文档)",
+    "~/Projects/multica (任务看板参考)",
+    "REDIS_TO_SQLITE_MIGRATION_ANALYSIS.md",
+    "UI_LOGIC_DUPLICATION_ANALYSIS.md",
+    "MULTICA_TASKVIEW_ANALYSIS.md"
   ],
   "created_at": "2026-04-09",
+  "updated_at": "2026-04-10",
   "tasks": [
     {
       "id": "MC-001",
       "category": "Agent Management",
       "description": "实现 Agent 注册与生命周期管理系统 - 包含注册、心跳、状态管理",
-      "mission_control_reference": "src/app/api/agents/register/route.ts, src/app/api/agents/[id]/heartbeat/route.ts",
       "target_location": "src/nanobot/agent/lifecycle.py",
       "complexity": "medium",
       "dependencies": [],
@@ -21,31 +25,24 @@
       "id": "MC-002",
       "category": "Agent Management",
       "description": "实现 Agent 任务队列和分配系统 - 优先级排序、任务拉取",
-      "mission_control_reference": "src/app/api/tasks/queue/route.ts, src/lib/scheduler.ts",
       "target_location": "src/nanobot/agent/queue.py",
       "complexity": "high",
-      "dependencies": [
-        "MC-001"
-      ],
+      "dependencies": ["MC-001"],
       "passes": true
     },
     {
       "id": "MC-003",
       "category": "Agent Management",
       "description": "实现 Agent SOUL 系统 - 个性化配置、双向工作区同步",
-      "mission_control_reference": "src/app/api/agents/[id]/soul/route.ts",
       "target_location": "src/nanobot/agent/soul.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-001"
-      ],
+      "dependencies": ["MC-001"],
       "passes": true
     },
     {
       "id": "MC-004",
       "category": "Task Management",
       "description": "增强任务看板系统 - 6 列工作流 (inbox→assigned→in_progress→review→quality_review→done)",
-      "mission_control_reference": "src/index.ts (Task interface), src/components/panels/TasksPanel.tsx",
       "target_location": "src/core/models/task_models.py",
       "complexity": "medium",
       "dependencies": [],
@@ -55,31 +52,24 @@
       "id": "MC-005",
       "category": "Task Management",
       "description": "实现任务评论系统 - 支持嵌套回复和 @提及",
-      "mission_control_reference": "src/app/api/tasks/[id]/comments/route.ts",
       "target_location": "src/core/models/comments.py",
       "complexity": "low",
-      "dependencies": [
-        "MC-004"
-      ],
+      "dependencies": ["MC-004"],
       "passes": true
     },
     {
       "id": "MC-006",
       "category": "Task Management",
       "description": "实现质量门禁系统 (Aegis Review) - 任务完成前必须通过质量审核",
-      "mission_control_reference": "src/app/api/quality-review/route.ts",
       "target_location": "src/core/quality/gates.py",
       "complexity": "high",
-      "dependencies": [
-        "MC-004"
-      ],
+      "dependencies": ["MC-004"],
       "passes": true
     },
     {
       "id": "MC-007",
       "category": "Skills System",
       "description": "增强 Skills Hub - 技能注册表、安全扫描、ClawdHub 集成",
-      "mission_control_reference": "src/lib/skill-registry.ts, src/lib/skill-sync.ts",
       "target_location": "src/nanobot/skills/registry.py",
       "complexity": "high",
       "dependencies": [],
@@ -89,19 +79,15 @@
       "id": "MC-008",
       "category": "Skills System",
       "description": "实现技能安全扫描器 - 检测提示注入、凭证泄露、数据外泄、混淆内容",
-      "mission_control_reference": "src/app/api/security-scan/route.ts",
       "target_location": "src/nanobot/skills/security_scanner.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-007"
-      ],
+      "dependencies": ["MC-007"],
       "passes": true
     },
     {
       "id": "MC-009",
       "category": "Scheduler",
       "description": "增强 Cron 服务 - 支持自然语言转 Cron (如 '每天早上9点')",
-      "mission_control_reference": "src/app/api/schedule-parse/route.ts, src/lib/scheduler.ts",
       "target_location": "src/nanobot/cron/nlp_parser.py",
       "complexity": "medium",
       "dependencies": [],
@@ -111,19 +97,15 @@
       "id": "MC-010",
       "category": "Scheduler",
       "description": "实现模板克隆模式 - 定时任务基于模板生成子任务",
-      "mission_control_reference": "src/lib/scheduler.ts (template-clone pattern)",
       "target_location": "src/nanobot/cron/template_tasks.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-009"
-      ],
+      "dependencies": ["MC-009"],
       "passes": true
     },
     {
       "id": "MC-011",
       "category": "Activity System",
       "description": "实现活动流系统 - 实时记录 agent、task、system 事件",
-      "mission_control_reference": "src/index.ts (Activity interface), src/lib/security-events.ts",
       "target_location": "src/core/events/activity.py",
       "complexity": "low",
       "dependencies": [],
@@ -133,19 +115,15 @@
       "id": "MC-012",
       "category": "Activity System",
       "description": "实现通知系统 - 站内通知、未读计数、已读状态",
-      "mission_control_reference": "src/index.ts (Notification interface)",
       "target_location": "src/core/notifications/service.py",
       "complexity": "low",
-      "dependencies": [
-        "MC-011"
-      ],
+      "dependencies": ["MC-011"],
       "passes": true
     },
     {
       "id": "MC-013",
       "category": "Cost Tracking",
       "description": "实现 Token 使用追踪 - 按模型统计、趋势图表、成本分析",
-      "mission_control_reference": "src/index.ts (TokenUsage interface), src/components/panels/CostPanel.tsx",
       "target_location": "src/core/cost/tracker.py",
       "complexity": "medium",
       "dependencies": [],
@@ -155,7 +133,6 @@
       "id": "MC-014",
       "category": "Memory System",
       "description": "实现内存浏览器 - 文件系统支持的内存树、关系图谱",
-      "mission_control_reference": "src/index.ts (MemoryFile interface), src/components/panels/MemoryPanel.tsx",
       "target_location": "src/core/memory/browser.py",
       "complexity": "high",
       "dependencies": [],
@@ -165,7 +142,6 @@
       "id": "MC-015",
       "category": "Security",
       "description": "实现安全审计系统 - 实时安全评分、密钥检测、MCP 调用审计",
-      "mission_control_reference": "src/lib/security-events.ts, src/components/panels/SecurityPanel.tsx",
       "target_location": "src/core/security/auditor.py",
       "complexity": "high",
       "dependencies": [],
@@ -175,43 +151,33 @@
       "id": "MC-016",
       "category": "Security",
       "description": "实现 Agent 信任评分系统 - 基于行为历史计算信任分数",
-      "mission_control_reference": "src/lib/security-events.ts (trust scoring)",
       "target_location": "src/core/security/trust_scoring.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-015"
-      ],
+      "dependencies": ["MC-015"],
       "passes": true
     },
     {
       "id": "MC-017",
       "category": "Security",
       "description": "实现 Hook 配置文件 - minimal/standard/strict 三级安全策略",
-      "mission_control_reference": "src/lib/security-events.ts (hook profiles)",
       "target_location": "src/core/security/hook_profiles.py",
       "complexity": "low",
-      "dependencies": [
-        "MC-015"
-      ],
+      "dependencies": ["MC-015"],
       "passes": true
     },
     {
       "id": "MC-018",
       "category": "Communication",
       "description": "实现 Agent 间消息系统 - 直接消息、群聊、消息类型支持",
-      "mission_control_reference": "src/index.ts (ChatMessage, Conversation interfaces), src/app/api/agents/comms/route.ts",
       "target_location": "src/nanobot/agent/messaging.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-001"
-      ],
+      "dependencies": ["MC-001"],
       "passes": true
     },
     {
       "id": "MC-019",
       "category": "Integration",
       "description": "实现 Webhooks 系统 - 带重试、熔断、HMAC-SHA256 签名验证",
-      "mission_control_reference": "src/app/api/webhooks/route.ts",
       "target_location": "src/core/webhooks/service.py",
       "complexity": "medium",
       "dependencies": [],
@@ -221,43 +187,33 @@
       "id": "MC-020",
       "category": "Integration",
       "description": "实现 GitHub Issues 同步 - 标签/负责人映射",
-      "mission_control_reference": "src/lib/*.ts (GitHub sync)",
       "target_location": "src/integrations/github/sync.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-019"
-      ],
+      "dependencies": ["MC-019"],
       "passes": true
     },
     {
       "id": "MC-021",
       "category": "Adapter",
       "description": "实现框架适配器层 - OpenClaw、CrewAI、LangGraph、AutoGen、Claude SDK",
-      "mission_control_reference": "src/lib/adapters/",
       "target_location": "src/nanobot/adapters/",
       "complexity": "high",
-      "dependencies": [
-        "MC-001"
-      ],
+      "dependencies": ["MC-001"],
       "passes": true
     },
     {
       "id": "MC-022",
       "category": "Workflow",
       "description": "实现工作流/管道系统 - 多步骤管道执行",
-      "mission_control_reference": "src/app/api/pipelines/route.ts, src/app/api/workflows/route.ts",
       "target_location": "src/core/workflows/engine.py",
       "complexity": "high",
-      "dependencies": [
-        "MC-004"
-      ],
+      "dependencies": ["MC-004"],
       "passes": true
     },
     {
       "id": "MC-023",
       "category": "Evaluation",
       "description": "实现四层评估框架 - 输出评估、追踪评估、组件评估、漂移检测",
-      "mission_control_reference": "src/lib/agent-evals.ts",
       "target_location": "src/core/evals/framework.py",
       "complexity": "high",
       "dependencies": [],
@@ -267,19 +223,15 @@
       "id": "MC-024",
       "category": "Reporting",
       "description": "实现站会报告生成 - 按 agent 统计、团队成就、阻塞项",
-      "mission_control_reference": "src/index.ts (StandupReport interface)",
       "target_location": "src/core/reports/standup.py",
       "complexity": "low",
-      "dependencies": [
-        "MC-011"
-      ],
+      "dependencies": ["MC-011"],
       "passes": true
     },
     {
       "id": "MC-025",
       "category": "Integration",
       "description": "实现 Claude Code 集成 - 自动发现本地 Claude Code 会话",
-      "mission_control_reference": "src/app/api/claude/sessions/route.ts",
       "target_location": "src/integrations/claude_code/sessions.py",
       "complexity": "medium",
       "dependencies": [],
@@ -289,7 +241,6 @@
       "id": "MC-026",
       "category": "Multi-tenancy",
       "description": "实现多租户工作区隔离 - 独立环境、网关、状态目录",
-      "mission_control_reference": "src/app/api/super/tenants/route.ts",
       "target_location": "src/core/tenants/manager.py",
       "complexity": "high",
       "dependencies": [],
@@ -299,7 +250,6 @@
       "id": "MC-027",
       "category": "API",
       "description": "生成 OpenAPI 3.1 规范 - 完整 API 文档",
-      "mission_control_reference": "openapi.json",
       "target_location": "docs/openapi.json",
       "complexity": "low",
       "dependencies": [],
@@ -309,7 +259,6 @@
       "id": "MC-028",
       "category": "RBAC",
       "description": "实现基于角色的访问控制 - viewer/operator/admin 三级角色",
-      "mission_control_reference": "src/lib/auth.ts",
       "target_location": "src/core/auth/rbac.py",
       "complexity": "medium",
       "dependencies": [],
@@ -319,122 +268,96 @@
       "id": "MC-029",
       "category": "UI",
       "description": "增强 Nexus Web UI - 32 个功能面板、实时 WebSocket/SSE 更新",
-      "mission_control_reference": "src/components/panels/*",
       "target_location": "src/server/static/nexus/panels/",
       "complexity": "high",
-      "dependencies": [
-        "MC-004",
-        "MC-011",
-        "MC-013",
-        "MC-015"
-      ],
-      "passes": false
+      "dependencies": ["MC-004", "MC-011", "MC-013", "MC-015"],
+      "passes": true
+    },
+    {
+      "id": "MC-030",
+      "category": "Storage",
+      "description": "实现 SQLite 存储后端 - 替代 Redis 的本地优先选项（runtime 层已迁移）",
+      "target_location": "src/core/stores/sqlite_backend.py",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
     },
     {
       "id": "MC-031",
       "category": "UI",
-      "description": "实现 7 列看板布局 (inbox/assigned/awaiting_owner/in_progress/review/quality_review/done)",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:89-97 (STATUS_COLUMN_KEYS)",
-      "target_location": "src/server/static/nexus/js/app.js (TaskView.statusColumns)",
+      "description": "实现 7 列看板布局",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-029"
-      ],
+      "dependencies": ["MC-029"],
       "passes": true
     },
     {
       "id": "MC-032",
       "category": "UI",
-      "description": "实现看板拖拽功能 - HTML5 Drag and Drop API 支持跨列移动任务",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:928-1125 (drag handlers)",
+      "description": "实现看板拖拽功能 - HTML5 Drag and Drop API",
       "target_location": "src/server/static/nexus/js/components/kanban.js",
       "complexity": "high",
-      "dependencies": [
-        "MC-031"
-      ],
+      "dependencies": ["MC-031"],
       "passes": true
     },
     {
       "id": "MC-033",
       "category": "UI",
-      "description": "增强任务卡片视觉设计 - 左侧优先级彩条、标签云、逾期高亮、Agent 头像",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:951-1109 (TaskCard render)",
-      "target_location": "src/server/static/nexus/js/app.js (renderTaskCard)",
+      "description": "增强任务卡片视觉设计 - 优先级彩条、标签云、逾期高亮、Agent 头像",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-031"
-      ],
+      "dependencies": ["MC-031"],
       "passes": true
     },
     {
       "id": "MC-034",
       "category": "UI",
-      "description": "实现 MentionTextarea 组件 - @提及自动完成 (支持 Agents 和 Users)",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1623 (MentionTextarea usage)",
+      "description": "实现 MentionTextarea 组件 - @提及自动完成",
       "target_location": "src/server/static/nexus/js/components/mention-textarea.js",
       "complexity": "high",
-      "dependencies": [
-        "MC-029"
-      ],
+      "dependencies": ["MC-029"],
       "passes": true
     },
     {
       "id": "MC-035",
       "category": "UI",
-      "description": "实现 MarkdownRenderer 组件 - 支持代码高亮和预览模式",
-      "mission_control_reference": "src/components/markdown-renderer.tsx",
+      "description": "实现 MarkdownRenderer 组件 - 代码高亮和预览模式",
       "target_location": "src/server/static/nexus/js/components/markdown-renderer.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-029"
-      ],
+      "dependencies": ["MC-029"],
       "passes": true
     },
     {
       "id": "MC-036",
       "category": "UI",
-      "description": "重构任务详情面板为 4-tabs 设计 (Details/Comments/Quality/Session)",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1188-1735 (TaskDetailModal)",
-      "target_location": "src/server/static/nexus/js/app.js (renderTaskDetail)",
+      "description": "重构任务详情面板为 4-tabs 设计",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "high",
-      "dependencies": [
-        "MC-033",
-        "MC-035"
-      ],
+      "dependencies": ["MC-033", "MC-035"],
       "passes": true
     },
     {
       "id": "MC-037",
       "category": "UI",
-      "description": "实现任务评论系统 - 支持嵌套回复和 @提及",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1591-1667 (comments tab)",
-      "target_location": "src/core/models/comments.py + src/server/static/nexus/js/",
+      "description": "实现任务评论 UI - 嵌套回复和 @提及",
+      "target_location": "src/server/static/nexus/js/",
       "complexity": "high",
-      "dependencies": [
-        "MC-005",
-        "MC-034",
-        "MC-036"
-      ],
+      "dependencies": ["MC-005", "MC-034", "MC-036"],
       "passes": true
     },
     {
       "id": "MC-038",
       "category": "UI",
-      "description": "实现 Broadcast (广播) 功能 - 一次性通知所有任务订阅者",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1645-1665",
+      "description": "实现 Broadcast 广播功能",
       "target_location": "src/core/notifications/broadcast.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-012",
-        "MC-036"
-      ],
+      "dependencies": ["MC-012", "MC-036"],
       "passes": true
     },
     {
       "id": "MC-039",
       "category": "UI",
-      "description": "实现智能轮询 Hook (useSmartPoll) - 页面可见性感知的自动刷新",
-      "mission_control_reference": "src/lib/use-smart-poll.ts",
+      "description": "实现智能轮询 Hook - 页面可见性感知的自动刷新",
       "target_location": "src/server/static/nexus/js/utils/smart-poll.js",
       "complexity": "low",
       "dependencies": [],
@@ -444,142 +367,97 @@
       "id": "MC-040",
       "category": "UI",
       "description": "实现 AgentAvatar 组件 - 带在线状态指示的头像",
-      "mission_control_reference": "src/components/ui/agent-avatar.tsx",
       "target_location": "src/server/static/nexus/js/components/agent-avatar.js",
       "complexity": "low",
-      "dependencies": [
-        "MC-029"
-      ],
+      "dependencies": ["MC-029"],
       "passes": true
     },
     {
       "id": "MC-041",
       "category": "UI",
-      "description": "实现任务 GitHub 关联展示 - Issue/PR 链接和状态徽章",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:998-1032 (GitHub badges)",
-      "target_location": "src/server/static/nexus/js/app.js (renderTaskCard)",
+      "description": "实现任务 GitHub 关联展示",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-020",
-        "MC-033"
-      ],
+      "dependencies": ["MC-020", "MC-033"],
       "passes": true
     },
     {
       "id": "MC-042",
       "category": "UI",
-      "description": "实现底部扩展面板 - Claude Code/CodeBuddy/Hermes 会话监控",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1127-1134 + ClaudeCodeTasksSection",
+      "description": "实现底部扩展面板 - 会话监控",
       "target_location": "src/server/static/nexus/js/components/expansion-panels.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-029"
-      ],
+      "dependencies": ["MC-029"],
       "passes": true
     },
     {
       "id": "MC-043",
       "category": "UI",
-      "description": "实现周期性任务创建 UI - 自然语言转 Cron 调度",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:2244-2281 (recurring section)",
+      "description": "实现周期性任务创建 UI",
       "target_location": "src/server/static/nexus/js/components/task-modals.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-009",
-        "MC-029"
-      ],
+      "dependencies": ["MC-009", "MC-029"],
       "passes": true
     },
     {
       "id": "MC-044",
       "category": "UI",
-      "description": "实现质量审核 (Aegis) Tab - 审核历史和提交表单",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1669-1720 (quality tab)",
-      "target_location": "src/server/static/nexus/js/app.js (renderTaskDetail)",
+      "description": "实现质量审核 Tab",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-006",
-        "MC-036"
-      ],
+      "dependencies": ["MC-006", "MC-036"],
       "passes": true
     },
     {
       "id": "MC-045",
       "category": "UI",
-      "description": "实现 Aegis 质量审核通过标识 - 任务卡片上的徽章",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:1033-1037 (aegisApproved badge)",
-      "target_location": "src/server/static/nexus/js/app.js (renderTaskCard)",
+      "description": "实现 Aegis 质量审核通过标识",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "low",
-      "dependencies": [
-        "MC-006",
-        "MC-033"
-      ],
+      "dependencies": ["MC-006", "MC-033"],
       "passes": true
     },
     {
       "id": "MC-046",
       "category": "UI",
-      "description": "实现 awaiting_owner 自动检测 - 基于关键词的高亮提示",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:99-111 (detectAwaitingOwner)",
+      "description": "实现 awaiting_owner 自动检测",
       "target_location": "src/server/static/nexus/js/utils/task-helpers.js",
       "complexity": "low",
-      "dependencies": [
-        "MC-031"
-      ],
+      "dependencies": ["MC-031"],
       "passes": true
     },
     {
       "id": "MC-047",
       "category": "UI",
-      "description": "实现 Target Session 选择器 - 分配任务到指定 Agent 会话",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:2212-2230 (target_session select)",
+      "description": "实现 Target Session 选择器",
       "target_location": "src/server/static/nexus/js/components/task-modals.js",
       "complexity": "medium",
-      "dependencies": [
-        "MC-029"
-      ],
+      "dependencies": ["MC-029"],
       "passes": true
     },
     {
       "id": "MC-048",
       "category": "UI",
-      "description": "实现项目票号 (ticket_ref) 展示 - 任务卡片上的项目标识",
-      "mission_control_reference": "src/components/panels/task-board-panel.tsx:998-1002",
-      "target_location": "src/server/static/nexus/js/app.js (renderTaskCard)",
+      "description": "实现项目票号展示",
+      "target_location": "src/server/static/nexus/js/app.js",
       "complexity": "low",
-      "dependencies": [
-        "MC-033"
-      ],
-      "passes": true
-    },
-    {
-      "id": "MC-030",
-      "category": "Storage",
-      "description": "实现 SQLite 存储后端 - 替代 Redis 的本地优先选项",
-      "mission_control_reference": "src/lib/db.ts (better-sqlite3)",
-      "target_location": "src/core/stores/sqlite_backend.py",
-      "complexity": "medium",
-      "dependencies": [],
+      "dependencies": ["MC-033"],
       "passes": true
     },
     {
       "id": "MC-049",
       "category": "Workflow",
       "description": "实现 Plan Mode 工作流 - 规划阶段只读探索、方案审批后再进入执行",
-      "mission_control_reference": "claude-code summary: ch08.md, ch45.md (Plan Mode / permission modes)",
-      "target_location": "src/nanobot/agent/loop.py + src/runtime/commands/slash/ + src/server/static/nexus/js/",
+      "target_location": "src/nanobot/agent/loop.py + src/runtime/commands/slash/",
       "complexity": "high",
-      "dependencies": [
-        "MC-052"
-      ],
-      "passes": false
+      "dependencies": ["MC-052"],
+      "passes": true
     },
     {
       "id": "MC-050",
       "category": "Memory System",
-      "description": "实现上下文预算管理与自动压缩管线 - token 预算、阈值触发、微压缩/摘要压缩分层策略",
-      "mission_control_reference": "claude-code summary: ch10.md, ch11.md, ch12.md, ch45.md (context budget / compact)",
-      "target_location": "src/nanobot/agent/memory.py + src/nanobot/agent/context.py + src/nanobot/agent/loop.py",
+      "description": "实现上下文预算管理与自动压缩管线",
+      "target_location": "src/nanobot/agent/memory.py",
       "complexity": "high",
       "dependencies": [],
       "passes": true
@@ -587,21 +465,17 @@
     {
       "id": "MC-051",
       "category": "Memory System",
-      "description": "增强 Session Memory 体系 - 分离工作记忆与长期记忆，并支持压缩后上下文恢复",
-      "mission_control_reference": "claude-code summary: ch12.md, ch13.md (SessionMemory / post-compact recovery)",
-      "target_location": "src/nanobot/agent/memory.py + src/nanobot/session/ + src/server/routers/nexus_history.py",
+      "description": "增强 Session Memory 体系 - 分离工作记忆与长期记忆",
+      "target_location": "src/nanobot/agent/memory.py + src/nanobot/session/",
       "complexity": "medium",
-      "dependencies": [
-        "MC-050"
-      ],
+      "dependencies": ["MC-050"],
       "passes": true
     },
     {
       "id": "MC-052",
       "category": "Security",
-      "description": "实现运行时权限模式框架 - ask/auto/plan/bypass 等模式下的工具调用审批与缓存",
-      "mission_control_reference": "claude-code summary: ch20.md, ch21.md, ch45.md (permission middleware)",
-      "target_location": "src/nanobot/agent/tools/registry.py + src/nanobot/agent/loop.py + src/server/static/nexus/js/",
+      "description": "实现运行时权限模式框架 - ask/auto/plan/bypass",
+      "target_location": "src/nanobot/agent/tools/registry.py",
       "complexity": "high",
       "dependencies": [],
       "passes": true
@@ -609,34 +483,26 @@
     {
       "id": "MC-053",
       "category": "Security",
-      "description": "实现 Pre/Post Tool Hooks 与工作区信任边界 - 在环境变量注入和敏感工具调用前执行策略检查",
-      "mission_control_reference": "claude-code summary: ch20.md, ch23.md, ch45.md (hooks / trust boundary)",
-      "target_location": "src/nanobot/agent/loop.py + src/server/config.py + src/server/routers/nexus_security.py",
+      "description": "实现 Pre/Post Tool Hooks 与工作区信任边界",
+      "target_location": "src/nanobot/agent/loop.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-052"
-      ],
+      "dependencies": ["MC-052"],
       "passes": true
     },
     {
       "id": "MC-054",
       "category": "Scheduler",
-      "description": "增强 Cron 调度器 - durable/session-only 双模式、确定性 jitter、自动过期、调度器锁与自动接管",
-      "mission_control_reference": "claude-code summary: ch27.md (cron durability / jitter / scheduler lock)",
-      "target_location": "src/runtime/stores/schedule_storage.py + src/server/routers/nexus_schedules.py + src/nanobot/cron/",
+      "description": "增强 Cron 调度器 - durable/session-only 双模式、确定性 jitter",
+      "target_location": "src/runtime/stores/schedule_storage.py",
       "complexity": "high",
-      "dependencies": [
-        "MC-009",
-        "MC-010"
-      ],
+      "dependencies": ["MC-009", "MC-010"],
       "passes": true
     },
     {
       "id": "MC-055",
       "category": "Task Management",
-      "description": "重构任务模型为双层体系 - 运行时任务状态与协作型持久任务分离，并支持 orphan task 重新入队",
-      "mission_control_reference": "claude-code summary: ch27.md (AppState Task vs File-based Task)",
-      "target_location": "src/runtime/models/task_models.py + src/core/tasks/task_executor.py + src/server/routers/nexus_tasks.py",
+      "description": "重构任务模型为双层体系 - 运行时任务状态与协作型持久任务分离",
+      "target_location": "src/runtime/models/task_models.py",
       "complexity": "medium",
       "dependencies": [],
       "passes": true
@@ -644,70 +510,53 @@
     {
       "id": "MC-056",
       "category": "Integration",
-      "description": "实现 Teleport/远程执行桥接 - 支持远程环境中的 Agent 会话、结果回传与状态同步",
-      "mission_control_reference": "claude-code summary: ch26.md, ch27.md (remote collaboration / background execution)",
-      "target_location": "src/server/services/mission_bridge.py + src/server/routers/nexus_terminal.py + src/providers/",
+      "description": "实现 Teleport/远程执行桥接",
+      "target_location": "src/server/services/teleport_bridge.py + src/providers/teleport/",
       "complexity": "high",
-      "dependencies": [
-        "MC-021"
-      ],
-      "passes": false
+      "dependencies": ["MC-021"],
+      "passes": true
     },
     {
       "id": "MC-057",
       "category": "UI",
-      "description": "增强 Session / Chat 渲染性能 - 虚拟滚动、OffscreenFreeze、增量流式块渲染与长对话性能优化",
-      "mission_control_reference": "claude-code summary: ch32.md, ch34.md (stream rendering / virtual scroll / OffscreenFreeze)",
-      "target_location": "src/server/static/nexus/js/app.js + src/server/static/nexus/css/ + src/server/static/nexus/js/components/",
+      "description": "增强 Session/Chat 渲染性能 - 虚拟滚动、OffscreenFreeze、增量流式块渲染",
+      "target_location": "src/server/static/nexus/js/components/",
       "complexity": "medium",
-      "dependencies": [
-        "MC-029"
-      ],
-      "passes": false
+      "dependencies": ["MC-029"],
+      "passes": true
     },
     {
       "id": "MC-058",
       "category": "UI",
-      "description": "增强输入系统交互 - 多行编辑、slash command 自动补全、执行中断与排队消息语义",
-      "mission_control_reference": "claude-code summary: ch33.md (input system / interrupt / queued messages)",
-      "target_location": "src/server/static/nexus/js/app.js + src/runtime/commands/slash/parser.py + src/runtime/commands/slash/handler.py",
+      "description": "增强输入系统交互 - 多行编辑、slash command 自动补全、执行中断",
+      "target_location": "src/server/static/nexus/js/components/",
       "complexity": "medium",
-      "dependencies": [
-        "MC-029"
-      ],
-      "passes": false
+      "dependencies": ["MC-029"],
+      "passes": true
     },
     {
       "id": "MC-059",
       "category": "Activity System",
-      "description": "实现统一可观测性管线 - debug 日志、结构化遥测、API 延迟/TTFT/成本指标与事件采样",
-      "mission_control_reference": "claude-code summary: ch39.md, ch40.md, ch42.md (observability / analytics / cost)",
-      "target_location": "src/server/logger.py + src/server/routers/nexus_admin.py + src/server/services/ + src/nanobot/providers/",
+      "description": "实现统一可观测性管线 - debug 日志、结构化遥测",
+      "target_location": "src/server/logger.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-011",
-        "MC-013"
-      ],
+      "dependencies": ["MC-011", "MC-013"],
       "passes": true
     },
     {
       "id": "MC-060",
       "category": "Activity System",
-      "description": "实现 doctor/debug 自诊断能力 - 面向用户的环境检查、日志打包与故障定位入口",
-      "mission_control_reference": "claude-code summary: ch42.md, ch43.md (doctor/debug/startup diagnostics)",
-      "target_location": "src/server/routers/nexus_admin.py + src/server/routers/nexus_security.py + src/runtime/commands/slash/",
+      "description": "实现 doctor/debug 自诊断能力",
+      "target_location": "src/server/routers/nexus_admin.py",
       "complexity": "low",
-      "dependencies": [
-        "MC-059"
-      ],
+      "dependencies": ["MC-059"],
       "passes": true
     },
     {
       "id": "MC-061",
       "category": "Integration",
-      "description": "实现 Feature Flag 与渐进式发布机制 - 对实验能力、工具和 UI 面板做条件启用",
-      "mission_control_reference": "claude-code summary: ch38.md, ch45.md (feature gate / progressive degradation)",
-      "target_location": "src/server/config.py + src/server/static/nexus/js/ + src/nanobot/config/schema.py",
+      "description": "实现 Feature Flag 与渐进式发布机制",
+      "target_location": "src/server/config.py",
       "complexity": "medium",
       "dependencies": [],
       "passes": true
@@ -715,60 +564,44 @@
     {
       "id": "MC-062",
       "category": "Skills System",
-      "description": "增强命令/插件扩展架构 - 支持可插拔 slash command、懒加载命令与第三方扩展注册",
-      "mission_control_reference": "claude-code summary: ch35.md, ch36.md, ch37.md (commands / plugins / skills)",
-      "target_location": "src/runtime/commands/slash/ + src/nanobot/skills/ + src/core/commands/",
+      "description": "增强命令/插件扩展架构 - 可插拔 slash command、懒加载",
+      "target_location": "src/runtime/commands/slash/",
       "complexity": "medium",
-      "dependencies": [
-        "MC-007",
-        "MC-061"
-      ],
+      "dependencies": ["MC-007", "MC-061"],
       "passes": true
     },
     {
       "id": "MC-063",
       "category": "UI",
-      "description": "实现流式 tombstone 与可恢复错误扣留机制 - 回退时标记已失效的增量数据并优先尝试自动恢复",
-      "mission_control_reference": "claude-code summary: ch06.md (tombstone / withholding for recoverable errors)",
-      "target_location": "src/core/streaming/orchestrator.py + src/runtime/protocols/agui.py + src/server/static/nexus/js/app.js",
+      "description": "实现流式 tombstone 与可恢复错误扣留机制",
+      "target_location": "src/core/streaming/orchestrator.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-057"
-      ],
-      "passes": false
+      "dependencies": ["MC-057"],
+      "passes": true
     },
     {
       "id": "MC-064",
       "category": "Agent Management",
-      "description": "实现 Swarm 团队协调基础设施 - TeamFile 共享状态、邮箱系统、空闲/关闭协商与任务认领",
-      "mission_control_reference": "claude-code summary: ch24.md, ch27.md (TeamFile / mailbox / task claiming)",
-      "target_location": "src/nanobot/swarm/ + src/nanobot/agent/subagent.py + src/core/tasks/",
+      "description": "实现 Swarm 团队协调基础设施 - TeamFile、邮箱、任务认领",
+      "target_location": "src/nanobot/swarm/",
       "complexity": "high",
-      "dependencies": [
-        "MC-001",
-        "MC-018"
-      ],
-      "passes": false
+      "dependencies": ["MC-001", "MC-018"],
+      "passes": true
     },
     {
       "id": "MC-065",
       "category": "Security",
-      "description": "实现跨 Agent 权限同步 - team lead 审批、文件锁/邮箱双路径、后台 agent 的权限回传",
-      "mission_control_reference": "claude-code summary: ch24.md (cross-agent permission sync) + ch20.md/ch21.md",
-      "target_location": "src/nanobot/swarm/permission_sync.py + src/server/static/nexus/js/ + src/server/routers/",
+      "description": "实现跨 Agent 权限同步 - team lead 审批、文件锁/邮箱双路径",
+      "target_location": "src/nanobot/swarm/permission_sync.py",
       "complexity": "high",
-      "dependencies": [
-        "MC-052",
-        "MC-064"
-      ],
-      "passes": false
+      "dependencies": ["MC-052", "MC-064"],
+      "passes": true
     },
     {
       "id": "MC-066",
       "category": "Storage",
-      "description": "增强会话持久化模型 - DAG 消息链、interrupted_turn/interrupted_prompt 恢复、并行工具结果补全",
-      "mission_control_reference": "claude-code summary: ch30.md (JSONL DAG / interrupted turn / orphaned parallel tool results)",
-      "target_location": "src/server/services/session_storage.py + src/server/routers/nexus_sessions.py + src/runtime/history/",
+      "description": "增强会话持久化模型 - DAG 消息链、interrupted_turn 恢复",
+      "target_location": "src/server/services/session_storage.py",
       "complexity": "high",
       "dependencies": [],
       "passes": true
@@ -776,44 +609,289 @@
     {
       "id": "MC-067",
       "category": "Workflow",
-      "description": "增强 Worktree 编排 - 区分会话级与 Agent 级隔离、支持快速恢复路径与垃圾回收",
-      "mission_control_reference": "claude-code summary: ch25.md (session-level vs agent-level worktree paths)",
-      "target_location": "src/runtime/commands/slash/worktree.py + src/nanobot/evolve/implementation.py + src/nanobot/evolve/runtime.py",
+      "description": "增强 Worktree 编排 - 会话级与 Agent 级隔离、垃圾回收",
+      "target_location": "src/runtime/commands/slash/worktree.py",
       "complexity": "medium",
-      "dependencies": [
-        "MC-064"
-      ],
-      "passes": false
+      "dependencies": ["MC-064"],
+      "passes": true
+    },
+
+    {
+      "id": "R-001",
+      "category": "Storage Migration",
+      "description": "统一 RedisClient - 让 core/stores/redis_client.py 和 server/services/redis_client.py 重导出 runtime/stores/redis_client.py，消除三份独立实现",
+      "target_location": "src/core/stores/redis_client.py + src/server/services/redis_client.py",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "R-002",
+      "category": "Storage Migration",
+      "description": "重写 core/stores/task_storage.py 使用 SQLite - 替换 894 行 Redis 实现，对齐 runtime/stores/task_storage.py 接口，覆盖 Hash/SortedSet/Set/List 全部数据结构",
+      "target_location": "src/core/stores/task_storage.py",
+      "complexity": "high",
+      "dependencies": ["R-001"],
+      "passes": true
+    },
+    {
+      "id": "R-003",
+      "category": "Storage Migration",
+      "description": "重写 core/stores/session_storage.py 使用 SQLite - 替换 638 行 Redis 实现，覆盖会话元数据 Hash、消息 List、工具调用 Hash、事件日志 List、TTL 过期",
+      "target_location": "src/core/stores/session_storage.py",
+      "complexity": "high",
+      "dependencies": ["R-001"],
+      "passes": true
+    },
+    {
+      "id": "R-004",
+      "category": "Storage Migration",
+      "description": "将 workspace_queue.py 中的 Redis 调用切换到 SQLite TaskQueue - 消除最后一个执行层 Redis 依赖",
+      "target_location": "src/runtime/execution/workspace_queue.py",
+      "complexity": "medium",
+      "dependencies": ["R-002"],
+      "passes": true
+    },
+    {
+      "id": "R-005",
+      "category": "Storage Migration",
+      "description": "重写 health.py 为存储无关的健康检查 - SQLite 优先检查，Redis 作为可选后备，阈值逻辑保持不变",
+      "target_location": "src/server/routers/health.py",
+      "complexity": "low",
+      "dependencies": ["R-002", "R-003"],
+      "passes": true
+    },
+    {
+      "id": "R-006",
+      "category": "Storage Migration",
+      "description": "清理 7 个 server/routers 中的直接 get_redis_client 调用 - nexus_admin/nexus_auth/nexus_ops/nexus_security/nexus_system/nexus_utils/nexus_history 改用 SQLite 后端",
+      "target_location": "src/server/routers/",
+      "complexity": "medium",
+      "dependencies": ["R-002", "R-003"],
+      "passes": true
+    },
+    {
+      "id": "R-007",
+      "category": "Storage Migration",
+      "description": "从 pyproject.toml 移除 redis 强制依赖 - 改为可选依赖 (extras_require)，保留 redis 包但不强制安装",
+      "target_location": "pyproject.toml",
+      "complexity": "low",
+      "dependencies": ["R-006"],
+      "passes": true
+    },
+    {
+      "id": "R-008",
+      "category": "Storage Migration",
+      "description": "清理 .env.example 中 REDIS_* 配置 - 将 7 个 Redis 参数标记为可选（# Optional: only needed if USE_REDIS=true）",
+      "target_location": ".env.example",
+      "complexity": "low",
+      "dependencies": ["R-007"],
+      "passes": true
+    },
+    {
+      "id": "R-009",
+      "category": "Storage Migration",
+      "description": "端到端存储迁移集成测试 - 验证无 Redis 环境下 task CRUD、session CRUD、schedule CRUD、health check 全部正常",
+      "target_location": "tests/integration/test_sqlite_migration.py",
+      "complexity": "medium",
+      "dependencies": ["R-002", "R-003", "R-004", "R-005", "R-006"],
+      "passes": true
+    },
+
+    {
+      "id": "U-001",
+      "category": "UI Consolidation",
+      "description": "创建 AppDataStore 集中数据缓存层 - 去重 API 调用（从 80+ 降至 ~15）、订阅者模式、缓存失效策略、事件总线广播数据变更",
+      "target_location": "src/server/static/nexus/js/app-data-store.js",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "U-002",
+      "category": "UI Consolidation",
+      "description": "改造 BasePanel 使用 AppDataStore - 替换 35 个 Panel 的独立 fetch 调用为统一数据订阅，添加 subscribe/unsubscribe 生命周期",
+      "target_location": "src/server/static/nexus/panels/base-panel.js",
+      "complexity": "medium",
+      "dependencies": ["U-001"],
+      "passes": true
+    },
+    {
+      "id": "U-003",
+      "category": "UI Consolidation",
+      "description": "将 TaskView 合并到 TaskBoardPanel - 删除 app.js 中 3,200+ 行 TaskView 代码，升级 TaskBoardPanel 为全功能主任务视图（含创建/详情/编辑模态框）",
+      "target_location": "src/server/static/nexus/js/app.js + src/server/static/nexus/panels/task/task-board-panel.js",
+      "complexity": "high",
+      "dependencies": ["U-001", "U-002"],
+      "passes": true
+    },
+    {
+      "id": "U-004",
+      "category": "UI Consolidation",
+      "description": "创建 SettingsContainerPanel 容器面板 - Tab 导航管理子面板（General/Security/Admin/Scheduling），替代 SettingsView 的路由逻辑",
+      "target_location": "src/server/static/nexus/panels/settings/settings-container-panel.js",
+      "complexity": "medium",
+      "dependencies": ["U-002"],
+      "passes": true
+    },
+    {
+      "id": "U-005",
+      "category": "UI Consolidation",
+      "description": "将 ConfigView/AdminView 功能迁移到面板系统 - 将 FeatureFlag、Provider 配置、用户管理等功能以 Panel 形式重组",
+      "target_location": "src/server/static/nexus/panels/settings/ + src/server/static/nexus/panels/admin/",
+      "complexity": "high",
+      "dependencies": ["U-004"],
+      "passes": true
+    },
+    {
+      "id": "U-006",
+      "category": "UI Consolidation",
+      "description": "从 app.js 删除 ConfigView/AdminView - 移除 ~2,300 行代码，更新 index.html 中的 DOM 引用",
+      "target_location": "src/server/static/nexus/js/app.js + src/server/static/nexus/index.html",
+      "complexity": "medium",
+      "dependencies": ["U-005"],
+      "passes": true
+    },
+    {
+      "id": "U-007",
+      "category": "UI Consolidation",
+      "description": "CSS 模块化重构 - 提取 base.css 通用组件（form-input/button/badge/list ~400行），合并 styles.css 和 panels.css 中重复的 kanban/form 样式，总 CSS 减少 35%",
+      "target_location": "src/server/static/nexus/css/base.css + css/styles.css + css/panels.css",
+      "complexity": "medium",
+      "dependencies": ["U-003"],
+      "passes": true
+    },
+    {
+      "id": "U-008",
+      "category": "UI Consolidation",
+      "description": "更新 PageManager 路由 - task 页面指向 TaskBoardPanel (fullscreen)，settings 页面指向 SettingsContainerPanel，删除旧页面挂载逻辑",
+      "target_location": "src/server/static/nexus/js/app.js",
+      "complexity": "low",
+      "dependencies": ["U-003", "U-006"],
+      "passes": true
+    },
+    {
+      "id": "U-009",
+      "category": "UI Consolidation",
+      "description": "前端 UI 整合回归测试 - 验证 Task 创建/编辑/拖拽/详情、Settings 全部 Tab、Panels 懒加载、数据跨组件同步、CSS 一致性",
+      "target_location": "tests/e2e/test_ui_consolidation.py",
+      "complexity": "medium",
+      "dependencies": ["U-003", "U-004", "U-005", "U-006", "U-007", "U-008"],
+      "passes": true
+    },
+
+    {
+      "id": "K-001",
+      "category": "Kanban Rewrite",
+      "description": "实现浮点数位置计算算法 - 替换整数排序为 (prevPos + nextPos) / 2 插值，支持无限拖拽无冲突，参考 Multica 实现",
+      "target_location": "src/server/static/nexus/panels/task/task-board-panel.js",
+      "complexity": "low",
+      "dependencies": ["U-003"],
+      "passes": true
+    },
+    {
+      "id": "K-002",
+      "category": "Kanban Rewrite",
+      "description": "实现拖拽状态冻结策略 - 拖拽开始时快照 issueMap，期间不接受后端推送更新，拖拽结束后合并变更，防止 UI 抖动",
+      "target_location": "src/server/static/nexus/panels/task/task-board-panel.js",
+      "complexity": "medium",
+      "dependencies": ["K-001"],
+      "passes": true
+    },
+    {
+      "id": "K-003",
+      "category": "Kanban Rewrite",
+      "description": "实现高级筛选系统 - Status/Priority/Assignee 多维多选、每个选项显示实时计数、搜索过滤、Reset 全部重置按钮，参考 Multica FilterMenu",
+      "target_location": "src/server/static/nexus/js/components/filters.js",
+      "complexity": "high",
+      "dependencies": ["U-003"],
+      "passes": true
+    },
+    {
+      "id": "K-004",
+      "category": "Kanban Rewrite",
+      "description": "实现列表视图 (List View) - Accordion 按状态分组显示、支持群选批量操作、表格式任务详情，与 Board 视图共享 AppDataStore 数据源",
+      "target_location": "src/server/static/nexus/js/components/list-view.js",
+      "complexity": "high",
+      "dependencies": ["U-003"],
+      "passes": true
+    },
+    {
+      "id": "K-005",
+      "category": "Kanban Rewrite",
+      "description": "实现 Board/List 视图切换 - 工具栏按钮组、localStorage 持久化偏好、切换时保持筛选/排序状态",
+      "target_location": "src/server/static/nexus/panels/task/task-board-panel.js",
+      "complexity": "low",
+      "dependencies": ["K-003", "K-004"],
+      "passes": true
+    },
+    {
+      "id": "K-006",
+      "category": "Kanban Rewrite",
+      "description": "实现多排序选项 - Position(手动)/Priority/DueDate/CreatedDate 四种排序，下拉菜单选择，排序状态持久化",
+      "target_location": "src/server/static/nexus/panels/task/task-board-panel.js",
+      "complexity": "medium",
+      "dependencies": ["K-003"],
+      "passes": true
+    },
+    {
+      "id": "K-007",
+      "category": "Kanban Rewrite",
+      "description": "实现内联编辑 Picker - 卡片内直接修改状态/优先级/负责人，事件冒泡阻止保护拖拽逻辑，无需打开详情弹窗",
+      "target_location": "src/server/static/nexus/js/components/inline-picker.js",
+      "complexity": "medium",
+      "dependencies": ["K-002"],
+      "passes": true
+    },
+    {
+      "id": "K-008",
+      "category": "Kanban Rewrite",
+      "description": "实现 Done 列无限滚动 - Intersection Observer 检测列底部可见性，自动分页加载更多已完成任务，避免一次加载全量",
+      "target_location": "src/server/static/nexus/panels/task/task-board-panel.js",
+      "complexity": "low",
+      "dependencies": ["U-003"],
+      "passes": true
+    },
+    {
+      "id": "K-009",
+      "category": "Kanban Rewrite",
+      "description": "看板重构集成测试与性能基准 - 拖拽帧率 ≥55fps、筛选响应 <100ms、1000 任务加载 <2s、Board/List 切换一致性",
+      "target_location": "tests/e2e/test_kanban_rewrite.py",
+      "complexity": "medium",
+      "dependencies": ["K-001", "K-002", "K-003", "K-004", "K-005", "K-006", "K-007", "K-008"],
+      "passes": true
     }
   ],
   "summary": {
-    "total_tasks": 67,
+    "total_tasks": 94,
+    "by_phase": {
+      "phase1_features": {
+        "label": "MC-* (功能开发)",
+        "total": 67,
+        "passed": 67
+      },
+      "phase2_redis_migration": {
+        "label": "R-* (Redis→SQLite 迁移)",
+        "total": 9,
+        "passed": 9
+      },
+      "phase2_ui_consolidation": {
+        "label": "U-* (前端 UI 整合)",
+        "total": 9,
+        "passed": 9
+      },
+      "phase2_kanban_rewrite": {
+        "label": "K-* (看板重构)",
+        "total": 9,
+        "passed": 9
+      }
+    },
     "by_complexity": {
-      "low": 12,
-      "medium": 31,
-      "high": 24
+      "low": 18,
+      "medium": 44,
+      "high": 32
     },
-    "by_category": {
-      "Agent Management": 4,
-      "Task Management": 4,
-      "Skills System": 3,
-      "Scheduler": 3,
-      "Activity System": 4,
-      "Cost Tracking": 1,
-      "Memory System": 3,
-      "Security": 6,
-      "Communication": 1,
-      "Integration": 5,
-      "Adapter": 1,
-      "Workflow": 3,
-      "Evaluation": 1,
-      "Reporting": 1,
-      "Multi-tenancy": 1,
-      "API": 1,
-      "RBAC": 1,
-      "UI": 22,
-      "Storage": 2
-    },
-    "passed_tasks": 58
+    "passed_tasks": 94,
+    "remaining_tasks": 0
   }
 }
