@@ -445,14 +445,14 @@ class TaskBoardPanel extends BasePanel {
                         <span class="task-card-id">#${task.id.slice(0, 8)}</span>
                         ${task.ticket_ref ? `<span class="task-card-ticket-ref" title="Project ticket">${this._esc(task.ticket_ref)}</span>` : ''}
                         ${ghBadge}${aegisBadge}
-                        ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
+                        ${task.priority ? `<span class="task-card-priority ${priorityClass}" data-inline-edit="priority" data-current-value="${this._esc(task.priority || 'normal')}" style="cursor:pointer;" title="Click to change priority">${task.priority}</span>` : ''}
                         ${task.loop_enabled ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;">Loop ${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
                         ${overdueHtml}${awaitingBadge}
                     </div>
                     <p class="task-card-title">${this._esc(task.description || 'No description')}</p>
                     ${tagsHtml}
                     <div class="task-card-meta">
-                        ${agentAvatar ? `<span class="task-card-meta-item">${agentAvatar}</span>` : ''}
+                        ${agentAvatar ? `<span class="task-card-meta-item" data-inline-edit="assignee" data-current-value="${this._esc(agentName)}" style="cursor:pointer;" title="Click to change assignee">${agentAvatar}</span>` : ''}
                         <span class="task-card-meta-item">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             ${timeStr}
@@ -469,6 +469,7 @@ class TaskBoardPanel extends BasePanel {
         root.querySelectorAll('.task-card').forEach(card => {
             card.addEventListener('click', (e) => {
                 if (e.target.closest('.task-card-checkbox')) return;
+                if (e.target.closest('[data-inline-edit]')) return;
                 this._selectTask(card.dataset.taskId);
             });
         });
@@ -478,6 +479,44 @@ class TaskBoardPanel extends BasePanel {
                 this._toggleTaskSelection(cb.dataset.taskId);
             });
         });
+        // K-007: Inline picker
+        if (typeof InlinePicker !== 'undefined') {
+            InlinePicker.attachAll(root, {
+                getStatusColumns: () => this.statusColumns.map(c => ({ key: c.key, label: c.title, color: c.color })),
+                getAssigneeOptions: () => {
+                    const names = new Set();
+                    this._tasks.forEach(t => {
+                        if (t.assigned_to) names.add(t.assigned_to);
+                        if (t.alias) names.add(t.alias);
+                    });
+                    return Array.from(names).sort().map(n => ({ key: n, label: n, color: null }));
+                },
+                onSelect: async (taskId, field, value) => {
+                    try {
+                        const update = {};
+                        if (field === 'status') {
+                            await this.api.updateTaskStatus(taskId, value, { execUser: this._getExecUser() });
+                        } else {
+                            if (field === 'priority') update.priority = value;
+                            if (field === 'assignee') update.assigned_to = value;
+                            await this.api.updateTask(taskId, update, { execUser: this._getExecUser() });
+                        }
+                        // Optimistic local update
+                        const local = this._tasks.find(t => t.id === taskId);
+                        if (local) {
+                            if (field === 'status') local.status = this._normalizeTaskStatus(value);
+                            if (field === 'priority') local.priority = value;
+                            if (field === 'assignee') local.assigned_to = value;
+                        }
+                        this._renderKanban();
+                        this._getApp()?.showToast?.(`Updated ${field}`, 'success');
+                    } catch (e) {
+                        this._getApp()?.showToast?.(`Update failed: ${e.message}`, 'error');
+                        await this._loadTasks();
+                    }
+                },
+            });
+        }
     }
 
     // ------------------------------------------------------------------
