@@ -7553,7 +7553,6 @@ class AdminView {
         } catch (e) { this._showError('Failed to load scheduling: ' + e.message); }
     }
 }
-}
 
 class SettingsView {
     constructor(app) {
