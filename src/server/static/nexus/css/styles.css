@@ -1344,6 +1344,48 @@
     height: 11px;
 }
 
+/* Inline Picker Popover */
+.inline-picker-popover.due-date-picker input[type="date"] {
+    width: 100%;
+    padding: 6px;
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    background: var(--bg-secondary, #2a2a3e);
+    color: var(--text-primary);
+    font-size: 12px;
+}
+
+.inline-picker-popover.label-picker .picker-search {
+    width: 100%;
+    padding: 6px 8px;
+    margin: 4px 0;
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    background: var(--bg-secondary, #2a2a3e);
+    color: var(--text-primary);
+    font-size: 12px;
+    box-sizing: border-box;
+}
+
+.inline-picker-popover.label-picker .picker-option {
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.inline-picker-popover.label-picker .picker-option:hover {
+    background: var(--bg-secondary, #2a2a3e);
+}
+
+.inline-picker-popover.label-picker .picker-checkbox {
+    width: 20px;
+    flex-shrink: 0;
+}
+
 /* Task Card Tags */
 .task-card-tags {
     display: flex;

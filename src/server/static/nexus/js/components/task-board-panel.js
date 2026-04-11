@@ -468,6 +468,8 @@ class TaskBoardPanel {
                     ${tagsHtml}
                     <div class="task-card-meta">
                         ${agentAvatar ? `<span class="task-card-meta-item" data-inline-edit="assignee" data-current-value="${this._esc(agentName)}" style="cursor:pointer;" title="Click to change assignee">${agentAvatar}</span>` : ''}
+                        ${task.due_date ? (() => { const dd = new Date(task.due_date * 1000); const fmt = dd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); return `<span class="task-card-meta-item" data-inline-edit="due_date" data-current-value="${task.due_date}" style="cursor:pointer;" title="Click to change due date"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:12px;height:12px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>${fmt}</span>`; })() : ''}
+                        ${tags.length > 0 ? `<span class="task-card-meta-item" data-inline-edit="labels" data-current-labels="${this._esc(tags.join(','))}" style="cursor:pointer;" title="Click to edit labels"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:12px;height:12px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>${tags.length} label${tags.length > 1 ? 's' : ''}</span>` : ''}
                         <span class="task-card-meta-item">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             ${timeStr}
@@ -506,6 +508,13 @@ class TaskBoardPanel {
                     });
                     return Array.from(names).sort().map(n => ({ key: n, label: n, color: null }));
                 },
+                getAllLabels: () => {
+                    const labels = new Set();
+                    this._tasks.forEach(t => {
+                        if (Array.isArray(t.tags)) t.tags.forEach(l => labels.add(l));
+                    });
+                    return Array.from(labels).sort();
+                },
                 onSelect: async (taskId, field, value) => {
                     try {
                         const update = {};
@@ -514,6 +523,11 @@ class TaskBoardPanel {
                         } else {
                             if (field === 'priority') update.priority = value;
                             if (field === 'assignee') update.assigned_to = value;
+                            if (field === 'due_date') {
+                                // Convert ISO date string to unix timestamp for API
+                                update.due_date = value ? Math.floor(new Date(value).getTime() / 1000) : null;
+                            }
+                            if (field === 'labels') update.tags = value;
                             await NexusAPI.updateTask(taskId, update, { execUser: this._getExecUser() });
                         }
                         // Invalidate data store cache so next fetch gets fresh data
@@ -524,6 +538,8 @@ class TaskBoardPanel {
                             if (field === 'status') local.status = this._normalizeTaskStatus(value);
                             if (field === 'priority') local.priority = value;
                             if (field === 'assignee') local.assigned_to = value;
+                            if (field === 'due_date') local.due_date = value ? Math.floor(new Date(value).getTime() / 1000) : null;
+                            if (field === 'labels') local.tags = value;
                         }
                         this._renderKanban();
                         this._getApp()?.showToast?.(`Updated ${field}`, 'success');
