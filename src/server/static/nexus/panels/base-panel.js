@@ -6,6 +6,10 @@
  *
  * Lifecycle:
  *   constructor(id, def, opts) → init() → render(container) → refresh() / onResize() / onRealtimeEvent() → destroy()
+ *
+ * Data layer:
+ *   Panels access data through AppDataStore subscriptions instead of direct API calls.
+ *   Use this.subscribeData(key, cb) in init() and the base class handles cleanup in destroy().
  */
 
 class BasePanel {
@@ -24,6 +28,9 @@ class BasePanel {
         this._destroyed = false;
         this._refreshTimer = null;
         this._poll = null;  // SmartPoll instance if auto-refresh enabled
+
+        /** @type {Array<{key: string, cb: Function}>} tracked data subscriptions */
+        this._dataSubscriptions = [];
     }
 
     // ----------------------------------------------------------
@@ -89,6 +96,8 @@ class BasePanel {
             clearInterval(this._refreshTimer);
             this._refreshTimer = null;
         }
+        // Unsubscribe all data store subscriptions
+        this._unsubscribeAll();
         this.container = null;
     }
 
@@ -107,6 +116,66 @@ class BasePanel {
      */
     onRealtimeEvent(eventType, payload) {
         // no-op by default — panels opt-in to real-time updates
+    }
+
+    // ----------------------------------------------------------
+    // Data Store integration
+    // ----------------------------------------------------------
+
+    /**
+     * Get the shared AppDataStore instance.
+     * @returns {AppDataStore}
+     */
+    get store() {
+        return window.AppDataStore?.getInstance();
+    }
+
+    /**
+     * Subscribe to a data key in AppDataStore.
+     * The subscription is automatically cleaned up in destroy().
+     *
+     * @param {string} key   Data source key (e.g. 'tasks', 'sessions')
+     * @param {Function} cb  Callback receiving (data, key)
+     */
+    subscribeData(key, cb) {
+        const store = this.store;
+        if (!store) return;
+        store.subscribe(key, cb);
+        this._dataSubscriptions.push({ key, cb });
+    }
+
+    /**
+     * Fetch data from the store (with caching / dedup).
+     * @param {string} key
+     * @param {Object} [opts]
+     * @returns {Promise<any>}
+     */
+    fetchData(key, opts) {
+        const store = this.store;
+        if (!store) return this.api[`get${key.charAt(0).toUpperCase() + key.slice(1)}`]?.(opts);
+        return store.fetch(key, opts);
+    }
+
+    /**
+     * Invalidate cached data and refresh from network.
+     * @param {string} key
+     * @param {Object} [opts]
+     * @returns {Promise<any>}
+     */
+    refreshData(key, opts) {
+        const store = this.store;
+        if (!store) return this.fetchData(key, opts);
+        return store.refresh(key, opts);
+    }
+
+    /** @private Unsubscribe all tracked data subscriptions */
+    _unsubscribeAll() {
+        const store = this.store;
+        if (!store) return;
+        for (const { key, cb } of this._dataSubscriptions) {
+            store.unsubscribe(key, cb);
+        }
+        this._dataSubscriptions = [];
     }
 
     // ----------------------------------------------------------
