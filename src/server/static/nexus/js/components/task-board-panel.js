@@ -46,7 +46,7 @@ class TaskBoardPanel {
         // K-005: View mode
         this._viewMode = localStorage.getItem('nexus-kanban-viewMode') || 'board';
         this._listView = null;
-        this._filterPanel = null;
+        this._filterBar = null;
 
         this.statusColumns = [
             { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
@@ -120,12 +120,7 @@ class TaskBoardPanel {
                                 <button class="view-toggle-btn ${this._viewMode === 'board' ? 'active' : ''}" data-action="set-view" data-view="board" title="Board view" style="padding:4px 10px;font-size:12px;border:none;background:${this._viewMode === 'board' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'board' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">Board</button>
                                 <button class="view-toggle-btn ${this._viewMode === 'list' ? 'active' : ''}" data-action="set-view" data-view="list" title="List view" style="padding:4px 10px;font-size:12px;border:none;border-left:1px solid var(--border);background:${this._viewMode === 'list' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'list' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">List</button>
                             </div>
-                            <button class="action-btn" data-action="toggle-filters" title="Toggle filters" style="margin-right:8px;">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
-                                </svg>
-                                <span>Filter</span>
-                            </button>
+                            <div id="filterBar-${pid}" style="display:inline-flex;align-items:center;margin-right:8px;"></div>
                             <select class="form-input form-select" id="sortFieldSelect-${pid}" style="width:130px;height:28px;font-size:12px;margin-right:4px;" title="Sort by">
                                 <option value="position" ${this._sortField === 'position' ? 'selected' : ''}>Position</option>
                                 <option value="priority" ${this._sortField === 'priority' ? 'selected' : ''}>Priority</option>
@@ -164,7 +159,6 @@ class TaskBoardPanel {
                         </div>
                     </div>
                     <div style="display:flex;flex:1;overflow:hidden;">
-                        <div class="filter-sidebar" id="filterSidebar-${pid}" style="display:none;width:220px;border-right:1px solid var(--border);overflow-y:auto;flex-shrink:0;padding:8px;"></div>
                         <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
                             <div class="kanban-board" id="kanbanBoard-${pid}" style="${this._viewMode === 'board' ? '' : 'display:none;'}">
                                 <div class="kanban-primary-columns">
@@ -201,7 +195,7 @@ class TaskBoardPanel {
         `;
 
         this._bindToolbarEvents();
-        this._initFilterPanel();
+        this._initFilterBar();
         this._initListView();
         this._loadTasks();
         this._startAutoPolling();
@@ -397,9 +391,9 @@ class TaskBoardPanel {
 
         this._bindKanbanDragDrop();
 
-        // Update filter panel counts
-        if (this._filterPanel) {
-            this._filterPanel.updateCounts(this._tasks);
+        // Update filter bar counts
+        if (this._filterBar) {
+            this._filterBar.updateCounts(this._tasks);
         }
 
         // Update list view if active
@@ -875,9 +869,6 @@ class TaskBoardPanel {
             btn.addEventListener('click', () => this._setViewMode(btn.dataset.view));
         });
 
-        // K-003: Filter toggle
-        c.querySelector('[data-action="toggle-filters"]')?.addEventListener('click', () => this._toggleFilterPanel());
-
         // K-006: Sort controls
         document.getElementById(`sortFieldSelect-${pid}`)?.addEventListener('change', (e) => {
             this._sortField = e.target.value;
@@ -1083,29 +1074,12 @@ class TaskBoardPanel {
         }
     }
 
-    _toggleFilterPanel() {
+    _initFilterBar() {
         const pid = this._paneId;
-        const sidebar = document.getElementById(`filterSidebar-${pid}`);
-        if (!sidebar) return;
-        const isVisible = sidebar.style.display !== 'none';
-        sidebar.style.display = isVisible ? 'none' : '';
-    }
-
-    _initFilterPanel() {
-        const pid = this._paneId;
-        const sidebar = document.getElementById(`filterSidebar-${pid}`);
-        if (!sidebar || typeof FilterPanel === 'undefined') return;
-        this._filterPanel = new FilterPanel({
-            container: sidebar,
-            getStatusColumns: () => this.statusColumns,
-            onFilterChange: () => {
-                this._renderKanban();
-                if (this._viewMode === 'list' && this._listView) {
-                    this._listView.updateTasks(this._getFilteredTasks());
-                }
-            },
-        });
-        this._filterPanel.render();
+        const container = document.getElementById(`filterBar-${pid}`);
+        if (!container || typeof FilterBar === 'undefined') return;
+        this._filterBar = new FilterBar(this);
+        this._filterBar.render(container);
     }
 
     _initListView() {
@@ -1146,8 +1120,8 @@ class TaskBoardPanel {
      * Get tasks after applying the filter panel.
      */
     _getFilteredTasks() {
-        if (this._filterPanel && this._filterPanel.hasActiveFilters) {
-            return this._filterPanel.apply(this._tasks);
+        if (this._filterBar && this._filterBar.hasActiveFilters()) {
+            return this._filterBar.applyFilter(this._tasks);
         }
         return this._tasks;
     }
