@@ -70,8 +70,8 @@ class PageManager {
         this.apply();
 
         // Stop task polling/streams when leaving task page
-        if (prevPage === 'task' && page !== 'task' && this.app.taskView) {
-            this.app.taskView._stopAutoPolling();
+        if (prevPage === 'task' && page !== 'task' && this.app.taskBoardPanel) {
+            this.app.taskBoardPanel._stopAutoPolling();
         }
 
         // Refresh settings view when switching to settings page
@@ -79,10 +79,9 @@ class PageManager {
             this.app.settingsView.refresh();
         }
 
-        // Refresh task view when switching to task page
-        if (page === 'task' && this.app.taskView) {
-            this.app.taskView.renderFullPage();
-            this.app.taskView._startAutoPolling('global');
+        // Mount/refresh task board when switching to task page
+        if (page === 'task' && this.app.taskBoardPanel) {
+            this.app._mountTaskBoard();
         }
 
         // Refresh chat providers when switching back to chat page
@@ -7665,7 +7664,18 @@ class NexusApp {
     constructor() {
         this.themeManager = new ThemeManager();
         this.chatView = new ChatView(this);
-        this.taskView = new TaskView(this);
+        // TaskBoardPanel replaces the old TaskView — instantiated as a panel
+        this.taskBoardPanel = new TaskBoardPanel('task-board', {
+            title: 'Task Board',
+            icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4',
+            refreshMs: 0,
+        });
+        // Legacy alias — panels and code that reference this.taskView still work
+        this.taskView = {
+            renderFullPage: () => this._mountTaskBoard(),
+            _startAutoPolling: () => {},
+            _stopAutoPolling: () => { this.taskBoardPanel._stopAutoPolling(); },
+        };
         this.tabManager = new TabManager(this);
         this.layoutManager = new LayoutManager(this);
         this.configView = new ConfigView(this);
@@ -7946,10 +7956,13 @@ class NexusApp {
         // Start real-time hub (WebSocket/SSE)
         this.realtimeHub.start();
 
+        // Initialize TaskBoardPanel
+        this.taskBoardPanel.init();
+
         // Trigger initial rendering for the current page (after refresh)
         const currentPage = this.pageManager.currentPage;
-        if (currentPage === 'task' && this.taskView) {
-            this.taskView.renderFullPage();
+        if (currentPage === 'task') {
+            this._mountTaskBoard();
         } else if (currentPage === 'settings' && this.settingsView) {
             this.settingsView.refresh();
         } else if (currentPage === 'panels') {
@@ -7966,6 +7979,15 @@ class NexusApp {
     /**
      * Mount the Panels view — lazy-creates container and delegates to PanelLayoutManager.
      */
+    /**
+     * Mount the TaskBoardPanel into the task page container.
+     */
+    _mountTaskBoard() {
+        const container = document.getElementById('taskPageContainer');
+        if (!container) return;
+        this.taskBoardPanel.render(container);
+    }
+
     mountPanelsView() {
         let container = document.getElementById('panelsView');
         if (!container) {
@@ -8921,6 +8943,7 @@ function showMainApp(authRequired) {
     
     // Initialize main app
     window.app = new NexusApp();
+    window.nexusApp = window.app;
     
     // Setup logout handler
     if (logoutBtn) {
