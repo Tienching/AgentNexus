@@ -89,10 +89,7 @@ class PageManager {
             this.app.refreshChatProviders();
         }
 
-        // Mount panels view when switching to panels page
-        if (page === 'panels' && this.app.panelLayoutManager) {
-            this.app.mountPanelsView();
-        }
+        // No additional action needed for task/settings pages
     }
 
     apply() {
@@ -110,12 +107,6 @@ class PageManager {
         }
         if (this.settingsView) {
             this.settingsView.classList.toggle('active', this.currentPage === 'settings');
-        }
-
-        // Show/hide panels view
-        const panelsView = document.getElementById('panelsView');
-        if (panelsView) {
-            panelsView.style.display = this.currentPage === 'panels' ? '' : 'none';
         }
 
         // Show/hide chat-specific header elements
@@ -8089,191 +8080,6 @@ class PlanModeManager {
     get isPlanMode() { return this._planMode; }
 }
 
-// ============================================================
-// Panel Layout Manager — Sidebar + content for 32 feature panels
-// ============================================================
-class PanelLayoutManager {
-    constructor(app) {
-        this.app = app;
-        this.registry = window.PanelRegistry;
-        this._activePanelId = null;
-        this._container = null;
-        this._initialized = false;
-    }
-
-    /** Mount the panel layout into the panels view container. */
-    mount(container) {
-        this._container = container;
-        if (!this._initialized) {
-            this._buildLayout();
-            this._initialized = true;
-        }
-        this._renderSidebar();
-        // Restore last active panel or show first
-        const last = localStorage.getItem('nexus-active-panel');
-        if (last && this.registry.getDef(last)) {
-            this.showPanel(last);
-        } else {
-            const first = this.registry.getAllDefs()[0];
-            if (first) this.showPanel(first.id);
-        }
-    }
-
-    /** Show a specific panel by id (lazy-loads if needed). */
-    async showPanel(panelId) {
-        this._activePanelId = panelId;
-        localStorage.setItem('nexus-active-panel', panelId);
-        this._updateSidebarActive();
-
-        const content = this._container?.querySelector('.panel-content');
-        if (!content) return;
-
-        content.innerHTML = '<div class="panel-loading"><div class="spinner"></div><span>Loading…</span></div>';
-
-        try {
-            const panel = await this.registry.create(panelId);
-            panel.render(content);
-
-            // Wire up real-time events
-            if (this.app.realtimeHub) {
-                this.app.realtimeHub.off('*', this._onRealtimeEvent);
-                this.app.realtimeHub.on('*', this._onRealtimeEvent = (msg) => {
-                    panel.onRealtimeEvent(msg.type, msg.payload);
-                });
-            }
-        } catch (e) {
-            console.error('PanelLayoutManager: failed to create panel', panelId, e);
-            content.innerHTML = `<div class="panel-error"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg><span>Failed to load panel: ${e.message}</span></div>`;
-        }
-    }
-
-    /** Build the grid layout with sidebar + content area. */
-    _buildLayout() {
-        if (!this._container) return;
-        this._container.innerHTML = `
-            <div class="panel-grid-layout">
-                <nav class="panel-sidebar"></nav>
-                <div class="panel-main">
-                    <div class="panel-content"></div>
-                </div>
-            </div>
-        `;
-    }
-
-    /** Render sidebar items grouped by category. */
-    _renderSidebar() {
-        const sidebar = this._container?.querySelector('.panel-sidebar');
-        if (!sidebar) return;
-
-        const groups = this.registry.getDefsByCategory();
-        const categoryLabels = {
-            agent: 'Agent', task: 'Task', skill: 'Skill', scheduler: 'Scheduler',
-            activity: 'Activity', memory: 'Memory', security: 'Security',
-            integration: 'Integration', admin: 'Admin', general: 'General',
-        };
-
-        sidebar.innerHTML = Object.entries(groups).map(([cat, defs]) => `
-            <div class="panel-sidebar-section">
-                <div class="panel-sidebar-title">${categoryLabels[cat] || cat}</div>
-                ${defs.map(d => `
-                    <div class="panel-sidebar-item ${d.id === this._activePanelId ? 'active' : ''}" data-panel-id="${d.id}">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${d.icon || 'M4 6h16M4 12h16M4 18h16'}"/>
-                        </svg>
-                        <span>${d.title}</span>
-                    </div>
-                `).join('')}
-            </div>
-        `).join('');
-
-        // Bind clicks
-        sidebar.querySelectorAll('.panel-sidebar-item').forEach(el => {
-            el.addEventListener('click', () => {
-                this.showPanel(el.dataset.panelId);
-            });
-        });
-    }
-
-    /** Update active class on sidebar items without full re-render. */
-    _updateSidebarActive() {
-        const sidebar = this._container?.querySelector('.panel-sidebar');
-        if (!sidebar) return;
-        sidebar.querySelectorAll('.panel-sidebar-item').forEach(el => {
-            el.classList.toggle('active', el.dataset.panelId === this._activePanelId);
-        });
-    }
-}
-
-// ============================================================
-// Real-time Hub — Unified entry point for WS/SSE → Panel dispatch
-// ============================================================
-class RealtimeHub {
-    constructor() {
-        this._handlers = new Map();
-        this._ws = null;
-        this._sse = null;
-        this._started = false;
-    }
-
-    start() {
-        if (this._started) return;
-        this._started = true;
-
-        // Prefer WebSocket, fall back to SSE
-        if (window.WebSocketManager) {
-            try {
-                this._ws = new WebSocketManager('/api/nexus/ws');
-                this._ws.on('*', (msg) => this._dispatch(msg.type || 'unknown', msg.payload || msg));
-                this._ws.connect();
-                return;
-            } catch (e) {
-                console.warn('RealtimeHub: WebSocket unavailable, falling back to SSE', e);
-            }
-        }
-
-        if (window.SSEHandler) {
-            this._sse = new SSEHandler('/api/nexus/events');
-            this._sse.on('*', (msg) => this._dispatch(msg.type || 'unknown', msg.payload || msg));
-            this._sse.connect();
-        }
-    }
-
-    stop() {
-        if (this._ws) { this._ws.destroy(); this._ws = null; }
-        if (this._sse) { this._sse.destroy(); this._sse = null; }
-        this._started = false;
-    }
-
-    on(eventType, handler) {
-        if (!this._handlers.has(eventType)) this._handlers.set(eventType, []);
-        this._handlers.get(eventType).push(handler);
-        return () => this.off(eventType, handler);
-    }
-
-    off(eventType, handler) {
-        const list = this._handlers.get(eventType);
-        if (list) {
-            const idx = list.indexOf(handler);
-            if (idx !== -1) list.splice(idx, 1);
-        }
-    }
-
-    _dispatch(eventType, payload) {
-        const handlers = this._handlers.get(eventType);
-        if (handlers) {
-            for (const fn of handlers) {
-                try { fn(payload); } catch (e) { console.error('RealtimeHub handler error:', e); }
-            }
-        }
-        // Also dispatch to wildcard
-        const wildcardHandlers = this._handlers.get('*');
-        if (wildcardHandlers) {
-            for (const fn of wildcardHandlers) {
-                try { fn({ type: eventType, payload }); } catch (e) { console.error('RealtimeHub handler error:', e); }
-            }
-        }
-    }
-}
 
 // ============================================================
 // Main Application
@@ -8305,8 +8111,6 @@ class NexusApp {
         this.planModeIndicator = this.planModeManager.indicator;
         this.planModeEditor = this.planModeManager.editor;
         this.planModeApproval = this.planModeManager.approval;
-        this.panelLayoutManager = new PanelLayoutManager(this);
-        this.realtimeHub = new RealtimeHub();
         this.pageManager = new PageManager(this);
         this.availableAgents = [];
         this.customProviders = this.loadCustomProviders();
@@ -8571,9 +8375,6 @@ class NexusApp {
         // Bind global events
         this.bindEvents();
 
-        // Start real-time hub (WebSocket/SSE)
-        this.realtimeHub.start();
-
         // Initialize TaskBoardPanel
         this.taskBoardPanel.init();
 
@@ -8583,8 +8384,6 @@ class NexusApp {
             this._mountTaskBoard();
         } else if (currentPage === 'settings' && this.settingsView) {
             this.settingsView.refresh();
-        } else if (currentPage === 'panels') {
-            this.mountPanelsView();
         }
 
         // Start auto-refresh for session list and active messages
@@ -8595,9 +8394,6 @@ class NexusApp {
     }
 
     /**
-     * Mount the Panels view — lazy-creates container and delegates to PanelLayoutManager.
-     */
-    /**
      * Mount the TaskBoardPanel into the task page container.
      */
     _mountTaskBoard() {
@@ -8606,25 +8402,6 @@ class NexusApp {
         this.taskBoardPanel.render(container);
     }
 
-    mountPanelsView() {
-        let container = document.getElementById('panelsView');
-        if (!container) {
-            // Create panels view container and insert it alongside other page views
-            container = document.createElement('div');
-            container.id = 'panelsView';
-            container.style.display = 'none';
-            // Insert after taskView
-            const taskView = document.getElementById('taskView');
-            if (taskView && taskView.parentNode) {
-                taskView.parentNode.insertBefore(container, taskView.nextSibling);
-            } else {
-                const appEl = document.getElementById('app');
-                if (appEl) appEl.appendChild(container);
-            }
-        }
-        container.style.display = '';
-        this.panelLayoutManager.mount(container);
-    }
 
     /**
      * Load server-side defaults from .env via API.
