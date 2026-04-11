@@ -24,7 +24,6 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.redis_client import get_redis_client
 from ..services.task_storage import TaskQueue
 from .nexus_auth import verify_nexus_auth
 
@@ -265,28 +264,22 @@ async def export_data(
 
     elif type == "sessions":
         try:
-            rc = get_redis_client()
-            r = rc.client
-            import os
-            prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-            pattern = f"{prefix}session:*:meta"
-            cursor = 0
-            while len(rows) < limit:
-                cursor, keys = r.scan(cursor, match=pattern, count=200)
-                for key in keys:
-                    try:
-                        raw = r.get(key)
-                        if not raw:
-                            continue
-                        meta = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-
-                        created = meta.get("created_at", "")
+            from src.runtime.stores.db import get_db
+            db = get_db()
+            # Try core_sessions first, then sessions
+            for table in ("core_sessions", "sessions"):
+                try:
+                    session_rows = db.execute_fetchall(
+                        f"SELECT id, provider, title, username, exec_dir, created_at, status "
+                        f"FROM {table} ORDER BY updated_at DESC LIMIT ?",
+                        (limit,),
+                    )
+                    for sr in session_rows:
+                        created = sr.get("created_at", "")
                         created_ts = None
                         if created:
                             try:
-                                created_ts = datetime.fromisoformat(
-                                    created.replace("Z", "+00:00")
-                                ).timestamp() if isinstance(created, str) else float(created)
+                                created_ts = float(created) / 1000.0  # ms -> seconds
                             except Exception:
                                 pass
 
@@ -296,18 +289,18 @@ async def export_data(
                             continue
 
                         rows.append({
-                            "session_id": meta.get("session_id", ""),
-                            "provider": meta.get("provider", ""),
-                            "description": meta.get("description", ""),
-                            "exec_user": meta.get("exec_user", ""),
-                            "workspace": meta.get("workspace", ""),
-                            "created_at": created,
-                            "status": meta.get("status", ""),
+                            "session_id": sr.get("id", ""),
+                            "provider": sr.get("provider", ""),
+                            "description": sr.get("title", ""),
+                            "exec_user": sr.get("username", ""),
+                            "workspace": sr.get("exec_dir", ""),
+                            "created_at": str(created) if created else "",
+                            "status": sr.get("status", ""),
                         })
-                    except Exception:
-                        continue
-                if cursor == 0:
-                    break
+                    if session_rows:
+                        break
+                except Exception:
+                    continue
         except Exception as e:
             logger.warning(f"Export sessions failed: {e}")
 

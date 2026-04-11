@@ -5,8 +5,8 @@ Ported from mission-control:
   - GET /api/diagnostics  (api/diagnostics/route.ts)
   - GET /api/audit        (api/audit/route.ts)
 
-Adapted for agent-nexus: Redis-backed audit log, Python system info,
-comprehensive diagnostics combining system/redis/tasks/sessions/security.
+Adapted for agent-nexus: SQLite-backed audit log, Python system info,
+comprehensive diagnostics combining system/database/tasks/sessions/security.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import os
 import platform
 import resource
 import time
-from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -25,7 +24,6 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.redis_client import get_redis_client
 from ..services.task_storage import TaskQueue
 from .nexus_auth import verify_nexus_auth
 
@@ -38,15 +36,38 @@ router = APIRouter(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Audit Log — Redis-backed operation log
+# Audit Log — SQLite-backed operation log
 # ═══════════════════════════════════════════════════════════════════════════
 
-AUDIT_KEY = "nexus:audit:log"
 AUDIT_MAX_ENTRIES = 10000  # Cap to prevent unbounded growth
 
-# In-memory fallback when Redis is unavailable — prevents silent data loss
-_audit_fallback: deque = deque(maxlen=1000)
-_audit_fallback_next_id: int = 0
+_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS audit_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    action      TEXT NOT NULL,
+    actor       TEXT NOT NULL DEFAULT '',
+    detail      TEXT,
+    ip_address  TEXT NOT NULL DEFAULT '',
+    timestamp   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action);
+CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(timestamp DESC);
+"""
+_audit_schema_done = False
+
+
+def _audit_db():
+    from src.runtime.stores.db import get_db
+    global _audit_schema_done
+    db = get_db()
+    if not _audit_schema_done:
+        try:
+            with db.transaction() as conn:
+                conn.executescript(_AUDIT_SCHEMA)
+            _audit_schema_done = True
+        except Exception:
+            _audit_schema_done = True
+    return db
 
 
 class AuditEvent(BaseModel):
@@ -71,41 +92,24 @@ def record_audit_event(
     detail: Optional[Any] = None,
     ip_address: str = "",
 ) -> None:
-    """Record an audit event to Redis. Fire-and-forget, never raises."""
+    """Record an audit event to SQLite. Fire-and-forget, never raises."""
     try:
-        rc = get_redis_client()
-        r = rc.client
-        prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-        key = f"{prefix}{AUDIT_KEY}"
-
-        # Auto-increment ID
-        id_key = f"{prefix}nexus:audit:next_id"
-        event_id = r.incr(id_key)
-
-        event = {
-            "id": event_id,
-            "action": action,
-            "actor": actor,
-            "detail": detail,
-            "ip_address": ip_address,
-            "timestamp": int(time.time()),
-        }
-        r.lpush(key, json.dumps(event, default=str))
-        # Trim to max entries
-        r.ltrim(key, 0, AUDIT_MAX_ENTRIES - 1)
+        db = _audit_db()
+        detail_json = json.dumps(detail, default=str) if detail is not None else None
+        with db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO audit_events (action, actor, detail, ip_address, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (action, actor, detail_json, ip_address, int(time.time())),
+            )
+            # Trim to max entries
+            conn.execute(
+                "DELETE FROM audit_events WHERE id IN ("
+                "  SELECT id FROM audit_events ORDER BY id DESC LIMIT -1 OFFSET ?"
+                ")",
+                (AUDIT_MAX_ENTRIES,),
+            )
     except Exception as e:
-        logger.debug(f"Failed to record audit event (using fallback): {e}")
-        global _audit_fallback_next_id
-        _audit_fallback_next_id += 1
-        event = {
-            "id": _audit_fallback_next_id,
-            "action": action,
-            "actor": actor,
-            "detail": detail,
-            "ip_address": ip_address,
-            "timestamp": int(time.time()),
-        }
-        _audit_fallback.append(event)
+        logger.debug(f"Failed to record audit event: {e}")
 
 
 @router.get("/audit", response_model=AuditResponse)
@@ -119,65 +123,60 @@ async def get_audit_log(
 ):
     """Query the audit log.
 
-    Ported from mission-control GET /api/audit (api/audit/route.ts).
     Returns operation events (login, export, cleanup, task operations)
-    stored in Redis with filtering and pagination.
+    stored in SQLite with filtering and pagination.
     """
     try:
-        rc = get_redis_client()
-        r = rc.client
-        prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-        key = f"{prefix}{AUDIT_KEY}"
+        db = _audit_db()
+        conditions: List[str] = []
+        params: list = []
 
-        # Get all events (they're stored newest-first)
-        raw_events = r.lrange(key, 0, -1)
-        events: List[AuditEvent] = []
+        if action:
+            conditions.append("action = ?")
+            params.append(action)
+        if actor:
+            conditions.append("actor = ?")
+            params.append(actor)
+        if since:
+            conditions.append("timestamp >= ?")
+            params.append(since)
+        if until:
+            conditions.append("timestamp <= ?")
+            params.append(until)
 
-        for raw in raw_events:
-            try:
-                data = json.loads(raw)
-                event = AuditEvent(**data)
+        where = " AND ".join(conditions) if conditions else "1=1"
 
-                # Apply filters
-                if action and event.action != action:
-                    continue
-                if actor and event.actor != actor:
-                    continue
-                if since and event.timestamp < since:
-                    continue
-                if until and event.timestamp > until:
-                    continue
+        count_row = db.execute_fetchone(
+            f"SELECT COUNT(*) as cnt FROM audit_events WHERE {where}", tuple(params)
+        )
+        total = count_row["cnt"] if count_row else 0
 
-                events.append(event)
-            except Exception:
-                continue
+        rows = db.execute_fetchall(
+            f"SELECT * FROM audit_events WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+            tuple(params + [limit, offset]),
+        )
 
-        total = len(events)
-        page = events[offset:offset + limit]
+        events = []
+        for row in rows:
+            detail = None
+            if row.get("detail"):
+                try:
+                    detail = json.loads(row["detail"])
+                except Exception:
+                    detail = row["detail"]
+            events.append(AuditEvent(
+                id=row["id"],
+                action=row["action"],
+                actor=row.get("actor", ""),
+                detail=detail,
+                ip_address=row.get("ip_address", ""),
+                timestamp=row["timestamp"],
+            ))
 
-        return AuditResponse(events=page, total=total, limit=limit, offset=offset)
+        return AuditResponse(events=events, total=total, limit=limit, offset=offset)
     except Exception as e:
-        logger.warning(f"Audit log query failed, using fallback: {e}")
-        events: List[AuditEvent] = []
-        for data in list(_audit_fallback):
-            try:
-                event = AuditEvent(**data)
-                if action and event.action != action:
-                    continue
-                if actor and event.actor != actor:
-                    continue
-                if since and event.timestamp < since:
-                    continue
-                if until and event.timestamp > until:
-                    continue
-                events.append(event)
-            except Exception:
-                continue
-        # Fallback stores oldest-first; reverse to match Redis newest-first order
-        events.reverse()
-        total = len(events)
-        page = events[offset:offset + limit]
-        return AuditResponse(events=page, total=total, limit=limit, offset=offset)
+        logger.warning(f"Audit log query failed: {e}")
+        return AuditResponse(events=[], total=0, limit=limit, offset=offset)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -214,6 +213,12 @@ class DiagSecurity(BaseModel):
     checks: List[DiagSecurityCheck]
 
 
+class DiagDatabase(BaseModel):
+    connected: bool
+    db_path: str = ""
+    size_mb: float = 0
+
+
 class DiagRedis(BaseModel):
     connected: bool
     version: str = ""
@@ -243,6 +248,7 @@ class DiagnosticsResponse(BaseModel):
     system: DiagSystem
     version: DiagVersion
     security: DiagSecurity
+    database: DiagDatabase
     redis: DiagRedis
     tasks: DiagTasks
     sessions: DiagSessions
@@ -331,16 +337,33 @@ def _get_security_info() -> DiagSecurity:
     )
 
 
-def _get_redis_info() -> DiagRedis:
-    """Collect Redis diagnostics."""
+def _get_database_info() -> DiagDatabase:
+    """Collect SQLite diagnostics."""
     try:
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        db.execute_fetchone("SELECT 1")
+        db_path = db.db_path
+        size_mb = 0.0
+        try:
+            size_mb = round(os.path.getsize(db_path) / 1024 / 1024, 1)
+        except Exception:
+            pass
+        return DiagDatabase(connected=True, db_path=db_path, size_mb=size_mb)
+    except Exception as e:
+        return DiagDatabase(connected=False, db_path=str(e)[:80])
+
+
+def _get_redis_info() -> DiagRedis:
+    """Collect Redis diagnostics (optional)."""
+    try:
+        from ..services.redis_client import get_redis_client
         rc = get_redis_client()
         if not rc.ping():
             return DiagRedis(connected=False)
 
         r = rc.client
         info = r.info()
-        prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
         total_keys = 0
         for db_info in [v for k, v in info.items() if k.startswith("db") and isinstance(v, dict)]:
             total_keys += db_info.get("keys", 0)
@@ -354,8 +377,8 @@ def _get_redis_info() -> DiagRedis:
             total_keys=total_keys,
             uptime_seconds=info.get("uptime_in_seconds", 0),
         )
-    except Exception as e:
-        return DiagRedis(connected=False, version=str(e)[:80])
+    except Exception:
+        return DiagRedis(connected=False)
 
 
 def _get_task_info() -> DiagTasks:
@@ -375,19 +398,19 @@ def _get_task_info() -> DiagTasks:
 
 
 def _get_session_count() -> DiagSessions:
-    """Count total sessions in Redis."""
+    """Count total sessions in SQLite."""
     try:
-        rc = get_redis_client()
-        r = rc.client
-        prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-        count = 0
-        cursor = 0
-        while True:
-            cursor, keys = r.scan(cursor, match=f"{prefix}session:*:meta", count=500)
-            count += len(keys)
-            if cursor == 0:
-                break
-        return DiagSessions(total=count)
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        # Try core_sessions table first, then sessions table
+        for table in ("core_sessions", "sessions"):
+            try:
+                row = db.execute_fetchone(f"SELECT COUNT(*) as cnt FROM {table}")
+                if row:
+                    return DiagSessions(total=row["cnt"])
+            except Exception:
+                continue
+        return DiagSessions(total=0)
     except Exception:
         return DiagSessions(total=0)
 
@@ -395,20 +418,18 @@ def _get_session_count() -> DiagSessions:
 def _get_audit_count() -> int:
     """Count audit log entries."""
     try:
-        rc = get_redis_client()
-        r = rc.client
-        prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-        return r.llen(f"{prefix}{AUDIT_KEY}")
+        db = _audit_db()
+        row = db.execute_fetchone("SELECT COUNT(*) as cnt FROM audit_events")
+        return row["cnt"] if row else 0
     except Exception:
-        return len(_audit_fallback)
+        return 0
 
 
 @router.get("/diagnostics", response_model=DiagnosticsResponse)
 async def diagnostics():
     """Comprehensive system diagnostics dashboard.
 
-    Ported from mission-control GET /api/diagnostics (api/diagnostics/route.ts).
-    Returns system info, version, security posture, Redis stats,
+    Returns system info, version, security posture, database/Redis stats,
     task/session counts, retention config, and audit log size.
     """
     import asyncio
@@ -416,6 +437,7 @@ async def diagnostics():
     system = _get_system_info()
     version = _get_version_info()
     security = _get_security_info()
+    database = await asyncio.get_event_loop().run_in_executor(None, _get_database_info)
     redis = await asyncio.get_event_loop().run_in_executor(None, _get_redis_info)
     tasks = await asyncio.get_event_loop().run_in_executor(None, _get_task_info)
     sessions = await asyncio.get_event_loop().run_in_executor(None, _get_session_count)
@@ -434,6 +456,7 @@ async def diagnostics():
         system=system,
         version=version,
         security=security,
+        database=database,
         redis=redis,
         tasks=tasks,
         sessions=sessions,
@@ -464,20 +487,8 @@ class DoctorResponse(BaseModel):
 
 @router.get("/doctor", response_model=DoctorResponse, summary="Run self-diagnosis")
 async def doctor():
-    """User-friendly self-diagnosis for troubleshooting.
-
-    Provides a simple pass/fail/warn status for common issues:
-    - Database connectivity
-    - Redis connectivity
-    - Authentication configured
-    - Environment variables
-    - Disk space
-    - Memory usage
-
-    Returns a summary and suggestion for next steps if issues are found.
-    """
+    """User-friendly self-diagnosis for troubleshooting."""
     import shutil
-    import asyncio
 
     checks: List[DoctorCheck] = []
     all_passed = True
@@ -568,30 +579,29 @@ async def doctor():
         ))
         all_passed = False
 
-    # Check 5: Redis
-    redis_connected = False
+    # Check 5: Redis (optional)
     try:
+        from ..services.redis_client import get_redis_client
         rc = get_redis_client()
         if rc.ping():
-            redis_connected = True
             checks.append(DoctorCheck(
                 name="redis",
                 status="pass",
-                message="Redis connected",
+                message="Redis connected (optional)",
             ))
         else:
             checks.append(DoctorCheck(
                 name="redis",
                 status="warn",
-                message="Redis ping failed",
-                detail="Redis may be unavailable but app can still function.",
+                message="Redis ping failed (optional)",
+                detail="Redis is optional. All data is stored in SQLite.",
             ))
-    except Exception as e:
+    except Exception:
         checks.append(DoctorCheck(
             name="redis",
             status="warn",
-            message="Redis not configured",
-            detail="App will use in-memory fallback. Set REDIS_URL to enable full functionality.",
+            message="Redis not available (optional)",
+            detail="Redis is optional. All data is stored in SQLite.",
         ))
 
     # Check 6: Authentication
@@ -667,16 +677,7 @@ async def doctor():
 
 @router.get("/doctor/bundle", summary="Bundle diagnostic information for support")
 async def doctor_bundle():
-    """Bundle diagnostic information for support/debugging.
-
-    Returns a JSON object containing:
-    - System info
-    - Recent error logs (if available)
-    - Configuration (non-sensitive)
-    - Diagnostics output
-
-    This bundle can be shared with support to help diagnose issues.
-    """
+    """Bundle diagnostic information for support/debugging."""
     from src.server.logger import get_logger
 
     bundle: Dict[str, Any] = {
@@ -694,21 +695,19 @@ async def doctor_bundle():
     try:
         import asyncio
         system = _get_system_info()
-        version = _get_version_info()
         security = _get_security_info()
-        redis = await asyncio.get_event_loop().run_in_executor(None, _get_redis_info)
+        database = await asyncio.get_event_loop().run_in_executor(None, _get_database_info)
         bundle["diagnostics"] = {
             "security_score": security.score,
-            "redis_connected": redis.connected,
+            "database_connected": database.connected,
             "system": system.model_dump(),
         }
     except Exception as e:
         bundle["diagnostics_error"] = str(e)
 
-    # Add recent logs (last 50 lines from logger if available)
+    # Add recent logs
     try:
         logger_instance = get_logger()
-        # Get recent log entries if possible
         bundle["logs"] = "Log retrieval not implemented - check server logs directly"
     except Exception:
         bundle["logs"] = "Logger not accessible"
@@ -722,11 +721,7 @@ async def doctor_bundle():
 
 @router.get("/metrics", summary="Get observability metrics snapshot")
 async def get_metrics(path_prefix: str = Query("", description="Filter latency by path prefix")):
-    """Return a snapshot of telemetry metrics: latency, token usage, cost, events.
-
-    Query params:
-      - path_prefix: Optional prefix to filter latency stats (e.g. "/api/nexus/tasks")
-    """
+    """Return a snapshot of telemetry metrics: latency, token usage, cost, events."""
     from ..services.observability import telemetry
 
     if path_prefix:

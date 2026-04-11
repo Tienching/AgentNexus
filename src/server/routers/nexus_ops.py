@@ -6,13 +6,12 @@ Ported from mission-control:
   - GET /api/cleanup      (cleanup/route.ts) — retention preview
   - POST /api/cleanup     (cleanup/route.ts) — execute cleanup
 
-Adapted for agent-nexus: Redis-backed search across tasks and sessions,
+Adapted for agent-nexus: SQLite-backed search across tasks and sessions,
 configurable retention policies.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from typing import Any, Dict, List, Literal, Optional
@@ -22,7 +21,6 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.redis_client import get_redis_client
 from ..services.task_storage import TaskQueue
 from .nexus_auth import verify_nexus_auth
 
@@ -77,8 +75,7 @@ async def global_search(
 ):
     """Global search across tasks and sessions.
 
-    Ported from mission-control GET /api/search (search/route.ts).
-    Searches task descriptions, session messages, and metadata in Redis.
+    Searches task descriptions and session metadata in SQLite.
     Results ranked by relevance (title match > content match) then recency.
     """
     exec_user = getattr(settings, "exec_user", None) or "default"
@@ -114,46 +111,37 @@ async def global_search(
     # ── Search sessions ──
     if not type or type == "session":
         try:
-            rc = get_redis_client()
-            r = rc.client
-            prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
+            from src.runtime.stores.db import get_db
+            db = get_db()
+            # Search in core_sessions table (created by session_storage migration)
+            for table in ("core_sessions", "sessions"):
+                try:
+                    rows = db.execute_fetchall(
+                        f"SELECT id, title, provider, username, exec_dir, created_at FROM {table} "
+                        f"WHERE title LIKE ? OR id LIKE ? OR provider LIKE ? OR username LIKE ? "
+                        f"ORDER BY updated_at DESC LIMIT ?",
+                        (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", limit * 2),
+                    )
+                    for row in rows:
+                        session_id = row.get("id", "")
+                        title = row.get("title", "")
+                        provider = row.get("provider", "")
+                        created = row.get("created_at", "")
 
-            # Scan session keys
-            pattern = f"{prefix}session:*:meta"
-            cursor = 0
-            session_count = 0
-            while session_count < limit * 2:  # scan more than needed for filtering
-                cursor, keys = r.scan(cursor, match=pattern, count=200)
-                for key in keys:
-                    try:
-                        raw = r.get(key)
-                        if not raw:
-                            continue
-                        meta = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-                        session_id = meta.get("session_id", "")
-                        provider = meta.get("provider", "")
-                        description = meta.get("description", "")
-                        exec_user_s = meta.get("exec_user", "")
-                        workspace = meta.get("workspace", "")
-                        created = meta.get("created_at", "")
-
-                        searchable = f"{session_id} {provider} {description} {exec_user_s} {workspace}".lower()
-                        if query_lower in searchable:
-                            relevance = 2 if query_lower in (description or "").lower()[:50] else 1
-                            results.append(SearchResult(
-                                type="session",
-                                id=session_id,
-                                title=description[:120] if description else f"Session {session_id[:8]}",
-                                subtitle=f"{provider}" + (f" · {workspace}" if workspace else ""),
-                                excerpt=_truncate_match(description, q) if description else None,
-                                created_at=created if created else None,
-                                relevance=relevance,
-                            ))
-                            session_count += 1
-                    except Exception:
-                        continue
-                if cursor == 0:
-                    break
+                        relevance = 2 if query_lower in (title or "").lower()[:50] else 1
+                        results.append(SearchResult(
+                            type="session",
+                            id=session_id,
+                            title=title[:120] if title else f"Session {session_id[:8]}",
+                            subtitle=provider or "",
+                            excerpt=_truncate_match(title, q) if title else None,
+                            created_at=str(created) if created else None,
+                            relevance=relevance,
+                        ))
+                    if rows:
+                        break  # Got results from one table, no need to try the other
+                except Exception:
+                    continue
         except Exception as e:
             logger.warning(f"Session search failed: {e}")
 
@@ -205,8 +193,72 @@ def _get_retention() -> Dict[str, int]:
     }
 
 
+def _count_stale_sessions(cutoff_ms: int) -> int:
+    """Count sessions older than cutoff (cutoff in ms timestamp)."""
+    try:
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        for table in ("core_sessions", "sessions"):
+            try:
+                row = db.execute_fetchone(
+                    f"SELECT COUNT(*) as cnt FROM {table} WHERE created_at < ?",
+                    (cutoff_ms,),
+                )
+                if row:
+                    return row["cnt"]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 0
+
+
+def _delete_stale_sessions(cutoff_ms: int) -> int:
+    """Delete sessions older than cutoff (cutoff in ms timestamp). Returns count."""
+    try:
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        count = 0
+        for table in ("core_sessions", "sessions"):
+            try:
+                # Get stale session IDs first
+                rows = db.execute_fetchall(
+                    f"SELECT id FROM {table} WHERE created_at < ?",
+                    (cutoff_ms,),
+                )
+                if not rows:
+                    continue
+                ids = [r["id"] for r in rows]
+                count = len(ids)
+                # Delete associated data
+                msg_table = table.replace("sessions", "session_messages")
+                tc_table = table.replace("sessions", "session_tool_calls")
+                ev_table = table.replace("sessions", "session_events")
+                st_table = table.replace("sessions", "session_streaming")
+                with db.transaction() as conn:
+                    placeholders = ",".join("?" * len(ids))
+                    for dep_table in (msg_table, tc_table, ev_table, st_table):
+                        try:
+                            conn.execute(
+                                f"DELETE FROM {dep_table} WHERE session_id IN ({placeholders})",
+                                ids,
+                            )
+                        except Exception:
+                            pass
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                return count
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return 0
+
+
 def _preview_cleanup(exec_user: str) -> CleanupPreview:
-    """Scan Redis for stale items without deleting anything."""
+    """Scan SQLite for stale items without deleting anything."""
     retention = _get_retention()
     now = time.time()
     preview: List[RetentionTarget] = []
@@ -264,39 +316,9 @@ def _preview_cleanup(exec_user: str) -> CleanupPreview:
     if days > 0:
         cutoff = now - days * 86400
         cutoff_date = time.strftime("%Y-%m-%d", time.gmtime(cutoff))
-        stale = 0
-        try:
-            rc = get_redis_client()
-            r = rc.client
-            prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-            pattern = f"{prefix}session:*:meta"
-            cursor = 0
-            while True:
-                cursor, keys = r.scan(cursor, match=pattern, count=200)
-                for key in keys:
-                    try:
-                        raw = r.get(key)
-                        if not raw:
-                            continue
-                        meta = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-                        created = meta.get("created_at", "")
-                        if created:
-                            from datetime import datetime
-                            if isinstance(created, str):
-                                try:
-                                    ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
-                                except Exception:
-                                    continue
-                            else:
-                                ts = float(created)
-                            if ts < cutoff:
-                                stale += 1
-                    except Exception:
-                        continue
-                if cursor == 0:
-                    break
-        except Exception:
-            pass
+        # created_at is stored as ms timestamp
+        cutoff_ms = int(cutoff * 1000)
+        stale = _count_stale_sessions(cutoff_ms)
         preview.append(RetentionTarget(
             category="Sessions",
             retention_days=days,
@@ -310,13 +332,7 @@ def _preview_cleanup(exec_user: str) -> CleanupPreview:
 
 @router.get("/cleanup", response_model=CleanupPreview)
 async def cleanup_preview():
-    """Preview what data would be cleaned up based on retention policies.
-
-    Ported from mission-control GET /api/cleanup (cleanup/route.ts).
-    Shows stale task/session counts without deleting anything.
-    Configure retention via RETENTION_TASKS_DONE_DAYS, RETENTION_TASKS_FAILED_DAYS,
-    RETENTION_SESSIONS_DAYS environment variables.
-    """
+    """Preview what data would be cleaned up based on retention policies."""
     exec_user = getattr(settings, "exec_user", None) or "default"
     return _preview_cleanup(exec_user)
 
@@ -325,12 +341,7 @@ async def cleanup_preview():
 async def execute_cleanup(
     dry_run: bool = Query(False, description="If true, only preview without deleting"),
 ):
-    """Execute data cleanup based on retention policies.
-
-    Ported from mission-control POST /api/cleanup (cleanup/route.ts).
-    Deletes tasks and sessions older than their retention window.
-    Use dry_run=true to preview first.
-    """
+    """Execute data cleanup based on retention policies."""
     start = time.time()
     exec_user = getattr(settings, "exec_user", None) or "default"
     retention = _get_retention()
@@ -388,56 +399,11 @@ async def execute_cleanup(
     count = 0
     if days > 0:
         cutoff = now - days * 86400
-        try:
-            rc = get_redis_client()
-            r = rc.client
-            prefix = os.environ.get("REDIS_KEY_PREFIX", "aona:")
-            pattern = f"{prefix}session:*:meta"
-            cursor = 0
-            stale_keys: List[str] = []
-            while True:
-                cursor, keys = r.scan(cursor, match=pattern, count=200)
-                for key in keys:
-                    try:
-                        raw = r.get(key)
-                        if not raw:
-                            continue
-                        meta = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-                        created = meta.get("created_at", "")
-                        if created:
-                            from datetime import datetime
-                            if isinstance(created, str):
-                                try:
-                                    ts = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
-                                except Exception:
-                                    continue
-                            else:
-                                ts = float(created)
-                            if ts < cutoff:
-                                stale_keys.append(key)
-                    except Exception:
-                        continue
-                if cursor == 0:
-                    break
-
-            if not dry_run and stale_keys:
-                # Delete session meta and associated data
-                for meta_key in stale_keys:
-                    try:
-                        # meta_key is like "aona:session:{id}:meta"
-                        # Also delete messages, files etc.
-                        base = meta_key.rsplit(":meta", 1)[0]
-                        keys_to_del = [meta_key]
-                        # Scan for related session keys
-                        for related in r.scan_iter(match=f"{base}:*", count=100):
-                            keys_to_del.append(related)
-                        if keys_to_del:
-                            r.delete(*keys_to_del)
-                    except Exception:
-                        pass
-            count = len(stale_keys)
-        except Exception:
-            pass
+        cutoff_ms = int(cutoff * 1000)
+        if dry_run:
+            count = _count_stale_sessions(cutoff_ms)
+        else:
+            count = _delete_stale_sessions(cutoff_ms)
     deleted["sessions"] = count
 
     duration_ms = int((time.time() - start) * 1000)

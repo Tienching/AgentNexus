@@ -16,14 +16,12 @@ from pydantic import BaseModel
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.redis_client import get_redis_client
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/nexus/auth", tags=["nexus-auth"])
 
-# Redis-backed session store (fallback to in-memory if Redis is unavailable)
-_redis = get_redis_client()
+# SQLite-backed session store (fallback to in-memory if DB unavailable)
 _session_key_prefix = "nexus:session:"
 _memory_sessions: dict[str, float] = {}  # token -> expiry_timestamp
 
@@ -86,26 +84,36 @@ def _session_key(token: str) -> str:
     return f"{_session_key_prefix}{token}"
 
 
-def _redis_available() -> bool:
+def _session_db():
+    """Get the SQLite database for session tokens."""
     try:
-        return _redis.ping()
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        # Ensure table exists (idempotent)
+        db.execute("CREATE TABLE IF NOT EXISTS auth_sessions (token TEXT PRIMARY KEY, expires_at REAL NOT NULL)")
+        return db
     except Exception:
-        return False
+        return None
 
 
 def _create_session(token: str) -> None:
-    """Create a new session with expiry (Redis preferred, fallback to memory)."""
+    """Create a new session with expiry (SQLite preferred, fallback to memory)."""
     ttl = int(settings.nexus_session_ttl)
-    if _redis_available():
+    expiry = time.time() + ttl
+
+    db = _session_db()
+    if db:
         try:
-            _redis.set(_session_key(token), "1", ex=ttl)
+            with db.transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO auth_sessions (token, expires_at) VALUES (?, ?)",
+                    (token, expiry),
+                )
             return
         except Exception as e:
-            logger.warning(f"Redis session set failed, fallback to memory: {e}")
+            logger.warning(f"SQLite session set failed, fallback to memory: {e}")
 
-    expiry = time.time() + ttl
-    # Evict oldest before inserting when at capacity (MC e7aa7e6 pattern).
-    # Only evict when this token is genuinely new — no eviction on refresh.
+    # Evict oldest before inserting when at capacity.
     if token not in _memory_sessions and len(_memory_sessions) >= _MEMORY_SESSIONS_MAX_ENTRIES:
         _evict_oldest_session()
     _memory_sessions[token] = expiry
@@ -125,11 +133,22 @@ def _validate_session(token: str) -> bool:
     if not token:
         return False
 
-    if _redis_available():
+    db = _session_db()
+    if db:
         try:
-            return _redis.exists(_session_key(token))
+            row = db.execute_fetchone(
+                "SELECT expires_at FROM auth_sessions WHERE token = ?", (token,)
+            )
+            if row:
+                if time.time() > row["expires_at"]:
+                    # Expired — clean up
+                    with db.transaction() as conn:
+                        conn.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
+                    return False
+                return True
+            # Not in DB — check memory fallback
         except Exception as e:
-            logger.warning(f"Redis session check failed, fallback to memory: {e}")
+            logger.warning(f"SQLite session check failed, fallback to memory: {e}")
 
     expiry = _memory_sessions.get(token)
     if not expiry:
@@ -145,11 +164,13 @@ def _invalidate_session(token: str) -> None:
     if not token:
         return
 
-    if _redis_available():
+    db = _session_db()
+    if db:
         try:
-            _redis.delete(_session_key(token))
+            with db.transaction() as conn:
+                conn.execute("DELETE FROM auth_sessions WHERE token = ?", (token,))
         except Exception as e:
-            logger.warning(f"Redis session delete failed: {e}")
+            logger.warning(f"SQLite session delete failed: {e}")
 
     _memory_sessions.pop(token, None)
 

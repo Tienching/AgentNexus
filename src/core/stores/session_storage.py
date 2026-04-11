@@ -1,8 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Session Storage Service
+"""Session Storage Service — SQLite implementation.
 
-Provides CRUD operations for AGUI session data in Redis.
+Provides CRUD operations for AGUI session data in SQLite.
+Replaces the multi-key Redis structure (meta hash, messages list,
+toolcalls hash, events list, streaming content with TTL) with
+normalized SQLite tables.
+
+TTL is handled via ``expires_at`` columns with periodic cleanup.
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -15,7 +22,7 @@ from ..models.session import (
     StoredMessage,
     StoredToolCall,
 )
-from .redis_client import get_redis_client, RedisClient
+from src.runtime.stores.db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -23,69 +30,161 @@ logger = logging.getLogger(__name__)
 SESSION_TTL = 7 * 24 * 60 * 60  # 7 days
 STREAMING_CONTENT_TTL = 60 * 60  # 1 hour for temporary streaming content
 
+# ---------------------------------------------------------------------------
+# Schema bootstrap — idempotent, called once on first access
+# ---------------------------------------------------------------------------
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS core_sessions (
+    id              TEXT PRIMARY KEY,
+    thread_id       TEXT NOT NULL,
+    run_id          TEXT,
+    title           TEXT NOT NULL DEFAULT 'New Session',
+    username        TEXT NOT NULL DEFAULT '',
+    exec_user       TEXT,
+    provider        TEXT,
+    alias           TEXT,
+    exec_dir        TEXT,
+    status          TEXT NOT NULL DEFAULT 'idle',
+    message_count   INTEGER NOT NULL DEFAULT 0,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    expires_at      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_core_sessions_username ON core_sessions(username);
+CREATE INDEX IF NOT EXISTS idx_core_sessions_updated ON core_sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_core_sessions_status ON core_sessions(status);
+
+CREATE TABLE IF NOT EXISTS core_session_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    msg_json    TEXT NOT NULL,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_core_session_messages_sid ON core_session_messages(session_id);
+
+CREATE TABLE IF NOT EXISTS core_session_tool_calls (
+    call_id     TEXT NOT NULL,
+    session_id  TEXT NOT NULL,
+    tool_json   TEXT NOT NULL,
+    PRIMARY KEY (session_id, call_id)
+);
+
+CREATE TABLE IF NOT EXISTS core_session_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT NOT NULL,
+    event_json  TEXT NOT NULL,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_core_session_events_sid ON core_session_events(session_id);
+
+CREATE TABLE IF NOT EXISTS core_session_streaming (
+    session_id  TEXT NOT NULL,
+    message_id  TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    expires_at  REAL NOT NULL,
+    PRIMARY KEY (session_id, message_id)
+);
+"""
+
+_schema_initialized = False
+
+
+def _ensure_schema(db: Database) -> None:
+    global _schema_initialized
+    if _schema_initialized:
+        return
+    try:
+        with db.transaction() as conn:
+            conn.executescript(_SCHEMA_SQL)
+        _schema_initialized = True
+    except Exception as e:
+        logger.warning(f"Schema init (may already exist): {e}")
+        _schema_initialized = True
+
 
 class SessionStorage:
-    """Session storage service using Redis"""
+    """Session storage service using SQLite."""
 
-    def __init__(self, redis_client: Optional[RedisClient] = None):
-        """Initialize session storage
-        
-        Args:
-            redis_client: Optional Redis client instance. If not provided, uses global instance.
-        """
-        self._redis = redis_client or get_redis_client()
+    def __init__(self, db: Optional[Database] = None):
+        self._db = db or get_db()
+        _ensure_schema(self._db)
 
     # ============ Session Metadata Operations ============
 
     def save_session_meta(self, meta: SessionMeta) -> bool:
-        """Save session metadata to Redis
-        
-        Args:
-            meta: Session metadata to save
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{meta.id}:meta"
-            self._redis.hset(key, meta.to_redis_hash())
-            
-            # Set TTL
-            self._redis.client.expire(self._redis._key(key), SESSION_TTL)
-            
-            # Add to global session index (sorted set with updated_at as score)
-            global_key = "sessions:all"
-            self._redis.zadd(global_key, {meta.id: meta.updated_at})
-            
-            # Also add to user's session index if username provided
-            if meta.username:
-                user_key = f"user:{meta.username}:sessions"
-                self._redis.zadd(user_key, {meta.id: meta.updated_at})
-            
-            logger.debug(f"Saved session meta: {meta.id}")
+            session_id = (meta.id or "").strip()
+            if not session_id:
+                logger.warning("Skip saving session meta with empty id")
+                return False
+
+            now_ms = int(time.time() * 1000)
+            expires_at = time.time() + SESSION_TTL
+
+            with self._db.transaction() as conn:
+                conn.execute("""
+                    INSERT OR REPLACE INTO core_sessions (
+                        id, thread_id, run_id, title, username, exec_user,
+                        provider, alias, exec_dir, status,
+                        message_count, created_at, updated_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    session_id,
+                    meta.thread_id or session_id,
+                    getattr(meta, "run_id", None) or None,
+                    meta.title or "New Session",
+                    meta.username or "",
+                    getattr(meta, "exec_user", None) or None,
+                    meta.provider or None,
+                    getattr(meta, "alias", None) or None,
+                    getattr(meta, "exec_dir", None) or None,
+                    meta.status.value if isinstance(meta.status, SessionStatus) else (meta.status or "idle"),
+                    getattr(meta, "message_count", 0) or 0,
+                    meta.created_at or now_ms,
+                    meta.updated_at or now_ms,
+                    expires_at,
+                ))
+
+            logger.debug(f"Saved session meta: {session_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to save session meta: {e}")
             return False
 
     def get_session_meta(self, session_id: str) -> Optional[SessionMeta]:
-        """Get session metadata from Redis
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            SessionMeta if found, None otherwise
-        """
         try:
-            key = f"session:{session_id}:meta"
-            data = self._redis.hgetall(key)
-            if not data:
+            row = self._db.execute_fetchone(
+                "SELECT * FROM core_sessions WHERE id = ?", (session_id,)
+            )
+            if not row:
                 return None
-            return SessionMeta.from_redis_hash(data)
+            return self._row_to_meta(row)
         except Exception as e:
             logger.error(f"Failed to get session meta: {e}")
             return None
+
+    def _row_to_meta(self, row: dict) -> SessionMeta:
+        return SessionMeta(
+            id=row["id"],
+            thread_id=row.get("thread_id") or row["id"],
+            run_id=row.get("run_id") or None,
+            title=row.get("title") or "New Session",
+            username=row.get("username") or "",
+            exec_user=row.get("exec_user") or None,
+            provider=row.get("provider") or None,
+            alias=row.get("alias") or None,
+            exec_dir=row.get("exec_dir") or None,
+            status=SessionStatus(row.get("status", "idle")),
+            message_count=row.get("message_count", 0) or 0,
+            created_at=row.get("created_at") or 0,
+            updated_at=row.get("updated_at") or 0,
+        )
+
+    # ============ Session Listing ============
 
     def get_user_sessions(
         self,
@@ -95,51 +194,25 @@ class SessionStorage:
         search: Optional[str] = None,
         status_filter: Optional[SessionStatus] = None,
     ) -> Tuple[List[SessionMeta], int]:
-        """Get user's sessions with pagination and filtering
-        
-        Args:
-            username: Username
-            page: Page number (1-indexed)
-            page_size: Number of sessions per page
-            search: Optional search term for title
-            status_filter: Optional status filter
-            
-        Returns:
-            Tuple of (session list, total count)
-        """
         try:
-            user_key = f"user:{username}:sessions"
-            
-            # Get all session IDs sorted by updated_at (descending)
-            # Use zrevrange for descending order
-            all_session_ids = self._redis.client.zrevrange(
-                self._redis._key(user_key), 0, -1
+            conditions = ["username = ?"]
+            params: list = [username]
+            if search:
+                conditions.append("title LIKE ?")
+                params.append(f"%{search}%")
+            if status_filter:
+                conditions.append("status = ?")
+                params.append(status_filter.value)
+            where = " AND ".join(conditions)
+            count_row = self._db.execute_fetchone(
+                f"SELECT COUNT(*) as cnt FROM core_sessions WHERE {where}", params
             )
-            
-            if not all_session_ids:
-                return [], 0
-            
-            # Fetch all session metadata for filtering
-            sessions = []
-            for session_id in all_session_ids:
-                meta = self.get_session_meta(session_id)
-                if meta:
-                    # Apply filters
-                    if search and search.lower() not in meta.title.lower():
-                        continue
-                    if status_filter and meta.status != status_filter:
-                        continue
-                    sessions.append(meta)
-            
-            total = len(sessions)
-            
-            # Apply pagination
-            start = (page - 1) * page_size
-            end = start + page_size
-            paginated = sessions[start:end]
-            
-            return paginated, total
-            
+            total = count_row["cnt"] if count_row else 0
+            rows = self._db.execute_fetchall(
+                f"SELECT * FROM core_sessions WHERE {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                params + [page_size, (page - 1) * page_size],
+            )
+            return [self._row_to_meta(r) for r in rows], total
         except Exception as e:
             logger.error(f"Failed to get user sessions: {e}")
             return [], 0
@@ -151,81 +224,35 @@ class SessionStorage:
         search: Optional[str] = None,
         status_filter: Optional[SessionStatus] = None,
     ) -> Tuple[List[SessionMeta], int]:
-        """Get all sessions with pagination and filtering
-        
-        Args:
-            page: Page number (1-indexed)
-            page_size: Number of sessions per page
-            search: Optional search term for title
-            status_filter: Optional status filter
-            
-        Returns:
-            Tuple of (session list, total count)
-        """
         try:
-            global_key = "sessions:all"
-            
-            # Get all session IDs sorted by updated_at (descending)
-            all_session_ids = self._redis.client.zrevrange(
-                self._redis._key(global_key), 0, -1
+            conditions: list = []
+            params: list = []
+            if search:
+                conditions.append("title LIKE ?")
+                params.append(f"%{search}%")
+            if status_filter:
+                conditions.append("status = ?")
+                params.append(status_filter.value)
+            where = " AND ".join(conditions) if conditions else "1=1"
+            count_row = self._db.execute_fetchone(
+                f"SELECT COUNT(*) as cnt FROM core_sessions WHERE {where}", params
             )
-            
-            if not all_session_ids:
-                return [], 0
-            
-            # Fetch all session metadata for filtering
-            sessions = []
-            for session_id in all_session_ids:
-                meta = self.get_session_meta(session_id)
-                if meta:
-                    # Apply filters
-                    if search and search.lower() not in meta.title.lower():
-                        continue
-                    if status_filter and meta.status != status_filter:
-                        continue
-                    sessions.append(meta)
-            
-            total = len(sessions)
-            
-            # Apply pagination
-            start = (page - 1) * page_size
-            end = start + page_size
-            paginated = sessions[start:end]
-            
-            return paginated, total
-            
+            total = count_row["cnt"] if count_row else 0
+            rows = self._db.execute_fetchall(
+                f"SELECT * FROM core_sessions WHERE {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                params + [page_size, (page - 1) * page_size],
+            )
+            return [self._row_to_meta(r) for r in rows], total
         except Exception as e:
             logger.error(f"Failed to get all sessions: {e}")
             return [], 0
 
     def get_all_usernames(self) -> List[str]:
-        """Get all unique usernames from sessions
-        
-        Returns:
-            List of usernames sorted alphabetically
-        """
         try:
-            global_key = "sessions:all"
-            
-            # Get all session IDs
-            all_session_ids = self._redis.client.zrevrange(
-                self._redis._key(global_key), 0, -1
+            rows = self._db.execute_fetchall(
+                "SELECT DISTINCT username FROM core_sessions WHERE username IS NOT NULL AND username != ''"
             )
-            
-            if not all_session_ids:
-                return []
-            
-            # Collect unique usernames
-            usernames = set()
-            for session_id in all_session_ids:
-                if isinstance(session_id, bytes):
-                    session_id = session_id.decode('utf-8')
-                meta = self.get_session_meta(session_id)
-                if meta and meta.username:
-                    usernames.add(meta.username)
-            
-            return sorted(list(usernames))
-            
+            return sorted([r["username"] for r in rows])
         except Exception as e:
             logger.error(f"Failed to get usernames: {e}")
             return []
@@ -236,82 +263,33 @@ class SessionStorage:
         status: SessionStatus,
         update_timestamp: bool = True,
     ) -> bool:
-        """Update session status
-        
-        Args:
-            session_id: Session ID
-            status: New status
-            update_timestamp: Whether to update updated_at timestamp
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{session_id}:meta"
-            
-            mapping = {"status": status.value}
-            updated_at: Optional[int] = None
             if update_timestamp:
                 updated_at = int(time.time() * 1000)
-                mapping["updated_at"] = str(updated_at)
-            
-            self._redis.hset(key, mapping)
-            
-            # Refresh indexes if timestamp changed
-            if update_timestamp and updated_at is not None:
-                self._redis.zadd("sessions:all", {session_id: updated_at})
-                meta = self.get_session_meta(session_id)
-                if meta and meta.username:
-                    user_key = f"user:{meta.username}:sessions"
-                    self._redis.zadd(user_key, {session_id: updated_at})
-            
+                with self._db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE core_sessions SET status = ?, updated_at = ? WHERE id = ?",
+                        (status.value, updated_at, session_id),
+                    )
+            else:
+                with self._db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE core_sessions SET status = ? WHERE id = ?",
+                        (status.value, session_id),
+                    )
             return True
         except Exception as e:
             logger.error(f"Failed to update session status: {e}")
             return False
 
     def delete_session(self, session_id: str, username: Optional[str] = None) -> bool:
-        """Delete session and all associated data.
-
-        Notes:
-            - Idempotent: deleting a non-existent session returns True.
-            - If username is not provided, we will best-effort resolve it from session meta
-              so user index doesn't accumulate stale ids.
-            - Also clears AGUI event log and temporary streaming content keys.
-        """
         try:
-            # Resolve username from meta if not provided
-            if not username:
-                try:
-                    meta = self.get_session_meta(session_id)
-                    if meta and meta.username:
-                        username = meta.username
-                except Exception:
-                    pass
-
-            # Delete all fixed session keys
-            keys_to_delete = [
-                f"session:{session_id}:meta",
-                f"session:{session_id}:messages",
-                f"session:{session_id}:toolcalls",
-                f"session:{session_id}:events",  # task SSE playback log
-            ]
-            self._redis.delete(*keys_to_delete)
-
-            # Delete temporary streaming content keys: session:{id}:msg:*:content
-            try:
-                for key in self._redis.scan_iter(f"session:{session_id}:msg:*:content"):
-                    self._redis.delete(key)
-            except Exception:
-                pass
-
-            # Remove from global index
-            self._redis.zrem("sessions:all", session_id)
-
-            # Remove from user index if username known
-            if username:
-                self._redis.zrem(f"user:{username}:sessions", session_id)
-
+            with self._db.transaction() as conn:
+                conn.execute("DELETE FROM core_session_messages WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM core_session_tool_calls WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM core_session_events WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM core_session_streaming WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM core_sessions WHERE id = ?", (session_id,))
             logger.info(f"Deleted session: {session_id}")
             return True
         except Exception as e:
@@ -321,251 +299,155 @@ class SessionStorage:
     # ============ Message Operations ============
 
     def add_session_message(self, session_id: str, message: StoredMessage) -> bool:
-        """Add a message to session
-        
-        Args:
-            session_id: Session ID
-            message: Message to add
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{session_id}:messages"
-            self._redis.rpush(key, message.to_json())
-            
-            # Set TTL
-            self._redis.client.expire(self._redis._key(key), SESSION_TTL)
-            
-            # Update session meta
-            meta_key = f"session:{session_id}:meta"
-            updated_at = int(time.time() * 1000)
-            self._redis.hset(meta_key, {
-                "message_count": str(self._redis.llen(key)),
-                "updated_at": str(updated_at),
-            })
-
-            # Refresh indexes
-            self._redis.zadd("sessions:all", {session_id: updated_at})
-            meta = self.get_session_meta(session_id)
-            if meta and meta.username:
-                self._redis.zadd(f"user:{meta.username}:sessions", {session_id: updated_at})
-            
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO core_session_messages (session_id, msg_id, role, content, msg_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (session_id, message.id, message.role, message.content, message.to_json(), time.time()),
+                )
+                conn.execute(
+                    "UPDATE core_sessions SET message_count = message_count + 1, updated_at = ? WHERE id = ?",
+                    (int(time.time() * 1000), session_id),
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to add session message: {e}")
             return False
 
     def update_message(self, session_id: str, message: StoredMessage) -> bool:
-        """Update an existing message in session
-        
-        This replaces the message with matching ID in the list.
-        
-        Args:
-            session_id: Session ID
-            message: Updated message
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{session_id}:messages"
-            messages = self._redis.lrange(key, 0, -1)
-            
-            for i, msg_json in enumerate(messages):
-                try:
-                    msg_data = json.loads(msg_json)
-                    if msg_data.get("id") == message.id:
-                        # Found the message, update it
-                        self._redis.client.lset(
-                            self._redis._key(key), i, message.to_json()
-                        )
-                        return True
-                except json.JSONDecodeError:
-                    continue
-            
-            return False
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "UPDATE core_session_messages SET role = ?, content = ?, msg_json = ? WHERE session_id = ? AND msg_id = ?",
+                    (message.role, message.content, message.to_json(), session_id, message.id),
+                )
+            return True
         except Exception as e:
             logger.error(f"Failed to update message: {e}")
             return False
 
     def get_session_messages(self, session_id: str) -> List[StoredMessage]:
-        """Get all messages for a session
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            List of messages
-        """
         try:
-            key = f"session:{session_id}:messages"
-            messages_json = self._redis.lrange(key, 0, -1)
-            
+            rows = self._db.execute_fetchall(
+                "SELECT msg_json FROM core_session_messages WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            )
             messages = []
-            for msg_json in messages_json:
+            for row in rows:
                 try:
-                    messages.append(StoredMessage.from_json(msg_json))
-                except Exception as e:
-                    logger.warning(f"Failed to parse message: {e}")
+                    messages.append(StoredMessage.from_json(row["msg_json"]))
+                except Exception:
                     continue
-            
             return messages
         except Exception as e:
             logger.error(f"Failed to get session messages: {e}")
             return []
 
     def get_message_by_id(self, session_id: str, message_id: str) -> Optional[StoredMessage]:
-        """Get a specific message by ID
-        
-        Args:
-            session_id: Session ID
-            message_id: Message ID
-            
-        Returns:
-            StoredMessage if found, None otherwise
-        """
-        messages = self.get_session_messages(session_id)
-        for msg in messages:
-            if msg.id == message_id:
-                return msg
-        return None
+        try:
+            row = self._db.execute_fetchone(
+                "SELECT msg_json FROM core_session_messages WHERE session_id = ? AND msg_id = ?",
+                (session_id, message_id),
+            )
+            return StoredMessage.from_json(row["msg_json"]) if row else None
+        except Exception:
+            return None
+
+    def clear_session_messages(self, session_id: str) -> bool:
+        try:
+            with self._db.transaction() as conn:
+                conn.execute("DELETE FROM core_session_messages WHERE session_id = ?", (session_id,))
+                conn.execute("UPDATE core_sessions SET message_count = 0 WHERE id = ?", (session_id,))
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear session messages: {e}")
+            return False
+
+    def clear_session_tool_calls(self, session_id: str) -> bool:
+        try:
+            with self._db.transaction() as conn:
+                conn.execute("DELETE FROM core_session_tool_calls WHERE session_id = ?", (session_id,))
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear session tool calls: {e}")
+            return False
 
     # ============ Tool Call Operations ============
 
     def save_tool_call(self, session_id: str, tool_call: StoredToolCall) -> bool:
-        """Save a tool call to session
-        
-        Args:
-            session_id: Session ID
-            tool_call: Tool call to save
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{session_id}:toolcalls"
-            self._redis.hset(key, {tool_call.id: tool_call.to_json()})
-            
-            # Set TTL
-            self._redis.client.expire(self._redis._key(key), SESSION_TTL)
-            
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO core_session_tool_calls (call_id, session_id, tool_json) VALUES (?, ?, ?)",
+                    (tool_call.id, session_id, tool_call.to_json()),
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to save tool call: {e}")
             return False
 
     def get_tool_call(self, session_id: str, tool_call_id: str) -> Optional[StoredToolCall]:
-        """Get a specific tool call by ID
-        
-        Args:
-            session_id: Session ID
-            tool_call_id: Tool call ID
-            
-        Returns:
-            StoredToolCall if found, None otherwise
-        """
         try:
-            key = f"session:{session_id}:toolcalls"
-            tool_json = self._redis.hget(key, tool_call_id)
-            if not tool_json:
-                return None
-            return StoredToolCall.from_json(tool_json)
-        except Exception as e:
-            logger.error(f"Failed to get tool call: {e}")
+            row = self._db.execute_fetchone(
+                "SELECT tool_json FROM core_session_tool_calls WHERE session_id = ? AND call_id = ?",
+                (session_id, tool_call_id),
+            )
+            return StoredToolCall.from_json(row["tool_json"]) if row else None
+        except Exception:
             return None
 
     def get_session_tool_calls(self, session_id: str) -> List[StoredToolCall]:
-        """Get all tool calls for a session
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            List of tool calls
-        """
         try:
-            key = f"session:{session_id}:toolcalls"
-            tool_calls_map = self._redis.hgetall(key)
-            
-            tool_calls = []
-            for tool_json in tool_calls_map.values():
+            rows = self._db.execute_fetchall(
+                "SELECT tool_json FROM core_session_tool_calls WHERE session_id = ?",
+                (session_id,),
+            )
+            tc = []
+            for row in rows:
                 try:
-                    tool_calls.append(StoredToolCall.from_json(tool_json))
-                except Exception as e:
-                    logger.warning(f"Failed to parse tool call: {e}")
+                    tc.append(StoredToolCall.from_json(row["tool_json"]))
+                except Exception:
                     continue
-            
-            # Sort by start_time
-            tool_calls.sort(key=lambda x: x.start_time)
-            return tool_calls
+            tc.sort(key=lambda x: x.start_time)
+            return tc
         except Exception as e:
             logger.error(f"Failed to get session tool calls: {e}")
             return []
 
     def update_tool_call(self, session_id: str, tool_call: StoredToolCall) -> bool:
-        """Update a tool call
-        
-        Args:
-            session_id: Session ID
-            tool_call: Updated tool call
-            
-        Returns:
-            True if successful
-        """
         return self.save_tool_call(session_id, tool_call)
 
-    # ============ Streaming Content Operations ============
+    # ============ Streaming Content ============
 
     def save_streaming_content(self, session_id: str, message_id: str, content: str) -> bool:
-        """Save temporary streaming content
-        
-        Args:
-            session_id: Session ID
-            message_id: Message ID
-            content: Current accumulated content
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{session_id}:msg:{message_id}:content"
-            self._redis.set(key, content, ex=STREAMING_CONTENT_TTL)
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO core_session_streaming (session_id, message_id, content, expires_at) VALUES (?, ?, ?, ?)",
+                    (session_id, message_id, content, time.time() + STREAMING_CONTENT_TTL),
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to save streaming content: {e}")
             return False
 
     def get_streaming_content(self, session_id: str, message_id: str) -> Optional[str]:
-        """Get temporary streaming content
-        
-        Args:
-            session_id: Session ID
-            message_id: Message ID
-            
-        Returns:
-            Content string if found, None otherwise
-        """
         try:
-            key = f"session:{session_id}:msg:{message_id}:content"
-            return self._redis.get(key)
-        except Exception as e:
-            logger.error(f"Failed to get streaming content: {e}")
+            row = self._db.execute_fetchone(
+                "SELECT content FROM core_session_streaming WHERE session_id = ? AND message_id = ?",
+                (session_id, message_id),
+            )
+            return row["content"] if row else None
+        except Exception:
             return None
 
     def delete_streaming_content(self, session_id: str, message_id: str) -> bool:
-        """Delete temporary streaming content
-        
-        Args:
-            session_id: Session ID
-            message_id: Message ID
-            
-        Returns:
-            True if successful
-        """
         try:
-            key = f"session:{session_id}:msg:{message_id}:content"
-            self._redis.delete(key)
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "DELETE FROM core_session_streaming WHERE session_id = ? AND message_id = ?",
+                    (session_id, message_id),
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to delete streaming content: {e}")
@@ -574,48 +456,50 @@ class SessionStorage:
     # ============ AGUI Event Log Operations ============
 
     def append_agui_event(self, session_id: str, event: Dict[str, Any], max_len: int = 5000) -> bool:
-        """Append a raw AG-UI event JSON into an ordered event log.
-
-        用途：Task 在后台执行时，前端无法直连 CLI 的 SSE；我们把转换后的 AG-UI 事件写入 Redis，
-        然后由 `/api/nexus/tasks/{id}/agui/stream` 以 SSE 方式增量推送。
-        """
         try:
-            key = f"session:{session_id}:events"
-            self._redis.rpush(key, json.dumps(event, ensure_ascii=False))
-
-            # TTL aligned with session lifetime
-            self._redis.client.expire(self._redis._key(key), SESSION_TTL)
-
-            # Best-effort cap
-            if max_len and max_len > 0:
-                try:
-                    # Keep last N items
-                    self._redis.client.ltrim(self._redis._key(key), -max_len, -1)
-                except Exception:
-                    pass
-
+            with self._db.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO core_session_events (session_id, event_json, created_at) VALUES (?, ?, ?)",
+                    (session_id, json.dumps(event, ensure_ascii=False), time.time()),
+                )
+                # Cap to max_len by deleting oldest beyond limit
+                conn.execute(
+                    "DELETE FROM core_session_events WHERE id IN ("
+                    "  SELECT id FROM core_session_events WHERE session_id = ? ORDER BY id DESC LIMIT -1 OFFSET ?"
+                    ")",
+                    (session_id, max_len),
+                )
             return True
         except Exception as e:
             logger.error(f"Failed to append AGUI event: {e}")
             return False
 
     def get_agui_event_count(self, session_id: str) -> int:
-        """Get event count for session event log."""
         try:
-            key = f"session:{session_id}:events"
-            return int(self._redis.llen(key) or 0)
+            row = self._db.execute_fetchone(
+                "SELECT COUNT(*) as cnt FROM core_session_events WHERE session_id = ?",
+                (session_id,),
+            )
+            return row["cnt"] if row else 0
         except Exception:
             return 0
 
     def get_agui_events(self, session_id: str, start: int = 0, end: int = -1) -> List[Dict[str, Any]]:
-        """Get a slice of AG-UI events."""
         try:
-            key = f"session:{session_id}:events"
-            raw = self._redis.lrange(key, start, end)
-            out: List[Dict[str, Any]] = []
-            for item in raw or []:
+            if end == -1:
+                rows = self._db.execute_fetchall(
+                    "SELECT event_json FROM core_session_events WHERE session_id = ? ORDER BY id LIMIT -1 OFFSET ?",
+                    (session_id, start),
+                )
+            else:
+                rows = self._db.execute_fetchall(
+                    "SELECT event_json FROM core_session_events WHERE session_id = ? ORDER BY id LIMIT ? OFFSET ?",
+                    (session_id, end - start + 1, start),
+                )
+            out = []
+            for row in rows:
                 try:
-                    evt = json.loads(item)
+                    evt = json.loads(row["event_json"])
                     if isinstance(evt, dict):
                         out.append(evt)
                 except Exception:

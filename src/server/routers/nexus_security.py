@@ -393,74 +393,46 @@ def _scan_os() -> SecurityCategory:
 
 
 # ---------------------------------------------------------------------------
-# Category: Redis
+# Category: Database
 # ---------------------------------------------------------------------------
 
-def _scan_redis() -> SecurityCategory:
+def _scan_database() -> SecurityCategory:
     checks: List[SecurityCheck] = []
 
     try:
-        from ..services.redis_client import get_redis_client
-        rc = get_redis_client()
+        from src.runtime.stores.db import get_db
+        db = get_db()
+        db.execute_fetchone("SELECT 1")
 
-        # 1. Redis reachable
-        pong = rc.ping()
         checks.append(SecurityCheck(
-            id="redis_reachable",
-            name="Redis reachable",
-            status="pass" if pong else "fail",
-            detail="Redis PING → PONG" if pong else "Redis not responding",
-            fix="" if pong else "Check Redis service: redis-cli ping",
+            id="database_reachable",
+            name="SQLite database reachable",
+            status="pass",
+            detail=f"Database OK: {db.db_path}",
+            fix="",
             severity="critical",
         ))
 
-        # Access the underlying redis.Redis client for info/config
-        r = rc.client
-
-        # 2. Redis version
-        info = r.info("server")
-        version = info.get("redis_version", "unknown")
-        major = int(version.split(".")[0]) if version != "unknown" else 0
+        # Check file permissions
+        import stat
+        db_stat = os.stat(db.db_path)
+        world_readable = bool(db_stat.st_mode & stat.S_IROTH)
         checks.append(SecurityCheck(
-            id="redis_version",
-            name="Redis version current",
-            status="pass" if major >= 6 else "warn",
-            detail=f"Redis {version}",
-            fix="" if major >= 6 else "Upgrade to Redis 6+ for ACL support",
+            id="database_permissions",
+            name="Database file permissions",
+            status="warn" if world_readable else "pass",
+            detail="World-readable" if world_readable else "Not world-readable",
+            fix="chmod 600 the database file" if world_readable else "",
             severity="medium",
-        ))
-
-        # 3. Redis maxmemory
-        mem_info = r.info("memory")
-        maxmem = mem_info.get("maxmemory", 0)
-        checks.append(SecurityCheck(
-            id="redis_maxmemory",
-            name="Redis maxmemory configured",
-            status="pass" if maxmem > 0 else "warn",
-            detail=f"maxmemory: {maxmem}" if maxmem > 0 else "maxmemory not set — unbounded memory usage",
-            fix="" if maxmem > 0 else "Set maxmemory in redis.conf to prevent OOM",
-            severity="medium",
-        ))
-
-        # 4. Redis protected-mode
-        config_resp = r.config_get("protected-mode")
-        protected = config_resp.get("protected-mode", "yes")
-        checks.append(SecurityCheck(
-            id="redis_protected_mode",
-            name="Redis protected mode",
-            status="pass" if protected == "yes" else "warn",
-            detail=f"protected-mode: {protected}",
-            fix="" if protected == "yes" else "Enable protected-mode in redis.conf",
-            severity="high",
         ))
 
     except Exception as e:
         checks.append(SecurityCheck(
-            id="redis_reachable",
-            name="Redis reachable",
+            id="database_reachable",
+            name="SQLite database reachable",
             status="fail",
-            detail=f"Redis connection failed: {str(e)[:80]}",
-            fix="Ensure Redis is running and REDIS_HOST/REDIS_PORT are correct",
+            detail=f"Database connection failed: {str(e)[:80]}",
+            fix="Check NEXUS_DB_PATH and disk permissions",
             severity="critical",
         ))
 
@@ -478,7 +450,7 @@ def run_security_scan() -> SecurityScanResult:
         "network": _scan_network(),
         "runtime": _scan_runtime(),
         "os": _scan_os(),
-        "redis": _scan_redis(),
+        "redis": _scan_database(),
     }
 
     all_checks = [c for cat in categories.values() for c in cat.checks]

@@ -30,7 +30,6 @@ from src.runtime import __version__ as runtime_version
 from ..models import HealthCheck, HealthResponse, MetricsResponse
 from ..config import settings
 from ..logger import get_logger
-from ..services.redis_client import get_redis_client
 
 router = APIRouter(tags=["health"])
 logger = get_logger(__name__)
@@ -56,44 +55,65 @@ _STARTUP_SUBSYSTEM_ORDER = [
 
 # ─── individual check helpers ────────────────────────────────────────────────
 
-def _check_redis() -> HealthCheck:
-    """Verify Redis is reachable and measure round-trip latency.
-
-    Ported from mission-control DB check logic (4eda03a): healthy < threshold,
-    warning ≥ threshold.  Redis replaces SQLite in Nexus.
-    """
+def _check_database() -> HealthCheck:
+    """Verify SQLite database is reachable and measure round-trip latency."""
     try:
-        r = get_redis_client()
+        from src.runtime.stores.db import get_db
+        db = get_db()
         t0 = time.monotonic()
-        r.ping()
+        db.execute_fetchone("SELECT 1")
         elapsed_ms = (time.monotonic() - t0) * 1000
 
         if elapsed_ms >= 100:
             return HealthCheck(
-                name="Redis",
+                name="Database",
                 status="warning",
-                message=f"Redis slow ({elapsed_ms:.0f} ms)",
+                message=f"SQLite slow ({elapsed_ms:.0f} ms)",
                 detail={
                     "latency_ms": round(elapsed_ms, 1),
-                    "hint": "Inspect Redis latency and network saturation if this warning persists.",
+                    "db_path": db.db_path,
+                    "hint": "Inspect disk I/O if this warning persists.",
                 },
             )
         return HealthCheck(
-            name="Redis",
+            name="Database",
+            status="healthy",
+            message=f"SQLite OK ({elapsed_ms:.0f} ms)",
+            detail={"latency_ms": round(elapsed_ms, 1), "db_path": db.db_path},
+        )
+    except Exception as exc:
+        return HealthCheck(
+            name="Database",
+            status="unhealthy",
+            message=f"SQLite connectivity failed: {exc}",
+            detail={
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "hint": "Check NEXUS_DB_PATH and disk permissions.",
+            },
+        )
+
+
+def _check_redis_optional() -> HealthCheck:
+    """Check Redis as optional backend — degraded, never unhealthy."""
+    try:
+        from ..services.redis_client import get_redis_client
+        r = get_redis_client()
+        t0 = time.monotonic()
+        r.ping()
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        return HealthCheck(
+            name="Redis (optional)",
             status="healthy",
             message=f"Redis reachable ({elapsed_ms:.0f} ms)",
             detail={"latency_ms": round(elapsed_ms, 1)},
         )
-    except Exception as exc:
+    except Exception:
         return HealthCheck(
-            name="Redis",
-            status="unhealthy",
-            message=f"Redis connectivity failed: {exc}",
-            detail={
-                "error": str(exc),
-                "exception_type": type(exc).__name__,
-                "hint": "Confirm Redis is running and that REDIS_HOST, REDIS_PORT, and REDIS_PASSWORD match the reachable instance.",
-            },
+            name="Redis (optional)",
+            status="degraded",
+            message="Redis not available — using SQLite backend",
+            detail={"hint": "Redis is optional. All data is stored in SQLite."},
         )
 
 
@@ -270,14 +290,17 @@ def _perform_health_check(
     Ported from mission-control performHealthCheck (commits 4eda03a / afa8e9d).
     """
     checks: List[HealthCheck] = [
-        _check_redis(),
+        _check_database(),
+        _check_redis_optional(),
         _check_process_memory(),
         _check_disk_space(),
     ]
     startup_checks, startup_failures = _build_startup_subsystem_checks(startup_states)
     checks.extend(startup_checks)
 
-    overall = _worst([c.status for c in checks[:3]] + startup_failures)
+    # Use database + memory + disk for overall status (skip optional Redis)
+    core_checks = [c for c in checks if c.name != "Redis (optional)"]
+    overall = _worst([c.status for c in core_checks[:3]] + startup_failures)
 
     return HealthResponse(
         status=overall,
@@ -304,7 +327,7 @@ def _build_health_error_response(exc: Exception) -> HealthResponse:
                 detail={
                     "error": message,
                     "exception_type": type(exc).__name__,
-                    "hint": "Inspect server logs and verify runtime dependencies such as Redis connectivity before retrying.",
+                    "hint": "Inspect server logs and verify runtime dependencies such as database connectivity before retrying.",
                 },
             )
         ],

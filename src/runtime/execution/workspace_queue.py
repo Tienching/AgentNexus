@@ -16,7 +16,6 @@ from datetime import datetime, timezone
 
 from ..models.task_models import Task, TaskStatus, ExecutorConfig
 from ..stores.task_storage import TaskQueue
-from ..stores.redis_client import get_redis_client, RedisClient
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +50,6 @@ class WorkspaceQueueManager:
         self._config = config or ExecutorConfig()
         self._providers: Dict[str, ProviderState] = {}
         self._global_executing: Set[str] = set()
-        self._redis: RedisClient = get_redis_client()
         self._lock = asyncio.Lock()
         
         logger.info(

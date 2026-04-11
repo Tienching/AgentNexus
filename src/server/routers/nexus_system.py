@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.redis_client import get_redis_client
 from ..services.task_storage import TaskQueue
 from .nexus_auth import verify_nexus_auth
 
@@ -437,27 +436,12 @@ def _build_standup(exec_user: str) -> StandupReport:
         todo_count = 0
         doing_count = 0
 
-    # Retrieve done / failed by checking all task keys in Redis
+    # Retrieve done / failed counts from SQLite task queue
     done_count = 0
     failed_count = 0
     try:
-        redis = get_redis_client()
-        pattern = f"task:{exec_user}:*"
-        keys = list(redis.scan_iter(pattern))
-        for key in keys:
-            raw = redis.get(key)
-            if not raw:
-                continue
-            import json as _json
-            try:
-                data = _json.loads(raw)
-            except Exception:
-                continue
-            st = (data.get("status") or "").lower()
-            if st == "done":
-                done_count += 1
-            elif st == "failed":
-                failed_count += 1
+        done_tasks, done_count = queue.list_tasks(page=1, page_size=1, status="done")
+        failed_tasks, failed_count = queue.list_tasks(page=1, page_size=1, status="failed")
     except Exception:
         pass
 
