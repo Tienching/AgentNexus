@@ -6900,6 +6900,14 @@ class AdminView {
             audit: () => this.renderAudit(),
             cleanup: () => this.renderCleanup(),
             tools: () => this.renderTools(),
+            // New tabs — merged from panels
+            agents: () => this.renderAgentsTab(),
+            activity: () => this.renderActivityTab(),
+            memory: () => this.renderMemoryTab(),
+            integrations: () => this.renderIntegrationsTab(),
+            admin: () => this.renderAdminTab(),
+            // Extended tabs — panel content appended
+            scheduling: () => this.renderSchedulingTab(),
         };
         (renderers[this.activeTab] || renderers.overview)();
     }
@@ -6963,20 +6971,104 @@ class AdminView {
         } catch(e) { this._showError('Failed to load overview: '+e.message); }
     }
 
-    // ── Security Tab ──
+    // ── Security Tab (extended with panel content) ──
     async renderSecurity() {
         this._showLoading();
         try {
-            const data = await NexusAPI.getSecurityScan();
-            if (!data) { this._showError('Failed to load security scan'); return; }
-            const grade = (data.overall||'unknown').toLowerCase().replace(/[^a-z-]/g,'');
+            const [secData, auditData] = await Promise.all([
+                NexusAPI.getSecurityScan().catch(() => null),
+                NexusAPI.getAuditLog({ limit: 50 }).catch(() => ({ entries: [] })),
+            ]);
+            if (!secData) { this._showError('Failed to load security scan'); return; }
+            const grade = (secData.overall||'unknown').toLowerCase().replace(/[^a-z-]/g,'');
             const ico = (s) => s==='pass'||s===true?'&#x2705;':s==='warn'||s==='warning'?'&#x26A0;&#xFE0F;':'&#x274C;';
             let cats = '';
-            for (const [n, cd] of Object.entries(data.categories||{})) {
+            for (const [n, cd] of Object.entries(secData.categories||{})) {
                 const cks = (cd.checks||[]).map(c=>`<div class="security-check"><span class="security-check-icon">${ico(c.status)}</span><div class="security-check-info"><div class="security-check-name">${this._esc(c.name||c.check||'')}</div>${c.detail?`<div class="security-check-detail">${this._esc(c.detail)}</div>`:''}${c.fix?`<div class="security-check-fix">Fix: ${this._esc(c.fix)}</div>`:''}</div></div>`).join('');
                 cats += `<div class="admin-card"><div class="admin-card-header"><span class="admin-card-title">${this._esc(n)}</span><span class="admin-badge ${(cd.status||'').toLowerCase()}">${cd.score??''}/100</span></div><div class="security-checks">${cks||'<div class="admin-metric-label">No checks</div>'}</div></div>`;
             }
-            this.container.innerHTML = `<div class="admin-section"><div style="display:flex;align-items:center;gap:var(--spacing-md);margin-bottom:var(--spacing-lg);"><h3 class="admin-section-title" style="margin-bottom:0">Security Scan</h3><span class="admin-badge ${grade}" style="font-size:var(--text-sm);padding:4px 16px;">${data.score}/100 — ${this._esc(data.overall||'Unknown')}</span></div><div class="admin-cards">${cats}</div><div class="admin-actions"><button class="action-btn primary" id="adminRescanBtn">Re-scan</button></div></div>`;
+
+            // Security Audit (from security-audit panel)
+            const secEntries = auditData.entries || auditData.logs || [];
+            const highRisk = secEntries.filter(e => e.level === 'error' || e.severity === 'high').length;
+            let secAuditHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Security Audit</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Entries</span><span class="admin-metric-value">${secEntries.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">High Risk</span><span class="admin-metric-value" style="color:var(--error)">${highRisk}</span></div>
+                        </div></div>
+                    </div>
+                    ${secEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No audit entries</div>' :
+                      secEntries.slice(0, 20).map(e => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(e.action || e.event_type || 'Audit Event')}</div>
+                                <div class="panel-list-item-sub">${e.timestamp ? new Date(e.timestamp).toLocaleString() : ''} ${e.username ? '&middot; ' + this._esc(e.username) : ''}</div>
+                            </div>
+                            <span class="panel-badge ${e.level === 'error' || e.severity === 'high' ? 'badge-error' : e.level === 'warning' ? 'badge-warn' : 'badge-ok'}">${e.level || e.severity || 'info'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Trust Scores (from trust-score panel)
+            const trustScores = secData.trust_scores || secData.scores || [];
+            let trustHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Trust Scores</h3>
+                    ${trustScores.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No trust scores available</div>' :
+                      trustScores.map(s => {
+                        const score = s.score ?? s.trust_score ?? 0;
+                        const level = score >= 80 ? 'high' : score >= 50 ? 'medium' : 'low';
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(s.agent_id || s.name || 'Agent')}</div>
+                                <div class="panel-list-item-sub">${this._esc(s.reason || level + ' trust level')}</div>
+                            </div>
+                            <div class="panel-trust-score score-${level}">
+                                <span class="score-value">${score}</span><span class="score-max">/100</span>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            // Hook Profiles (from hook-profiles panel)
+            const hooks = secData.hook_profiles || secData.hooks || [];
+            let hooksHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Hook Profiles</h3>
+                    ${hooks.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No hook profiles configured</div>' :
+                      hooks.map(h => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(h.name || h.id || 'Hook')}</div>
+                                <div class="panel-list-item-sub">${this._esc(h.type || h.event || '')} &middot; ${this._esc(h.action || 'log')}</div>
+                            </div>
+                            <span class="panel-badge ${h.enabled !== false ? 'badge-ok' : 'badge-muted'}">${h.enabled !== false ? 'Active' : 'Disabled'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Permissions (from permission panel)
+            const permissions = secData.permissions || secData.acl || [];
+            let permHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Permissions</h3>
+                    ${permissions.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No permission entries</div>' :
+                      permissions.map(p => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(p.subject || p.role || 'Role')}</div>
+                                <div class="panel-list-item-sub">${this._esc(p.resource || p.scope || '')}: ${this._esc(p.action || p.permission || 'read')}</div>
+                            </div>
+                            <span class="panel-badge ${p.granted !== false ? 'badge-ok' : 'badge-error'}">${p.granted !== false ? 'Granted' : 'Denied'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = `<div class="admin-section"><div style="display:flex;align-items:center;gap:var(--spacing-md);margin-bottom:var(--spacing-lg);"><h3 class="admin-section-title" style="margin-bottom:0">Security Scan</h3><span class="admin-badge ${grade}" style="font-size:var(--text-sm);padding:4px 16px;">${secData.score}/100 — ${this._esc(secData.overall||'Unknown')}</span></div><div class="admin-cards">${cats}</div><div class="admin-actions"><button class="action-btn primary" id="adminRescanBtn">Re-scan</button></div></div>` + secAuditHtml + trustHtml + hooksHtml + permHtml;
             document.getElementById('adminRescanBtn')?.addEventListener('click', () => this.renderSecurity());
         } catch(e) { this._showError('Failed to load security scan: '+e.message); }
     }
@@ -7071,6 +7163,613 @@ class AdminView {
         document.getElementById('exportBtn')?.addEventListener('click',async()=>{const t=document.getElementById('exportType')?.value||'tasks';const f=document.getElementById('exportFormat')?.value||'json';const a=document.getElementById('exportResult');a.innerHTML='<div class="admin-loading">Exporting...</div>';try{const d=await NexusAPI.exportData(t,f);const blob=new Blob([f==='csv'?d:JSON.stringify(d,null,2)],{type:f==='csv'?'text/csv':'application/json'});const u=URL.createObjectURL(blob);const l=document.createElement('a');l.href=u;l.download=`${t}_export.${f}`;l.click();URL.revokeObjectURL(u);a.innerHTML=`<div style="color:#22c55e;padding:var(--spacing-sm);">Downloaded ${f.toUpperCase()} file</div>`;}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
         document.getElementById('standupBtn')?.addEventListener('click',async()=>{const a=document.getElementById('standupResult');a.innerHTML='<div class="admin-loading">Generating report...</div>';try{const d=await NexusAPI.getStandup();a.innerHTML=`<div class="admin-tool-result">${JSON.stringify(d,null,2)}</div>`;}catch(e){a.innerHTML=`<div class="admin-error">${this._esc(e.message)}</div>`;}});
     }
+
+    // ============================================================
+    // New Tabs — Merged from Panel framework
+    // ============================================================
+
+    // ── Agents Tab ──
+    async renderAgentsTab() {
+        this._showLoading();
+        try {
+            const [agentsData, workload] = await Promise.all([
+                NexusAPI.getAgents().catch(() => ({ agents: [] })),
+                NexusAPI.getWorkload().catch(() => ({})),
+            ]);
+            const agents = agentsData.agents || [];
+            const queues = workload.agents || workload.queues || [];
+
+            // Agent Registry
+            const online = agents.filter(a => a.available).length;
+            let registryHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Agent Registry</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${agents.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Online</span><span class="admin-metric-value" style="color:var(--success-500)">${online}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Offline</span><span class="admin-metric-value" style="color:var(--text-tertiary)">${agents.length - online}</span></div>
+                        </div></div>
+                    </div>
+                    ${agents.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No agents found</div>' :
+                      agents.map(a => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-icon ${a.available ? 'status-online' : 'status-offline'}">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="16" height="16"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            </div>
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(a.display_name || a.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(a.agent_type || '')} &middot; ${this._esc(a.username || '')}</div>
+                            </div>
+                            <span class="panel-badge ${a.available ? 'badge-ok' : 'badge-muted'}">${a.available ? 'Online' : 'Offline'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Agent Heartbeat (static snapshot)
+            let heartbeatHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Agent Heartbeat</h3>
+                    ${agents.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No heartbeat data</div>' :
+                      agents.slice(0, 10).map(a => `
+                        <div class="panel-list-item">
+                            <div class="timeline-dot ${a.available ? 'status-online' : 'status-offline'}"></div>
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(a.display_name || a.id)}</div>
+                                <div class="panel-list-item-sub">${a.last_active ? new Date(a.last_active).toLocaleString() : 'Unknown'} &middot; ${a.available ? 'OK' : 'Offline'}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Agent Soul
+            let soulHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Agent Soul Profiles</h3>
+                    ${agents.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No soul profiles</div>' :
+                      agents.map(a => {
+                        const soul = a.soul || a.identity;
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(a.display_name || a.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(a.agent_type || '')}</div>
+                                ${soul ? `<pre class="panel-code" style="margin-top:4px;font-size:var(--text-xs);">${this._esc(typeof soul === 'string' ? soul : JSON.stringify(soul, null, 2))}</pre>` : '<div style="color:var(--text-tertiary);font-size:var(--text-xs);">No soul profile configured</div>'}
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            // Agent Queue
+            const totalPending = queues.reduce((s, q) => s + (q.pending || q.queued || 0), 0);
+            const totalRunning = queues.reduce((s, q) => s + (q.running || 0), 0);
+            let queueHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Agent Queue</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Pending</span><span class="admin-metric-value large">${totalPending}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Running</span><span class="admin-metric-value" style="color:var(--success-500)">${totalRunning}</span></div>
+                        </div></div>
+                    </div>
+                    ${queues.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No queue data</div>' :
+                      queues.map(q => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(q.agent_id || q.name || 'Unknown')}</div>
+                                <div class="panel-list-item-sub">Pending: ${q.pending || q.queued || 0} &middot; Running: ${q.running || 0}</div>
+                            </div>
+                            <div class="panel-queue-bar"><div class="queue-bar-fill" style="width: ${Math.min(100, ((q.running || 0) / Math.max(1, (q.capacity || 5))) * 100)}%"></div></div>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Agent Messaging
+            let messagingHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Agent Messaging</h3>
+                    <div id="agentMessagingContent"><div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No messages yet</div></div>
+                </div>`;
+
+            this.container.innerHTML = registryHtml + heartbeatHtml + soulHtml + queueHtml + messagingHtml;
+
+            // Load messaging data lazily
+            try {
+                const msgData = await NexusAPI.getAuditLog({ action: 'message', limit: 30 });
+                const messages = msgData.entries || msgData.logs || [];
+                const mc = document.getElementById('agentMessagingContent');
+                if (mc && messages.length > 0) {
+                    mc.innerHTML = messages.map(m => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(m.from || m.agent_id || 'System')}</div>
+                                <div class="panel-list-item-sub">${m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : ''} &middot; ${this._esc(m.content || m.message || m.action || '')}</div>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) { /* ignore */ }
+        } catch (e) { this._showError('Failed to load agents: ' + e.message); }
+    }
+
+    // ── Activity Tab ──
+    async renderActivityTab() {
+        this._showLoading();
+        try {
+            const [auditData, diagData] = await Promise.all([
+                NexusAPI.getAuditLog({ limit: 50 }).catch(() => ({ entries: [] })),
+                NexusAPI.getDiagnostics().catch(() => ({})),
+            ]);
+            const entries = auditData.entries || auditData.logs || [];
+            const tokenUsage = diagData.token_usage || diagData.usage || [];
+            const costData = diagData.cost_analysis || diagData.billing || { total: 0, breakdown: [] };
+
+            // Activity Feed
+            let feedHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Activity Feed</h3>
+                    ${entries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No activity recorded</div>' :
+                      entries.map(e => {
+                        const time = e.timestamp ? new Date(e.timestamp).toLocaleString() : '';
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(e.action || e.event_type || 'Activity')}</div>
+                                <div class="panel-list-item-sub">${time} ${e.username ? '&middot; ' + this._esc(e.username) : ''}</div>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            // Notifications
+            const notifications = entries.filter(e => e.action === 'notification');
+            const unread = notifications.filter(n => !n.read).length;
+            let notifyHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Notifications ${unread > 0 ? `<span class="admin-badge warn" style="margin-left:8px;">${unread} Unread</span>` : ''}</h3>
+                    ${notifications.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No notifications</div>' :
+                      notifications.map(n => `
+                        <div class="panel-list-item ${n.read ? '' : 'unread'}">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(n.action || n.title || 'Notification')}</div>
+                                <div class="panel-list-item-sub">${this._esc(n.detail || n.message || '')}</div>
+                            </div>
+                            <span class="panel-badge ${n.level === 'error' ? 'badge-error' : n.level === 'warning' ? 'badge-warn' : 'badge-ok'}">${n.level || 'info'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Token Usage
+            const totalTokens = tokenUsage.reduce((s, u) => s + (u.total_tokens || u.tokens || 0), 0);
+            const totalCost = tokenUsage.reduce((s, u) => s + (u.cost || 0), 0);
+            let tokenHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Token Usage</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total Tokens</span><span class="admin-metric-value large">${(totalTokens / 1000).toFixed(1)}k</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Cost</span><span class="admin-metric-value">$${totalCost.toFixed(2)}</span></div>
+                        </div></div>
+                    </div>
+                    ${tokenUsage.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No token usage data</div>' :
+                      tokenUsage.map(u => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(u.provider || u.model || 'Unknown')}</div>
+                                <div class="panel-list-item-sub">Prompt: ${(u.prompt_tokens || 0).toLocaleString()} &middot; Completion: ${(u.completion_tokens || 0).toLocaleString()} &middot; Total: ${(u.total_tokens || u.tokens || 0).toLocaleString()}</div>
+                            </div>
+                            <span class="panel-badge">${u.cost != null ? '$' + u.cost.toFixed(4) : ''}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Cost Analysis
+            const breakdown = costData.breakdown || [];
+            const costTotal = costData.total || 0;
+            let costHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Cost Analysis</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total Cost</span><span class="admin-metric-value large">$${costTotal.toFixed(2)}</span></div>
+                        </div></div>
+                    </div>
+                    ${breakdown.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No cost data available</div>' :
+                      breakdown.map(b => {
+                        const pct = costTotal > 0 ? ((b.cost / costTotal) * 100).toFixed(1) : 0;
+                        return `
+                        <div class="panel-bar-row">
+                            <div class="panel-bar-label">${this._esc(b.provider || b.model || b.label)}</div>
+                            <div class="panel-bar-track"><div class="panel-bar-fill" style="width: ${pct}%"></div></div>
+                            <div class="panel-bar-value">$${(b.cost || 0).toFixed(2)} (${pct}%)</div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            this.container.innerHTML = feedHtml + notifyHtml + tokenHtml + costHtml;
+        } catch (e) { this._showError('Failed to load activity: ' + e.message); }
+    }
+
+    // ── Memory Tab ──
+    async renderMemoryTab() {
+        this._showLoading();
+        try {
+            const data = await NexusAPI.getAgents().catch(() => ({ agents: [] }));
+            const agents = data.agents || [];
+
+            // Memory Browser
+            const memEntries = agents.map(a => ({
+                id: a.id, agent: a.display_name || a.id,
+                memory_count: a.memory_count || 0,
+                last_updated: a.last_active || new Date().toISOString(),
+            }));
+            let browserHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Memory Browser</h3>
+                    ${memEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No memory entries found</div>' :
+                      memEntries.map(e => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(e.agent)}</div>
+                                <div class="panel-list-item-sub">${e.memory_count} entries &middot; Updated ${new Date(e.last_updated).toLocaleString()}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Memory Tree
+            const tree = agents.map(a => ({
+                id: a.id, name: a.display_name || a.id,
+                children: [
+                    { id: `${a.id}-short`, name: 'Short-term', count: 0 },
+                    { id: `${a.id}-long`, name: 'Long-term', count: 0 },
+                    { id: `${a.id}-episodic`, name: 'Episodic', count: 0 },
+                ],
+            }));
+            let treeHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Memory Tree</h3>
+                    ${tree.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No memory tree data</div>' :
+                      tree.map(n => `
+                        <div style="margin-bottom:var(--spacing-sm);">
+                            <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px;">${this._esc(n.name)}</div>
+                            ${n.children.map(c => `
+                                <div style="display:flex;align-items:center;gap:var(--spacing-sm);padding-left:var(--spacing-lg);">
+                                    <span class="tree-leaf-dot"></span>
+                                    <span class="tree-label">${this._esc(c.name)}</span>
+                                    <span class="panel-badge">${c.count}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Memory Graph
+            const nodes = agents.map(a => ({ id: a.id, label: a.display_name || a.id, available: a.available }));
+            const edges = [];
+            for (let i = 0; i < agents.length; i++) {
+                for (let j = i + 1; j < agents.length; j++) {
+                    if (agents[i].username === agents[j].username) {
+                        edges.push({ from: agents[i].id, to: agents[j].id });
+                    }
+                }
+            }
+            let graphHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Memory Graph</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Nodes</span><span class="admin-metric-value">${nodes.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Edges</span><span class="admin-metric-value">${edges.length}</span></div>
+                        </div></div>
+                    </div>
+                    <div class="panel-graph-container"><canvas class="panel-canvas" id="memoryGraphCanvas" width="600" height="400"></canvas></div>
+                </div>`;
+
+            this.container.innerHTML = browserHtml + treeHtml + graphHtml;
+
+            // Draw the memory graph
+            const canvas = document.getElementById('memoryGraphCanvas');
+            if (canvas && nodes.length > 0) {
+                const ctx = canvas.getContext('2d');
+                const w = canvas.width, h = canvas.height;
+                ctx.clearRect(0, 0, w, h);
+                const cx = w / 2, cy = h / 2, r = Math.min(w, h) * 0.35;
+                const positions = {};
+                nodes.forEach((node, i) => {
+                    const angle = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+                    positions[node.id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+                });
+                ctx.strokeStyle = 'rgba(100, 160, 255, 0.3)'; ctx.lineWidth = 1;
+                for (const edge of edges) {
+                    const from = positions[edge.from], to = positions[edge.to];
+                    if (from && to) { ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke(); }
+                }
+                const style = getComputedStyle(document.documentElement);
+                for (const node of nodes) {
+                    const pos = positions[node.id]; if (!pos) continue;
+                    ctx.beginPath(); ctx.arc(pos.x, pos.y, 8, 0, 2 * Math.PI);
+                    ctx.fillStyle = node.available ? (style.getPropertyValue('--success-500') || '#22c55e') : (style.getPropertyValue('--text-muted') || '#888');
+                    ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.2)'; ctx.lineWidth = 1; ctx.stroke();
+                    ctx.fillStyle = style.getPropertyValue('--text-primary') || '#fff'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+                    ctx.fillText(node.label.split('/').pop(), pos.x, pos.y + 20);
+                }
+            }
+        } catch (e) { this._showError('Failed to load memory: ' + e.message); }
+    }
+
+    // ── Integrations Tab ──
+    async renderIntegrationsTab() {
+        this._showLoading();
+        try {
+            const [diagData, projectsData, runtimeData] = await Promise.all([
+                NexusAPI.getDiagnostics().catch(() => ({})),
+                NexusAPI.getProjects().catch(() => ({ projects: [] })),
+                NexusAPI.getAgentRuntimes('claude').catch(() => ({ runtimes: {} })),
+            ]);
+
+            // Webhooks
+            const webhooks = diagData.webhooks || [];
+            let webhookHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Webhooks</h3>
+                    ${webhooks.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No webhooks configured</div>' :
+                      webhooks.map(w => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(w.name || w.url || 'Webhook')}</div>
+                                <div class="panel-list-item-sub">${this._esc(w.url || w.detail || '')} &middot; ${this._esc(w.events || 'all events')}</div>
+                            </div>
+                            <span class="panel-badge ${w.active !== false ? 'badge-ok' : 'badge-muted'}">${w.active !== false ? 'Active' : 'Inactive'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // GitHub Sync
+            const repos = (projectsData.projects || []).map(p => ({
+                name: typeof p === 'string' ? p : p.name || p.path || 'Unknown',
+                path: typeof p === 'string' ? p : p.path || '',
+            }));
+            let githubHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">GitHub Sync</h3>
+                    ${repos.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No repositories connected</div>' :
+                      repos.map(r => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(r.name)}</div>
+                                <div class="panel-list-item-sub">${this._esc(r.path)}</div>
+                            </div>
+                            <span class="panel-badge badge-ok">Connected</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Claude Code
+            const runtime = runtimeData.runtimes?.claude || runtimeData.runtime || {};
+            const sessions = runtime.sessions || runtime.processes || [];
+            let claudeHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Claude Code</h3>
+                    ${Object.keys(runtime).length > 0 ? `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">Runtime: ${this._esc(runtime.version || 'Unknown')}</div>
+                                <div class="panel-list-item-sub">${this._esc(runtime.path || 'Not found')}</div>
+                            </div>
+                            <span class="panel-badge ${runtime.available ? 'badge-ok' : 'badge-error'}">${runtime.available ? 'Available' : 'Not Found'}</span>
+                        </div>
+                    ` : '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No Claude Code runtime detected</div>'}
+                    ${sessions.length > 0 ? sessions.map(s => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(s.id || s.session_id || 'Session')}</div>
+                                <div class="panel-list-item-sub">${this._esc(s.project || s.cwd || '')}</div>
+                            </div>
+                            <span class="panel-badge badge-ok">Running</span>
+                        </div>
+                    `).join('') : ''}
+                </div>`;
+
+            // Teleport
+            const connections = diagData.teleport_connections || diagData.connections || [];
+            const activeConns = connections.filter(c => c.status === 'connected' || c.active).length;
+            let teleportHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Teleport</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Active</span><span class="admin-metric-value" style="color:var(--success-500)">${activeConns}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value">${connections.length}</span></div>
+                        </div></div>
+                    </div>
+                    ${connections.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No teleport connections</div>' :
+                      connections.map(c => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(c.name || c.host || 'Connection')}</div>
+                                <div class="panel-list-item-sub">${this._esc(c.host || '')} ${c.port ? ':' + c.port : ''} &middot; Latency: ${c.latency_ms ?? '—'}ms</div>
+                            </div>
+                            <span class="panel-badge ${c.status === 'connected' || c.active ? 'badge-ok' : 'badge-muted'}">${c.status || (c.active ? 'Active' : 'Inactive')}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = webhookHtml + githubHtml + claudeHtml + teleportHtml;
+        } catch (e) { this._showError('Failed to load integrations: ' + e.message); }
+    }
+
+    // ── Admin Tab ──
+    async renderAdminTab() {
+        this._showLoading();
+        try {
+            const [diagData, secData] = await Promise.all([
+                NexusAPI.getDiagnostics().catch(() => ({})),
+                NexusAPI.getSecurityScan().catch(() => ({})),
+            ]);
+
+            // Feature Flags
+            const flags = diagData.feature_flags || diagData.flags || [];
+            const enabled = flags.filter(f => f.enabled).length;
+            let flagHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Feature Flags</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Enabled</span><span class="admin-metric-value" style="color:var(--success-500)">${enabled}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Disabled</span><span class="admin-metric-value">${flags.length - enabled}</span></div>
+                        </div></div>
+                    </div>
+                    ${flags.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No feature flags configured</div>' :
+                      flags.map(f => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(f.name || f.key)}</div>
+                                <div class="panel-list-item-sub">${this._esc(f.description || '')}</div>
+                            </div>
+                            <label class="panel-toggle"><input type="checkbox" ${f.enabled ? 'checked' : ''} data-flag-key="${this._esc(f.name || f.key)}"><span class="toggle-slider"></span></label>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Standup Report
+            let standupHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Standup Report</h3>
+                    <button class="action-btn primary" id="adminStandupGenBtn" style="margin-bottom:var(--spacing-md);">Generate Report</button>
+                    <div id="adminStandupResult"></div>
+                </div>`;
+
+            // RBAC
+            const roles = secData.rbac || secData.roles || [
+                { name: 'admin', permissions: ['*'], users: [] },
+                { name: 'operator', permissions: ['task:read', 'task:write', 'agent:read'], users: [] },
+                { name: 'viewer', permissions: ['task:read', 'agent:read'], users: [] },
+            ];
+            let rbacHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">RBAC</h3>
+                    ${roles.map(r => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(r.name)}</div>
+                                <div class="panel-list-item-sub">${(r.permissions || []).length} permissions</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = flagHtml + standupHtml + rbacHtml;
+
+            // Bind standup report generation
+            document.getElementById('adminStandupGenBtn')?.addEventListener('click', async () => {
+                const area = document.getElementById('adminStandupResult');
+                area.innerHTML = '<div class="admin-loading">Generating report...</div>';
+                try {
+                    const report = await NexusAPI.getStandup();
+                    area.innerHTML = `
+                        <div class="admin-section">
+                            <div class="admin-metric"><span class="admin-metric-label">Completed</span><span class="admin-metric-value">${report.tasks_completed ?? 0}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">In Progress</span><span class="admin-metric-value">${report.tasks_in_progress ?? 0}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Agents Active</span><span class="admin-metric-value">${report.agents_active ?? 0}</span></div>
+                        </div>
+                        ${report.recent_completions?.length ? report.recent_completions.map(t => `<div class="panel-list-item"><div class="panel-list-item-body"><div class="panel-list-item-title">${this._esc(t.title || t.id)}</div><div class="panel-list-item-sub">${this._esc(t.agent_type || '')}</div></div></div>`).join('') : ''}
+                    `;
+                } catch (e) { area.innerHTML = `<div class="admin-error">${this._esc(e.message)}</div>`; }
+            });
+
+            // Bind feature flag toggles
+            this.container.querySelectorAll('.panel-toggle input').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    console.log(`Feature flag "${e.target.dataset.flagKey}" ${e.target.checked ? 'enabled' : 'disabled'}`);
+                });
+            });
+        } catch (e) { this._showError('Failed to load admin: ' + e.message); }
+    }
+
+    // ── Scheduling Tab ──
+    async renderSchedulingTab() {
+        this._showLoading();
+        try {
+            const [schedData, taskData] = await Promise.all([
+                NexusAPI.getSchedules({ pageSize: 50 }).catch(() => ({ schedules: [] })),
+                NexusAPI.getTasks({ pageSize: 20 }).catch(() => ({ tasks: [] })),
+            ]);
+            const schedules = schedData.schedules || schedData.items || [];
+            const doneTasks = (taskData.tasks || []).filter(t => t.status === 'done').slice(0, 20);
+
+            // Cron Scheduler
+            const activeSched = schedules.filter(s => s.status === 'active').length;
+            const pausedSched = schedules.filter(s => s.status === 'paused').length;
+            let cronHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Cron Scheduler</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Active</span><span class="admin-metric-value" style="color:var(--success-500)">${activeSched}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Paused</span><span class="admin-metric-value" style="color:var(--warning-500)">${pausedSched}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value">${schedules.length}</span></div>
+                        </div></div>
+                    </div>
+                    ${schedules.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No schedules configured</div>' :
+                      schedules.map(s => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(s.name || s.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(s.cron || s.schedule || '')} &middot; ${this._esc(s.task_type || '')}</div>
+                            </div>
+                            <span class="panel-badge ${s.status === 'active' ? 'badge-ok' : s.status === 'paused' ? 'badge-warn' : 'badge-muted'}">${s.status}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // NLP Parser
+            let nlpHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Natural Language Scheduler</h3>
+                    <div style="display:flex;gap:var(--spacing-sm);">
+                        <input type="text" class="form-input" id="schedulingNlpInput" placeholder='e.g. "every weekday at 9am"' style="flex:1;">
+                        <button class="action-btn primary" id="schedulingNlpBtn">Parse</button>
+                    </div>
+                    <div id="schedulingNlpResult" style="margin-top:var(--spacing-sm);"></div>
+                </div>`;
+
+            // Template Tasks
+            let templateHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Template Tasks</h3>
+                    ${doneTasks.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No templates available</div>' :
+                      '<div class="panel-grid">' + doneTasks.map(t => `
+                        <div class="panel-card">
+                            <div class="panel-card-title">${this._esc(t.title || t.id)}</div>
+                            <div class="panel-card-meta">${this._esc(t.agent_type || 'any')} &middot; ${this._esc(t.priority || 'normal')}</div>
+                        </div>
+                    `).join('') + '</div>'}
+                </div>`;
+
+            this.container.innerHTML = cronHtml + nlpHtml + templateHtml;
+
+            // Bind NLP parser
+            document.getElementById('schedulingNlpBtn')?.addEventListener('click', async () => {
+                const input = document.getElementById('schedulingNlpInput')?.value?.trim();
+                if (!input) return;
+                const area = document.getElementById('schedulingNlpResult');
+                area.innerHTML = '<div class="admin-loading">Parsing...</div>';
+                try {
+                    const result = await NexusAPI.parseSchedule(input);
+                    area.innerHTML = `
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Cron Expression</span><span class="admin-metric-value">${this._esc(result.cron || '')}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Human Readable</span><span class="admin-metric-value">${this._esc(result.human || result.description || '')}</span></div>
+                        </div></div>
+                        ${result.next_runs ? result.next_runs.map(r => `<div style="font-size:var(--text-sm);color:var(--text-secondary);">${this._esc(r)}</div>`).join('') : ''}
+                    `;
+                } catch (e) { area.innerHTML = `<div class="admin-error">${this._esc(e.message)}</div>`; }
+            });
+            document.getElementById('schedulingNlpInput')?.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('schedulingNlpBtn')?.click(); });
+        } catch (e) { this._showError('Failed to load scheduling: ' + e.message); }
+    }
+}
 }
 
 class SettingsView {
@@ -7079,6 +7778,7 @@ class SettingsView {
         this.activeTab = localStorage.getItem('nexus-settings-tab') || 'overview';
         this.configSection = document.getElementById('settingsConfigSection');
         this.adminSection = document.getElementById('settingsAdminSection');
+        this._skillsPanelContainer = null;
         this.bindEvents();
     }
 
@@ -7100,8 +7800,13 @@ class SettingsView {
         const configTabMap = {
             general: 'parameters',
             mcp: 'mcp',
-            skills: 'skills',
         };
+
+        // Tabs that show in admin section (with panel content merged)
+        const adminTabs = [
+            'overview', 'security', 'runtimes', 'audit', 'cleanup', 'tools',
+            'agents', 'activity', 'memory', 'integrations', 'admin', 'scheduling',
+        ];
 
         document.querySelectorAll('.settings-tab').forEach(tab => {
             tab.classList.toggle('active', tab.dataset.settingsTab === this.activeTab);
@@ -7109,17 +7814,138 @@ class SettingsView {
 
         const configTab = configTabMap[this.activeTab];
         if (configTab) {
+            // Pure ConfigView tabs (general, mcp)
             if (this.configSection) this.configSection.style.display = '';
             if (this.adminSection) this.adminSection.style.display = 'none';
+            this._removeSkillsPanelSection();
             this.app.configView.refresh();
             this.app.configView.switchTab(configTab);
             return;
         }
 
+        if (this.activeTab === 'skills') {
+            // Skills tab: show ConfigView skills AND panel content below
+            if (this.configSection) this.configSection.style.display = '';
+            this.app.configView.refresh();
+            this.app.configView.switchTab('skills');
+            // Render panel content below config section
+            this._renderSkillsPanelSection();
+            return;
+        }
+
+        // All other tabs go through AdminView
         if (this.configSection) this.configSection.style.display = 'none';
+        this._removeSkillsPanelSection();
         if (this.adminSection) this.adminSection.style.display = '';
         this.app.adminView.switchTab(this.activeTab);
     }
+
+    async _renderSkillsPanelSection() {
+        this._removeSkillsPanelSection();
+
+        const section = document.createElement('div');
+        section.id = 'settingsSkillsPanelSection';
+        section.className = 'settings-section';
+        section.style.marginTop = '0';
+        section.innerHTML = '<div class="admin-content" id="skillsPanelContent"><div class="admin-loading">Loading skills panels...</div></div>';
+
+        // Insert after configSection
+        this.configSection?.after(section);
+        this._skillsPanelContainer = document.getElementById('skillsPanelContent');
+        if (!this._skillsPanelContainer) return;
+
+        try {
+            const [skillsData, secData] = await Promise.all([
+                NexusAPI.getSkills().catch(() => ({ providers: {} })),
+                NexusAPI.getSecurityScan().catch(() => ({})),
+            ]);
+
+            const providers = Object.keys(skillsData.providers || {});
+            const totalSkills = providers.reduce((s, p) => s + (skillsData.providers[p]?.length || 0), 0);
+
+            // Skill Registry
+            let registryHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Skill Registry</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Providers</span><span class="admin-metric-value">${providers.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Total Skills</span><span class="admin-metric-value">${totalSkills}</span></div>
+                        </div></div>
+                    </div>
+                    ${providers.map(p => {
+                        const skills = skillsData.providers[p] || [];
+                        return `
+                        <div style="margin-bottom:var(--spacing-md);">
+                            <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px;">${this._esc(p)} <span class="panel-badge">${skills.length}</span></div>
+                            ${skills.map(sk => `
+                                <div class="panel-list-item">
+                                    <div class="panel-list-item-body">
+                                        <div class="panel-list-item-title">${this._esc(sk.skill_name || sk.name)}</div>
+                                        <div class="panel-list-item-sub">${this._esc(sk.description || '')}</div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            // Skill Security
+            const pending = (secData.skills?.pending || []).map(s => ({ ...s, _status: 'pending' }));
+            const approved = (secData.skills?.approved || []).map(s => ({ ...s, _status: 'approved' }));
+            const allSkills = [...pending, ...approved];
+            let secSkillsHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Skill Security</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Pending</span><span class="admin-metric-value" style="color:var(--warning-500)">${pending.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Approved</span><span class="admin-metric-value" style="color:var(--success-500)">${approved.length}</span></div>
+                        </div></div>
+                    </div>
+                    ${allSkills.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No skill security entries</div>' :
+                      allSkills.map(s => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(s.name || s.skill_name)}</div>
+                                <div class="panel-list-item-sub">${this._esc(s.provider || '')} &middot; ${this._esc(s.risk_level || 'unknown risk')}</div>
+                            </div>
+                            <span class="panel-badge ${s._status === 'approved' ? 'badge-ok' : 'badge-warn'}">${s._status}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            // Skill Sync
+            let syncHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Skill Sync</h3>
+                    ${providers.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No providers to sync</div>' :
+                      providers.map(p => {
+                        const count = (skillsData.providers[p] || []).length;
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(p)}</div>
+                                <div class="panel-list-item-sub">${count} skills</div>
+                            </div>
+                            <span class="panel-badge badge-ok">In Sync</span>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            this._skillsPanelContainer.innerHTML = registryHtml + secSkillsHtml + syncHtml;
+        } catch (e) {
+            this._skillsPanelContainer.innerHTML = `<div class="admin-error">Failed to load skills: ${this._esc(e.message)}</div>`;
+        }
+    }
+
+    _removeSkillsPanelSection() {
+        const existing = document.getElementById('settingsSkillsPanelSection');
+        if (existing) existing.remove();
+        this._skillsPanelContainer = null;
+    }
+
+    _esc(str) { return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
     refresh() {
         this.applyTab();
