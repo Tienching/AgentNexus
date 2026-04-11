@@ -360,6 +360,39 @@ class TaskQueue:
         logger.info(f"Task {task_id} status manually updated: {old_status_val} -> {new_status.value}")
         return task
 
+    def update_task(self, task_id: str, updates: dict) -> Optional[Task]:
+        """Update arbitrary task fields (priority, assignee, position, description, etc).
+
+        Allowed fields: priority, assignee, position, description, title, due_date, labels, metadata.
+        Status changes should use update_task_status() instead.
+        """
+        task_id = str(task_id)
+        task = self.get_task(task_id)
+        if not task:
+            return None
+
+        allowed = {"priority", "assignee", "position", "description", "title", "due_date", "labels", "metadata"}
+        filtered = {k: v for k, v in updates.items() if k in allowed}
+        if not filtered:
+            return task
+
+        set_clauses = []
+        params = []
+        for key, value in filtered.items():
+            if isinstance(value, (dict, list)):
+                set_clauses.append(f"{key} = ?")
+                params.append(json.dumps(value))
+            else:
+                set_clauses.append(f"{key} = ?")
+                params.append(str(value) if value is not None else None)
+
+        params.append(task_id)
+        params.append(self.exec_user)
+        sql = f"UPDATE core_tasks SET {', '.join(set_clauses)} WHERE task_id = ? AND exec_user = ?"
+        self._db.execute(sql, params)
+
+        return self.get_task(task_id)
+
     def get_queue_status(self) -> dict:
         """Get overall queue status"""
         rows = self._db.execute_fetchall(

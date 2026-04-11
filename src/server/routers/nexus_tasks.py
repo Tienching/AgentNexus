@@ -49,6 +49,7 @@ from .nexus_models import (
     BulkCreateTaskRequest,
     BulkCreateTaskResponse,
     UpdateTaskStatusRequest,
+    UpdateTaskRequest,
     RequeueOrphanTaskRequest,
     UpdateTaskOutcomeRequest,
     TaskOutcomesResponse,
@@ -505,6 +506,35 @@ async def requeue_orphan_task(
     updated = queue.requeue_orphan_task(task_id, reason=request.reason)
     if not updated:
         raise HTTPException(status_code=400, detail=f"Task {task_id} is not marked as orphaned")
+
+    return task_to_item(updated)
+
+
+# ============ Task General Update API ============
+
+
+@router.patch("/tasks/{task_id}", response_model=TaskItem)
+async def update_task(
+    task_id: str,
+    request: UpdateTaskRequest,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+):
+    """Update arbitrary task fields (priority, assignee, position, title, etc).
+
+    For status changes, use PATCH /tasks/{id}/status instead.
+    """
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    updates = request.model_dump(exclude_none=True)
+    if not updates:
+        return task_to_item(task)
+
+    updated = queue.update_task(task_id, updates)
+    if not updated:
+        raise HTTPException(status_code=400, detail=f"Failed to update task {task_id}")
 
     return task_to_item(updated)
 

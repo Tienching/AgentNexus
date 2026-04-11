@@ -215,6 +215,17 @@ class UpdateTaskOutcomeRequest(BaseModel):
     outcome: str = Field(..., description="Outcome: success | failed | partial | abandoned")
     resolution: Optional[str] = Field(None, description="Free-text resolution notes")
     feedback_rating: Optional[int] = Field(None, ge=1, le=5, description="Human rating 1-5")
+
+
+class UpdateTaskRequest(BaseModel):
+    """Update arbitrary task fields. Status changes should use UpdateTaskStatusRequest."""
+    priority: Optional[str] = Field(None, description="Task priority: critical | serious | normal | low")
+    assignee: Optional[str] = Field(None, description="Assignee name or ID")
+    position: Optional[float] = Field(None, description="Float position for ordering")
+    title: Optional[str] = Field(None, description="Task title")
+    description: Optional[str] = Field(None, description="Task description")
+    due_date: Optional[str] = Field(None, description="Due date (ISO format)")
+    labels: Optional[list] = Field(None, description="Task labels/tags")
     feedback_notes: Optional[str] = Field(None, description="Human feedback text")
 
 

@@ -531,6 +531,24 @@ class NexusAPI {
         return response.json();
     }
 
+    static async updateTask(taskId, updates, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}?${params}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        });
+
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to update task: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     static async getTaskQualityReviews(taskId, options = {}) {
         const params = new URLSearchParams({
             exec_user: options.execUser || _defaultExecUser,
