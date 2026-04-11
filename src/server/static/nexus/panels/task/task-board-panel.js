@@ -24,6 +24,15 @@ class TaskBoardPanel extends BasePanel {
         this._mentionInputs = [];
         this._schedulePanelOpen = false;
         this._paneId = 'global'; // fixed pane id for fullscreen mode
+        this._sortField = 'position'; // position | priority | due_date | created_at
+        this._sortDirection = 'asc';
+
+        // K-008: Done column infinite scroll state
+        this._donePageSize = 20;
+        this._doneLoadedCount = 20;
+        this._doneAllTasks = [];
+        this._doneLoading = false;
+        this._doneObserver = null;
 
         this.statusColumns = [
             { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
@@ -167,6 +176,10 @@ class TaskBoardPanel extends BasePanel {
 
     async destroy() {
         this._stopAutoPolling();
+        if (this._doneObserver) {
+            this._doneObserver.disconnect();
+            this._doneObserver = null;
+        }
         for (const [taskId] of this._activeStreams) {
             this._closeTaskStream(taskId);
         }
@@ -238,6 +251,7 @@ class TaskBoardPanel extends BasePanel {
                 ...t,
                 status: this._normalizeTaskStatus(t.status),
             }));
+            this._ensurePositions();
             this._renderKanban();
             this._loadExpansionPanels();
             this._syncSelectedTaskDetail();
@@ -282,16 +296,31 @@ class TaskBoardPanel extends BasePanel {
         });
 
         this.statusColumns.forEach(col => {
-            const items = grouped[col.key] || [];
+            const allItems = this._sortTasks(grouped[col.key] || []);
             const el = document.getElementById(`items-${pid}-${col.key}`);
             const countEl = document.getElementById(`count-${pid}-${col.key}`);
-            if (countEl) countEl.textContent = items.length;
+            if (countEl) countEl.textContent = allItems.length;
+
+            // K-008: Done column infinite scroll — only render first N items
+            let items = allItems;
+            if (col.key === 'done') {
+                this._doneAllTasks = allItems;
+                items = allItems.slice(0, this._doneLoadedCount);
+            }
+
             if (el) {
-                if (items.length === 0) {
+                if (allItems.length === 0) {
                     el.innerHTML = '<div class="empty-state" style="padding: 24px 16px;"><p style="font-size: 12px; color: var(--text-muted);">No tasks</p></div>';
                 } else {
-                    el.innerHTML = items.map(t => this._renderTaskCard(t)).join('');
+                    let html = items.map(t => this._renderTaskCard(t)).join('');
+                    // Add sentinel for infinite scroll on Done column
+                    if (col.key === 'done' && items.length < allItems.length) {
+                        html += '<div class="done-scroll-sentinel" id="doneScrollSentinel-' + pid + '" style="padding:12px;text-align:center;"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto;"></div><p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Loading more...</p></div>';
+                    }
+                    el.innerHTML = html;
                     this._bindCardEvents(el);
+                    // Set up Intersection Observer for Done column
+                    if (col.key === 'done') this._setupDoneInfiniteScroll(pid);
                 }
             }
         });
@@ -953,11 +982,18 @@ class TaskBoardPanel extends BasePanel {
                 const task = this._tasks.find(t => t.id === taskId);
                 return task ? this._normalizeTaskStatus(task.status) : null;
             },
-            onMove: async (taskId, toStatus, fromStatus) => {
+            getTaskPosition: (taskId) => {
+                const task = this._tasks.find(t => t.id === taskId);
+                return task?.position ?? 0;
+            },
+            onMove: async (taskId, toStatus, fromStatus, newPosition) => {
                 try {
                     await this.api.updateTaskStatus(taskId, toStatus, { execUser: this._getExecUser() });
                     const local = this._tasks.find(t => t.id === taskId);
-                    if (local) local.status = toStatus;
+                    if (local) {
+                        local.status = toStatus;
+                        local.position = newPosition;
+                    }
                     this._renderKanban();
                     if (this._selectedTask === taskId) {
                         const task = this._tasks.find(t => t.id === taskId);
@@ -966,6 +1002,17 @@ class TaskBoardPanel extends BasePanel {
                     this._getApp()?.showToast?.(`Task moved: ${fromStatus} → ${toStatus}`, 'success');
                 } catch (e) {
                     this._getApp()?.showToast?.(`Move failed: ${e.message}`, 'error');
+                    await this._loadTasks();
+                }
+            },
+            onReorder: async (taskId, status, newPosition) => {
+                const local = this._tasks.find(t => t.id === taskId);
+                if (local) local.position = newPosition;
+                this._renderKanban();
+                try {
+                    await this.api.updateTask(taskId, { position: newPosition }, { execUser: this._getExecUser() });
+                } catch (e) {
+                    this._getApp()?.showToast?.(`Reorder failed: ${e.message}`, 'error');
                     await this._loadTasks();
                 }
             },
@@ -1118,6 +1165,131 @@ class TaskBoardPanel extends BasePanel {
             const isStreaming = this._activeStreams.has(this._selectedTask);
             if ((renderedId !== this._selectedTask || renderedStatus !== latestStatus || (shouldHaveConv && !hasConvDom)) && !isStreaming) {
                 this._renderTaskDetail(latest);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Done column infinite scroll (K-008)
+    // ------------------------------------------------------------------
+
+    _setupDoneInfiniteScroll(pid) {
+        // Disconnect previous observer
+        if (this._doneObserver) {
+            this._doneObserver.disconnect();
+            this._doneObserver = null;
+        }
+        const sentinel = document.getElementById(`doneScrollSentinel-${pid}`);
+        if (!sentinel) return;
+
+        this._doneObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting && !this._doneLoading) {
+                    this._loadMoreDoneTasks(pid);
+                }
+            });
+        }, { root: sentinel.closest('.kanban-column-items'), threshold: 0.1 });
+
+        this._doneObserver.observe(sentinel);
+    }
+
+    _loadMoreDoneTasks(pid) {
+        if (this._doneLoading) return;
+        if (this._doneLoadedCount >= this._doneAllTasks.length) return;
+
+        this._doneLoading = true;
+        const nextBatch = this._doneAllTasks.slice(
+            this._doneLoadedCount,
+            this._doneLoadedCount + this._donePageSize
+        );
+        this._doneLoadedCount += nextBatch.length;
+
+        const el = document.getElementById(`items-${pid}-done`);
+        if (!el) { this._doneLoading = false; return; }
+
+        // Remove old sentinel
+        const oldSentinel = document.getElementById(`doneScrollSentinel-${pid}`);
+        if (oldSentinel) oldSentinel.remove();
+
+        // Append new cards
+        const fragment = document.createDocumentFragment();
+        const temp = document.createElement('div');
+        temp.innerHTML = nextBatch.map(t => this._renderTaskCard(t)).join('');
+        while (temp.firstChild) fragment.appendChild(temp.firstChild);
+
+        // Add new sentinel if more remain
+        if (this._doneLoadedCount < this._doneAllTasks.length) {
+            const sentinel = document.createElement('div');
+            sentinel.className = 'done-scroll-sentinel';
+            sentinel.id = `doneScrollSentinel-${pid}`;
+            sentinel.style.cssText = 'padding:12px;text-align:center;';
+            sentinel.innerHTML = '<div class="loading-spinner" style="width:16px;height:16px;margin:0 auto;"></div><p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Loading more...</p>';
+            fragment.appendChild(sentinel);
+        }
+
+        el.appendChild(fragment);
+        this._bindCardEvents(el);
+        this._doneLoading = false;
+
+        // Re-observe new sentinel
+        if (this._doneLoadedCount < this._doneAllTasks.length) {
+            this._setupDoneInfiniteScroll(pid);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Sorting
+    // ------------------------------------------------------------------
+
+    _sortTasks(tasks) {
+        const dir = this._sortDirection === 'desc' ? -1 : 1;
+        return [...tasks].sort((a, b) => {
+            switch (this._sortField) {
+                case 'priority': {
+                    const order = { critical: 0, serious: 1, normal: 2 };
+                    const pa = order[a.priority] ?? 2;
+                    const pb = order[b.priority] ?? 2;
+                    return (pa - pb) * dir;
+                }
+                case 'due_date': {
+                    const da = a.due_date || Infinity;
+                    const db = b.due_date || Infinity;
+                    return (da - db) * dir;
+                }
+                case 'created_at': {
+                    const ca = new Date(a.created_at || 0).getTime();
+                    const cb = new Date(b.created_at || 0).getTime();
+                    return (ca - cb) * dir;
+                }
+                case 'position':
+                default: {
+                    const pa = a.position ?? 0;
+                    const pb = b.position ?? 0;
+                    return (pa - pb) * dir;
+                }
+            }
+        });
+    }
+
+    /**
+     * Assign initial float positions to tasks that lack a position field.
+     * Uses 65536 gap (same as KanbanDragDrop.POSITION_GAP).
+     */
+    _ensurePositions() {
+        const GAP = 65536;
+        const grouped = {};
+        this._tasks.forEach(t => {
+            const s = this._normalizeTaskStatus(t.status);
+            (grouped[s] = grouped[s] || []).push(t);
+        });
+        for (const tasks of Object.values(grouped)) {
+            let needsAssign = tasks.some(t => t.position == null || t.position === 0);
+            if (needsAssign) {
+                tasks.forEach((t, i) => {
+                    if (t.position == null || t.position === 0) {
+                        t.position = (i + 1) * GAP;
+                    }
+                });
             }
         }
     }
