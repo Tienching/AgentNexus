@@ -6,7 +6,8 @@
  * status transitions via drag-drop, filtering/search, schedules, batch operations,
  * SSE streaming for live task conversations.
  *
- * Standalone class — no BasePanel dependency. Uses NexusAPI directly.
+ * Standalone class — no BasePanel dependency. Uses AppDataStore for data
+ * caching with fallback to direct NexusAPI calls.
  */
 
 class TaskBoardPanel {
@@ -26,6 +27,8 @@ class TaskBoardPanel {
         this._smartPoll = null;
         this._pollInterval = 10000;
         this._mentionInputs = [];
+        this._dataStore = (typeof AppDataStore !== 'undefined') ? AppDataStore.getInstance() : null;
+        this._dataStoreSubscriptions = [];
         this._schedulePanelOpen = false;
         this._paneId = 'global'; // fixed pane id for fullscreen mode
         this._sortField = localStorage.getItem('nexus-kanban-sortField') || 'position';
@@ -68,12 +71,14 @@ class TaskBoardPanel {
     // ------------------------------------------------------------------
 
     async init() {
+        // Subscribe to data store updates if available
+        this._subscribeToDataStore();
         // Start auto-refresh if configured
         if (this.def.refreshMs > 0 && typeof SmartPoll !== 'undefined') {
             this._poll = new SmartPoll(() => this.refresh(), { intervalMs: this.def.refreshMs });
             this._poll.start();
         }
-        // Load initial tasks directly via NexusAPI
+        // Load initial tasks
         await this._loadTasks();
     }
 
@@ -209,6 +214,7 @@ class TaskBoardPanel {
     async destroy() {
         this._destroyed = true;
         this._stopAutoPolling();
+        this._unsubscribeFromDataStore();
         if (this._poll) { this._poll.destroy(); this._poll = null; }
         if (this._doneObserver) {
             this._doneObserver.disconnect();
@@ -248,9 +254,17 @@ class TaskBoardPanel {
         const filterEl = document.getElementById(`taskProjectFilter-${pid}`);
         if (!filterEl) return;
         try {
-            const projects = await NexusAPI.getProjects({
-                execUser: this._getExecUser()
-            });
+            let projects;
+            if (this._dataStore) {
+                const data = await this._dataStore.fetch('projects', {
+                    execUser: this._getExecUser()
+                });
+                projects = Array.isArray(data) ? data : (data.projects || []);
+            } else {
+                projects = await NexusAPI.getProjects({
+                    execUser: this._getExecUser()
+                });
+            }
             const current = filterEl.value;
             filterEl.innerHTML = '<option value="">All Projects</option>' +
                 projects.map(p => {
@@ -275,12 +289,18 @@ class TaskBoardPanel {
             if (projectFilter && projectFilter.options.length <= 1) {
                 await this._loadProjects();
             }
-            const data = await NexusAPI.getTasks({
+            let data;
+            const taskOpts = {
                 execUser: this._getExecUser(),
                 pageSize: 100,
                 search: searchInput?.value || '',
                 projectId: projectFilter?.value || '',
-            });
+            };
+            if (this._dataStore) {
+                data = await this._dataStore.fetch('tasks', taskOpts);
+            } else {
+                data = await NexusAPI.getTasks(taskOpts);
+            }
             this._tasks = (data.tasks || []).map(t => ({
                 ...t,
                 status: this._normalizeTaskStatus(t.status),
@@ -303,7 +323,9 @@ class TaskBoardPanel {
         const root = document.getElementById(`expansionPanels-${pid}`);
         if (!root) return;
         try {
-            const data = await NexusAPI.getSessions({ page: 1, pageSize: 200, username: this._getUsername() || undefined });
+            const data = await (this._dataStore
+                ? this._dataStore.fetch('sessions', { page: 1, pageSize: 200, username: this._getUsername() || undefined })
+                : NexusAPI.getSessions({ page: 1, pageSize: 200, username: this._getUsername() || undefined }));
             const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
             if (window.ExpansionPanels?.render) {
                 window.ExpansionPanels.render(root, sessions);
@@ -494,6 +516,8 @@ class TaskBoardPanel {
                             if (field === 'assignee') update.assigned_to = value;
                             await NexusAPI.updateTask(taskId, update, { execUser: this._getExecUser() });
                         }
+                        // Invalidate data store cache so next fetch gets fresh data
+                        if (this._dataStore) this._dataStore.invalidate('tasks');
                         // Optimistic local update
                         const local = this._tasks.find(t => t.id === taskId);
                         if (local) {
@@ -835,7 +859,7 @@ class TaskBoardPanel {
                 container.insertAdjacentHTML('beforeend', `<div style="padding:8px 12px;margin-top:8px;background:rgba(${isError ? '239,68,68' : '16,185,129'},0.1);border-radius:6px;font-size:12px;color:var(--${isError ? 'error' : 'success'});">${isError ? `Task failed${data.message ? ': ' + this._esc(data.message) : ''}` : '✓ Task completed'}</div>`);
                 container.scrollTop = container.scrollHeight;
                 this._closeTaskStream(taskId);
-                if (!isReplay) { this._loadTasks(); app?.chatView?.loadSessions?.(0); }
+                if (!isReplay) { if (this._dataStore) this._dataStore.invalidate('tasks'); this._loadTasks(); app?.chatView?.loadSessions?.(0); }
             }
         };
         es.onerror = () => { if (!runFinished && es.readyState !== EventSource.CLOSED) console.warn(`Task ${taskId} SSE error`); };
@@ -957,6 +981,7 @@ class TaskBoardPanel {
                 this._getApp()?.showToast?.(`Deleted ${result.result?.count || ids.length} tasks`, 'success');
                 this._selectedTaskIds = new Set();
                 this._updateDeleteBtnCount();
+                if (this._dataStore) this._dataStore.invalidate('tasks');
                 await this._loadTasks();
             } catch (e) {
                 this._getApp()?.showToast?.('Failed to delete tasks', 'error');
@@ -970,6 +995,7 @@ class TaskBoardPanel {
             this._getApp()?.showToast?.('Task deleted', 'success');
             this._selectedTask = null;
             document.getElementById(`taskDetail-${this._paneId}`)?.classList.add('hidden');
+            if (this._dataStore) this._dataStore.invalidate('tasks');
             await this._loadTasks();
         } catch (e) {
             this._getApp()?.showToast?.('Failed to delete task', 'error');
@@ -1029,6 +1055,7 @@ class TaskBoardPanel {
                         if (task) this._renderTaskDetail(task);
                     }
                     this._getApp()?.showToast?.(`Task moved: ${fromStatus} → ${toStatus}`, 'success');
+                    if (this._dataStore) this._dataStore.invalidate('tasks');
                 } catch (e) {
                     this._getApp()?.showToast?.(`Move failed: ${e.message}`, 'error');
                     await this._loadTasks();
@@ -1040,6 +1067,7 @@ class TaskBoardPanel {
                 this._renderKanban();
                 try {
                     await NexusAPI.updateTask(taskId, { position: newPosition }, { execUser: this._getExecUser() });
+                    if (this._dataStore) this._dataStore.invalidate('tasks');
                 } catch (e) {
                     this._getApp()?.showToast?.(`Reorder failed: ${e.message}`, 'error');
                     await this._loadTasks();
@@ -1097,6 +1125,7 @@ class TaskBoardPanel {
                         await NexusAPI.updateTaskStatus(id, newStatus, { execUser: this._getExecUser() });
                     }
                     this._getApp()?.showToast?.(`Updated ${ids.length} tasks`, 'success');
+                    if (this._dataStore) this._dataStore.invalidate('tasks');
                     await this._loadTasks();
                 } catch (e) {
                     this._getApp()?.showToast?.(`Batch update failed: ${e.message}`, 'error');
@@ -1107,6 +1136,7 @@ class TaskBoardPanel {
                     try {
                         await NexusAPI.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
                         this._getApp()?.showToast?.(`Deleted ${ids.length} tasks`, 'success');
+                        if (this._dataStore) this._dataStore.invalidate('tasks');
                         await this._loadTasks();
                     } catch (e) {
                         this._getApp()?.showToast?.('Failed to delete tasks', 'error');
@@ -1145,7 +1175,10 @@ class TaskBoardPanel {
         if (!listEl) return;
         const statusFilter = document.getElementById(`scheduleStatusFilter-${pid}`)?.value || '';
         try {
-            const data = await NexusAPI.getSchedules({ status: statusFilter || undefined, pageSize: 100 });
+            const schedOpts = { status: statusFilter || undefined, pageSize: 100 };
+            const data = await (this._dataStore
+                ? this._dataStore.fetch('schedules', schedOpts)
+                : NexusAPI.getSchedules(schedOpts));
             const schedules = data.schedules || [];
             if (schedules.length === 0) {
                 listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--text-muted);font-size:13px;">No schedules found</p></div>';
@@ -1212,7 +1245,7 @@ class TaskBoardPanel {
     async _pauseSchedule(id) { try { await NexusAPI.pauseSchedule(id); this._getApp()?.showToast?.('Schedule paused', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _resumeSchedule(id) { try { await NexusAPI.resumeSchedule(id); this._getApp()?.showToast?.('Schedule resumed', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _cancelSchedule(id) { if (!confirm('Cancel this schedule permanently?')) return; try { await NexusAPI.cancelSchedule(id); this._getApp()?.showToast?.('Schedule cancelled', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
-    async _deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; try { await NexusAPI.deleteSchedule(id); this._getApp()?.showToast?.('Schedule deleted', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; try { await NexusAPI.deleteSchedule(id); if (this._dataStore) this._dataStore.invalidate('schedules'); this._getApp()?.showToast?.('Schedule deleted', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _showEditScheduleModal(id) {
         try {
             const s = await NexusAPI.getSchedule(id);
@@ -1239,6 +1272,9 @@ class TaskBoardPanel {
         this._smartPoll = new SmartPoll(async () => {
             const app = this._getApp();
             if (app?.pageManager?.currentPage !== 'task') return;
+            if (this._dataStore) {
+                this._dataStore.invalidate('tasks');
+            }
             await this._loadTasks();
             const hasRunning = this._tasks.some(t => this._normalizeTaskStatus(t.status) === 'in_progress');
             if (hasRunning) app?.chatView?.loadSessions?.(0);
@@ -1450,6 +1486,35 @@ class TaskBoardPanel {
         const d = document.createElement('div');
         d.textContent = str || '';
         return d.innerHTML;
+    }
+
+    // ------------------------------------------------------------------
+    // AppDataStore integration
+    // ------------------------------------------------------------------
+
+    _subscribeToDataStore() {
+        if (!this._dataStore) return;
+        const onTasksChange = (data) => {
+            if (this._destroyed || this._isDragging) return;
+            const tasks = (data?.tasks || []).map(t => ({
+                ...t,
+                status: this._normalizeTaskStatus(t.status),
+            }));
+            this._tasks = tasks;
+            this._ensurePositions();
+            this._renderKanban();
+            this._syncSelectedTaskDetail();
+        };
+        this._dataStore.subscribe('tasks', onTasksChange);
+        this._dataStoreSubscriptions.push({ key: 'tasks', cb: onTasksChange });
+    }
+
+    _unsubscribeFromDataStore() {
+        if (!this._dataStore) return;
+        for (const { key, cb } of this._dataStoreSubscriptions) {
+            this._dataStore.unsubscribe(key, cb);
+        }
+        this._dataStoreSubscriptions = [];
     }
 }
 
