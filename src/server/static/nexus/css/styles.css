@@ -1118,6 +1118,214 @@
     gap: var(--spacing-sm);
 }
 
+/* ========== List View ========== */
+.list-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: auto;
+}
+
+/* Batch toolbar - sticky at top */
+.batch-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    background: var(--surface-1, var(--bg-elevated, #fff));
+    border-bottom: 1px solid var(--border-primary, var(--border));
+    box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.08));
+}
+.batch-count {
+    font-weight: 600;
+    color: var(--primary-500, var(--accent-primary, #4f46e5));
+    white-space: nowrap;
+}
+.batch-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+/* List row - hover checkbox behavior */
+.list-view-row {
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.list-view-row:hover {
+    background: var(--bg-hover, rgba(0,0,0,0.03));
+}
+.list-view-row.selected {
+    background: rgba(79, 70, 229, 0.08);
+}
+.list-view-row:hover .list-row-checkbox,
+.list-view-row.selected .list-row-checkbox {
+    visibility: visible;
+}
+
+/* Checkbox cell - hidden by default, shown on hover/selected */
+.list-row-checkbox-cell {
+    width: 32px;
+    padding: 4px 0 4px 8px !important;
+}
+.list-row-checkbox {
+    visibility: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.list-row-checkbox.visible {
+    visibility: visible;
+}
+
+/* Group header checkbox */
+.list-view-group-checkbox {
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+/* Section header & body */
+.list-view-section {
+    border-bottom: 1px solid var(--border-primary, var(--border));
+}
+.list-view-section-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    cursor: pointer;
+    user-select: none;
+    background: var(--surface-1, #fff);
+    border-bottom: 1px solid var(--border-primary, var(--border));
+}
+.list-view-section-header:hover {
+    background: var(--bg-hover, rgba(0,0,0,0.03));
+}
+.list-view-section-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.list-view-section-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.list-view-section-title {
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: capitalize;
+}
+.list-view-section-count {
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--surface-2, #f3f4f6);
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+.list-view-section-body {
+    overflow: hidden;
+}
+.list-view-empty {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+/* Chevron rotation */
+.list-view-chevron {
+    transition: transform 0.2s;
+}
+.list-view-chevron.expanded {
+    transform: rotate(180deg);
+}
+
+/* Table styling */
+.list-view-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.list-view-table thead th {
+    padding: 6px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    text-align: left;
+    border-bottom: 1px solid var(--border-primary, var(--border));
+    background: var(--surface-2, #f9fafb);
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+.list-view-table tbody td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-primary, var(--border));
+    vertical-align: middle;
+}
+.list-view-row-title {
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.list-view-row-id {
+    color: var(--text-muted);
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    margin-right: 8px;
+}
+.list-view-priority {
+    font-weight: 500;
+    text-transform: capitalize;
+}
+.list-view-overdue {
+    color: var(--error, #ef4444);
+    font-weight: 600;
+}
+.list-view-row.overdue {
+    border-left: 3px solid var(--error, #ef4444);
+}
+
+/* Assignee picker dropdown */
+.batch-assignee-dropdown {
+    position: absolute;
+    z-index: 100;
+    background: var(--surface-1, #fff);
+    border: 1px solid var(--border-primary, var(--border));
+    border-radius: 8px;
+    box-shadow: var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.12));
+    min-width: 200px;
+    overflow: hidden;
+}
+.batch-assignee-dropdown-inner {
+    display: flex;
+    flex-direction: column;
+}
+.batch-assignee-search {
+    border: none !important;
+    border-bottom: 1px solid var(--border-primary, var(--border)) !important;
+    border-radius: 0 !important;
+}
+.batch-assignee-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+.batch-assignee-option {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.batch-assignee-option:hover {
+    background: var(--bg-hover, rgba(0,0,0,0.05));
+}
+
 /* ========== Kanban Board ========== */
 .kanban-board {
     flex: 1;
