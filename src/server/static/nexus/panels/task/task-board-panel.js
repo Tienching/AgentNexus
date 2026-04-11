@@ -1,5 +1,12 @@
 /**
- * TaskBoardPanel - Kanban-style task board with drag-and-drop status updates.
+ * TaskBoardPanel - Full-featured task management panel.
+ *
+ * Serves as the single entry point for the Tasks page, replacing the old TaskView.
+ * Features: Kanban board, task create modal, task detail (4-tab), editing,
+ * status transitions via drag-drop, filtering/search, schedules, batch operations,
+ * SSE streaming for live task conversations.
+ *
+ * Extends BasePanel for lifecycle & AppDataStore integration.
  */
 
 class TaskBoardPanel extends BasePanel {
@@ -7,99 +14,1165 @@ class TaskBoardPanel extends BasePanel {
         super(id, def, opts);
         this._tasks = [];
         this._filter = '';
+        this._projectFilter = '';
+        this._selectedTask = null;
+        this._selectionMode = false;
+        this._selectedTaskIds = new Set();
+        this._activeStreams = new Map();
+        this._smartPoll = null;
+        this._pollInterval = 10000;
+        this._mentionInputs = [];
+        this._schedulePanelOpen = false;
+        this._paneId = 'global'; // fixed pane id for fullscreen mode
+
+        this.statusColumns = [
+            { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
+            { key: 'assigned', title: 'Assigned', color: 'var(--status-assigned)' },
+            { key: 'awaiting_owner', title: 'Awaiting Owner', color: 'var(--status-awaiting-owner)' },
+            { key: 'in_progress', title: 'In Progress', color: 'var(--status-in-progress)' },
+            { key: 'review', title: 'Review', color: 'var(--status-review)' },
+            { key: 'quality_review', title: 'QA', color: 'var(--status-quality-review)' },
+            { key: 'done', title: 'Done', color: 'var(--status-done)' },
+        ];
+        this.terminalColumns = [
+            { key: 'failed', title: 'Failed', color: 'var(--status-failed)' },
+            { key: 'cancelled', title: 'Cancelled', color: 'var(--status-cancelled)' },
+        ];
     }
 
-    async refresh() {
-        try {
-            const data = await this.api.getTasks({ pageSize: 100 });
-            this._tasks = data.tasks || [];
-            this.render(this.container);
-        } catch (e) {
-            this.showError(e.message);
-        }
+    // ------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------
+
+    async init() {
+        await super.init();
+        this.subscribeData('tasks', (data) => {
+            this._tasks = (data.tasks || []).map(t => ({
+                ...t,
+                status: this._normalizeTaskStatus(t.status),
+            }));
+            if (this.container) this._renderKanban();
+        });
     }
 
     render(container) {
         this.container = container;
-        const statuses = ['todo', 'doing', 'done', 'failed', 'cancelled'];
-        const tasks = this._filter
-            ? this._tasks.filter(t => (t.title || t.description || '').toLowerCase().includes(this._filter.toLowerCase()))
-            : this._tasks;
-
-        const byStatus = {};
-        for (const s of statuses) byStatus[s] = tasks.filter(t => t.status === s);
+        const pid = this._paneId;
 
         container.innerHTML = `
-            ${this._headerHtml({ actions: `
-                <input type="text" class="panel-input panel-search" placeholder="Filter tasks…" value="${this._escapeHtml(this._filter)}">
-            `})}
-            <div class="panel-body">
-                <div class="panel-kanban">
-                    ${statuses.map(s => `
-                        <div class="kanban-col" data-status="${s}">
-                            <div class="kanban-col-header">
-                                <span class="kanban-col-title">${s.charAt(0).toUpperCase() + s.slice(1)}</span>
-                                <span class="kanban-col-count">${byStatus[s].length}</span>
-                            </div>
-                            <div class="kanban-col-items" data-status="${s}">
-                                ${byStatus[s].map(t => `
-                                    <div class="kanban-card" data-task-id="${this._escapeHtml(t.id)}" draggable="true">
-                                        <div class="kanban-card-title">${this._escapeHtml(t.title || t.id)}</div>
-                                        <div class="kanban-card-meta">${this._escapeHtml(t.agent_type || '')} ${t.priority ? '&middot; P' + t.priority : ''}</div>
-                                    </div>
-                                `).join('')}
+            <div class="task-container" style="height: 100%;">
+                <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                    <div class="task-toolbar">
+                        <div class="task-toolbar-left">
+                            <button class="action-btn primary" data-action="create-task">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                <span>New Task</span>
+                            </button>
+                            <button class="action-btn" data-action="toggle-selection" title="Toggle selection mode">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                </svg>
+                                <span>Select</span>
+                            </button>
+                            <button class="action-btn" data-action="toggle-schedules" title="Show/hide scheduled tasks">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
+                                <span>Schedules</span>
+                            </button>
+                            <div class="selection-actions" id="selectionActions-${pid}" style="display: none;">
+                                <button class="action-btn" data-action="select-all"><span>Select All</span></button>
+                                <button class="action-btn" data-action="deselect-all"><span>Clear</span></button>
+                                <button class="action-btn danger" data-action="delete-selected" id="deleteSelectedBtn-${pid}">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                    </svg>
+                                    <span>Delete (0)</span>
+                                </button>
                             </div>
                         </div>
-                    `).join('')}
+                        <div class="task-toolbar-right">
+                            <select class="form-input form-select" style="width: 150px; margin-right: 8px;" id="taskProjectFilter-${pid}">
+                                <option value="">All Projects</option>
+                            </select>
+                            <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" id="taskSearch-${pid}">
+                        </div>
+                    </div>
+                    <!-- Schedules Panel (collapsible) -->
+                    <div class="schedule-panel" id="schedulePanel-${pid}" style="display: none;">
+                        <div class="schedule-panel-header">
+                            <span class="schedule-panel-title">Scheduled Tasks</span>
+                            <div class="schedule-panel-actions">
+                                <select class="form-input form-select schedule-status-filter" id="scheduleStatusFilter-${pid}" style="width:120px; height:30px; font-size:12px;">
+                                    <option value="">All Status</option>
+                                    <option value="active">Active</option>
+                                    <option value="paused">Paused</option>
+                                    <option value="cancelled">Cancelled</option>
+                                </select>
+                                <button class="action-btn schedule-refresh-btn" data-action="refresh-schedules" title="Refresh schedules">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="schedule-list" id="scheduleList-${pid}">
+                            <div class="empty-state" style="padding: 16px;">
+                                <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="kanban-board" id="kanbanBoard-${pid}">
+                        <div class="kanban-primary-columns">
+                        ${this.statusColumns.map(col => `
+                            <div class="kanban-column" data-status="${col.key}">
+                                <div class="kanban-column-header">
+                                    <span class="kanban-column-title">
+                                        <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
+                                        ${col.title}
+                                    </span>
+                                    <span class="kanban-column-count" id="count-${pid}-${col.key}">0</span>
+                                </div>
+                                <div class="kanban-column-items" id="items-${pid}-${col.key}">
+                                    <div class="empty-state" style="padding: 24px 16px;">
+                                        <div class="loading-spinner" style="width: 20px; height: 20px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                        </div>
+                        <div class="kanban-terminal-columns" id="terminalColumns-${pid}" style="display: none;"></div>
+                    </div>
+                    <div id="expansionPanels-${pid}" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 260px; overflow-y: auto;">
+                        <div class="empty-state" style="padding: 8px;">
+                            <div class="loading-spinner" style="width: 16px; height: 16px;"></div>
+                        </div>
+                    </div>
                 </div>
+                <div class="task-detail hidden" id="taskDetail-${pid}"></div>
             </div>
         `;
 
-        this._bindRefreshBtn();
-        this._bindKanbanDnD(container);
+        this._bindToolbarEvents();
+        this._loadTasks();
+        this._startAutoPolling();
+    }
 
-        const searchInput = container.querySelector('.panel-search');
-        if (searchInput) {
-            searchInput.addEventListener('input', (e) => {
-                this._filter = e.target.value;
-                this.render(container);
+    async refresh() {
+        if (!this.container || this._destroyed) return;
+        await this._loadTasks();
+    }
+
+    async destroy() {
+        this._stopAutoPolling();
+        for (const [taskId] of this._activeStreams) {
+            this._closeTaskStream(taskId);
+        }
+        this._mentionInputs.forEach(m => { try { m.destroy(); } catch {} });
+        this._mentionInputs = [];
+        await super.destroy();
+    }
+
+    onRealtimeEvent(eventType) {
+        if (eventType.startsWith('task.')) this.refresh();
+    }
+
+    // ------------------------------------------------------------------
+    // Status normalization
+    // ------------------------------------------------------------------
+
+    _normalizeTaskStatus(status) {
+        const s = String(status || '').trim().toLowerCase();
+        if (s === 'pending' || s === 'todo') return 'inbox';
+        if (s === 'in_progress' || s === 'running' || s === 'doing') return 'in_progress';
+        if (s === 'completed') return 'done';
+        if (['inbox','assigned','awaiting_owner','review','quality_review','done','failed','cancelled','archived'].includes(s)) return s;
+        return 'inbox';
+    }
+
+    // ------------------------------------------------------------------
+    // Data loading
+    // ------------------------------------------------------------------
+
+    async _loadProjects() {
+        const pid = this._paneId;
+        const filterEl = document.getElementById(`taskProjectFilter-${pid}`);
+        if (!filterEl) return;
+        try {
+            const projects = await this.api.getProjects({
+                execUser: this._getExecUser()
+            });
+            const current = filterEl.value;
+            filterEl.innerHTML = '<option value="">All Projects</option>' +
+                projects.map(p => {
+                    const count = (p.todo || 0) + (p.doing || 0);
+                    const label = p.project_name || p.project_id;
+                    return `<option value="${p.project_id}">${label}${count > 0 ? ` (${count})` : ''}</option>`;
+                }).join('');
+            if (current && Array.from(filterEl.options).some(o => o.value === current)) {
+                filterEl.value = current;
+            }
+        } catch (e) {
+            console.error('Failed to load projects:', e);
+        }
+    }
+
+    async _loadTasks() {
+        const pid = this._paneId;
+        const searchInput = document.getElementById(`taskSearch-${pid}`);
+        const projectFilter = document.getElementById(`taskProjectFilter-${pid}`);
+
+        try {
+            if (projectFilter && projectFilter.options.length <= 1) {
+                await this._loadProjects();
+            }
+            const data = await this.api.getTasks({
+                execUser: this._getExecUser(),
+                pageSize: 100,
+                search: searchInput?.value || '',
+                projectId: projectFilter?.value || '',
+            });
+            this._tasks = (data.tasks || []).map(t => ({
+                ...t,
+                status: this._normalizeTaskStatus(t.status),
+            }));
+            this._renderKanban();
+            this._loadExpansionPanels();
+            this._syncSelectedTaskDetail();
+        } catch (e) {
+            console.error('Failed to load tasks:', e);
+            this.statusColumns.forEach(col => {
+                const el = document.getElementById(`items-${pid}-${col.key}`);
+                if (el) el.innerHTML = `<div class="empty-state" style="padding: 16px;"><p style="font-size: 12px; color: var(--error);">Failed to load</p></div>`;
             });
         }
     }
 
-    _bindKanbanDnD(container) {
-        const cards = container.querySelectorAll('.kanban-card[draggable]');
-        const columns = container.querySelectorAll('.kanban-col-items');
+    async _loadExpansionPanels() {
+        const pid = this._paneId;
+        const root = document.getElementById(`expansionPanels-${pid}`);
+        if (!root) return;
+        try {
+            const data = await this.api.getSessions({ page: 1, pageSize: 200, username: this._getUsername() || undefined });
+            const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+            if (window.ExpansionPanels?.render) {
+                window.ExpansionPanels.render(root, sessions);
+            } else {
+                root.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Session monitor unavailable.</div>';
+            }
+        } catch (e) {
+            root.innerHTML = '<div style="font-size:12px;color:var(--error);">Failed to load session monitor</div>';
+        }
+    }
 
-        cards.forEach(card => {
-            card.addEventListener('dragstart', (e) => {
-                e.dataTransfer.setData('text/plain', card.dataset.taskId);
-                card.classList.add('dragging');
-            });
-            card.addEventListener('dragend', () => card.classList.remove('dragging'));
+    // ------------------------------------------------------------------
+    // Kanban rendering
+    // ------------------------------------------------------------------
+
+    _renderKanban() {
+        const pid = this._paneId;
+        const tasks = this._tasks;
+        const grouped = {};
+        this.statusColumns.forEach(col => { grouped[col.key] = []; });
+        tasks.forEach(t => {
+            const s = (t.status || 'inbox').toLowerCase();
+            (grouped[s] || grouped['inbox']).push(t);
         });
 
-        columns.forEach(col => {
-            col.addEventListener('dragover', (e) => e.preventDefault());
-            col.addEventListener('drop', async (e) => {
-                e.preventDefault();
-                const taskId = e.dataTransfer.getData('text/plain');
-                const newStatus = col.dataset.status;
-                if (taskId && newStatus) {
-                    try {
-                        await this.api.updateTaskStatus(taskId, newStatus);
-                        this.refresh();
-                    } catch (err) {
-                        console.error('Failed to update task status:', err);
-                    }
+        this.statusColumns.forEach(col => {
+            const items = grouped[col.key] || [];
+            const el = document.getElementById(`items-${pid}-${col.key}`);
+            const countEl = document.getElementById(`count-${pid}-${col.key}`);
+            if (countEl) countEl.textContent = items.length;
+            if (el) {
+                if (items.length === 0) {
+                    el.innerHTML = '<div class="empty-state" style="padding: 24px 16px;"><p style="font-size: 12px; color: var(--text-muted);">No tasks</p></div>';
+                } else {
+                    el.innerHTML = items.map(t => this._renderTaskCard(t)).join('');
+                    this._bindCardEvents(el);
                 }
+            }
+        });
+
+        // Terminal columns
+        const terminalContainer = document.getElementById(`terminalColumns-${pid}`);
+        if (terminalContainer) {
+            const terminalTasks = [];
+            this.terminalColumns.forEach(col => {
+                const items = tasks.filter(t => this._normalizeTaskStatus(t.status) === col.key);
+                if (items.length > 0) terminalTasks.push({ col, items });
+            });
+            if (terminalTasks.length > 0) {
+                terminalContainer.style.display = 'flex';
+                terminalContainer.innerHTML = terminalTasks.map(({ col, items }) => `
+                    <div class="kanban-column kanban-column-terminal" data-status="${col.key}">
+                        <div class="kanban-column-header">
+                            <span class="kanban-column-title">
+                                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
+                                ${col.title}
+                            </span>
+                            <span class="kanban-column-count">${items.length}</span>
+                        </div>
+                        <div class="kanban-column-items">
+                            ${items.map(t => this._renderTaskCard(t)).join('')}
+                        </div>
+                    </div>
+                `).join('');
+                this._bindCardEvents(terminalContainer);
+            } else {
+                terminalContainer.style.display = 'none';
+            }
+        }
+
+        this._bindKanbanDragDrop();
+    }
+
+    _renderTaskCard(task) {
+        const priorityClass = task.priority === 'critical' ? 'critical' : task.priority === 'serious' ? 'serious' : 'normal';
+        const timeStr = this._formatTime(task.updated_at || task.created_at);
+        const isSelected = this._selectedTask === task.id;
+        const isChecked = this._selectedTaskIds.has(task.id);
+        const alias = String(task?.alias || '').trim();
+        const provider = String(task?.provider || '').trim();
+        const targetPrimary = alias || provider;
+        const targetSecondary = alias && provider && alias.toLowerCase() !== provider.toLowerCase() ? provider : '';
+        const targetTooltip = targetSecondary ? `Alias: ${alias} · Provider: ${provider}` : (alias || provider);
+        const priorityColors = { critical: 'var(--error)', serious: 'var(--warning)', normal: 'var(--primary-500)' };
+        const agentName = task.assigned_to || alias || provider || '';
+        const agentAvatar = agentName && typeof AgentAvatar !== 'undefined' ? AgentAvatar.render(agentName, { size: 'xs', status: this._normalizeTaskStatus(task.status) === 'in_progress' ? 'online' : 'none' }) : '';
+        const tags = Array.isArray(task.tags) ? task.tags : [];
+        const visibleTags = tags.slice(0, 3);
+        const extraTagCount = tags.length > 3 ? tags.length - 3 : 0;
+        const tagsHtml = tags.length > 0 ? `<div class="task-card-tags">${visibleTags.map(t => `<span class="task-card-tag">${this._esc(t)}</span>`).join('')}${extraTagCount > 0 ? `<span class="task-card-tag task-card-tag-more">+${extraTagCount}</span>` : ''}</div>` : '';
+        const isOverdue = task.due_date && (task.due_date * 1000 < Date.now()) && this._normalizeTaskStatus(task.status) !== 'done';
+        const overdueHtml = isOverdue ? '<span class="task-card-overdue">! Overdue</span>' : '';
+        const isAwaitingOwner = this._detectAwaitingOwner(task);
+        const awaitingBadge = isAwaitingOwner && this._normalizeTaskStatus(task.status) !== 'awaiting_owner' ? '<span class="task-card-awaiting-badge">Needs Attention</span>' : '';
+        const ghLabel = this._resolveGitHubIssueLabel(task);
+        const ghUrl = this._resolveGitHubIssueUrl(task);
+        const ghState = String(task.github_state || '').trim().toLowerCase();
+        const ghColor = ghState === 'closed' ? 'var(--success)' : 'var(--primary-500)';
+        const ghBadge = ghLabel ? (ghUrl ? `<a href="${this._esc(ghUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid ${ghColor};color:${ghColor};text-decoration:none;">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</a>` : `<span style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid ${ghColor};color:${ghColor};">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</span>`) : '';
+        const aegisBadge = task.aegis_approved ? '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(16,185,129,0.16);color:var(--success);font-weight:600;">Aegis ✓</span>' : '';
+
+        return `
+            <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''} ${isOverdue ? 'task-card-overdue-state' : ''} ${isAwaitingOwner ? 'task-card-needs-attention' : ''}" data-task-id="${task.id}" draggable="${!this._selectionMode}" style="border-left: 3px solid ${priorityColors[priorityClass] || 'transparent'};">
+                ${this._selectionMode ? `<div class="task-card-checkbox" data-task-id="${task.id}"><input type="checkbox" ${isChecked ? 'checked' : ''}></div>` : ''}
+                <div class="task-card-content">
+                    <div class="task-card-header">
+                        <span class="task-card-id">#${task.id.slice(0, 8)}</span>
+                        ${task.ticket_ref ? `<span class="task-card-ticket-ref" title="Project ticket">${this._esc(task.ticket_ref)}</span>` : ''}
+                        ${ghBadge}${aegisBadge}
+                        ${task.priority ? `<span class="task-card-priority ${priorityClass}">${task.priority}</span>` : ''}
+                        ${task.loop_enabled ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;">Loop ${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
+                        ${overdueHtml}${awaitingBadge}
+                    </div>
+                    <p class="task-card-title">${this._esc(task.description || 'No description')}</p>
+                    ${tagsHtml}
+                    <div class="task-card-meta">
+                        ${agentAvatar ? `<span class="task-card-meta-item">${agentAvatar}</span>` : ''}
+                        <span class="task-card-meta-item">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            ${timeStr}
+                        </span>
+                        ${targetPrimary ? `<span class="task-card-meta-item" title="${this._esc(targetTooltip)}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg><span>${this._esc(targetPrimary)}</span>${targetSecondary ? `<span class="task-provider-base">${this._esc(targetSecondary)}</span>` : ''}</span>` : ''}
+                    </div>
+                    ${task.depends_on?.length ? `<div class="task-card-deps"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>${task.depends_on.map(d => `<span class="task-card-dep">${d.slice(0, 8)}</span>`).join('')}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    _bindCardEvents(root) {
+        root.querySelectorAll('.task-card').forEach(card => {
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.task-card-checkbox')) return;
+                this._selectTask(card.dataset.taskId);
+            });
+        });
+        root.querySelectorAll('.task-card-checkbox').forEach(cb => {
+            cb.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._toggleTaskSelection(cb.dataset.taskId);
             });
         });
     }
 
-    onRealtimeEvent(eventType, payload) {
-        if (eventType.startsWith('task.')) this.refresh();
+    // ------------------------------------------------------------------
+    // Task detail
+    // ------------------------------------------------------------------
+
+    async _selectTask(taskId) {
+        this._selectedTask = taskId;
+        const board = document.getElementById(`kanbanBoard-${this._paneId}`);
+        board?.querySelectorAll('.task-card').forEach(c => c.classList.toggle('selected', c.dataset.taskId === taskId));
+        await this._showTaskDetail(taskId);
+    }
+
+    async _showTaskDetail(taskId) {
+        const pid = this._paneId;
+        const detailPanel = document.getElementById(`taskDetail-${pid}`);
+        if (!detailPanel) return;
+        detailPanel.classList.remove('hidden');
+        detailPanel.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div></div>';
+        try {
+            const task = await this.api.getTask(taskId, { execUser: this._getExecUser() });
+            this._renderTaskDetail(task);
+        } catch (e) {
+            detailPanel.innerHTML = '<div class="empty-state"><p style="color: var(--error);">Failed to load task details</p></div>';
+        }
+    }
+
+    _renderTaskDetail(task) {
+        const pid = this._paneId;
+        const detailPanel = document.getElementById(`taskDetail-${pid}`);
+        if (!detailPanel) return;
+        this._closeTaskStream(this._selectedTask);
+        const statusClass = this._normalizeTaskStatus(task.status);
+        const isRunning = statusClass === 'in_progress';
+        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'completed' || statusClass === 'failed';
+        const alias = String(task?.alias || '').trim();
+        const provider = String(task?.provider || '').trim();
+        const targetPrimary = alias || provider;
+        const targetSecondary = alias && provider && alias.toLowerCase() !== provider.toLowerCase() ? provider : '';
+        const targetTooltip = targetSecondary ? `Alias: ${alias} · Provider: ${provider}` : (alias || provider);
+
+        detailPanel.dataset.taskId = task.id;
+        detailPanel.dataset.taskStatus = statusClass;
+
+        detailPanel.innerHTML = `
+            <div class="task-detail-header">
+                <span class="task-detail-title">#${task.id.slice(0, 8)}</span>
+                <button class="task-detail-close" data-action="close-detail">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="task-detail-content" style="display:flex;flex-direction:column;overflow:hidden;flex:1;">
+                <div class="task-detail-section" style="flex-shrink:0;">
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <span class="status-badge ${statusClass}"><span class="status-dot"></span>${task.status || 'TODO'}</span>
+                        ${targetPrimary ? `<span class="task-target-badge" title="${this._esc(targetTooltip)}">${this._esc(targetPrimary)}</span>` : ''}
+                        ${targetSecondary ? `<span class="task-target-badge task-target-badge-base" title="Base provider">${this._esc(targetSecondary)}</span>` : ''}
+                        ${task.workspace ? `<span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);" title="${this._esc(task.workspace)}">${this._esc(task.workspace.split('/').pop() || task.workspace)}</span>` : ''}
+                    </div>
+                    <p style="margin:6px 0 0;font-size:13px;color:var(--text-secondary);">${this._esc(task.description || 'No description')}</p>
+                    ${task.error_message ? `<p style="margin:4px 0 0;font-size:12px;color:var(--error);">${this._esc(task.error_message)}</p>` : ''}
+                    ${this._resolveGitHubIssueLabel(task) ? `<p style="margin:6px 0 0;font-size:12px;color:var(--text-secondary);">GitHub: ${this._resolveGitHubIssueUrl(task) ? `<a href="${this._esc(this._resolveGitHubIssueUrl(task))}" target="_blank" rel="noopener noreferrer" style="color:var(--primary-500);">${this._esc(this._resolveGitHubIssueLabel(task))}</a>` : this._esc(this._resolveGitHubIssueLabel(task))}${task.github_state ? `<span style="margin-left:6px;color:var(--text-muted);">(${this._esc(String(task.github_state))})</span>` : ''}</p>` : ''}
+                    ${(task.aegis_status || task.aegis_approved) ? `<p style="margin:4px 0 0;font-size:12px;color:${task.aegis_approved ? 'var(--success)' : 'var(--warning)'};">Aegis: ${task.aegis_approved ? 'Approved' : this._esc(String(task.aegis_status || 'pending'))}${task.aegis_reason ? `<span style="color:var(--text-muted);"> · ${this._esc(task.aegis_reason)}</span>` : ''}</p>` : ''}
+                    ${task.loop_enabled ? `<div style="margin-top:8px;padding:8px 10px;background:var(--bg-secondary);border-radius:6px;font-size:12px;"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="font-weight:600;color:var(--text-primary);">Ralph Loop</span><span style="padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;font-size:10px;">${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓ Found' : ''}</span></div><div style="color:var(--text-secondary);"><span>Keywords: </span>${(task.loop_keywords || []).map(kw => `<code style="background:var(--bg-tertiary,#374151);padding:1px 4px;border-radius:3px;font-size:11px;">${this._esc(kw)}</code>`).join(' ')}</div></div>` : ''}
+                </div>
+                <div class="task-conversation" style="flex:1;overflow:hidden;border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;flex-direction:column;gap:8px;">
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button class="action-btn task-detail-tab active" data-task-tab="details" style="padding:4px 10px;">Details</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="comments" style="padding:4px 10px;">Comments</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="quality" style="padding:4px 10px;">Quality</button>
+                        <button class="action-btn task-detail-tab" data-task-tab="session" style="padding:4px 10px;">Session</button>
+                    </div>
+                    <div id="taskTabDetails-${pid}" data-task-tab-pane="details" style="flex:1;overflow-y:auto;">
+                        <div id="taskDetailsPanel-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"></div>
+                    </div>
+                    <div id="taskTabComments-${pid}" data-task-tab-pane="comments" style="display:none;overflow-y:auto;">
+                        <div id="taskComments-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
+                    </div>
+                    <div id="taskTabQuality-${pid}" data-task-tab-pane="quality" style="display:none;overflow-y:auto;">
+                        <div id="taskQuality-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
+                    </div>
+                    <div id="taskTabSession-${pid}" data-task-tab-pane="session" style="display:none;flex:1;overflow-y:auto;">
+                        ${hasConversation ? `<div class="chat-messages" id="taskConversation-${pid}" style="padding:0;"><div class="empty-state" style="padding:24px;"><div class="loading-spinner"></div><p style="font-size:12px;color:var(--text-muted);margin-top:8px;">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p></div></div>` : `<div class="empty-state" style="padding:24px;"><p style="font-size:12px;color:var(--text-muted);">Session view is available after task execution starts.</p></div>`}
+                    </div>
+                </div>
+                <div class="task-detail-section" style="flex-shrink:0;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        ${hasConversation ? `<button class="action-btn" data-action="view-session" data-task-id="${task.id}" title="Open in Chat view"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>Open Session</button>` : ''}
+                        <button class="action-btn" data-action="broadcast-task" data-task-id="${task.id}" title="Broadcast"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405C18.21 15.21 18 14.702 18 14.172V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.172c0 .53-.21 1.039-.595 1.423L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>Broadcast</button>
+                        <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color:var(--error);"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        this._bindDetailEvents(detailPanel, task);
+        this._bindDetailTabs(detailPanel);
+        this._loadDetailsTab(task);
+        this._loadCommentsTab(task.id);
+        this._loadQualityTab(task.id);
+        if (hasConversation) {
+            if (isRunning) this._streamTaskConversation(task.id);
+            else this._streamTaskConversation(task.id, true);
+        }
+    }
+
+    _bindDetailEvents(panel, task) {
+        const pid = this._paneId;
+        panel.querySelector('[data-action="close-detail"]')?.addEventListener('click', () => {
+            this._closeTaskStream(task.id);
+            panel.classList.add('hidden');
+            this._selectedTask = null;
+            document.getElementById(`kanbanBoard-${pid}`)?.querySelectorAll('.task-card').forEach(c => c.classList.remove('selected'));
+        });
+        panel.querySelector('[data-action="delete-task"]')?.addEventListener('click', () => {
+            this._getApp()?.showDeleteModal?.('task', task.id, () => this._deleteTask(task.id));
+        });
+        panel.querySelector('[data-action="broadcast-task"]')?.addEventListener('click', async () => {
+            const message = window.prompt('Broadcast message to task subscribers:');
+            if (!message?.trim()) return;
+            try {
+                const result = await this.api.broadcastTask(task.id, { message: message.trim(), sender: 'user', include_assignee: true }, { execUser: this._getExecUser() });
+                this._getApp()?.showToast?.(`Broadcast sent to ${result.delivered || 0} subscribers`, 'success');
+            } catch (e) {
+                this._getApp()?.showToast?.(e.message || 'Failed to broadcast', 'error');
+            }
+        });
+        panel.querySelector('[data-action="view-session"]')?.addEventListener('click', () => {
+            const sessionId = task.session_id || `task_${task.id}`;
+            const app = this._getApp();
+            app?.pageManager?.setPage('chat');
+            setTimeout(() => app?.chatView?.selectSession(0, sessionId), 300);
+        });
+    }
+
+    _bindDetailTabs(panel) {
+        const pid = this._paneId;
+        const buttons = panel.querySelectorAll('.task-detail-tab');
+        const panes = {
+            details: panel.querySelector(`#taskTabDetails-${pid}`),
+            comments: panel.querySelector(`#taskTabComments-${pid}`),
+            quality: panel.querySelector(`#taskTabQuality-${pid}`),
+            session: panel.querySelector(`#taskTabSession-${pid}`),
+        };
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const target = btn.getAttribute('data-task-tab') || 'details';
+                buttons.forEach(b => b.classList.toggle('active', b === btn));
+                Object.entries(panes).forEach(([key, pane]) => { if (pane) pane.style.display = key === target ? '' : 'none'; });
+            });
+        });
+    }
+
+    _loadDetailsTab(task) {
+        const pid = this._paneId;
+        const root = document.getElementById(`taskDetailsPanel-${pid}`);
+        if (!root) return;
+        const app = this._getApp();
+        const descHtml = app?.chatView?.formatMessageContent ? app.chatView.formatMessageContent(task.description || '') : this._esc(task.description || '');
+        root.innerHTML = `
+            <div style="display:grid;grid-template-columns:120px 1fr;gap:6px 10px;font-size:12px;">
+                <span style="color:var(--text-muted);">Task ID</span><span>${this._esc(task.id||'')}</span>
+                <span style="color:var(--text-muted);">Status</span><span>${this._esc(task.status||'')}</span>
+                <span style="color:var(--text-muted);">Priority</span><span>${this._esc(task.priority||'')}</span>
+                <span style="color:var(--text-muted);">Assignee</span><span>${this._esc(task.assigned_to||'-')}</span>
+                <span style="color:var(--text-muted);">Source Session</span><span>${this._esc(task.source_session_id||'-')}</span>
+                <span style="color:var(--text-muted);">Created</span><span>${this._esc(task.created_at ? new Date(task.created_at).toLocaleString() : '-')}</span>
+                <span style="color:var(--text-muted);">Updated</span><span>${this._esc(task.updated_at ? new Date(task.updated_at).toLocaleString() : '-')}</span>
+                <span style="color:var(--text-muted);">Depends On</span><span>${Array.isArray(task.depends_on) && task.depends_on.length ? this._esc(task.depends_on.join(', ')) : '-'}</span>
+            </div>
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Description (Markdown)</div>
+                <div class="message-text">${descHtml}</div>
+            </div>
+        `;
+    }
+
+    async _loadCommentsTab(taskId) {
+        const pid = this._paneId;
+        const root = document.getElementById(`taskComments-${pid}`);
+        if (!root) return;
+        this._mentionInputs.forEach(m => { try { m.destroy(); } catch {} });
+        this._mentionInputs = [];
+        const execUser = this._getExecUser();
+        try {
+            const data = await this.api.getTaskComments(taskId, { execUser });
+            const comments = Array.isArray(data?.comments) ? data.comments : [];
+            root.innerHTML = `
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                    <strong style="font-size:12px;color:var(--text-primary);">Comments</strong>
+                    <span style="font-size:11px;color:var(--text-muted);">${comments.length}</span>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;margin-bottom:10px;">
+                    ${comments.length ? comments.map(c => this._renderCommentNode(c, 0)).join('') : '<div style="font-size:11px;color:var(--text-muted);">No comments yet.</div>'}
+                </div>
+                <div style="border-top:1px solid var(--border);padding-top:8px;display:grid;gap:6px;">
+                    <label style="font-size:11px;color:var(--text-muted);">New comment</label>
+                    <textarea id="taskCommentInput-${pid}" class="form-input" rows="3" placeholder="Write a comment..."></textarea>
+                    <div style="display:flex;gap:6px;justify-content:flex-end;">
+                        <button class="action-btn primary" data-action="submit-comment" style="padding:4px 12px;">Post</button>
+                    </div>
+                </div>
+            `;
+            root.querySelector('[data-action="submit-comment"]')?.addEventListener('click', async () => {
+                const input = document.getElementById(`taskCommentInput-${pid}`);
+                const content = input?.value?.trim();
+                if (!content) { this._getApp()?.showToast?.('Comment is required', 'warning'); return; }
+                await this.api.createTaskComment(taskId, { content, author: 'user' }, { execUser });
+                if (input) input.value = '';
+                await this._loadCommentsTab(taskId);
+            });
+            root.querySelectorAll('[data-action="reply-comment"]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const domId = btn.dataset.commentDomId;
+                    const form = document.getElementById(`replyForm-${domId}`);
+                    if (form) form.style.display = form.style.display === 'none' ? 'grid' : 'none';
+                });
+            });
+            root.querySelectorAll('[data-action="submit-reply"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const commentId = btn.dataset.commentId;
+                    const domId = btn.dataset.commentDomId;
+                    const input = document.getElementById(`replyInput-${domId}`);
+                    const content = input?.value?.trim();
+                    if (!content) { this._getApp()?.showToast?.('Reply is required', 'warning'); return; }
+                    await this.api.createTaskComment(taskId, { content, author: 'user', parent_id: commentId }, { execUser });
+                    await this._loadCommentsTab(taskId);
+                });
+            });
+        } catch (e) {
+            root.innerHTML = '<div style="font-size:12px;color:var(--error);">Failed to load comments</div>';
+        }
+    }
+
+    _renderCommentNode(comment, depth) {
+        const replies = Array.isArray(comment?.replies) ? comment.replies : [];
+        const margin = Math.min(depth * 14, 42);
+        const rawId = String(comment?.id || '');
+        const domId = rawId.replace(/[^A-Za-z0-9_-]/g, '_');
+        const app = this._getApp();
+        const contentHtml = app?.chatView?.formatMessageContent ? app.chatView.formatMessageContent(comment.content || '') : this._esc(comment.content || '');
+        return `
+            <div style="margin-left:${margin}px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);display:flex;flex-direction:column;gap:6px;">
+                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+                    <span style="font-size:11px;font-weight:600;color:var(--text-primary);">${this._esc(comment.author || 'user')}</span>
+                    <span style="font-size:10px;color:var(--text-muted);">${this._formatTime((comment.created_at || 0) * 1000)}</span>
+                </div>
+                <div class="message-text" style="font-size:12px;">${contentHtml}</div>
+                <div style="display:flex;gap:6px;">
+                    <button class="action-btn" data-action="reply-comment" data-comment-id="${this._esc(rawId)}" data-comment-dom-id="${domId}" style="padding:2px 8px;font-size:11px;">Reply</button>
+                </div>
+                <div id="replyForm-${domId}" style="display:none;gap:6px;">
+                    <textarea id="replyInput-${domId}" class="form-input" rows="2" placeholder="Write a reply..."></textarea>
+                    <button class="action-btn primary" data-action="submit-reply" data-comment-id="${this._esc(rawId)}" data-comment-dom-id="${domId}" style="padding:4px 10px;font-size:11px;">Post Reply</button>
+                </div>
+                ${replies.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${replies.map(r => this._renderCommentNode(r, depth + 1)).join('')}</div>` : ''}
+            </div>
+        `;
+    }
+
+    async _loadQualityTab(taskId) {
+        const pid = this._paneId;
+        const root = document.getElementById(`taskQuality-${pid}`);
+        if (!root) return;
+        const execUser = this._getExecUser();
+        try {
+            const data = await this.api.getTaskQualityReviews(taskId, { execUser });
+            const latest = data?.latest_review;
+            const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
+            root.innerHTML = `
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                    <strong style="font-size:12px;color:var(--text-primary);">Aegis Quality</strong>
+                    <span style="font-size:11px;color:${data?.gate_allowed ? 'var(--success)' : 'var(--warning)'};">${data?.gate_allowed ? 'Gate Passed' : 'Gate Blocked'}</span>
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">${this._esc(data?.gate_reason || '')}</div>
+                ${latest ? `<div style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;">Latest: <strong>${this._esc(String(latest.status||''))}</strong> by ${this._esc(String(latest.reviewer||'unknown'))} · ${this._formatTime((latest.created_at||0)*1000)}</div>` : '<div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;">No reviews yet.</div>'}
+                <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px;max-height:180px;overflow-y:auto;">
+                    ${reviews.length ? reviews.map(r => `<div style="border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);"><div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;"><span style="font-size:11px;font-weight:600;color:var(--text-primary);">${this._esc(String(r.status||''))}</span><span style="font-size:10px;color:var(--text-muted);">${this._formatTime((r.created_at||0)*1000)}</span></div><div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">Reviewer: ${this._esc(String(r.reviewer||'unknown'))}</div>${r.notes ? `<div class="message-text" style="font-size:11px;color:var(--text-secondary);">${this._esc(String(r.notes))}</div>` : ''}</div>`).join('') : '<div style="font-size:11px;color:var(--text-muted);">No history entries.</div>'}
+                </div>
+                <div style="border-top:1px solid var(--border);padding-top:10px;display:grid;gap:6px;">
+                    <label style="font-size:11px;color:var(--text-muted);">Reviewer</label>
+                    <input id="qualityReviewer-${pid}" type="text" class="form-input" value="aegis" placeholder="reviewer">
+                    <label style="font-size:11px;color:var(--text-muted);">Status</label>
+                    <select id="qualityStatus-${pid}" class="form-input form-select">
+                        <option value="approved">approved</option>
+                        <option value="needs_changes">needs_changes</option>
+                        <option value="rejected">rejected</option>
+                    </select>
+                    <label style="font-size:11px;color:var(--text-muted);">Notes</label>
+                    <textarea id="qualityNotes-${pid}" class="form-input" rows="3" placeholder="Review notes"></textarea>
+                    <div style="display:flex;gap:6px;justify-content:flex-end;">
+                        <button class="action-btn primary" data-action="submit-quality-review" style="justify-content:center;">Submit Review</button>
+                    </div>
+                </div>
+            `;
+            root.querySelector('[data-action="submit-quality-review"]')?.addEventListener('click', async () => {
+                const reviewer = document.getElementById(`qualityReviewer-${pid}`)?.value?.trim() || 'aegis';
+                const status = document.getElementById(`qualityStatus-${pid}`)?.value || 'approved';
+                const notes = document.getElementById(`qualityNotes-${pid}`)?.value?.trim() || '';
+                try {
+                    await this.api.submitTaskQualityReview(taskId, { reviewer, status, notes }, { execUser });
+                    this._getApp()?.showToast?.('Quality review submitted', 'success');
+                    await this._loadTasks();
+                    await this._showTaskDetail(taskId);
+                } catch (e) {
+                    this._getApp()?.showToast?.(e.message || 'Failed to submit', 'error');
+                }
+            });
+        } catch (e) {
+            root.innerHTML = '<div style="font-size:12px;color:var(--error);">Failed to load quality reviews</div>';
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // SSE streaming
+    // ------------------------------------------------------------------
+
+    _streamTaskConversation(taskId, isReplay = false) {
+        this._closeTaskStream(taskId);
+        const pid = this._paneId;
+        const container = document.getElementById(`taskConversation-${pid}`);
+        if (!container) return;
+        const es = this.api.streamTaskMessages(taskId, { execUser: this._getExecUser(), tail: 5000 });
+        this._activeStreams.set(taskId, es);
+        let bubbleEl = null, currentTextEl = null, currentTextContent = '', textSegmentIndex = 0;
+        const streamingToolCalls = new Map();
+        let initialized = false, runFinished = false;
+        const app = this._getApp();
+        const chatView = app?.chatView;
+
+        const ensureBubble = () => {
+            if (!bubbleEl) {
+                if (!initialized) { container.innerHTML = ''; initialized = true; }
+                const msgId = `task-stream-msg-${Date.now()}`;
+                container.insertAdjacentHTML('beforeend', `<div class="message assistant" id="${msgId}"><div class="message-avatar assistant"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg></div><div class="message-content"><div class="message-bubble streaming-bubble" id="task-bubble-${msgId}"></div></div></div>`);
+                bubbleEl = document.getElementById(`task-bubble-${msgId}`);
+            }
+            return bubbleEl;
+        };
+        const ensureTextElement = () => {
+            if (!currentTextEl) {
+                const bubble = ensureBubble();
+                if (bubble) {
+                    const textId = `task-stream-text-${taskId}-seg${textSegmentIndex}`;
+                    bubble.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
+                    currentTextEl = document.getElementById(textId);
+                }
+            }
+            return currentTextEl;
+        };
+
+        es.onmessage = (event) => {
+            if (runFinished) return;
+            let data;
+            try { data = JSON.parse(event.data); } catch { return; }
+
+            if (data.type === 'TEXT_MESSAGE_START') {
+                ensureBubble();
+            } else if (data.type === 'TEXT_MESSAGE_CONTENT') {
+                const delta = data.delta ?? data.content ?? data.text ?? data.response;
+                if (delta != null && delta !== '') {
+                    const textEl = ensureTextElement();
+                    currentTextContent += (typeof delta === 'string' ? delta : JSON.stringify(delta, null, 2));
+                    if (textEl && chatView) { textEl.innerHTML = chatView.formatMessageContent(currentTextContent); container.scrollTop = container.scrollHeight; }
+                }
+            } else if (data.type === 'result') {
+                const resultText = data.content ?? data.result;
+                if (resultText != null && resultText !== '') {
+                    const textEl = ensureTextElement();
+                    currentTextContent += (typeof resultText === 'string' ? resultText : JSON.stringify(resultText, null, 2));
+                    if (textEl && chatView) { textEl.innerHTML = chatView.formatMessageContent(currentTextContent); container.scrollTop = container.scrollHeight; }
+                }
+            } else if (data.type === 'TEXT_MESSAGE_END') {
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null; currentTextContent = ''; textSegmentIndex++;
+            } else if (data.type === 'TOOL_CALL_START') {
+                const toolCallId = data.toolCallId || `tool-${Date.now()}`;
+                const toolName = data.toolCallName || 'Tool';
+                const toolTitle = chatView?.formatToolCallTitle?.(toolName, {}, '') || toolName;
+                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null; currentTextContent = ''; textSegmentIndex++;
+                const bubble = ensureBubble();
+                if (bubble && chatView) { bubble.insertAdjacentHTML('beforeend', chatView.renderStreamingToolCall(toolCallId, toolTitle, 'executing')); container.scrollTop = container.scrollHeight; }
+            } else if (data.type === 'TOOL_CALL_ARGS') {
+                const tc = streamingToolCalls.get(data.toolCallId);
+                if (tc) {
+                    tc.args += (data.delta || '');
+                    const argsEl = document.getElementById(`streaming-tool-args-${data.toolCallId}`);
+                    if (argsEl) argsEl.textContent = tc.args;
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${data.toolCallId}"] .tool-call-name`);
+                    if (titleEl && chatView) titleEl.textContent = chatView.formatToolCallTitle(tc.name, {}, tc.args);
+                }
+            } else if (data.type === 'TOOL_CALL_END') {
+                const tc = streamingToolCalls.get(data.toolCallId);
+                if (tc) {
+                    tc.status = data.error ? 'failed' : 'completed';
+                    tc.result = data.result || '';
+                    const statusEl = document.querySelector(`[data-streaming-tool-id="${data.toolCallId}"] .tool-call-status-icon`);
+                    if (statusEl) { statusEl.textContent = data.error ? '✗' : '✓'; statusEl.parentElement.style.color = data.error ? 'var(--error)' : 'var(--success)'; }
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${data.toolCallId}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${data.toolCallId}`);
+                    if (resultSection && resultEl && tc.result) { resultSection.style.display = 'block'; resultEl.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2); }
+                    container.scrollTop = container.scrollHeight;
+                }
+            } else if (data.type === 'TOOL_CALL_RESULT') {
+                const tc = streamingToolCalls.get(data.toolCallId);
+                if (tc) {
+                    tc.result = data.result || data.content || '';
+                    const s = document.getElementById(`streaming-tool-result-section-${data.toolCallId}`);
+                    const el = document.getElementById(`streaming-tool-result-${data.toolCallId}`);
+                    if (s && el && tc.result) { s.style.display = 'block'; el.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2); }
+                }
+            } else if (data.type === 'RUN_FINISHED' || data.type === 'RUN_ERROR') {
+                runFinished = true;
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                const isError = data.type === 'RUN_ERROR';
+                container.insertAdjacentHTML('beforeend', `<div style="padding:8px 12px;margin-top:8px;background:rgba(${isError ? '239,68,68' : '16,185,129'},0.1);border-radius:6px;font-size:12px;color:var(--${isError ? 'error' : 'success'});">${isError ? `Task failed${data.message ? ': ' + this._esc(data.message) : ''}` : '✓ Task completed'}</div>`);
+                container.scrollTop = container.scrollHeight;
+                this._closeTaskStream(taskId);
+                if (!isReplay) { this._loadTasks(); app?.chatView?.loadSessions?.(0); }
+            }
+        };
+        es.onerror = () => { if (!runFinished && es.readyState !== EventSource.CLOSED) console.warn(`Task ${taskId} SSE error`); };
+    }
+
+    _closeTaskStream(taskId) {
+        if (!taskId) return;
+        const es = this._activeStreams.get(taskId);
+        if (es) { es.close(); this._activeStreams.delete(taskId); }
+    }
+
+    // ------------------------------------------------------------------
+    // Toolbar event bindings
+    // ------------------------------------------------------------------
+
+    _bindToolbarEvents() {
+        const c = this.container;
+        if (!c) return;
+        const pid = this._paneId;
+
+        c.querySelector('[data-action="create-task"]')?.addEventListener('click', () => this._getApp()?.showCreateTaskModal?.('single'));
+        c.querySelector('[data-action="toggle-selection"]')?.addEventListener('click', () => this._toggleSelectionMode());
+        c.querySelector('[data-action="select-all"]')?.addEventListener('click', () => this._selectAllTasks());
+        c.querySelector('[data-action="deselect-all"]')?.addEventListener('click', () => this._deselectAllTasks());
+        c.querySelector('[data-action="delete-selected"]')?.addEventListener('click', () => this._deleteSelectedTasks());
+        c.querySelector('[data-action="toggle-schedules"]')?.addEventListener('click', () => this._toggleSchedulePanel());
+        c.querySelector('[data-action="refresh-schedules"]')?.addEventListener('click', () => this._loadSchedules());
+
+        const searchInput = document.getElementById(`taskSearch-${pid}`);
+        if (searchInput) {
+            let t;
+            searchInput.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => this._loadTasks(), 300); });
+        }
+        document.getElementById(`taskProjectFilter-${pid}`)?.addEventListener('change', () => this._loadTasks());
+        document.getElementById(`scheduleStatusFilter-${pid}`)?.addEventListener('change', () => this._loadSchedules());
+    }
+
+    // ------------------------------------------------------------------
+    // Selection mode
+    // ------------------------------------------------------------------
+
+    _toggleSelectionMode() {
+        this._selectionMode = !this._selectionMode;
+        if (!this._selectionMode) this._selectedTaskIds = new Set();
+        const pid = this._paneId;
+        const el = document.getElementById(`selectionActions-${pid}`);
+        if (el) el.style.display = this._selectionMode ? 'flex' : 'none';
+        this._renderKanban();
+        this._updateDeleteBtnCount();
+    }
+
+    _toggleTaskSelection(taskId) {
+        if (this._selectedTaskIds.has(taskId)) this._selectedTaskIds.delete(taskId);
+        else this._selectedTaskIds.add(taskId);
+        const card = this.container?.querySelector(`.task-card[data-task-id="${taskId}"]`);
+        if (card) {
+            card.classList.toggle('checked', this._selectedTaskIds.has(taskId));
+            const cb = card.querySelector('.task-card-checkbox input');
+            if (cb) cb.checked = this._selectedTaskIds.has(taskId);
+        }
+        this._updateDeleteBtnCount();
+    }
+
+    _selectAllTasks() {
+        this._selectedTaskIds = new Set(this._tasks.map(t => t.id));
+        this.container?.querySelectorAll('.task-card').forEach(c => {
+            c.classList.add('checked');
+            const cb = c.querySelector('.task-card-checkbox input');
+            if (cb) cb.checked = true;
+        });
+        this._updateDeleteBtnCount();
+    }
+
+    _deselectAllTasks() {
+        this._selectedTaskIds = new Set();
+        this.container?.querySelectorAll('.task-card').forEach(c => {
+            c.classList.remove('checked');
+            const cb = c.querySelector('.task-card-checkbox input');
+            if (cb) cb.checked = false;
+        });
+        this._updateDeleteBtnCount();
+    }
+
+    _updateDeleteBtnCount() {
+        const count = this._selectedTaskIds.size;
+        const btn = document.getElementById(`deleteSelectedBtn-${this._paneId}`);
+        if (btn) {
+            const span = btn.querySelector('span');
+            if (span) span.textContent = `Delete (${count})`;
+            btn.disabled = count === 0;
+        }
+    }
+
+    async _deleteSelectedTasks() {
+        const ids = Array.from(this._selectedTaskIds);
+        if (ids.length === 0) { this._getApp()?.showToast?.('No tasks selected', 'warning'); return; }
+        this._getApp()?.showDeleteModal?.('tasks', `${ids.length} tasks`, async () => {
+            try {
+                const result = await this.api.bulkDeleteTasks(ids, { execUser: this._getExecUser() });
+                this._getApp()?.showToast?.(`Deleted ${result.result?.count || ids.length} tasks`, 'success');
+                this._selectedTaskIds = new Set();
+                this._updateDeleteBtnCount();
+                await this._loadTasks();
+            } catch (e) {
+                this._getApp()?.showToast?.('Failed to delete tasks', 'error');
+            }
+        });
+    }
+
+    async _deleteTask(taskId) {
+        try {
+            await this.api.deleteTask(taskId, { execUser: this._getExecUser() });
+            this._getApp()?.showToast?.('Task deleted', 'success');
+            this._selectedTask = null;
+            document.getElementById(`taskDetail-${this._paneId}`)?.classList.add('hidden');
+            await this._loadTasks();
+        } catch (e) {
+            this._getApp()?.showToast?.('Failed to delete task', 'error');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Kanban drag-drop
+    // ------------------------------------------------------------------
+
+    _bindKanbanDragDrop() {
+        const pid = this._paneId;
+        const board = document.getElementById(`kanbanBoard-${pid}`);
+        if (!board || typeof KanbanDragDrop === 'undefined') return;
+        KanbanDragDrop.mount(board, {
+            getTaskStatus: (taskId) => {
+                const task = this._tasks.find(t => t.id === taskId);
+                return task ? this._normalizeTaskStatus(task.status) : null;
+            },
+            onMove: async (taskId, toStatus, fromStatus) => {
+                try {
+                    await this.api.updateTaskStatus(taskId, toStatus, { execUser: this._getExecUser() });
+                    const local = this._tasks.find(t => t.id === taskId);
+                    if (local) local.status = toStatus;
+                    this._renderKanban();
+                    if (this._selectedTask === taskId) {
+                        const task = this._tasks.find(t => t.id === taskId);
+                        if (task) this._renderTaskDetail(task);
+                    }
+                    this._getApp()?.showToast?.(`Task moved: ${fromStatus} → ${toStatus}`, 'success');
+                } catch (e) {
+                    this._getApp()?.showToast?.(`Move failed: ${e.message}`, 'error');
+                    await this._loadTasks();
+                }
+            },
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Schedules
+    // ------------------------------------------------------------------
+
+    _toggleSchedulePanel() {
+        const pid = this._paneId;
+        const panel = document.getElementById(`schedulePanel-${pid}`);
+        if (!panel) return;
+        this._schedulePanelOpen = !this._schedulePanelOpen;
+        panel.style.display = this._schedulePanelOpen ? 'block' : 'none';
+        if (this._schedulePanelOpen) this._loadSchedules();
+    }
+
+    async _loadSchedules() {
+        const pid = this._paneId;
+        const listEl = document.getElementById(`scheduleList-${pid}`);
+        if (!listEl) return;
+        const statusFilter = document.getElementById(`scheduleStatusFilter-${pid}`)?.value || '';
+        try {
+            const data = await this.api.getSchedules({ status: statusFilter || undefined, pageSize: 100 });
+            const schedules = data.schedules || [];
+            if (schedules.length === 0) {
+                listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--text-muted);font-size:13px;">No schedules found</p></div>';
+                return;
+            }
+            listEl.innerHTML = schedules.map(s => this._renderScheduleCard(s)).join('');
+            listEl.querySelectorAll('.schedule-card').forEach(card => {
+                const sid = card.dataset.scheduleId;
+                card.querySelector('[data-action="trigger-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._triggerSchedule(sid); });
+                card.querySelector('[data-action="pause-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._pauseSchedule(sid); });
+                card.querySelector('[data-action="resume-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._resumeSchedule(sid); });
+                card.querySelector('[data-action="cancel-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._cancelSchedule(sid); });
+                card.querySelector('[data-action="edit-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._showEditScheduleModal(sid); });
+                card.querySelector('[data-action="delete-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._deleteSchedule(sid); });
+            });
+        } catch (e) {
+            listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--error);font-size:13px;">Failed to load schedules</p></div>';
+        }
+    }
+
+    _renderScheduleCard(schedule) {
+        const statusColors = { active: 'var(--status-doing)', paused: 'var(--status-todo)', cancelled: 'var(--status-cancelled)' };
+        const statusColor = statusColors[schedule.status] || 'var(--text-muted)';
+        const isActive = schedule.status === 'active';
+        const isPaused = schedule.status === 'paused';
+        const isCancelled = schedule.status === 'cancelled';
+        const nextRun = schedule.next_run_at ? new Date(schedule.next_run_at).toLocaleString() : '-';
+        const lastRun = schedule.last_run_at ? new Date(schedule.last_run_at).toLocaleString() : 'Never';
+        const maxRunsText = schedule.max_runs ? `${schedule.run_count}/${schedule.max_runs}` : `${schedule.run_count}`;
+        let triggerBadge = schedule.run_at
+            ? `<code class="schedule-cron-badge" title="One-time schedule">Once @ ${this._esc(new Date(schedule.run_at).toLocaleString())}</code>`
+            : `<code class="schedule-cron-badge">${this._esc(schedule.cron_expression || '-')}</code>`;
+        const kindBadge = schedule.schedule_kind === 'evolution' ? `<span class="schedule-kind-badge evolution" title="Evolution schedule">♻ ${this._esc(schedule.evolution_phase || 'evolve')}</span>` : '';
+        const isSystem = schedule.schedule_kind === 'evolution';
+
+        return `
+            <div class="schedule-card" data-schedule-id="${schedule.id}">
+                <div class="schedule-card-header">
+                    <div class="schedule-card-info">
+                        <span class="schedule-status-dot" style="background:${statusColor};"></span>
+                        <span class="schedule-card-name">${this._esc(schedule.name)}</span>
+                        ${kindBadge}${triggerBadge}
+                    </div>
+                    <div class="schedule-card-actions">
+                        ${isActive ? `<button class="schedule-action-btn" data-action="trigger-schedule" title="Trigger now"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button><button class="schedule-action-btn" data-action="pause-schedule" title="Pause"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
+                        ${isPaused ? `<button class="schedule-action-btn" data-action="resume-schedule" title="Resume"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
+                        ${!isCancelled ? `<button class="schedule-action-btn" data-action="cancel-schedule" title="Cancel"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
+                        <button class="schedule-action-btn" data-action="edit-schedule" title="Edit" style="${isSystem ? 'display:none' : ''}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
+                        <button class="schedule-action-btn danger" data-action="delete-schedule" title="Delete" style="${isSystem ? 'display:none' : ''}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+                    </div>
+                </div>
+                <div class="schedule-card-meta">
+                    <span title="Provider">${this._esc(schedule.alias || schedule.provider || '-')}</span>
+                    <span title="Runs">${maxRunsText} runs</span>
+                    <span title="Next run">Next: ${nextRun}</span>
+                    <span title="Last run">Last: ${lastRun}</span>
+                </div>
+                <div class="schedule-card-desc">${this._esc(schedule.description || '').substring(0, 120)}${(schedule.description || '').length > 120 ? '...' : ''}</div>
+            </div>
+        `;
+    }
+
+    async _triggerSchedule(id) { try { await this.api.triggerSchedule(id); this._getApp()?.showToast?.('Schedule triggered', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _pauseSchedule(id) { try { await this.api.pauseSchedule(id); this._getApp()?.showToast?.('Schedule paused', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _resumeSchedule(id) { try { await this.api.resumeSchedule(id); this._getApp()?.showToast?.('Schedule resumed', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _cancelSchedule(id) { if (!confirm('Cancel this schedule permanently?')) return; try { await this.api.cancelSchedule(id); this._getApp()?.showToast?.('Schedule cancelled', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; try { await this.api.deleteSchedule(id); this._getApp()?.showToast?.('Schedule deleted', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _showEditScheduleModal(id) {
+        try {
+            const s = await this.api.getSchedule(id);
+            const modal = document.getElementById('editScheduleModal');
+            if (!modal) return;
+            document.getElementById('editScheduleId').value = s.id;
+            document.getElementById('editScheduleName').value = s.name || '';
+            document.getElementById('editScheduleCron').value = s.cron_expression || '';
+            document.getElementById('editScheduleTimezone').value = s.timezone || 'UTC';
+            document.getElementById('editScheduleDescription').value = s.description || '';
+            document.getElementById('editScheduleWorkspace').value = s.workspace || '';
+            document.getElementById('editScheduleMaxRuns').value = s.max_runs || '';
+            modal.classList.add('open');
+        } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); }
+    }
+
+    // ------------------------------------------------------------------
+    // Auto-polling
+    // ------------------------------------------------------------------
+
+    _startAutoPolling() {
+        if (this._smartPoll) return;
+        if (typeof SmartPoll === 'undefined') return;
+        this._smartPoll = new SmartPoll(async () => {
+            const app = this._getApp();
+            if (app?.pageManager?.currentPage !== 'task') return;
+            await this._loadTasks();
+            const hasRunning = this._tasks.some(t => this._normalizeTaskStatus(t.status) === 'in_progress');
+            if (hasRunning) app?.chatView?.loadSessions?.(0);
+        }, { intervalMs: this._pollInterval });
+        this._smartPoll.start();
+    }
+
+    _stopAutoPolling() {
+        if (this._smartPoll) { this._smartPoll.destroy(); this._smartPoll = null; }
+    }
+
+    // ------------------------------------------------------------------
+    // Sync selected task detail after refresh
+    // ------------------------------------------------------------------
+
+    _syncSelectedTaskDetail() {
+        if (!this._selectedTask) return;
+        const pid = this._paneId;
+        const latest = this._tasks.find(t => t.id === this._selectedTask);
+        const detailPanel = document.getElementById(`taskDetail-${pid}`);
+        if (!latest) {
+            this._closeTaskStream(this._selectedTask);
+            this._selectedTask = null;
+            if (detailPanel) detailPanel.classList.add('hidden');
+        } else if (detailPanel) {
+            const latestStatus = this._normalizeTaskStatus(latest.status);
+            const renderedStatus = detailPanel.dataset.taskStatus || '';
+            const renderedId = detailPanel.dataset.taskId || '';
+            const hasConvDom = !!detailPanel.querySelector(`#taskConversation-${pid}`);
+            const shouldHaveConv = ['in_progress', 'done', 'completed', 'failed'].includes(latestStatus);
+            const isStreaming = this._activeStreams.has(this._selectedTask);
+            if ((renderedId !== this._selectedTask || renderedStatus !== latestStatus || (shouldHaveConv && !hasConvDom)) && !isStreaming) {
+                this._renderTaskDetail(latest);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    _getApp() { return window.nexusApp || window.app; }
+    _getExecUser() { return document.getElementById('globalUserFilter')?.value || NexusAPI.getDefaultExecUser(); }
+    _getUsername() { return document.getElementById('globalUserFilter')?.value || ''; }
+
+    _detectAwaitingOwner(task) {
+        if (!task) return false;
+        if (task.metadata?.awaiting_human) return true;
+        if (this._normalizeTaskStatus(task.status) === 'awaiting_owner') return true;
+        const s = String(task.status || '').toLowerCase();
+        if (s.includes('awaiting') || s.includes('blocked')) return true;
+        if (this._normalizeTaskStatus(task.status) === 'in_progress' && task.updated_at) {
+            if (Date.now() - new Date(task.updated_at).getTime() > 30 * 60 * 1000) return true;
+        }
+        return false;
+    }
+
+    _resolveGitHubIssueLabel(task) {
+        if (Number.isInteger(task?.github_issue_number)) return `#${task.github_issue_number}`;
+        const ref = String(task?.ticket_ref || '').trim();
+        const m = ref.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+        return m ? `${m[1]}#${m[2]}` : '';
+    }
+
+    _resolveGitHubIssueUrl(task) {
+        const direct = String(task?.github_url || '').trim();
+        if (direct) return direct;
+        const ref = String(task?.ticket_ref || '').trim();
+        const m = ref.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
+        return m ? `https://github.com/${m[1]}/issues/${m[2]}` : '';
+    }
+
+    _formatTime(timestamp) {
+        if (!timestamp) return '';
+        const d = new Date(timestamp);
+        const diff = Date.now() - d;
+        if (diff < 60000) return 'Just now';
+        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+        return d.toLocaleDateString();
+    }
+
+    _esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
     }
 }
 
-export { TaskBoardPanel };
+// Register globally
+window.TaskBoardPanel = TaskBoardPanel;
