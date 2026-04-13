@@ -53,17 +53,33 @@ _TABLE_CREATED = False
 
 
 def _ensure_core_tasks_table(db: Database):
-    """Create the core_tasks table if it doesn't already exist."""
+    """Create the core_tasks table if it doesn't already exist.
+    
+    If core_tasks is a VIEW (pointing to tasks table), skip table/index creation.
+    """
     global _TABLE_CREATED
     if _TABLE_CREATED:
         return
+    
+    # Check if core_tasks is a view (created by migration to unify tasks/core_tasks)
+    try:
+        row = db.execute_fetchone(
+            "SELECT type FROM sqlite_master WHERE name = 'core_tasks'"
+        )
+        if row and row.get("type") == "view":
+            logger.info("core_tasks is a VIEW — skipping table/index creation")
+            _TABLE_CREATED = True
+            return
+    except Exception:
+        pass
+    
     db.execute("""
         CREATE TABLE IF NOT EXISTS core_tasks (
             id TEXT PRIMARY KEY,
             exec_user TEXT NOT NULL DEFAULT 'default',
             description TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL DEFAULT 'thought',
-            status TEXT NOT NULL DEFAULT 'todo',
+            status TEXT NOT NULL DEFAULT 'inbox',
             context_json TEXT,
             project_id TEXT,
             project_name TEXT,
