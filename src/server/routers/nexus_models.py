@@ -56,6 +56,16 @@ class SessionBulkRequest(BaseModel):
     session_ids: List[str] = Field(default_factory=list)
 
 
+class CreateSessionRequest(BaseModel):
+    """Request body for POST /api/nexus/sessions."""
+    title: Optional[str] = Field(None, description="Session title")
+    username: Optional[str] = Field(None, description="Username")
+    exec_user: Optional[str] = Field(None, description="Linux exec user")
+    provider: Optional[str] = Field(None, description="Provider (e.g. claude, gemini)")
+    alias: Optional[str] = Field(None, description="Alias (defaults to provider)")
+    exec_dir: Optional[str] = Field(None, description="Working directory")
+
+
 class SessionBulkResponse(SuccessResponse):
     result: Dict[str, Any] = Field(default_factory=dict)
 

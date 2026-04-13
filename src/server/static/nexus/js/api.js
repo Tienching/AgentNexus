@@ -1074,6 +1074,7 @@ class NexusAPI {
     static async getAuditLog(params = {}) {
         const qs = new URLSearchParams();
         if (params.action) qs.set('action', params.action);
+        if (params.task_id) qs.set('task_id', params.task_id);
         if (params.limit) qs.set('limit', params.limit);
         const query = qs.toString();
         const response = await fetch(`${API_BASE}/audit${query ? '?' + query : ''}`);

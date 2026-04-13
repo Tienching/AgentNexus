@@ -18,6 +18,20 @@ import logging
 from ..models.task_models import Task, TaskPriority, TaskStatus
 from src.runtime.stores.db import Database, get_db
 
+
+def _normalize_task_status(status_str: str) -> str:
+    """Normalize legacy task status values to current enum names."""
+    normalized = status_str.strip().lower()
+    legacy_map = {
+        "pending": "inbox",
+        "todo": "inbox",
+        "doing": "in_progress",
+        "running": "in_progress",
+        "completed": "done",
+        "cancelled": "archived",
+    }
+    return legacy_map.get(normalized, normalized)
+
 logger = logging.getLogger(__name__)
 
 
@@ -320,9 +334,9 @@ class TaskQueue:
             return None
 
     def get_pending_tasks(self, limit: int = 10) -> List[Task]:
-        """Get TODO tasks sorted by priority (PROJECT first, then by creation time)"""
+        """Get INBOX tasks sorted by priority (PROJECT first, then by creation time)"""
         rows = self._db.execute_fetchall(
-            "SELECT * FROM core_tasks WHERE exec_user = ? AND status = 'todo' "
+            "SELECT * FROM core_tasks WHERE exec_user = ? AND status IN ('inbox', 'todo') "
             "ORDER BY CASE priority WHEN 'project' THEN 0 ELSE 1 END, created_at ASC "
             "LIMIT ?",
             (self.exec_user, limit),
@@ -330,9 +344,9 @@ class TaskQueue:
         return [_row_to_task(r) for r in rows if r]
 
     def get_in_progress_tasks(self) -> List[Task]:
-        """Get all DOING tasks"""
+        """Get all IN_PROGRESS tasks"""
         rows = self._db.execute_fetchall(
-            "SELECT * FROM core_tasks WHERE exec_user = ? AND status = 'doing'",
+            "SELECT * FROM core_tasks WHERE exec_user = ? AND status IN ('in_progress', 'doing')",
             (self.exec_user,),
         )
         return [_row_to_task(r) for r in rows if r]
@@ -459,11 +473,11 @@ class TaskQueue:
                     "completed": 0, "done": 0,
                 }
             projects[pid]["total_tasks"] += r["cnt"]
-            st = r["status"]
-            if st == "todo":
+            st = _normalize_task_status(r["status"])
+            if st == "inbox":
                 projects[pid]["todo"] += r["cnt"]
                 projects[pid]["pending"] += r["cnt"]
-            elif st == "doing":
+            elif st == "in_progress":
                 projects[pid]["doing"] += r["cnt"]
                 projects[pid]["in_progress"] += r["cnt"]
             elif st == "done":
@@ -481,16 +495,16 @@ class TaskQueue:
             return None
         tasks = [_row_to_task(r) for r in rows]
         first_task = tasks[0]
-        todo = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "todo")
-        doing = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "doing")
+        inbox = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) in ("inbox", "todo"))
+        in_progress = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) in ("in_progress", "doing"))
         done = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "done")
         failed = sum(1 for t in tasks if (t.status if isinstance(t.status, str) else t.status.value) == "failed")
         return {
             "project_id": project_id,
             "project_name": first_task.project_name or project_id,
             "total_tasks": len(tasks),
-            "pending": todo, "todo": todo,
-            "in_progress": doing, "doing": doing,
+            "pending": inbox, "todo": inbox,
+            "in_progress": in_progress, "doing": in_progress,
             "completed": done, "done": done,
             "failed": failed,
             "created_at": min(t.created_at for t in tasks),
@@ -533,8 +547,15 @@ class TaskQueue:
         params: list = [self.exec_user]
 
         if status:
-            conditions.append("status = ?")
-            params.append(status.lower().strip())
+            # Normalize legacy status values so both old and new names match
+            normalized = _normalize_task_status(status.lower().strip())
+            # Match both legacy and current status strings in DB
+            legacy_map = {"inbox": ["inbox", "todo"], "in_progress": ["in_progress", "doing"],
+                         "done": ["done", "completed"], "archived": ["archived", "cancelled"]}
+            match_values = legacy_map.get(normalized, [normalized])
+            placeholders = ",".join(["?"] * len(match_values))
+            conditions.append(f"status IN ({placeholders})")
+            params.extend(match_values)
         if project_id:
             conditions.append("project_id = ?")
             params.append(project_id.strip())
@@ -578,8 +599,8 @@ class TaskQueue:
         now_ts = datetime.now(timezone.utc).timestamp()
         with self._db.transaction() as conn:
             cursor = conn.execute(
-                "UPDATE core_tasks SET status = 'cancelled', deleted_at = ? "
-                "WHERE exec_user = ? AND project_id = ? AND status = 'todo'",
+                "UPDATE core_tasks SET status = 'archived', deleted_at = ? "
+                "WHERE exec_user = ? AND project_id = ? AND status IN ('inbox', 'todo')",
                 (now_ts, self.exec_user, project_id),
             )
             count = cursor.rowcount
@@ -647,30 +668,30 @@ class TaskQueue:
     # ============ Executor Support Methods ============
 
     def get_next_todo_task(self, workspace: Optional[str] = None) -> Optional[Task]:
-        """Get next TODO task from queue for execution"""
+        """Get next INBOX task from queue for execution"""
         if workspace is not None:
             wh = _ws_hash(workspace)
             row = self._db.execute_fetchone(
-                "SELECT * FROM core_tasks WHERE exec_user = ? AND workspace_hash = ? AND status = 'todo' "
+                "SELECT * FROM core_tasks WHERE exec_user = ? AND workspace_hash = ? AND status IN ('inbox', 'todo') "
                 "ORDER BY CASE priority WHEN 'project' THEN 0 ELSE 1 END, created_at ASC LIMIT 1",
                 (self.exec_user, wh),
             )
         else:
             row = self._db.execute_fetchone(
-                "SELECT * FROM core_tasks WHERE exec_user = ? AND status = 'todo' "
+                "SELECT * FROM core_tasks WHERE exec_user = ? AND status IN ('inbox', 'todo') "
                 "ORDER BY CASE priority WHEN 'project' THEN 0 ELSE 1 END, created_at ASC LIMIT 1",
                 (self.exec_user,),
             )
         return _row_to_task(row) if row else None
 
     def start_task(self, task_id: str) -> Optional[Task]:
-        """Mark task as DOING"""
+        """Mark task as IN_PROGRESS"""
         task = self.get_task(task_id)
         if not task:
             return None
         status_val = task.status if isinstance(task.status, str) else task.status.value
         if status_val != TaskStatus.INBOX.value:
-            logger.warning(f"Task {task_id} is not in TODO status, cannot start")
+            logger.warning(f"Task {task_id} is not in INBOX status, cannot start")
             return None
         task.attempt_count += 1
         self._update_task_status(task, TaskStatus.IN_PROGRESS)
@@ -696,12 +717,12 @@ class TaskQueue:
         if workspace:
             wh = _ws_hash(workspace)
             row = self._db.execute_fetchone(
-                "SELECT COUNT(*) as cnt FROM core_tasks WHERE exec_user = ? AND workspace_hash = ? AND status = 'doing'",
+                "SELECT COUNT(*) as cnt FROM core_tasks WHERE exec_user = ? AND workspace_hash = ? AND status IN ('in_progress', 'doing')",
                 (self.exec_user, wh),
             )
         else:
             row = self._db.execute_fetchone(
-                "SELECT COUNT(*) as cnt FROM core_tasks WHERE exec_user = ? AND status = 'doing'",
+                "SELECT COUNT(*) as cnt FROM core_tasks WHERE exec_user = ? AND status IN ('in_progress', 'doing')",
                 (self.exec_user,),
             )
         return row["cnt"] if row else 0
@@ -715,10 +736,10 @@ class TaskQueue:
         return [r["workspace_hash"] for r in rows]
 
     def requeue_stuck_tasks(self, timeout_seconds: int = 3600) -> int:
-        """Requeue tasks that have been DOING for too long"""
+        """Requeue tasks that have been IN_PROGRESS for too long"""
         cutoff = datetime.now(timezone.utc).timestamp() - timeout_seconds
         rows = self._db.execute_fetchall(
-            "SELECT * FROM core_tasks WHERE exec_user = ? AND status = 'doing' AND started_at < ?",
+            "SELECT * FROM core_tasks WHERE exec_user = ? AND status IN ('in_progress', 'doing') AND started_at < ?",
             (self.exec_user, cutoff),
         )
         count = 0

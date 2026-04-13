@@ -116,6 +116,7 @@ def record_audit_event(
 async def get_audit_log(
     action: Optional[str] = Query(None, description="Filter by action type"),
     actor: Optional[str] = Query(None, description="Filter by actor"),
+    task_id: Optional[str] = Query(None, description="Filter by task ID in detail"),
     limit: int = Query(100, ge=1, le=10000, description="Max events"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     since: Optional[int] = Query(None, description="Unix timestamp — events after"),
@@ -137,6 +138,9 @@ async def get_audit_log(
         if actor:
             conditions.append("actor = ?")
             params.append(actor)
+        if task_id:
+            conditions.append("detail LIKE ?")
+            params.append(f'%{task_id}%')
         if since:
             conditions.append("timestamp >= ?")
             params.append(since)
@@ -387,7 +391,7 @@ def _get_task_info() -> DiagTasks:
     queue = TaskQueue(db_path=None, exec_user=exec_user)
     by_status: Dict[str, int] = {}
     total = 0
-    for status in ("todo", "doing", "done", "failed", "archived"):
+    for status in ("inbox", "in_progress", "done", "failed", "archived"):
         try:
             tasks, count = queue.list_tasks(page=1, page_size=1, status=status)
             by_status[status] = count

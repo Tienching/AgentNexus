@@ -35,6 +35,7 @@ from .nexus_models import (
     AgentsResponse,
     SessionBulkRequest,
     SessionBulkResponse,
+    CreateSessionRequest,
     get_task_queue,
 )
 from .nexus_streaming import self_heal_running_session
@@ -115,6 +116,38 @@ async def get_agents():
 
 
 # ============ Session List API ============
+
+@router.post("/sessions", response_model=SessionMeta)
+async def create_session(request: CreateSessionRequest):
+    """Create a new session
+
+    Creates a new session record with the given parameters and returns the
+    session metadata.
+    """
+    from ..utils.ids import gen_session_id
+
+    storage = get_session_storage()
+    session_id = gen_session_id()
+
+    username = request.username or settings.exec_user
+    exec_user = request.exec_user or username
+
+    meta = SessionMeta(
+        id=session_id,
+        thread_id=session_id,
+        title=request.title or "New Session",
+        username=username,
+        exec_user=exec_user,
+        provider=request.provider,
+        alias=request.alias or request.provider,
+        exec_dir=request.exec_dir,
+    )
+
+    storage.save_session_meta(meta)
+    logger.info(f"Created session {session_id} for user={username}")
+
+    return meta
+
 
 @router.get("/sessions", response_model=SessionListResponse)
 async def list_sessions(
