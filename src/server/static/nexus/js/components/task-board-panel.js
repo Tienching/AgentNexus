@@ -642,6 +642,8 @@ class TaskBoardPanel {
                     <div style="display:flex;gap:8px;flex-wrap:wrap;">
                         ${hasConversation ? `<button class="action-btn" data-action="view-session" data-task-id="${task.id}" title="Open in Chat view"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>Open Session</button>` : ''}
                         <button class="action-btn" data-action="broadcast-task" data-task-id="${task.id}" title="Broadcast"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405C18.21 15.21 18 14.702 18 14.172V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.172c0 .53-.21 1.039-.595 1.423L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>Broadcast</button>
+                        ${statusClass === 'done' || statusClass === 'failed' ? `<button class="action-btn primary" data-action="continue-task" data-task-id="${task.id}" title="Continue task conversation"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>Continue</button>` : ''}
+                        ${statusClass === 'done' ? `<button class="action-btn" data-action="set-outcome" data-task-id="${task.id}" title="Set task outcome">Outcome</button>` : ''}
                         <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color:var(--error);"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button>
                     </div>
                 </div>
@@ -689,6 +691,26 @@ class TaskBoardPanel {
             const app = this._getApp();
             app?.pageManager?.setPage('chat');
             setTimeout(() => app?.chatView?.selectSession(0, sessionId), 300);
+        });
+        panel.querySelector('[data-action="continue-task"]')?.addEventListener('click', async () => {
+            try {
+                await NexusAPI.continueTask(task.id, { execUser: this._getExecUser() });
+                this._getApp()?.showToast?.('Task continued', 'success');
+                if (this._dataStore) this._dataStore.invalidate('tasks');
+                await this._loadTasks();
+            } catch (e) {
+                this._getApp()?.showToast?.(e.message, 'error');
+            }
+        });
+        panel.querySelector('[data-action="set-outcome"]')?.addEventListener('click', async () => {
+            const outcome = window.prompt('Set task outcome (e.g., success, partial, failure):');
+            if (!outcome?.trim()) return;
+            try {
+                await NexusAPI.updateTaskOutcome(task.id, outcome.trim(), { execUser: this._getExecUser() });
+                this._getApp()?.showToast?.('Outcome set', 'success');
+            } catch (e) {
+                this._getApp()?.showToast?.(e.message, 'error');
+            }
         });
     }
 
