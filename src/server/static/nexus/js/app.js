@@ -6690,6 +6690,10 @@ class AdminView {
             integrations: () => this.renderIntegrationsTab(),
             admin: () => this.renderAdminTab(),
             permissions: () => this.renderPermissionsTab(),
+            sessions: () => this.renderSessionsTab(),
+            missions: () => this.renderMissionsTab(),
+            runs: () => this.renderRunsTab(),
+            evolution: () => this.renderEvolutionTab(),
             // Extended tabs — panel content appended
             scheduling: () => this.renderSchedulingTab(),
         };
@@ -7785,6 +7789,290 @@ class AdminView {
         } catch (e) { this._showError('Failed to load permissions: ' + e.message); }
     }
 
+    // ── Sessions Tab (Session Recovery) ──
+    async renderSessionsTab() {
+        this._showLoading();
+        try {
+            const sessionsData = await NexusAPI.getSessions({ pageSize: 50 }).catch(() => ({ sessions: [] }));
+            const sessions = sessionsData.sessions || [];
+
+            let listHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Session Recovery</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${sessions.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Error</span><span class="admin-metric-value" style="color:var(--error)">${sessions.filter(s => s.status === 'error').length}</span></div>
+                        </div></div>
+                    </div>
+                    ${sessions.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No sessions</div>' :
+                      sessions.map(s => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(s.id || s.session_id || 'Session')}</div>
+                                <div class="panel-list-item-sub">${this._esc(s.status || '')} ${s.username ? '&middot; ' + this._esc(s.username) : ''} ${s.created_at ? '&middot; ' + new Date(s.created_at).toLocaleString() : ''}</div>
+                            </div>
+                            ${s.status === 'error' ? `
+                                <button class="action-btn" data-session-id="${this._esc(s.id || s.session_id)}" data-action="check-interrupted" style="padding:2px 8px;font-size:11px;">Interrupted</button>
+                                <button class="action-btn" data-session-id="${this._esc(s.id || s.session_id)}" data-action="find-orphans" style="padding:2px 8px;font-size:11px;">Orphans</button>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = listHtml;
+
+            // Bind session recovery actions
+            this.container.querySelectorAll('[data-action="check-interrupted"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const result = await NexusAPI.getInterruptedTurns(btn.dataset.sessionId);
+                        const turns = result.turns || result.interrupted || [];
+                        if (turns.length === 0) { alert('No interrupted turns found'); return; }
+                        const msgId = turns[0].message_id || turns[0].id;
+                        if (confirm(`Found ${turns.length} interrupted turn(s). Recover first one?`)) {
+                            await NexusAPI.recoverInterruptedTurn(btn.dataset.sessionId, msgId);
+                            this.app?.showToast?.('Turn recovered', 'success');
+                        }
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="find-orphans"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const result = await NexusAPI.findOrphanToolResults(btn.dataset.sessionId);
+                        const orphans = result.orphans || result.results || [];
+                        alert(`Found ${orphans.length} orphan tool result(s)`);
+                    } catch (e) { alert(e.message); }
+                });
+            });
+        } catch (e) { this._showError('Failed to load sessions: ' + e.message); }
+    }
+
+    // ── Missions Tab ──
+    async renderMissionsTab() {
+        this._showLoading();
+        try {
+            const missionsData = await NexusAPI.listMissions().catch(() => ({ missions: [] }));
+            const missions = missionsData.missions || missionsData.items || [];
+
+            let listHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Missions</h3>
+                    <button class="action-btn primary" id="createMissionBtn" style="margin-bottom:var(--spacing-sm);">Create Mission</button>
+                    ${missions.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No missions</div>' :
+                      missions.map(m => {
+                        const status = m.status || 'unknown';
+                        const statusClass = status === 'approved' ? 'badge-ok' : status === 'pending' ? 'badge-warn' : status === 'cancelled' ? 'badge-error' : 'badge-muted';
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(m.name || m.title || m.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(m.description || '').substring(0, 80)} ${m.created_at ? '&middot; ' + new Date(m.created_at).toLocaleString() : ''}</div>
+                            </div>
+                            <span class="panel-badge ${statusClass}">${this._esc(status)}</span>
+                            <div style="display:flex;gap:4px;margin-left:8px;">
+                                ${status === 'pending' ? `<button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="approve-mission" style="padding:2px 8px;font-size:11px;background:var(--success-500);color:#fff;border:none;">Approve</button>` : ''}
+                                ${status === 'approved' || status === 'in_progress' ? `<button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="pause-mission" style="padding:2px 8px;font-size:11px;">Pause</button>` : ''}
+                                ${status === 'paused' ? `<button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="resume-mission" style="padding:2px 8px;font-size:11px;">Resume</button>` : ''}
+                                <button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="mission-log" style="padding:2px 8px;font-size:11px;">Log</button>
+                                <button class="action-btn danger" data-mission-id="${this._esc(m.id)}" data-action="cancel-mission" style="padding:2px 8px;font-size:11px;">Cancel</button>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            this.container.innerHTML = listHtml;
+
+            // Bind mission actions
+            this.container.querySelectorAll('[data-action="approve-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.approveMission(btn.dataset.missionId); this.app?.showToast?.('Mission approved', 'success'); this.renderMissionsTab(); }
+                    catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="pause-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.pauseMission(btn.dataset.missionId); this.renderMissionsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="resume-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.resumeMission(btn.dataset.missionId); this.renderMissionsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="cancel-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Cancel this mission?')) return;
+                    try { await NexusAPI.cancelMission(btn.dataset.missionId); this.renderMissionsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="mission-log"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const log = await NexusAPI.getMissionLog(btn.dataset.missionId);
+                        alert(JSON.stringify(log, null, 2));
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            document.getElementById('createMissionBtn')?.addEventListener('click', async () => {
+                const name = prompt('Mission name:');
+                if (!name) return;
+                const desc = prompt('Description (optional):') || '';
+                try { await NexusAPI.createMission({ name, description: desc }); this.renderMissionsTab(); }
+                catch (e) { alert(e.message); }
+            });
+        } catch (e) { this._showError('Failed to load missions: ' + e.message); }
+    }
+
+    // ── Runs / Evals Tab ──
+    async renderRunsTab() {
+        this._showLoading();
+        try {
+            const [runsData, leaderboard] = await Promise.all([
+                NexusAPI.listRuns().catch(() => ({ runs: [] })),
+                NexusAPI.getEvalsLeaderboard().catch(() => ({ entries: [] })),
+            ]);
+            const runs = runsData.runs || runsData.items || [];
+            const lbEntries = leaderboard.entries || leaderboard.leaderboard || [];
+
+            let runsHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Runs</h3>
+                    <button class="action-btn primary" id="createRunBtn" style="margin-bottom:var(--spacing-sm);">Create Run</button>
+                    ${runs.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No runs</div>' :
+                      runs.map(r => {
+                        const status = r.status || 'unknown';
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(r.name || r.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(status)} ${r.created_at ? '&middot; ' + new Date(r.created_at).toLocaleString() : ''} ${r.score != null ? '&middot; Score: ' + r.score : ''}</div>
+                            </div>
+                            <span class="panel-badge ${status === 'completed' ? 'badge-ok' : status === 'running' ? 'badge-warn' : 'badge-muted'}">${this._esc(status)}</span>
+                            <div style="display:flex;gap:4px;margin-left:8px;">
+                                <button class="action-btn" data-run-id="${this._esc(r.id)}" data-action="view-run" style="padding:2px 8px;font-size:11px;">View</button>
+                                ${status === 'completed' ? `<button class="action-btn" data-run-id="${this._esc(r.id)}" data-action="eval-run" style="padding:2px 8px;font-size:11px;">Eval</button>` : ''}
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            let leaderboardHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Evals Leaderboard</h3>
+                    ${lbEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No eval entries</div>' :
+                      lbEntries.slice(0, 20).map((e, i) => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">#${i + 1} ${this._esc(e.name || e.agent_id || 'Entry')}</div>
+                                <div class="panel-list-item-sub">Score: ${e.score ?? '-'} ${e.model ? '&middot; ' + this._esc(e.model) : ''}</div>
+                            </div>
+                            <span class="panel-badge">${e.score ?? '-'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = runsHtml + leaderboardHtml;
+
+            // Bind run actions
+            document.getElementById('createRunBtn')?.addEventListener('click', async () => {
+                const name = prompt('Run name:');
+                if (!name) return;
+                try { await NexusAPI.createRun({ name }); this.renderRunsTab(); }
+                catch (e) { alert(e.message); }
+            });
+            this.container.querySelectorAll('[data-action="view-run"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const run = await NexusAPI.getRun(btn.dataset.runId);
+                        alert(JSON.stringify(run, null, 2));
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="eval-run"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const score = prompt('Evaluation score (0-100):');
+                    if (score == null) return;
+                    try {
+                        await NexusAPI.evalRun(btn.dataset.runId, { score: parseFloat(score) });
+                        this.app?.showToast?.('Run evaluated', 'success');
+                        this.renderRunsTab();
+                    } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
+        } catch (e) { this._showError('Failed to load runs: ' + e.message); }
+    }
+
+    // ── Evolution Tab ──
+    async renderEvolutionTab() {
+        this._showLoading();
+        try {
+            const [status, memory] = await Promise.all([
+                NexusAPI.getEvolutionStatus().catch(() => ({})),
+                NexusAPI.getEvolutionMemory().catch(() => ({})),
+            ]);
+
+            const isRunning = status.running || status.in_progress || false;
+            const phase = status.phase || status.current_phase || 'idle';
+            const generations = status.generations || status.total_generations || 0;
+            const memEntries = memory.entries || memory.generations || [];
+
+            let statusHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Evolution</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Status</span><span class="admin-metric-value large" style="color:${isRunning ? 'var(--success-500)' : 'var(--text-muted)'}">${isRunning ? 'Running' : 'Idle'}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Phase</span><span class="admin-metric-value">${this._esc(phase)}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Generations</span><span class="admin-metric-value">${generations}</span></div>
+                        </div></div>
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:8px;">
+                        <button class="action-btn primary" id="triggerEvolutionBtn" style="font-size:12px;">Trigger Evolution</button>
+                        <button class="action-btn" id="synthesisBtn" style="font-size:12px;">Run Synthesis</button>
+                    </div>
+                </div>`;
+
+            let memoryHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Evolution Memory</h3>
+                    ${memEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No evolution memory entries</div>' :
+                      memEntries.slice(0, 20).map(e => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(e.phase || e.generation || 'Entry')}</div>
+                                <div class="panel-list-item-sub">${this._esc(e.summary || e.result || '').substring(0, 100)} ${e.timestamp ? '&middot; ' + new Date(e.timestamp).toLocaleString() : ''}</div>
+                            </div>
+                            <span class="panel-badge ${e.success !== false ? 'badge-ok' : 'badge-error'}">${e.success !== false ? 'OK' : 'Failed'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = statusHtml + memoryHtml;
+
+            document.getElementById('triggerEvolutionBtn')?.addEventListener('click', async () => {
+                if (!confirm('Trigger evolution cycle?')) return;
+                try {
+                    await NexusAPI.triggerEvolution();
+                    this.app?.showToast?.('Evolution triggered', 'success');
+                    this.renderEvolutionTab();
+                } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+            document.getElementById('synthesisBtn')?.addEventListener('click', async () => {
+                if (!confirm('Run evolution synthesis?')) return;
+                try {
+                    await NexusAPI.evolutionSynthesis();
+                    this.app?.showToast?.('Synthesis started', 'success');
+                    this.renderEvolutionTab();
+                } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+        } catch (e) { this._showError('Failed to load evolution: ' + e.message); }
+    }
+
     // ── Scheduling Tab ──
     async renderSchedulingTab() {
         this._showLoading();
@@ -7902,7 +8190,8 @@ class SettingsView {
         // Tabs that show in admin section (with panel content merged)
         const adminTabs = [
             'overview', 'security', 'runtimes', 'audit', 'cleanup', 'tools',
-            'agents', 'activity', 'memory', 'integrations', 'admin', 'permissions', 'scheduling',
+            'agents', 'activity', 'memory', 'integrations', 'admin', 'permissions',
+            'sessions', 'missions', 'runs', 'evolution', 'scheduling',
         ];
 
         document.querySelectorAll('.settings-tab').forEach(tab => {
