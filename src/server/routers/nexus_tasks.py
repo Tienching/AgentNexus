@@ -723,12 +723,12 @@ async def chat_continue_task(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
 
     status_val = task.status if isinstance(task.status, str) else task.status.value
-    if status_val == TaskStatus.DOING.value:
+    if status_val == TaskStatus.IN_PROGRESS.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Task {task_id} is currently running. Wait for it to finish before continuing.",
         )
-    if status_val == TaskStatus.CANCELLED.value:
+    if status_val == TaskStatus.ARCHIVED.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Task {task_id} is cancelled and cannot be continued.",

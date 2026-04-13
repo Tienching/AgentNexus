@@ -264,9 +264,9 @@ class TaskQueue:
             return None
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val == TaskStatus.DOING.value:
+        if status_val == TaskStatus.IN_PROGRESS.value:
             return task
-        if status_val == TaskStatus.CANCELLED.value:
+        if status_val == TaskStatus.ARCHIVED.value:
             raise ValueError("Task is cancelled")
 
         msg = (message or "").strip()
@@ -280,7 +280,7 @@ class TaskQueue:
         task.context = ctx
 
         try:
-            self._update_task_status(task, TaskStatus.TODO)
+            self._update_task_status(task, TaskStatus.INBOX)
         except Exception:
             pass
 
@@ -325,14 +325,14 @@ class TaskQueue:
         """Update task status and timestamps."""
         task.status = new_status
         now = datetime.now(timezone.utc)
-        if new_status == TaskStatus.DOING:
+        if new_status == TaskStatus.IN_PROGRESS:
             task.started_at = now
         elif new_status in (TaskStatus.DONE, TaskStatus.FAILED):
             if not task.completed_at:
                 task.completed_at = now
         elif new_status == TaskStatus.ARCHIVED:
             task.archived_at = now
-        elif new_status == TaskStatus.CANCELLED:
+        elif new_status == TaskStatus.ARCHIVED:
             if not task.deleted_at:
                 task.deleted_at = now
         self._update_task(task)
@@ -344,8 +344,8 @@ class TaskQueue:
         if not task:
             return None
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val == TaskStatus.TODO.value:
-            self._update_task_status(task, TaskStatus.CANCELLED)
+        if status_val == TaskStatus.INBOX.value:
+            self._update_task_status(task, TaskStatus.ARCHIVED)
             logger.info(f"Task {task_id} cancelled and moved to trash")
         return task
 
@@ -400,23 +400,26 @@ class TaskQueue:
             (self.exec_user,),
         )
         counts = {r["status"]: r["cnt"] for r in rows}
-        todo = counts.get("todo", 0)
-        doing = counts.get("doing", 0)
+        inbox = counts.get("inbox", 0) + counts.get("todo", 0)
+        in_progress = counts.get("in_progress", 0) + counts.get("doing", 0)
+        in_review = counts.get("in_review", 0)
         done = counts.get("done", 0)
         failed = counts.get("failed", 0)
-        cancelled = counts.get("cancelled", 0)
-        archived = counts.get("archived", 0)
+        archived = counts.get("archived", 0) + counts.get("cancelled", 0)
         return {
-            "total": todo + doing + done + failed + cancelled + archived,
-            "todo": todo,
-            "doing": doing,
+            "total": inbox + in_progress + in_review + done + failed + archived,
+            "inbox": inbox,
+            "in_progress": in_progress,
+            "in_review": in_review,
             "done": done,
             "failed": failed,
-            "cancelled": cancelled,
             "archived": archived,
-            "pending": todo,
-            "in_progress": doing,
+            # Legacy aliases
+            "todo": inbox,
+            "doing": in_progress,
+            "pending": inbox,
             "completed": done,
+            "cancelled": archived,
         }
 
     def get_projects(self) -> List[dict]:
@@ -650,11 +653,11 @@ class TaskQueue:
         if not task:
             return None
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val != TaskStatus.TODO.value:
+        if status_val != TaskStatus.INBOX.value:
             logger.warning(f"Task {task_id} is not in TODO status, cannot start")
             return None
         task.attempt_count += 1
-        self._update_task_status(task, TaskStatus.DOING)
+        self._update_task_status(task, TaskStatus.IN_PROGRESS)
         logger.info(f"Task {task_id} started (attempt {task.attempt_count})")
         return task
 
@@ -705,7 +708,7 @@ class TaskQueue:
         count = 0
         for row in rows:
             task = _row_to_task(row)
-            self._update_task_status(task, TaskStatus.TODO)
+            self._update_task_status(task, TaskStatus.INBOX)
             logger.warning(f"Task {task.id} requeued after timeout")
             count += 1
         return count

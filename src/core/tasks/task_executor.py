@@ -254,7 +254,7 @@ class TaskExecutor:
                         # Requeue for retry
                         logger.info(f"Task {task.id} will be retried (attempt {current_task.attempt_count}/{self._config.max_retries})")
                         # Reset to TODO status
-                        self._task_queue._update_task_status(current_task, TaskStatus.TODO)
+                        self._task_queue._update_task_status(current_task, TaskStatus.INBOX)
                         # Re-add to queue after delay
                         await asyncio.sleep(self._config.retry_delay)
                         self._task_queue._redis.rpush(

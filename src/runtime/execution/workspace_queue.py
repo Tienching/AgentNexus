@@ -218,7 +218,7 @@ class WorkspaceQueueManager:
                 stale = set()
                 for task_id in pstate.executing_tasks:
                     task = self._task_queue.get_task(task_id)
-                    if not task or task.status not in (TaskStatus.DOING.value, TaskStatus.DOING):
+                    if not task or task.status not in (TaskStatus.IN_PROGRESS.value, TaskStatus.IN_PROGRESS):
                         stale.add(task_id)
                 for task_id in stale:
                     pstate.executing_tasks.discard(task_id)
@@ -229,7 +229,7 @@ class WorkspaceQueueManager:
             stale_global = set()
             for task_id in self._global_executing:
                 task = self._task_queue.get_task(task_id)
-                if not task or task.status not in (TaskStatus.DOING.value, TaskStatus.DOING):
+                if not task or task.status not in (TaskStatus.IN_PROGRESS.value, TaskStatus.IN_PROGRESS):
                     stale_global.add(task_id)
             for task_id in stale_global:
                 self._global_executing.discard(task_id)

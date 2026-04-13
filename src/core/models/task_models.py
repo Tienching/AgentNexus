@@ -32,33 +32,38 @@ class TaskPriority(str, Enum):
 
 
 class TaskStatus(str, Enum):
-    """Task status states
+    """Task status states — aligned with Multica workflow
     
-    Status names updated for clarity:
-    - TODO: Task is waiting to be processed
-    - DOING: Task is currently being executed
-    - DONE: Task completed successfully
-    - FAILED: Task execution failed
-    - CANCELLED: Task was cancelled (soft delete)
-    - ARCHIVED: Task was archived (hidden from main board, shown in Archived column)
+    Simplified from 9 frontend-only statuses to 6 unified statuses:
+    INBOX → IN_PROGRESS → IN_REVIEW → DONE
+                                   ↘ FAILED
+                                   ↘ ARCHIVED
     """
-    TODO = "todo"           # Renamed from PENDING
-    DOING = "doing"         # Renamed from IN_PROGRESS
-    DONE = "done"           # Renamed from COMPLETED
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    ARCHIVED = "archived"
+    INBOX = "inbox"               # New/unprocessed tasks (was TODO)
+    IN_PROGRESS = "in_progress"   # Actively being worked on (was DOING)
+    IN_REVIEW = "in_review"       # Under review/quality gate (NEW)
+    DONE = "done"                 # Completed successfully
+    FAILED = "failed"             # Execution failed
+    ARCHIVED = "archived"         # Archived/cancelled (hidden from main board)
     
     # Aliases for backward compatibility
     @classmethod
     def from_legacy(cls, value: str) -> "TaskStatus":
         """Convert legacy status values to new format"""
         legacy_map = {
-            "pending": cls.TODO,
-            "in_progress": cls.DOING,
+            "pending": cls.INBOX,
+            "todo": cls.INBOX,
+            "doing": cls.IN_PROGRESS,
+            "in_progress": cls.IN_PROGRESS,
+            "assigned": cls.IN_PROGRESS,
+            "awaiting_owner": cls.IN_PROGRESS,
+            "review": cls.IN_REVIEW,
+            "quality_review": cls.IN_REVIEW,
             "completed": cls.DONE,
+            "done": cls.DONE,
             "failed": cls.FAILED,
-            "cancelled": cls.CANCELLED,
+            "cancelled": cls.ARCHIVED,
+            "archived": cls.ARCHIVED,
         }
         if value in legacy_map:
             return legacy_map[value]
@@ -77,7 +82,7 @@ class Task(BaseModel):
     id: str = Field(default_factory=_generate_task_id)
     description: str
     priority: TaskPriority = TaskPriority.THOUGHT
-    status: TaskStatus = TaskStatus.TODO
+    status: TaskStatus = TaskStatus.INBOX
     
     # Timing
     created_at: datetime = Field(default_factory=_utcnow)

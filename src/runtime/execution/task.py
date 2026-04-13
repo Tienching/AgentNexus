@@ -121,7 +121,7 @@ class TaskManager:
         """取消任务"""
         task = self.get(task_id)
         if task and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-            task.status = TaskStatus.CANCELLED
+            task.status = TaskStatus.ARCHIVED
             task.completed_at = time.time()
         return task
     

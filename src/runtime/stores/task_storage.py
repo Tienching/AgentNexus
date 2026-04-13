@@ -307,7 +307,7 @@ class TaskQueue:
         status_val = task.status if isinstance(task.status, str) else task.status.value
         if status_val == TaskStatus.IN_PROGRESS.value:
             return task
-        if status_val == TaskStatus.CANCELLED.value:
+        if status_val == TaskStatus.ARCHIVED.value:
             raise ValueError("Task is cancelled")
 
         msg = (message or "").strip()
@@ -409,12 +409,12 @@ class TaskQueue:
             if not task.completed_at:
                 task.completed_at = now
             task.runtime_status = "failed"
-        elif new_status in (TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.ARCHIVED):
+        elif new_status in (TaskStatus.DONE, TaskStatus.ARCHIVED, TaskStatus.ARCHIVED):
             if new_status == TaskStatus.DONE and not task.completed_at:
                 task.completed_at = now
             if new_status == TaskStatus.ARCHIVED:
                 task.archived_at = now
-            if new_status == TaskStatus.CANCELLED and not task.deleted_at:
+            if new_status == TaskStatus.ARCHIVED and not task.deleted_at:
                 task.deleted_at = now
             task.runtime_status = "idle"
             task.runtime_orphaned = False
@@ -435,7 +435,7 @@ class TaskQueue:
             return None
         status_val = task.status if isinstance(task.status, str) else task.status.value
         if status_val in (TaskStatus.INBOX.value, TaskStatus.ASSIGNED.value, TaskStatus.AWAITING_OWNER.value):
-            self._update_task_status(task, TaskStatus.CANCELLED)
+            self._update_task_status(task, TaskStatus.ARCHIVED)
             logger.info(f"Task {task_id} cancelled and moved to trash")
         return task
 

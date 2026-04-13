@@ -337,7 +337,7 @@ class SlashCommandHandler:
             return f"## ❌ Not Found\n\n任务 `{task_id}` 不存在。"
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val == TaskStatus.DOING.value:
+        if status_val == TaskStatus.IN_PROGRESS.value:
             return (
                 f"## ⏳ 已在执行中\n\n"
                 f"任务 `#{task.id}` 正在执行中，请稍后再试。\n\n"
@@ -645,10 +645,10 @@ class SlashCommandHandler:
             response += "|----|--------|----------|-------------|\n"
             status_icons = {
                 TaskStatus.DONE: "✅",
-                TaskStatus.DOING: "🔄",
-                TaskStatus.TODO: "🕒",
+                TaskStatus.IN_PROGRESS: "🔄",
+                TaskStatus.INBOX: "🕒",
                 TaskStatus.FAILED: "❌",
-                TaskStatus.CANCELLED: "🗑️",
+                TaskStatus.ARCHIVED: "🗑️",
                 # Legacy support
                 "done": "✅",
                 "doing": "🔄",
@@ -851,7 +851,7 @@ class SlashCommandHandler:
         
         if task:
             status_val = task.status if isinstance(task.status, str) else task.status.value
-            if status_val == TaskStatus.CANCELLED.value or task.status == TaskStatus.CANCELLED:
+            if status_val == TaskStatus.ARCHIVED.value or task.status == TaskStatus.ARCHIVED:
                 return (
                     f"## ✅ Task Cancelled\n\n"
                     f"Task **#{task.id}** has been moved to trash.\n\n"
