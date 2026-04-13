@@ -6722,6 +6722,11 @@ class AdminView {
             memory: () => this.renderMemoryTab(),
             integrations: () => this.renderIntegrationsTab(),
             admin: () => this.renderAdminTab(),
+            permissions: () => this.renderPermissionsTab(),
+            sessions: () => this.renderSessionsTab(),
+            missions: () => this.renderMissionsTab(),
+            runs: () => this.renderRunsTab(),
+            evolution: () => this.renderEvolutionTab(),
             // Extended tabs — panel content appended
             scheduling: () => this.renderSchedulingTab(),
         };
@@ -6778,11 +6783,36 @@ class AdminView {
                     <div class="admin-actions">
                         <button class="action-btn primary" id="adminRefreshBtn">Refresh</button>
                         <button class="action-btn" id="adminExportTasksBtn">Export Tasks</button>
+                        <button class="action-btn" id="adminDoctorBtn">Run Diagnostics</button>
+                        <button class="action-btn" id="adminDoctorBundleBtn">Download Bundle</button>
                     </div>
+                    <div id="adminDoctorResult"></div>
                 </div>`;
             document.getElementById('adminRefreshBtn')?.addEventListener('click', () => this.renderOverview());
             document.getElementById('adminExportTasksBtn')?.addEventListener('click', async () => {
                 try { const d=await NexusAPI.exportData('tasks','json');const b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='tasks_export.json';a.click();URL.revokeObjectURL(u); } catch(e){alert('Export failed: '+e.message);}
+            });
+            // Doctor/Diagnostic buttons
+            document.getElementById('adminDoctorBtn')?.addEventListener('click', async () => {
+                const area = document.getElementById('adminDoctorResult');
+                if (!area) return;
+                area.innerHTML = '<div class="admin-loading">Running diagnostics...</div>';
+                try {
+                    const result = await NexusAPI.getDoctor();
+                    area.innerHTML = `<div class="admin-tool-result"><pre style="white-space:pre-wrap;font-size:12px;">${this._esc(JSON.stringify(result, null, 2))}</pre></div>`;
+                } catch (e) { area.innerHTML = `<div class="admin-error">${this._esc(e.message)}</div>`; }
+            });
+            document.getElementById('adminDoctorBundleBtn')?.addEventListener('click', async () => {
+                try {
+                    const result = await NexusAPI.getDoctorBundle();
+                    const blob = new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'doctor-bundle.json';
+                    a.click();
+                    URL.revokeObjectURL(url);
+                } catch (e) { alert('Bundle failed: ' + e.message); }
             });
         } catch(e) { this._showError('Failed to load overview: '+e.message); }
     }
@@ -6791,9 +6821,11 @@ class AdminView {
     async renderSecurity() {
         this._showLoading();
         try {
-            const [secData, auditData] = await Promise.all([
+            const [secData, auditData, pendingPerms, hookProfile] = await Promise.all([
                 NexusAPI.getSecurityScan().catch(() => null),
                 NexusAPI.getAuditLog({ limit: 50 }).catch(() => ({ entries: [] })),
+                NexusAPI.getPendingPermissions().catch(() => ({ requests: [] })),
+                NexusAPI.getHookProfile().catch(() => null),
             ]);
             if (!secData) { this._showError('Failed to load security scan'); return; }
             const grade = (secData.overall||'unknown').toLowerCase().replace(/[^a-z-]/g,'');
@@ -6850,13 +6882,14 @@ class AdminView {
                     }).join('')}
                 </div>`;
 
-            // Hook Profiles (from hook-profiles panel)
-            const hooks = secData.hook_profiles || secData.hooks || [];
+            // Hook Profiles from API
+            const apiHooks = hookProfile ? (hookProfile.hooks || hookProfile.profiles || []) : [];
+            const allHooks = [...(secData.hook_profiles || secData.hooks || []), ...apiHooks];
             let hooksHtml = `
                 <div class="admin-section" style="margin-top:var(--spacing-lg);">
                     <h3 class="admin-section-title">Hook Profiles</h3>
-                    ${hooks.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No hook profiles configured</div>' :
-                      hooks.map(h => `
+                    ${allHooks.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No hook profiles configured</div>' :
+                      allHooks.map(h => `
                         <div class="panel-list-item">
                             <div class="panel-list-item-body">
                                 <div class="panel-list-item-title">${this._esc(h.name || h.id || 'Hook')}</div>
@@ -6865,6 +6898,27 @@ class AdminView {
                             <span class="panel-badge ${h.enabled !== false ? 'badge-ok' : 'badge-muted'}">${h.enabled !== false ? 'Active' : 'Disabled'}</span>
                         </div>
                     `).join('')}
+                </div>`;
+
+            // Pending Permission Requests from API
+            const pendingRequests = pendingPerms.requests || pendingPerms.pending || [];
+            let pendingPermsHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Pending Permission Requests ${pendingRequests.length > 0 ? `<span class="admin-badge warn" style="margin-left:8px;">${pendingRequests.length}</span>` : ''}</h3>
+                    ${pendingRequests.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No pending requests</div>' :
+                      pendingRequests.map(p => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(p.tool || p.action || p.permission || 'Request')}</div>
+                                <div class="panel-list-item-sub">${this._esc(p.agent_id || p.requester || '')} &middot; ${this._esc(p.reason || '')}</div>
+                            </div>
+                            <button class="action-btn" data-perm-id="${this._esc(p.id)}" data-action="approve-perm" style="padding:2px 8px;font-size:11px;background:var(--success-500);color:#fff;border:none;">Approve</button>
+                            <button class="action-btn danger" data-perm-id="${this._esc(p.id)}" data-action="reject-perm" style="padding:2px 8px;font-size:11px;">Reject</button>
+                        </div>
+                    `).join('')}
+                    <div style="margin-top:8px;">
+                        <button class="action-btn" id="syncPermsBtn" style="font-size:12px;">Sync Permissions</button>
+                    </div>
                 </div>`;
 
             // Permissions (from permission panel)
@@ -6884,8 +6938,26 @@ class AdminView {
                     `).join('')}
                 </div>`;
 
-            this.container.innerHTML = `<div class="admin-section"><div style="display:flex;align-items:center;gap:var(--spacing-md);margin-bottom:var(--spacing-lg);"><h3 class="admin-section-title" style="margin-bottom:0">Security Scan</h3><span class="admin-badge ${grade}" style="font-size:var(--text-sm);padding:4px 16px;">${secData.score}/100 — ${this._esc(secData.overall||'Unknown')}</span></div><div class="admin-cards">${cats}</div><div class="admin-actions"><button class="action-btn primary" id="adminRescanBtn">Re-scan</button></div></div>` + secAuditHtml + trustHtml + hooksHtml + permHtml;
+            this.container.innerHTML = `<div class="admin-section"><div style="display:flex;align-items:center;gap:var(--spacing-md);margin-bottom:var(--spacing-lg);"><h3 class="admin-section-title" style="margin-bottom:0">Security Scan</h3><span class="admin-badge ${grade}" style="font-size:var(--text-sm);padding:4px 16px;">${secData.score}/100 — ${this._esc(secData.overall||'Unknown')}</span></div><div class="admin-cards">${cats}</div><div class="admin-actions"><button class="action-btn primary" id="adminRescanBtn">Re-scan</button></div></div>` + secAuditHtml + trustHtml + hooksHtml + pendingPermsHtml + permHtml;
             document.getElementById('adminRescanBtn')?.addEventListener('click', () => this.renderSecurity());
+
+            // Bind permission actions
+            this.container.querySelectorAll('[data-action="approve-perm"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.approvePermission(btn.dataset.permId); this.renderSecurity(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="reject-perm"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.rejectPermission(btn.dataset.permId); this.renderSecurity(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            document.getElementById('syncPermsBtn')?.addEventListener('click', async () => {
+                try { await NexusAPI.triggerPermissionSync(); this.app?.showToast?.('Permission sync triggered', 'success'); }
+                catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
         } catch(e) { this._showError('Failed to load security scan: '+e.message); }
     }
 
@@ -6988,15 +7060,19 @@ class AdminView {
     async renderAgentsTab() {
         this._showLoading();
         try {
-            const [agentsData, workload] = await Promise.all([
+            const [agentsData, workload, statsData] = await Promise.all([
                 NexusAPI.getAgents().catch(() => ({ agents: [] })),
                 NexusAPI.getWorkload().catch(() => ({})),
+                NexusAPI.getAgentStats().catch(() => ({})),
             ]);
             const agents = agentsData.agents || [];
             const queues = workload.agents || workload.queues || [];
+            const stats = statsData.stats || statsData;
 
-            // Agent Registry
+            // Agent Registry with API stats
             const online = agents.filter(a => a.available).length;
+            const totalTasks = stats.total_tasks || stats.tasks_total || 0;
+            const avgResponse = stats.avg_response_ms ?? stats.avg_response ?? '-';
             let registryHtml = `
                 <div class="admin-section">
                     <h3 class="admin-section-title">Agent Registry</h3>
@@ -7005,6 +7081,7 @@ class AdminView {
                             <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${agents.length}</span></div>
                             <div class="admin-metric"><span class="admin-metric-label">Online</span><span class="admin-metric-value" style="color:var(--success-500)">${online}</span></div>
                             <div class="admin-metric"><span class="admin-metric-label">Offline</span><span class="admin-metric-value" style="color:var(--text-tertiary)">${agents.length - online}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Avg Response</span><span class="admin-metric-value">${avgResponse}${typeof avgResponse === 'number' ? 'ms' : ''}</span></div>
                         </div></div>
                     </div>
                     ${agents.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No agents found</div>' :
@@ -7015,14 +7092,15 @@ class AdminView {
                             </div>
                             <div class="panel-list-item-body">
                                 <div class="panel-list-item-title">${this._esc(a.display_name || a.id)}</div>
-                                <div class="panel-list-item-sub">${this._esc(a.agent_type || '')} &middot; ${this._esc(a.username || '')}</div>
+                                <div class="panel-list-item-sub">${this._esc(a.agent_type || '')} &middot; ${this._esc(a.username || '')} ${a.last_active ? '&middot; Last: ' + new Date(a.last_active).toLocaleString() : ''}</div>
                             </div>
                             <span class="panel-badge ${a.available ? 'badge-ok' : 'badge-muted'}">${a.available ? 'Online' : 'Offline'}</span>
+                            ${!a.available ? `<button class="action-btn" data-agent-id="${this._esc(a.id)}" data-action="deregister-agent" style="margin-left:8px;padding:2px 8px;font-size:11px;" title="Deregister agent">Remove</button>` : ''}
                         </div>
                     `).join('')}
                 </div>`;
 
-            // Agent Heartbeat (static snapshot)
+            // Agent Heartbeat with API data
             let heartbeatHtml = `
                 <div class="admin-section" style="margin-top:var(--spacing-lg);">
                     <h3 class="admin-section-title">Agent Heartbeat</h3>
@@ -7034,6 +7112,7 @@ class AdminView {
                                 <div class="panel-list-item-title">${this._esc(a.display_name || a.id)}</div>
                                 <div class="panel-list-item-sub">${a.last_active ? new Date(a.last_active).toLocaleString() : 'Unknown'} &middot; ${a.available ? 'OK' : 'Offline'}</div>
                             </div>
+                            ${a.available ? `<button class="action-btn" data-agent-id="${this._esc(a.id)}" data-action="agent-heartbeat" style="padding:2px 8px;font-size:11px;" title="Send heartbeat">Ping</button>` : ''}
                         </div>
                     `).join('')}
                 </div>`;
@@ -7087,7 +7166,15 @@ class AdminView {
                     <div id="agentMessagingContent"><div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No messages yet</div></div>
                 </div>`;
 
-            this.container.innerHTML = registryHtml + heartbeatHtml + soulHtml + queueHtml + messagingHtml;
+            // Swarm Teams
+            let teamsHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Swarm Teams</h3>
+                    <button class="action-btn primary" id="createTeamBtn" style="margin-bottom:var(--spacing-sm);">Create Team</button>
+                    <div id="teamsList"><div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">Loading teams...</div></div>
+                </div>`;
+
+            this.container.innerHTML = registryHtml + heartbeatHtml + soulHtml + queueHtml + messagingHtml + teamsHtml;
 
             // Load messaging data lazily
             try {
@@ -7105,6 +7192,61 @@ class AdminView {
                     `).join('');
                 }
             } catch (e) { /* ignore */ }
+
+            // Load teams
+            try {
+                const teamsList = document.getElementById('teamsList');
+                const teamsData = await NexusAPI.getAgents().catch(() => ({}));
+                const teamNames = (teamsData.teams || []);
+                if (teamNames.length === 0) {
+                    teamsList.innerHTML = '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No teams</div>';
+                } else {
+                    teamsList.innerHTML = teamNames.map(t => {
+                        const name = typeof t === 'string' ? t : (t.name || t.id);
+                        return `<div class="panel-list-item">
+                            <div class="panel-list-item-body"><div class="panel-list-item-title">${this._esc(name)}</div></div>
+                            <button class="action-btn" data-team-name="${this._esc(name)}" data-action="team-status" style="padding:2px 8px;font-size:11px;">Status</button>
+                            <button class="action-btn danger" data-team-name="${this._esc(name)}" data-action="team-shutdown" style="padding:2px 8px;font-size:11px;">Shutdown</button>
+                        </div>`;
+                    }).join('');
+                }
+            } catch (e) { /* ignore */ }
+
+            // Bind agent lifecycle actions
+            this.container.querySelectorAll('[data-action="deregister-agent"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Deregister this agent?')) return;
+                    try { await NexusAPI.deregisterAgent(btn.dataset.agentId); this.renderAgentsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="agent-heartbeat"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.agentHeartbeat(btn.dataset.agentId); this.app?.showToast?.('Heartbeat sent', 'success'); }
+                    catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="team-shutdown"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Shutdown team ' + btn.dataset.teamName + '?')) return;
+                    try { await NexusAPI.shutdownTeam(btn.dataset.teamName); this.renderAgentsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="team-status"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const status = await NexusAPI.getTeamStatus(btn.dataset.teamName);
+                        alert(JSON.stringify(status, null, 2));
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            document.getElementById('createTeamBtn')?.addEventListener('click', async () => {
+                const name = prompt('Team name:');
+                if (!name) return;
+                try { await NexusAPI.createTeam({ name }); this.renderAgentsTab(); }
+                catch (e) { alert(e.message); }
+            });
         } catch (e) { this._showError('Failed to load agents: ' + e.message); }
     }
 
@@ -7210,8 +7352,12 @@ class AdminView {
     async renderMemoryTab() {
         this._showLoading();
         try {
-            const data = await NexusAPI.getAgents().catch(() => ({ agents: [] }));
+            const [data, memoryState] = await Promise.all([
+                NexusAPI.getAgents().catch(() => ({ agents: [] })),
+                NexusAPI.getMemoryState().catch(() => null),
+            ]);
             const agents = data.agents || [];
+            const memState = memoryState?.state || memoryState;
 
             // Memory Browser
             const memEntries = agents.map(a => ({
@@ -7282,7 +7428,32 @@ class AdminView {
                     <div class="panel-graph-container"><canvas class="panel-canvas" id="memoryGraphCanvas" width="600" height="400"></canvas></div>
                 </div>`;
 
-            this.container.innerHTML = browserHtml + treeHtml + graphHtml;
+            // Memory State from API
+            const memSessions = memState?.sessions || memState?.entries || [];
+            const memContexts = memState?.contexts || [];
+            let memStateHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Memory State</h3>
+                    ${memState ? `
+                        <div class="admin-cards">
+                            <div class="admin-card"><div class="admin-card-body">
+                                <div class="admin-metric"><span class="admin-metric-label">Sessions</span><span class="admin-metric-value">${memSessions.length}</span></div>
+                                <div class="admin-metric"><span class="admin-metric-label">Contexts</span><span class="admin-metric-value">${memContexts.length}</span></div>
+                            </div></div>
+                        </div>
+                        ${memSessions.length > 0 ? memSessions.slice(0, 10).map(s => `
+                            <div class="panel-list-item">
+                                <div class="panel-list-item-body">
+                                    <div class="panel-list-item-title">${this._esc(s.session_id || s.id || 'Session')}</div>
+                                    <div class="panel-list-item-sub">${s.updated_at ? new Date(s.updated_at).toLocaleString() : ''} ${s.message_count ? '&middot; ' + s.message_count + ' messages' : ''}</div>
+                                </div>
+                                <button class="action-btn" data-session-id="${this._esc(s.session_id || s.id)}" data-action="restore-memory" style="padding:2px 8px;font-size:11px;">Restore</button>
+                            </div>
+                        `).join('') : '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No memory sessions</div>'}
+                    ` : '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">Memory state API unavailable</div>'}
+                </div>`;
+
+            this.container.innerHTML = browserHtml + treeHtml + memStateHtml + graphHtml;
 
             // Draw the memory graph
             const canvas = document.getElementById('memoryGraphCanvas');
@@ -7311,6 +7482,17 @@ class AdminView {
                     ctx.fillText(node.label.split('/').pop(), pos.x, pos.y + 20);
                 }
             }
+
+            // Bind restore memory actions
+            this.container.querySelectorAll('[data-action="restore-memory"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Restore memory context from this session?')) return;
+                    try {
+                        await NexusAPI.restoreMemoryContext(btn.dataset.sessionId);
+                        this.app?.showToast?.('Memory context restored', 'success');
+                    } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
         } catch (e) { this._showError('Failed to load memory: ' + e.message); }
     }
 
@@ -7318,10 +7500,11 @@ class AdminView {
     async renderIntegrationsTab() {
         this._showLoading();
         try {
-            const [diagData, projectsData, runtimeData] = await Promise.all([
+            const [diagData, projectsData, runtimeData, teleportSessions] = await Promise.all([
                 NexusAPI.getDiagnostics().catch(() => ({})),
                 NexusAPI.getProjects().catch(() => ({ projects: [] })),
                 NexusAPI.getAgentRuntimes('claude').catch(() => ({ runtimes: {} })),
+                NexusAPI.listTeleportSessions().catch(() => ({ sessions: [] })),
             ]);
 
             // Webhooks
@@ -7387,9 +7570,11 @@ class AdminView {
                     `).join('') : ''}
                 </div>`;
 
-            // Teleport
+            // Teleport with API data
             const connections = diagData.teleport_connections || diagData.connections || [];
+            const tpSessions = teleportSessions.sessions || teleportSessions || [];
             const activeConns = connections.filter(c => c.status === 'connected' || c.active).length;
+            const activeTpSessions = tpSessions.filter(s => s.status === 'active' || s.connected).length;
             let teleportHtml = `
                 <div class="admin-section" style="margin-top:var(--spacing-lg);">
                     <h3 class="admin-section-title">Teleport</h3>
@@ -7397,7 +7582,13 @@ class AdminView {
                         <div class="admin-card"><div class="admin-card-body">
                             <div class="admin-metric"><span class="admin-metric-label">Active</span><span class="admin-metric-value" style="color:var(--success-500)">${activeConns}</span></div>
                             <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value">${connections.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Sessions</span><span class="admin-metric-value">${activeTpSessions}</span></div>
                         </div></div>
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:8px;">
+                        <button class="action-btn primary" id="teleportConnectBtn" style="font-size:12px;">Connect</button>
+                        <button class="action-btn" id="teleportSyncBtn" style="font-size:12px;">Sync</button>
+                        <button class="action-btn danger" id="teleportDisconnectBtn" style="font-size:12px;">Disconnect</button>
                     </div>
                     ${connections.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No teleport connections</div>' :
                       connections.map(c => `
@@ -7409,9 +7600,36 @@ class AdminView {
                             <span class="panel-badge ${c.status === 'connected' || c.active ? 'badge-ok' : 'badge-muted'}">${c.status || (c.active ? 'Active' : 'Inactive')}</span>
                         </div>
                     `).join('')}
+                    ${tpSessions.length > 0 ? `
+                        <div style="font-weight:600;color:var(--text-primary);margin-top:12px;margin-bottom:4px;">Sessions</div>
+                        ${tpSessions.slice(0, 10).map(s => `
+                            <div class="panel-list-item">
+                                <div class="panel-list-item-body">
+                                    <div class="panel-list-item-title">${this._esc(s.id || s.session_id || 'Session')}</div>
+                                    <div class="panel-list-item-sub">${this._esc(s.host || '')} ${s.username ? '&middot; ' + this._esc(s.username) : ''}</div>
+                                </div>
+                                <span class="panel-badge ${s.status === 'active' || s.connected ? 'badge-ok' : 'badge-muted'}">${s.status || 'Unknown'}</span>
+                            </div>
+                        `).join('')}
+                    ` : ''}
                 </div>`;
 
             this.container.innerHTML = webhookHtml + githubHtml + claudeHtml + teleportHtml;
+
+            // Bind Teleport actions
+            document.getElementById('teleportConnectBtn')?.addEventListener('click', async () => {
+                try { await NexusAPI.connectTeleport(); this.app?.showToast?.('Teleport connected', 'success'); this.renderIntegrationsTab(); }
+                catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+            document.getElementById('teleportDisconnectBtn')?.addEventListener('click', async () => {
+                if (!confirm('Disconnect Teleport?')) return;
+                try { await NexusAPI.disconnectTeleport(); this.app?.showToast?.('Teleport disconnected', 'success'); this.renderIntegrationsTab(); }
+                catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+            document.getElementById('teleportSyncBtn')?.addEventListener('click', async () => {
+                try { await NexusAPI.syncTeleport(); this.app?.showToast?.('Teleport synced', 'success'); }
+                catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
         } catch (e) { this._showError('Failed to load integrations: ' + e.message); }
     }
 
@@ -7419,14 +7637,15 @@ class AdminView {
     async renderAdminTab() {
         this._showLoading();
         try {
-            const [diagData, secData] = await Promise.all([
+            const [diagData, secData, featuresData] = await Promise.all([
                 NexusAPI.getDiagnostics().catch(() => ({})),
                 NexusAPI.getSecurityScan().catch(() => ({})),
+                NexusAPI.getFeatures().catch(() => ({ flags: [] })),
             ]);
 
-            // Feature Flags
-            const flags = diagData.feature_flags || diagData.flags || [];
-            const enabled = flags.filter(f => f.enabled).length;
+            // Feature Flags from API
+            const flags = featuresData.flags || featuresData.features || diagData.feature_flags || diagData.flags || [];
+            const enabled = flags.filter(f => f.enabled || f.value === true).length;
             let flagHtml = `
                 <div class="admin-section">
                     <h3 class="admin-section-title">Feature Flags</h3>
@@ -7496,11 +7715,395 @@ class AdminView {
 
             // Bind feature flag toggles
             this.container.querySelectorAll('.panel-toggle input').forEach(input => {
-                input.addEventListener('change', (e) => {
-                    console.log(`Feature flag "${e.target.dataset.flagKey}" ${e.target.checked ? 'enabled' : 'disabled'}`);
+                input.addEventListener('change', async (e) => {
+                    const key = e.target.dataset.flagKey;
+                    const newVal = e.target.checked;
+                    try {
+                        await NexusAPI.patchFlag(key, newVal);
+                        this.app?.showToast?.(`Flag "${key}" ${newVal ? 'enabled' : 'disabled'}`, 'success');
+                    } catch (err) {
+                        e.target.checked = !newVal; // revert on error
+                        this.app?.showToast?.(err.message, 'error');
+                    }
                 });
             });
+
+            // Reload flags button
+            const reloadBtn = document.createElement('button');
+            reloadBtn.className = 'action-btn';
+            reloadBtn.textContent = 'Reload Flags';
+            reloadBtn.style.cssText = 'margin-top:8px;';
+            reloadBtn.addEventListener('click', async () => {
+                try { await NexusAPI.reloadFlags(); this.renderAdminTab(); this.app?.showToast?.('Flags reloaded', 'success'); }
+                catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+            const flagSection = this.container.querySelector('.admin-section');
+            flagSection?.appendChild(reloadBtn);
         } catch (e) { this._showError('Failed to load admin: ' + e.message); }
+    }
+
+    // ── Permissions Tab ──
+    async renderPermissionsTab() {
+        this._showLoading();
+        try {
+            const [permsData, permCache] = await Promise.all([
+                NexusAPI.getPermissions().catch(() => ({ mode: 'unknown', permissions: [] })),
+                NexusAPI.getPermissionCache().catch(() => ({ entries: [] })),
+            ]);
+            const mode = permsData.mode || 'unknown';
+            const permissions = permsData.permissions || permsData.entries || [];
+            const cacheEntries = permCache.entries || permCache.cache || [];
+
+            let modeHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Permission Mode</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Current Mode</span><span class="admin-metric-value large">${this._esc(mode)}</span></div>
+                        </div></div>
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:8px;">
+                        <button class="action-btn ${mode === 'permissive' ? 'primary' : ''}" data-mode="permissive" data-action="set-perm-mode" style="font-size:12px;">Permissive</button>
+                        <button class="action-btn ${mode === 'restrictive' ? 'primary' : ''}" data-mode="restrictive" data-action="set-perm-mode" style="font-size:12px;">Restrictive</button>
+                        <button class="action-btn ${mode === 'auto' ? 'primary' : ''}" data-mode="auto" data-action="set-perm-mode" style="font-size:12px;">Auto</button>
+                        <button class="action-btn danger" id="clearPermCacheBtn" style="font-size:12px;">Clear Cache</button>
+                    </div>
+                </div>`;
+
+            let permsListHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Permissions</h3>
+                    ${permissions.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No permissions configured</div>' :
+                      permissions.map(p => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(p.name || p.role || p.id || 'Permission')}</div>
+                                <div class="panel-list-item-sub">${this._esc(p.description || p.scope || '')}</div>
+                            </div>
+                            <span class="panel-badge ${p.granted !== false ? 'badge-ok' : 'badge-error'}">${p.granted !== false ? 'Granted' : 'Denied'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            let cacheHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Permission Cache</h3>
+                    ${cacheEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No cache entries</div>' :
+                      cacheEntries.slice(0, 20).map(c => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(c.key || c.agent_id || 'Entry')}</div>
+                                <div class="panel-list-item-sub">${this._esc(c.permission || c.action || '')}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = modeHtml + permsListHtml + cacheHtml;
+
+            // Bind mode switch
+            this.container.querySelectorAll('[data-action="set-perm-mode"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        await NexusAPI.setPermissionMode(btn.dataset.mode);
+                        this.app?.showToast?.(`Permission mode set to ${btn.dataset.mode}`, 'success');
+                        this.renderPermissionsTab();
+                    } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
+            document.getElementById('clearPermCacheBtn')?.addEventListener('click', async () => {
+                if (!confirm('Clear permission cache?')) return;
+                try {
+                    await NexusAPI.clearPermissionCache();
+                    this.app?.showToast?.('Permission cache cleared', 'success');
+                    this.renderPermissionsTab();
+                } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+        } catch (e) { this._showError('Failed to load permissions: ' + e.message); }
+    }
+
+    // ── Sessions Tab (Session Recovery) ──
+    async renderSessionsTab() {
+        this._showLoading();
+        try {
+            const sessionsData = await NexusAPI.getSessions({ pageSize: 50 }).catch(() => ({ sessions: [] }));
+            const sessions = sessionsData.sessions || [];
+
+            let listHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Session Recovery</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Total</span><span class="admin-metric-value large">${sessions.length}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Error</span><span class="admin-metric-value" style="color:var(--error)">${sessions.filter(s => s.status === 'error').length}</span></div>
+                        </div></div>
+                    </div>
+                    ${sessions.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No sessions</div>' :
+                      sessions.map(s => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(s.id || s.session_id || 'Session')}</div>
+                                <div class="panel-list-item-sub">${this._esc(s.status || '')} ${s.username ? '&middot; ' + this._esc(s.username) : ''} ${s.created_at ? '&middot; ' + new Date(s.created_at).toLocaleString() : ''}</div>
+                            </div>
+                            ${s.status === 'error' ? `
+                                <button class="action-btn" data-session-id="${this._esc(s.id || s.session_id)}" data-action="check-interrupted" style="padding:2px 8px;font-size:11px;">Interrupted</button>
+                                <button class="action-btn" data-session-id="${this._esc(s.id || s.session_id)}" data-action="find-orphans" style="padding:2px 8px;font-size:11px;">Orphans</button>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = listHtml;
+
+            // Bind session recovery actions
+            this.container.querySelectorAll('[data-action="check-interrupted"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const result = await NexusAPI.getInterruptedTurns(btn.dataset.sessionId);
+                        const turns = result.turns || result.interrupted || [];
+                        if (turns.length === 0) { alert('No interrupted turns found'); return; }
+                        const msgId = turns[0].message_id || turns[0].id;
+                        if (confirm(`Found ${turns.length} interrupted turn(s). Recover first one?`)) {
+                            await NexusAPI.recoverInterruptedTurn(btn.dataset.sessionId, msgId);
+                            this.app?.showToast?.('Turn recovered', 'success');
+                        }
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="find-orphans"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const result = await NexusAPI.findOrphanToolResults(btn.dataset.sessionId);
+                        const orphans = result.orphans || result.results || [];
+                        alert(`Found ${orphans.length} orphan tool result(s)`);
+                    } catch (e) { alert(e.message); }
+                });
+            });
+        } catch (e) { this._showError('Failed to load sessions: ' + e.message); }
+    }
+
+    // ── Missions Tab ──
+    async renderMissionsTab() {
+        this._showLoading();
+        try {
+            const missionsData = await NexusAPI.listMissions().catch(() => ({ missions: [] }));
+            const missions = missionsData.missions || missionsData.items || [];
+
+            let listHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Missions</h3>
+                    <button class="action-btn primary" id="createMissionBtn" style="margin-bottom:var(--spacing-sm);">Create Mission</button>
+                    ${missions.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No missions</div>' :
+                      missions.map(m => {
+                        const status = m.status || 'unknown';
+                        const statusClass = status === 'approved' ? 'badge-ok' : status === 'pending' ? 'badge-warn' : status === 'cancelled' ? 'badge-error' : 'badge-muted';
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(m.name || m.title || m.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(m.description || '').substring(0, 80)} ${m.created_at ? '&middot; ' + new Date(m.created_at).toLocaleString() : ''}</div>
+                            </div>
+                            <span class="panel-badge ${statusClass}">${this._esc(status)}</span>
+                            <div style="display:flex;gap:4px;margin-left:8px;">
+                                ${status === 'pending' ? `<button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="approve-mission" style="padding:2px 8px;font-size:11px;background:var(--success-500);color:#fff;border:none;">Approve</button>` : ''}
+                                ${status === 'approved' || status === 'in_progress' ? `<button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="pause-mission" style="padding:2px 8px;font-size:11px;">Pause</button>` : ''}
+                                ${status === 'paused' ? `<button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="resume-mission" style="padding:2px 8px;font-size:11px;">Resume</button>` : ''}
+                                <button class="action-btn" data-mission-id="${this._esc(m.id)}" data-action="mission-log" style="padding:2px 8px;font-size:11px;">Log</button>
+                                <button class="action-btn danger" data-mission-id="${this._esc(m.id)}" data-action="cancel-mission" style="padding:2px 8px;font-size:11px;">Cancel</button>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            this.container.innerHTML = listHtml;
+
+            // Bind mission actions
+            this.container.querySelectorAll('[data-action="approve-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.approveMission(btn.dataset.missionId); this.app?.showToast?.('Mission approved', 'success'); this.renderMissionsTab(); }
+                    catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="pause-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.pauseMission(btn.dataset.missionId); this.renderMissionsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="resume-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try { await NexusAPI.resumeMission(btn.dataset.missionId); this.renderMissionsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="cancel-mission"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm('Cancel this mission?')) return;
+                    try { await NexusAPI.cancelMission(btn.dataset.missionId); this.renderMissionsTab(); }
+                    catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="mission-log"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const log = await NexusAPI.getMissionLog(btn.dataset.missionId);
+                        alert(JSON.stringify(log, null, 2));
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            document.getElementById('createMissionBtn')?.addEventListener('click', async () => {
+                const name = prompt('Mission name:');
+                if (!name) return;
+                const desc = prompt('Description (optional):') || '';
+                try { await NexusAPI.createMission({ name, description: desc }); this.renderMissionsTab(); }
+                catch (e) { alert(e.message); }
+            });
+        } catch (e) { this._showError('Failed to load missions: ' + e.message); }
+    }
+
+    // ── Runs / Evals Tab ──
+    async renderRunsTab() {
+        this._showLoading();
+        try {
+            const [runsData, leaderboard] = await Promise.all([
+                NexusAPI.listRuns().catch(() => ({ runs: [] })),
+                NexusAPI.getEvalsLeaderboard().catch(() => ({ entries: [] })),
+            ]);
+            const runs = runsData.runs || runsData.items || [];
+            const lbEntries = leaderboard.entries || leaderboard.leaderboard || [];
+
+            let runsHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Runs</h3>
+                    <button class="action-btn primary" id="createRunBtn" style="margin-bottom:var(--spacing-sm);">Create Run</button>
+                    ${runs.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No runs</div>' :
+                      runs.map(r => {
+                        const status = r.status || 'unknown';
+                        return `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(r.name || r.id)}</div>
+                                <div class="panel-list-item-sub">${this._esc(status)} ${r.created_at ? '&middot; ' + new Date(r.created_at).toLocaleString() : ''} ${r.score != null ? '&middot; Score: ' + r.score : ''}</div>
+                            </div>
+                            <span class="panel-badge ${status === 'completed' ? 'badge-ok' : status === 'running' ? 'badge-warn' : 'badge-muted'}">${this._esc(status)}</span>
+                            <div style="display:flex;gap:4px;margin-left:8px;">
+                                <button class="action-btn" data-run-id="${this._esc(r.id)}" data-action="view-run" style="padding:2px 8px;font-size:11px;">View</button>
+                                ${status === 'completed' ? `<button class="action-btn" data-run-id="${this._esc(r.id)}" data-action="eval-run" style="padding:2px 8px;font-size:11px;">Eval</button>` : ''}
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+
+            let leaderboardHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Evals Leaderboard</h3>
+                    ${lbEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No eval entries</div>' :
+                      lbEntries.slice(0, 20).map((e, i) => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">#${i + 1} ${this._esc(e.name || e.agent_id || 'Entry')}</div>
+                                <div class="panel-list-item-sub">Score: ${e.score ?? '-'} ${e.model ? '&middot; ' + this._esc(e.model) : ''}</div>
+                            </div>
+                            <span class="panel-badge">${e.score ?? '-'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = runsHtml + leaderboardHtml;
+
+            // Bind run actions
+            document.getElementById('createRunBtn')?.addEventListener('click', async () => {
+                const name = prompt('Run name:');
+                if (!name) return;
+                try { await NexusAPI.createRun({ name }); this.renderRunsTab(); }
+                catch (e) { alert(e.message); }
+            });
+            this.container.querySelectorAll('[data-action="view-run"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    try {
+                        const run = await NexusAPI.getRun(btn.dataset.runId);
+                        alert(JSON.stringify(run, null, 2));
+                    } catch (e) { alert(e.message); }
+                });
+            });
+            this.container.querySelectorAll('[data-action="eval-run"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const score = prompt('Evaluation score (0-100):');
+                    if (score == null) return;
+                    try {
+                        await NexusAPI.evalRun(btn.dataset.runId, { score: parseFloat(score) });
+                        this.app?.showToast?.('Run evaluated', 'success');
+                        this.renderRunsTab();
+                    } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+                });
+            });
+        } catch (e) { this._showError('Failed to load runs: ' + e.message); }
+    }
+
+    // ── Evolution Tab ──
+    async renderEvolutionTab() {
+        this._showLoading();
+        try {
+            const [status, memory] = await Promise.all([
+                NexusAPI.getEvolutionStatus().catch(() => ({})),
+                NexusAPI.getEvolutionMemory().catch(() => ({})),
+            ]);
+
+            const isRunning = status.running || status.in_progress || false;
+            const phase = status.phase || status.current_phase || 'idle';
+            const generations = status.generations || status.total_generations || 0;
+            const memEntries = memory.entries || memory.generations || [];
+
+            let statusHtml = `
+                <div class="admin-section">
+                    <h3 class="admin-section-title">Evolution</h3>
+                    <div class="admin-cards">
+                        <div class="admin-card"><div class="admin-card-body">
+                            <div class="admin-metric"><span class="admin-metric-label">Status</span><span class="admin-metric-value large" style="color:${isRunning ? 'var(--success-500)' : 'var(--text-muted)'}">${isRunning ? 'Running' : 'Idle'}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Phase</span><span class="admin-metric-value">${this._esc(phase)}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Generations</span><span class="admin-metric-value">${generations}</span></div>
+                        </div></div>
+                    </div>
+                    <div style="margin-top:8px;display:flex;gap:8px;">
+                        <button class="action-btn primary" id="triggerEvolutionBtn" style="font-size:12px;">Trigger Evolution</button>
+                        <button class="action-btn" id="synthesisBtn" style="font-size:12px;">Run Synthesis</button>
+                    </div>
+                </div>`;
+
+            let memoryHtml = `
+                <div class="admin-section" style="margin-top:var(--spacing-lg);">
+                    <h3 class="admin-section-title">Evolution Memory</h3>
+                    ${memEntries.length === 0 ? '<div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-lg);">No evolution memory entries</div>' :
+                      memEntries.slice(0, 20).map(e => `
+                        <div class="panel-list-item">
+                            <div class="panel-list-item-body">
+                                <div class="panel-list-item-title">${this._esc(e.phase || e.generation || 'Entry')}</div>
+                                <div class="panel-list-item-sub">${this._esc(e.summary || e.result || '').substring(0, 100)} ${e.timestamp ? '&middot; ' + new Date(e.timestamp).toLocaleString() : ''}</div>
+                            </div>
+                            <span class="panel-badge ${e.success !== false ? 'badge-ok' : 'badge-error'}">${e.success !== false ? 'OK' : 'Failed'}</span>
+                        </div>
+                    `).join('')}
+                </div>`;
+
+            this.container.innerHTML = statusHtml + memoryHtml;
+
+            document.getElementById('triggerEvolutionBtn')?.addEventListener('click', async () => {
+                if (!confirm('Trigger evolution cycle?')) return;
+                try {
+                    await NexusAPI.triggerEvolution();
+                    this.app?.showToast?.('Evolution triggered', 'success');
+                    this.renderEvolutionTab();
+                } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+            document.getElementById('synthesisBtn')?.addEventListener('click', async () => {
+                if (!confirm('Run evolution synthesis?')) return;
+                try {
+                    await NexusAPI.evolutionSynthesis();
+                    this.app?.showToast?.('Synthesis started', 'success');
+                    this.renderEvolutionTab();
+                } catch (e) { this.app?.showToast?.(e.message, 'error'); }
+            });
+        } catch (e) { this._showError('Failed to load evolution: ' + e.message); }
     }
 
     // ── Scheduling Tab ──
@@ -7620,7 +8223,8 @@ class SettingsView {
         // Tabs that show in admin section (with panel content merged)
         const adminTabs = [
             'overview', 'security', 'runtimes', 'audit', 'cleanup', 'tools',
-            'agents', 'activity', 'memory', 'integrations', 'admin', 'scheduling',
+            'agents', 'activity', 'memory', 'integrations', 'admin', 'permissions',
+            'sessions', 'missions', 'runs', 'evolution', 'scheduling',
         ];
 
         document.querySelectorAll('.settings-tab').forEach(tab => {
@@ -7992,11 +8596,7 @@ class PlanModeManager {
 
     async enterPlanMode() {
         try {
-            const resp = await fetch('/api/nexus/plan/enter', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to enter plan mode');
-            }
+            await NexusAPI.enterPlanMode();
             this._planMode = true;
             this._planContent = null;
             this.indicator.show('Exploring');
@@ -8011,15 +8611,7 @@ class PlanModeManager {
 
     async submitPlan(content) {
         try {
-            const resp = await fetch('/api/nexus/plan/submit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content }),
-            });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to submit plan');
-            }
+            await NexusAPI.submitPlan(content);
             this._planContent = content;
             this.indicator.setStatus('Awaiting Approval');
             this.editor.hide();
@@ -8032,11 +8624,7 @@ class PlanModeManager {
 
     async approvePlan() {
         try {
-            const resp = await fetch('/api/nexus/plan/approve', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to approve plan');
-            }
+            await NexusAPI.approvePlan();
             this._planMode = false;
             this._planContent = null;
             this.indicator.hide();
@@ -8050,11 +8638,7 @@ class PlanModeManager {
 
     async rejectPlan() {
         try {
-            const resp = await fetch('/api/nexus/plan/reject', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to reject plan');
-            }
+            await NexusAPI.rejectPlan();
             this._planContent = null;
             this.indicator.setStatus('Exploring');
             this.approval.hide();
@@ -8068,11 +8652,7 @@ class PlanModeManager {
 
     async exitPlanMode() {
         try {
-            const resp = await fetch('/api/nexus/plan/exit', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to exit plan mode');
-            }
+            await NexusAPI.exitPlanMode();
             this._planMode = false;
             this._planContent = null;
             this.indicator.hide();
@@ -8086,9 +8666,7 @@ class PlanModeManager {
 
     async refreshStatus() {
         try {
-            const resp = await fetch('/api/nexus/plan/status');
-            if (!resp.ok) return;
-            const data = await resp.json();
+            const data = await NexusAPI.getPlanStatus();
             this._planMode = data.plan_mode;
             this._planContent = data.plan_content;
             if (this._planMode) {

@@ -549,6 +549,26 @@ class NexusAPI {
         return response.json();
     }
 
+    /**
+     * Requeue an orphaned task back into the active queue
+     * @param {string} taskId - Task ID
+     * @param {Object} options - Query options
+     * @returns {Promise<Object>} Requeue response
+     */
+    static async requeueOrphanTask(taskId, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/requeue-orphan?${params}`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to requeue orphan task: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     static async getTaskQualityReviews(taskId, options = {}) {
         const params = new URLSearchParams({
             exec_user: options.execUser || _defaultExecUser,
@@ -1215,6 +1235,578 @@ class NexusAPI {
             const err = await response.json().catch(() => ({}));
             throw new Error(err.detail || 'Failed to exit plan mode');
         }
+        return response.json();
+    }
+
+    // ============ Agent Lifecycle API ============
+
+    /**
+     * Get agent statistics
+     * @returns {Promise<Object>} Agent stats response
+     */
+    static async getAgentStats() {
+        const response = await fetch(`${API_BASE}/agents/stats`);
+        if (!response.ok) throw new Error(`Failed to fetch agent stats: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Register a new agent
+     * @param {Object} payload - Agent registration data
+     * @returns {Promise<Object>} Registration response
+     */
+    static async registerAgent(payload) {
+        const response = await fetch(`${API_BASE}/agents/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to register agent');
+        }
+        return response.json();
+    }
+
+    /**
+     * Send agent heartbeat
+     * @param {string} agentId - Agent ID
+     * @param {Object} payload - Heartbeat data
+     * @returns {Promise<Object>} Heartbeat response
+     */
+    static async agentHeartbeat(agentId, payload = {}) {
+        const response = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}/heartbeat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) throw new Error(`Failed to send heartbeat: ${response.statusText}`);
+        return response.json();
+    }
+
+    /**
+     * Deregister an agent
+     * @param {string} agentId - Agent ID
+     * @returns {Promise<Object>} Deregistration response
+     */
+    static async deregisterAgent(agentId) {
+        const response = await fetch(`${API_BASE}/agents/${encodeURIComponent(agentId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to deregister agent: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Swarm Team API ============
+
+    static async createTeam(payload) {
+        const response = await fetch(`${API_BASE}/agents/teams`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to create team');
+        }
+        return response.json();
+    }
+
+    static async getTeamStatus(teamName) {
+        const response = await fetch(`${API_BASE}/agents/teams/${encodeURIComponent(teamName)}`);
+        if (!response.ok) throw new Error(`Failed to get team status: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async shutdownTeam(teamName) {
+        const response = await fetch(`${API_BASE}/agents/teams/${encodeURIComponent(teamName)}/shutdown`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to shutdown team: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getAgentMailbox(teamName, agentId) {
+        const response = await fetch(`${API_BASE}/agents/teams/${encodeURIComponent(teamName)}/mailbox/${encodeURIComponent(agentId)}`);
+        if (!response.ok) throw new Error(`Failed to get agent mailbox: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async claimTeamTask(teamName, payload = {}) {
+        const response = await fetch(`${API_BASE}/agents/teams/${encodeURIComponent(teamName)}/tasks/claim`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) throw new Error(`Failed to claim team task: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Feature Flags API ============
+
+    static async getFeatures() {
+        const response = await fetch(`${API_BASE}/features`);
+        if (!response.ok) throw new Error(`Failed to fetch features: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getFlag(name) {
+        const response = await fetch(`${API_BASE}/features/${encodeURIComponent(name)}`);
+        if (!response.ok) throw new Error(`Failed to fetch flag: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async patchFlag(name, value) {
+        const response = await fetch(`${API_BASE}/features/${encodeURIComponent(name)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value }),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to patch flag');
+        }
+        return response.json();
+    }
+
+    static async resetFlag(name) {
+        const response = await fetch(`${API_BASE}/features/${encodeURIComponent(name)}/reset`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to reset flag: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async reloadFlags() {
+        const response = await fetch(`${API_BASE}/features/reload`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to reload flags: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Security / Permission Sync API ============
+
+    static async getPendingPermissions() {
+        const response = await fetch(`${API_BASE}/security/permissions/pending`);
+        if (!response.ok) throw new Error(`Failed to fetch pending permissions: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async approvePermission(id) {
+        const response = await fetch(`${API_BASE}/security/permissions/${encodeURIComponent(id)}/approve`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to approve permission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async rejectPermission(id) {
+        const response = await fetch(`${API_BASE}/security/permissions/${encodeURIComponent(id)}/reject`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to reject permission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getPermissionCache() {
+        const response = await fetch(`${API_BASE}/security/permissions/cache`);
+        if (!response.ok) throw new Error(`Failed to fetch permission cache: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async triggerPermissionSync() {
+        const response = await fetch(`${API_BASE}/security/permissions/sync`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to trigger permission sync: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Hook Profile API ============
+
+    static async getHookProfile() {
+        const response = await fetch(`${API_BASE}/security/hook-profile`);
+        if (!response.ok) throw new Error(`Failed to fetch hook profile: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async updateHookProfile(profile) {
+        const response = await fetch(`${API_BASE}/security/hook-profile`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(profile),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to update hook profile');
+        }
+        return response.json();
+    }
+
+    // ============ Permissions Mode API ============
+
+    static async getPermissions() {
+        const response = await fetch(`${API_BASE}/permissions`);
+        if (!response.ok) throw new Error(`Failed to fetch permissions: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async setPermissionMode(mode) {
+        const response = await fetch(`${API_BASE}/permissions/mode`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to set permission mode');
+        }
+        return response.json();
+    }
+
+    static async clearPermissionCache() {
+        const response = await fetch(`${API_BASE}/permissions/cache/clear`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to clear permission cache: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Teleport REST API ============
+
+    static async connectTeleport(payload = {}) {
+        const response = await fetch(`${API_BASE}/teleport/connect`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to connect teleport');
+        }
+        return response.json();
+    }
+
+    static async disconnectTeleport() {
+        const response = await fetch(`${API_BASE}/teleport/disconnect`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to disconnect teleport: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async listTeleportSessions() {
+        const response = await fetch(`${API_BASE}/teleport/sessions`);
+        if (!response.ok) throw new Error(`Failed to list teleport sessions: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getTeleportSession(sessionId) {
+        const response = await fetch(`${API_BASE}/teleport/sessions/${encodeURIComponent(sessionId)}`);
+        if (!response.ok) throw new Error(`Failed to get teleport session: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async executeTeleport(payload) {
+        const response = await fetch(`${API_BASE}/teleport/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to execute teleport command');
+        }
+        return response.json();
+    }
+
+    static async syncTeleport() {
+        const response = await fetch(`${API_BASE}/teleport/sync`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to sync teleport: ${response.statusText}`);
+        return response.json();
+    }
+
+    static streamTeleportOutput(sessionId) {
+        return `${API_BASE}/teleport/sessions/${encodeURIComponent(sessionId)}/output`;
+    }
+
+    // ============ Session Recovery API ============
+
+    static async getInterruptedTurns(sessionId) {
+        const response = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/interrupted`);
+        if (!response.ok) throw new Error(`Failed to fetch interrupted turns: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getMessageChain(sessionId, messageId) {
+        const response = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/chain/${encodeURIComponent(messageId)}`);
+        if (!response.ok) throw new Error(`Failed to fetch message chain: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async recoverInterruptedTurn(sessionId, messageId) {
+        const response = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/recover/${encodeURIComponent(messageId)}`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to recover interrupted turn: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async findOrphanToolResults(sessionId) {
+        const response = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/orphans`);
+        if (!response.ok) throw new Error(`Failed to find orphan tool results: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Doctor / Diagnostic API ============
+
+    static async getDoctor() {
+        const response = await fetch(`${API_BASE}/doctor`);
+        if (!response.ok) throw new Error(`Failed to run doctor: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getDoctorBundle() {
+        const response = await fetch(`${API_BASE}/doctor/bundle`);
+        if (!response.ok) throw new Error(`Failed to get doctor bundle: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Task Continue / Outcome API ============
+
+    static async continueTask(taskId, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/continue?${params}`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to continue task: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    static async updateTaskOutcome(taskId, outcome, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/outcome?${params}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ outcome }),
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to update task outcome: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
+    static async getTaskOutcomes(options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/outcomes?${params}`);
+        if (!response.ok) throw new Error(`Failed to fetch task outcomes: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Memory State API ============
+
+    static async getMemoryState() {
+        const response = await fetch(`${API_BASE}/history/memory/state`);
+        if (!response.ok) throw new Error(`Failed to fetch memory state: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async restoreMemoryContext(sessionId, options = {}) {
+        const response = await fetch(`${API_BASE}/history/sessions/${encodeURIComponent(sessionId)}/restore-memory`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(options),
+        });
+        if (!response.ok) throw new Error(`Failed to restore memory context: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Mission API ============
+
+    static async listMissions(options = {}) {
+        const params = new URLSearchParams();
+        if (options.status) params.append('status', options.status);
+        const qs = params.toString();
+        const response = await fetch(`${API_BASE}/missions${qs ? '?' + qs : ''}`);
+        if (!response.ok) throw new Error(`Failed to list missions: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async createMission(payload) {
+        const response = await fetch(`${API_BASE}/missions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to create mission');
+        }
+        return response.json();
+    }
+
+    static async getMission(missionId) {
+        const response = await fetch(`${API_BASE}/missions/${encodeURIComponent(missionId)}`);
+        if (!response.ok) throw new Error(`Failed to get mission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async approveMission(missionId) {
+        const response = await fetch(`${API_BASE}/missions/${encodeURIComponent(missionId)}/approve`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to approve mission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async cancelMission(missionId) {
+        const response = await fetch(`${API_BASE}/missions/${encodeURIComponent(missionId)}/cancel`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to cancel mission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async pauseMission(missionId) {
+        const response = await fetch(`${API_BASE}/missions/${encodeURIComponent(missionId)}/pause`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to pause mission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async resumeMission(missionId) {
+        const response = await fetch(`${API_BASE}/missions/${encodeURIComponent(missionId)}/resume`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to resume mission: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getMissionLog(missionId) {
+        const response = await fetch(`${API_BASE}/missions/${encodeURIComponent(missionId)}/log`);
+        if (!response.ok) throw new Error(`Failed to get mission log: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Runs / Evals API ============
+
+    static async listRuns(options = {}) {
+        const params = new URLSearchParams();
+        if (options.status) params.append('status', options.status);
+        const qs = params.toString();
+        const response = await fetch(`${API_BASE}/runs${qs ? '?' + qs : ''}`);
+        if (!response.ok) throw new Error(`Failed to list runs: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async createRun(payload) {
+        const response = await fetch(`${API_BASE}/runs`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to create run');
+        }
+        return response.json();
+    }
+
+    static async getRun(runId) {
+        const response = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`);
+        if (!response.ok) throw new Error(`Failed to get run: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getRunProvenance(runId) {
+        const response = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/provenance`);
+        if (!response.ok) throw new Error(`Failed to get run provenance: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async updateRun(runId, data) {
+        const response = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to update run');
+        }
+        return response.json();
+    }
+
+    static async evalRun(runId, payload = {}) {
+        const response = await fetch(`${API_BASE}/runs/${encodeURIComponent(runId)}/eval`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to eval run');
+        }
+        return response.json();
+    }
+
+    static async getEvalsLeaderboard() {
+        const response = await fetch(`${API_BASE}/evals/leaderboard`);
+        if (!response.ok) throw new Error(`Failed to fetch evals leaderboard: ${response.statusText}`);
+        return response.json();
+    }
+
+    // ============ Evolution API ============
+
+    static async triggerEvolution(payload = {}) {
+        const response = await fetch(`${API_BASE}/evolution/trigger`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to trigger evolution');
+        }
+        return response.json();
+    }
+
+    static async evolutionSynthesis(payload = {}) {
+        const response = await fetch(`${API_BASE}/evolution/synthesis`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to run evolution synthesis');
+        }
+        return response.json();
+    }
+
+    static async getEvolutionStatus() {
+        const response = await fetch(`${API_BASE}/evolution/status`);
+        if (!response.ok) throw new Error(`Failed to fetch evolution status: ${response.statusText}`);
+        return response.json();
+    }
+
+    static async getEvolutionMemory() {
+        const response = await fetch(`${API_BASE}/evolution/memory`);
+        if (!response.ok) throw new Error(`Failed to fetch evolution memory: ${response.statusText}`);
         return response.json();
     }
 }

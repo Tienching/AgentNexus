@@ -237,6 +237,7 @@ class TaskBoardPanel {
         if (s === 'in_review') return 'in_review';
         if (s === 'completed') return 'done';
         if (s === 'cancelled') return 'archived';
+        if (s === 'orphaned') return 'inbox';
         if (['inbox', 'in_progress', 'in_review', 'done', 'failed', 'archived'].includes(s)) return s;
         return 'inbox';
     }
@@ -436,6 +437,8 @@ class TaskBoardPanel {
         const ghState = String(task.github_state || '').trim().toLowerCase();
         const ghColor = ghState === 'closed' ? 'var(--success)' : 'var(--primary-500)';
         const ghBadge = ghLabel ? (ghUrl ? `<a href="${this._esc(ghUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid ${ghColor};color:${ghColor};text-decoration:none;">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</a>` : `<span style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid ${ghColor};color:${ghColor};">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</span>`) : '';
+        const isOrphaned = String(task.status || '').trim().toLowerCase() === 'orphaned';
+        const requeueBtn = isOrphaned ? `<button class="task-card-requeue-btn" data-action="requeue-orphan" data-task-id="${task.id}" style="font-size:10px;padding:1px 6px;border-radius:4px;background:var(--warning);color:#fff;border:none;cursor:pointer;margin-left:4px;" title="Requeue this orphaned task">Requeue</button>` : '';
         const aegisBadge = task.aegis_approved ? '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(16,185,129,0.16);color:var(--success);font-weight:600;">Aegis ✓</span>' : '';
 
         return `
@@ -448,7 +451,7 @@ class TaskBoardPanel {
                         ${ghBadge}${aegisBadge}
                         ${task.priority ? `<span class="task-card-priority ${priorityClass}" data-inline-edit="priority" data-current-value="${this._esc(task.priority || 'normal')}" style="cursor:pointer;" title="Click to change priority">${task.priority}</span>` : ''}
                         ${task.loop_enabled ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;">Loop ${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
-                        ${overdueHtml}${awaitingBadge}
+                        ${overdueHtml}${awaitingBadge}${requeueBtn}
                     </div>
                     <p class="task-card-title">${this._esc(task.description || 'No description')}</p>
                     ${tagsHtml}
@@ -480,6 +483,13 @@ class TaskBoardPanel {
             cb.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this._toggleTaskSelection(cb.dataset.taskId);
+            });
+        });
+        // Requeue orphan task buttons
+        root.querySelectorAll('.task-card-requeue-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._requeueOrphanTask(btn.dataset.taskId);
             });
         });
         // K-007: Inline picker
@@ -632,6 +642,8 @@ class TaskBoardPanel {
                     <div style="display:flex;gap:8px;flex-wrap:wrap;">
                         ${hasConversation ? `<button class="action-btn" data-action="view-session" data-task-id="${task.id}" title="Open in Chat view"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>Open Session</button>` : ''}
                         <button class="action-btn" data-action="broadcast-task" data-task-id="${task.id}" title="Broadcast"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405C18.21 15.21 18 14.702 18 14.172V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.172c0 .53-.21 1.039-.595 1.423L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>Broadcast</button>
+                        ${statusClass === 'done' || statusClass === 'failed' ? `<button class="action-btn primary" data-action="continue-task" data-task-id="${task.id}" title="Continue task conversation"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>Continue</button>` : ''}
+                        ${statusClass === 'done' ? `<button class="action-btn" data-action="set-outcome" data-task-id="${task.id}" title="Set task outcome">Outcome</button>` : ''}
                         <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color:var(--error);"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button>
                     </div>
                 </div>
@@ -679,6 +691,26 @@ class TaskBoardPanel {
             const app = this._getApp();
             app?.pageManager?.setPage('chat');
             setTimeout(() => app?.chatView?.selectSession(0, sessionId), 300);
+        });
+        panel.querySelector('[data-action="continue-task"]')?.addEventListener('click', async () => {
+            try {
+                await NexusAPI.continueTask(task.id, { execUser: this._getExecUser() });
+                this._getApp()?.showToast?.('Task continued', 'success');
+                if (this._dataStore) this._dataStore.invalidate('tasks');
+                await this._loadTasks();
+            } catch (e) {
+                this._getApp()?.showToast?.(e.message, 'error');
+            }
+        });
+        panel.querySelector('[data-action="set-outcome"]')?.addEventListener('click', async () => {
+            const outcome = window.prompt('Set task outcome (e.g., success, partial, failure):');
+            if (!outcome?.trim()) return;
+            try {
+                await NexusAPI.updateTaskOutcome(task.id, outcome.trim(), { execUser: this._getExecUser() });
+                this._getApp()?.showToast?.('Outcome set', 'success');
+            } catch (e) {
+                this._getApp()?.showToast?.(e.message, 'error');
+            }
         });
     }
 
@@ -1242,6 +1274,7 @@ class TaskBoardPanel {
                 card.querySelector('[data-action="cancel-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._cancelSchedule(sid); });
                 card.querySelector('[data-action="edit-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._showEditScheduleModal(sid); });
                 card.querySelector('[data-action="delete-schedule"]')?.addEventListener('click', e => { e.stopPropagation(); this._deleteSchedule(sid); });
+                card.querySelector('[data-action="toggle-history"]')?.addEventListener('click', e => { e.stopPropagation(); this._toggleScheduleHistory(sid); });
             });
         } catch (e) {
             listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--error);font-size:13px;">Failed to load schedules</p></div>';
@@ -1276,6 +1309,7 @@ class TaskBoardPanel {
                         ${isPaused ? `<button class="schedule-action-btn" data-action="resume-schedule" title="Resume"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
                         ${!isCancelled ? `<button class="schedule-action-btn" data-action="cancel-schedule" title="Cancel"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
                         <button class="schedule-action-btn" data-action="edit-schedule" title="Edit" style="${isSystem ? 'display:none' : ''}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
+                        <button class="schedule-action-btn" data-action="toggle-history" title="Execution History"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>
                         <button class="schedule-action-btn danger" data-action="delete-schedule" title="Delete" style="${isSystem ? 'display:none' : ''}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                     </div>
                 </div>
@@ -1286,14 +1320,61 @@ class TaskBoardPanel {
                     <span title="Last run">Last: ${lastRun}</span>
                 </div>
                 <div class="schedule-card-desc">${this._esc(schedule.description || '').substring(0, 120)}${(schedule.description || '').length > 120 ? '...' : ''}</div>
+                <div class="schedule-history" id="scheduleHistory-${schedule.id}" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+                    <div style="color:var(--text-muted);font-size:12px;">Loading history...</div>
+                </div>
             </div>
         `;
+    }
+
+    async _toggleScheduleHistory(scheduleId) {
+        const histEl = document.getElementById(`scheduleHistory-${scheduleId}`);
+        if (!histEl) return;
+        if (histEl.style.display !== 'none') {
+            histEl.style.display = 'none';
+            return;
+        }
+        histEl.style.display = 'block';
+        histEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Loading history...</div>';
+        try {
+            const data = await NexusAPI.getScheduleHistory(scheduleId);
+            const taskIds = data.task_ids || data.history || [];
+            if (taskIds.length === 0) {
+                histEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No execution history</div>';
+                return;
+            }
+            histEl.innerHTML = `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">Execution History (${taskIds.length})</div>` +
+                taskIds.slice(0, 20).map(id => {
+                    const tid = typeof id === 'string' ? id : (id.task_id || id.id || '');
+                    const ts = id.created_at ? new Date(id.created_at).toLocaleString() : '';
+                    const status = id.status || '';
+                    return `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px;">
+                        <span style="color:var(--primary-500);cursor:pointer;" data-task-id="${this._esc(tid)}" onclick="document.querySelector('.task-board-panel')?.dispatchEvent?.(new CustomEvent('open-task',{detail:'${this._esc(tid)}'}))">#${this._esc(tid.slice(0, 8))}</span>
+                        ${ts ? `<span style="color:var(--text-muted);">${ts}</span>` : ''}
+                        ${status ? `<span style="color:var(--text-muted);">${this._esc(status)}</span>` : ''}
+                    </div>`;
+                }).join('');
+        } catch (e) {
+            histEl.innerHTML = `<div style="color:var(--error);font-size:12px;">Failed to load history: ${this._esc(e.message)}</div>`;
+        }
     }
 
     async _triggerSchedule(id) { try { await NexusAPI.triggerSchedule(id); this._getApp()?.showToast?.('Schedule triggered', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _pauseSchedule(id) { try { await NexusAPI.pauseSchedule(id); this._getApp()?.showToast?.('Schedule paused', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _resumeSchedule(id) { try { await NexusAPI.resumeSchedule(id); this._getApp()?.showToast?.('Schedule resumed', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _cancelSchedule(id) { if (!confirm('Cancel this schedule permanently?')) return; try { await NexusAPI.cancelSchedule(id); this._getApp()?.showToast?.('Schedule cancelled', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
+    async _requeueOrphanTask(taskId) {
+        if (!confirm('Requeue this orphaned task?')) return;
+        try {
+            await NexusAPI.requeueOrphanTask(taskId, { execUser: this._getExecUser() });
+            this._getApp()?.showToast?.('Task requeued', 'success');
+            if (this._dataStore) this._dataStore.invalidate('tasks');
+            await this._loadTasks();
+        } catch (e) {
+            this._getApp()?.showToast?.(e.message, 'error');
+        }
+    }
+
     async _deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; try { await NexusAPI.deleteSchedule(id); if (this._dataStore) this._dataStore.invalidate('schedules'); this._getApp()?.showToast?.('Schedule deleted', 'success'); this._loadSchedules(); } catch (e) { this._getApp()?.showToast?.(e.message, 'error'); } }
     async _showEditScheduleModal(id) {
         try {
