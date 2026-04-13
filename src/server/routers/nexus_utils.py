@@ -37,6 +37,54 @@ router = APIRouter(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Slash Commands Listing
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@router.get("/commands")
+async def list_slash_commands():
+    """Return all registered slash commands with metadata."""
+    try:
+        from src.runtime.commands.slash.parser import get_known_slash_commands
+        from src.runtime.commands.slash.handler import _ensure_slash_extensions_loaded
+
+        _ensure_slash_extensions_loaded()
+        known = get_known_slash_commands()
+
+        # Build description map from the static SLASH_COMMANDS list context
+        descriptions = {
+            "/task": "Create and manage tasks",
+            "/check": "Check task status",
+            "/usage": "Show resource usage",
+            "/report": "Generate reports",
+            "/cancel": "Cancel running operations",
+            "/trash": "Manage trashed items",
+            "/clear": "Clear conversation history",
+            "/help": "Show available commands",
+            "/chat": "Chat with an agent",
+            "/workspace": "Manage workspaces",
+            "/config": "View or update configuration",
+            "/switch": "Switch context or provider",
+            "/history": "View command history",
+            "/worktree": "Manage git worktrees",
+            "/plan": "Enter plan mode for read-only exploration",
+            "/exit": "Exit the current session",
+        }
+
+        result = []
+        for cmd in known:
+            name = cmd.lstrip("/")
+            result.append({
+                "name": name,
+                "description": descriptions.get(cmd, ""),
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to list slash commands: {e}")
+        return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Schedule Parser (ported from lib/schedule-parser.ts)
 # ═══════════════════════════════════════════════════════════════════════════
 

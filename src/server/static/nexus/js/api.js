@@ -1121,6 +1121,20 @@ class NexusAPI {
         return response.json();
     }
 
+    // ============ Slash Commands API ============
+
+    /**
+     * List all registered slash commands
+     * @returns {Promise<Array>} List of slash command objects with name and description
+     */
+    static async listSlashCommands() {
+        const response = await fetch(`${API_BASE}/commands`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch slash commands: ${response.statusText}`);
+        }
+        return response.json();
+    }
+
     // ============ Plan Mode API ============
 
     /**

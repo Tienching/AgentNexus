@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/worktree", "/exit"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/worktree", "/plan", "/exit"]
 
 # Dynamic slash extension hooks (MC-062)
 SlashExtensionHandler = Callable[["SlashCommandHandler", ParsedSlashCommand, Dict[str, Any]], str]

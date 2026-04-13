@@ -2534,16 +2534,24 @@ class ChatView {
         // Bind input events
         const textarea = document.getElementById(`chatInput-${paneId}`);
         const sendBtn = detail.querySelector('.chat-send-btn');
-        
+
         if (textarea) {
+            // Initialize slash command autocompleter first (so its keydown fires first)
+            const completer = new SlashCompleter(textarea);
+            completer.init();
+            textarea._slashCompleter = completer;
+
             // Auto-resize textarea
             textarea.addEventListener('input', () => {
                 textarea.style.height = 'auto';
                 textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
             });
-            
+
             // Enter to send (Shift+Enter for newline)
+            // SlashCompleter may intercept Enter for autocomplete selection;
+            // if it does, e.defaultPrevented will be true and this handler skips.
             textarea.addEventListener('keydown', (e) => {
+                if (e.defaultPrevented) return;
                 if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     this.sendMessage(paneId, sessionId, textarea.value);
@@ -2717,7 +2725,18 @@ class ChatView {
 
         // Add user message to UI immediately (must match renderMessage structure)
         const userTimeStr = this.formatTime(Date.now());
-        const userMsgHtml = `
+        const isSlashCmd = message.trim().startsWith('/') && !message.trim().startsWith('// ');
+        const userMsgHtml = isSlashCmd
+            ? `
+            <div class="message user slash-command-message">
+                <div class="message-avatar">U</div>
+                <div class="message-content">
+                    <div class="message-bubble"><div class="message-text"><span class="slash-cmd-badge">CMD</span> ${this.formatMessageContent(message)}</div></div>
+                    <span class="message-time">${userTimeStr}</span>
+                </div>
+            </div>
+            `
+            : `
             <div class="message user">
                 <div class="message-avatar">U</div>
                 <div class="message-content">
@@ -2725,7 +2744,7 @@ class ChatView {
                     <span class="message-time">${userTimeStr}</span>
                 </div>
             </div>
-        `;
+            `;
         
         // Remove empty state if present
         const emptyState = messagesContainer.querySelector('.empty-state');
@@ -2735,7 +2754,21 @@ class ChatView {
 
         // Add thinking indicator (must match renderMessage structure)
         const thinkingId = `thinking-${Date.now()}`;
-        const thinkingHtml = `
+        const thinkingHtml = isSlashCmd
+            ? `
+            <div class="message assistant" id="${thinkingId}">
+                <div class="message-avatar">A</div>
+                <div class="message-content">
+                    <div class="thinking-indicator">
+                        <span class="slash-exec-label">Executing ${this.escapeHtml(message.trim().split(/\s+/)[0])}...</span>
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-dot"></span>
+                    </div>
+                </div>
+            </div>
+            `
+            : `
             <div class="message assistant" id="${thinkingId}">
                 <div class="message-avatar">A</div>
                 <div class="message-content">
@@ -2746,7 +2779,7 @@ class ChatView {
                     </div>
                 </div>
             </div>
-        `;
+            `;
         messagesContainer.insertAdjacentHTML('beforeend', thinkingHtml);
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
