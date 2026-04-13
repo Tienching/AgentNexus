@@ -53,16 +53,13 @@ class TaskBoardPanel {
 
         this.statusColumns = [
             { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
-            { key: 'assigned', title: 'Assigned', color: 'var(--status-assigned)' },
-            { key: 'awaiting_owner', title: 'Awaiting Owner', color: 'var(--status-awaiting-owner)' },
             { key: 'in_progress', title: 'In Progress', color: 'var(--status-in-progress)' },
-            { key: 'review', title: 'Review', color: 'var(--status-review)' },
-            { key: 'quality_review', title: 'QA', color: 'var(--status-quality-review)' },
+            { key: 'in_review', title: 'In Review', color: 'var(--status-in-review)' },
             { key: 'done', title: 'Done', color: 'var(--status-done)' },
         ];
         this.terminalColumns = [
             { key: 'failed', title: 'Failed', color: 'var(--status-failed)' },
-            { key: 'cancelled', title: 'Cancelled', color: 'var(--status-cancelled)' },
+            { key: 'archived', title: 'Archived', color: 'var(--status-archived)' },
         ];
     }
 
@@ -239,9 +236,13 @@ class TaskBoardPanel {
     _normalizeTaskStatus(status) {
         const s = String(status || '').trim().toLowerCase();
         if (s === 'pending' || s === 'todo') return 'inbox';
-        if (s === 'in_progress' || s === 'running' || s === 'doing') return 'in_progress';
+        if (s === 'assigned' || s === 'awaiting_owner' || s === 'doing') return 'in_progress';
+        if (s === 'in_progress' || s === 'running') return 'in_progress';
+        if (s === 'review' || s === 'quality_review') return 'in_review';
+        if (s === 'in_review') return 'in_review';
         if (s === 'completed') return 'done';
-        if (['inbox','assigned','awaiting_owner','review','quality_review','done','failed','cancelled','archived'].includes(s)) return s;
+        if (s === 'cancelled') return 'archived';
+        if (['inbox', 'in_progress', 'in_review', 'done', 'failed', 'archived'].includes(s)) return s;
         return 'inbox';
     }
 
@@ -347,7 +348,7 @@ class TaskBoardPanel {
         const grouped = {};
         this.statusColumns.forEach(col => { grouped[col.key] = []; });
         tasks.forEach(t => {
-            const s = (t.status || 'inbox').toLowerCase();
+            const s = this._normalizeTaskStatus(t.status || 'inbox');
             (grouped[s] || grouped['inbox']).push(t);
         });
 
@@ -444,7 +445,7 @@ class TaskBoardPanel {
         const isOverdue = task.due_date && (task.due_date * 1000 < Date.now()) && this._normalizeTaskStatus(task.status) !== 'done';
         const overdueHtml = isOverdue ? '<span class="task-card-overdue">! Overdue</span>' : '';
         const isAwaitingOwner = this._detectAwaitingOwner(task);
-        const awaitingBadge = isAwaitingOwner && this._normalizeTaskStatus(task.status) !== 'awaiting_owner' ? '<span class="task-card-awaiting-badge">Needs Attention</span>' : '';
+        const awaitingBadge = isAwaitingOwner ? '<span class="task-card-awaiting-badge">Needs Attention</span>' : '';
         const ghLabel = this._resolveGitHubIssueLabel(task);
         const ghUrl = this._resolveGitHubIssueUrl(task);
         const ghState = String(task.github_state || '').trim().toLowerCase();
@@ -584,7 +585,7 @@ class TaskBoardPanel {
         this._closeTaskStream(this._selectedTask);
         const statusClass = this._normalizeTaskStatus(task.status);
         const isRunning = statusClass === 'in_progress';
-        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'completed' || statusClass === 'failed';
+        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'failed';
         const alias = String(task?.alias || '').trim();
         const provider = String(task?.provider || '').trim();
         const targetPrimary = alias || provider;
@@ -1134,6 +1135,7 @@ class TaskBoardPanel {
             container,
             tasks: [],
             statusColumns: this.statusColumns,
+            terminalColumns: this.terminalColumns,
             onTaskClick: (taskId) => this._selectTask(taskId),
             onBatchStatusChange: async (ids, newStatus) => {
                 try {
@@ -1488,7 +1490,6 @@ class TaskBoardPanel {
     _detectAwaitingOwner(task) {
         if (!task) return false;
         if (task.metadata?.awaiting_human) return true;
-        if (this._normalizeTaskStatus(task.status) === 'awaiting_owner') return true;
         const s = String(task.status || '').toLowerCase();
         if (s.includes('awaiting') || s.includes('blocked')) return true;
         if (this._normalizeTaskStatus(task.status) === 'in_progress' && task.updated_at) {

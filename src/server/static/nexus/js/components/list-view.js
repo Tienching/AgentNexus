@@ -27,13 +27,14 @@ class ListView {
         this.container = options.container;
         this.tasks = options.tasks || [];
         this.statusColumns = options.statusColumns || [];
+        this.terminalColumns = options.terminalColumns || [];
         this.onTaskClick = options.onTaskClick || (() => {});
         this.onBatchStatusChange = options.onBatchStatusChange || (async () => {});
         this.onBatchPriorityChange = options.onBatchPriorityChange || (async () => {});
         this.onBatchAssign = options.onBatchAssign || (async () => {});
         this.onDeleteTasks = options.onDeleteTasks || (async () => {});
         this._selectedIds = new Set();
-        this._expandedSections = new Set(this.statusColumns.map(c => c.key));
+        this._expandedSections = new Set([...this.statusColumns, ...this.terminalColumns].map(c => c.key));
     }
 
     updateTasks(tasks) {
@@ -47,8 +48,9 @@ class ListView {
 
     render() {
         if (!this.container) return;
+        const allColumns = [...this.statusColumns, ...this.terminalColumns];
         const grouped = {};
-        this.statusColumns.forEach(col => { grouped[col.key] = []; });
+        allColumns.forEach(col => { grouped[col.key] = []; });
         this.tasks.forEach(t => {
             const s = (t.status || 'inbox').toLowerCase();
             (grouped[s] || grouped['inbox']).push(t);
@@ -60,7 +62,7 @@ class ListView {
             <div class="list-view">
                 ${this._renderBatchToolbar()}
                 <div class="list-view-sections">
-                    ${this.statusColumns.map(col => {
+                    ${allColumns.map(col => {
                         const items = grouped[col.key] || [];
                         const isExpanded = this._expandedSections.has(col.key);
                         return this._renderGroupSection(col, items, isExpanded);
@@ -88,7 +90,7 @@ class ListView {
                 <div class="batch-actions">
                     <select class="form-input form-select batch-status-select" style="width:140px;height:28px;font-size:12px;">
                         <option value="">Change Status...</option>
-                        ${this.statusColumns.map(c => `<option value="${c.key}">${this._esc(c.title)}</option>`).join('')}
+                        ${allColumns.map(c => `<option value="${c.key}">${this._esc(c.title)}</option>`).join('')}
                     </select>
                     <select class="form-input form-select batch-priority-select" style="width:130px;height:28px;font-size:12px;">
                         <option value="">Change Priority...</option>

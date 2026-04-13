@@ -33,18 +33,19 @@
     --error-light: #f87171;
     --info: #3b82f6;
 
-    /* Status Colors — 7-column kanban model */
+    /* Status Colors — 6-status workflow */
     --status-inbox: #6b7280;
-    --status-assigned: #3b82f6;
-    --status-awaiting-owner: #f97316;
-    --status-in-progress: #eab308;
-    --status-review: #a855f7;
-    --status-quality-review: #6366f1;
-    --status-done: #22c55e;
+    --status-in-progress: #3b82f6;
+    --status-in-review: #f59e0b;
+    --status-done: #10b981;
     --status-failed: #ef4444;
-    --status-cancelled: #71717a;
-    --status-archived: #3f3f46;
-    /* Legacy aliases (for backward compat in schedules, etc.) */
+    --status-archived: #9ca3af;
+    /* Legacy aliases (for backward compat) */
+    --status-assigned: var(--status-in-progress);
+    --status-awaiting-owner: var(--status-in-progress);
+    --status-review: var(--status-in-review);
+    --status-quality-review: var(--status-in-review);
+    --status-cancelled: var(--status-archived);
     --status-todo: var(--status-inbox);
     --status-doing: var(--status-in-progress);
 

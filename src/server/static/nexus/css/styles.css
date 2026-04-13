@@ -1727,14 +1727,13 @@
     border-color: var(--warning) !important;
 }
 
-/* Status badge colors — 7-column workflow */
+/* Status badge colors — 6-status workflow */
 .status-badge.inbox { background: rgba(113, 113, 122, 0.15); color: var(--status-inbox); }
-.status-badge.assigned { background: rgba(139, 92, 246, 0.15); color: var(--status-assigned); }
-.status-badge.awaiting_owner { background: rgba(249, 115, 22, 0.15); color: var(--status-awaiting-owner); }
-.status-badge.in_progress { background: rgba(245, 158, 11, 0.15); color: var(--status-in-progress); }
-.status-badge.review { background: rgba(59, 130, 246, 0.15); color: var(--status-review); }
-.status-badge.quality_review { background: rgba(6, 182, 212, 0.15); color: var(--status-quality-review); }
+.status-badge.in_progress { background: rgba(59, 130, 246, 0.15); color: var(--status-in-progress); }
+.status-badge.in_review { background: rgba(245, 158, 11, 0.15); color: var(--status-in-review); }
 .status-badge.done { background: rgba(34, 197, 94, 0.15); color: var(--status-done); }
+.status-badge.failed { background: rgba(239, 68, 68, 0.15); color: var(--status-failed); }
+.status-badge.archived { background: rgba(107, 114, 128, 0.15); color: var(--status-archived); }
 
 /* Task Dependencies */
 .task-card-deps {
@@ -2329,12 +2328,12 @@
     font-weight: 600;
 }
 
-.status-badge.todo { background: rgba(113, 113, 122, 0.15); color: var(--status-todo); }
-.status-badge.doing { background: rgba(245, 158, 11, 0.15); color: var(--status-doing); }
-.status-badge.done { background: rgba(113, 113, 122, 0.15); color: var(--text-muted); }
+.status-badge.todo { background: rgba(113, 113, 122, 0.15); color: var(--status-inbox); }
+.status-badge.doing { background: rgba(59, 130, 246, 0.15); color: var(--status-in-progress); }
+.status-badge.done { background: rgba(34, 197, 94, 0.15); color: var(--status-done); }
 .status-badge.failed { background: rgba(239, 68, 68, 0.15); color: var(--status-failed); }
-.status-badge.cancelled { background: rgba(107, 114, 128, 0.15); color: var(--status-cancelled); }
-.status-badge.archived { background: rgba(55, 65, 81, 0.15); color: var(--status-archived); }
+.status-badge.cancelled { background: rgba(107, 114, 128, 0.15); color: var(--status-archived); }
+.status-badge.archived { background: rgba(107, 114, 128, 0.15); color: var(--status-archived); }
 
 .status-dot {
     width: 5px;
@@ -3794,9 +3793,9 @@
     gap: 2px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--status-awaiting-owner);
+    color: var(--warning);
     padding: 1px 5px;
-    background: rgba(249, 115, 22, 0.1);
+    background: rgba(245, 158, 11, 0.1);
     border-radius: var(--radius-sm);
 }
 
@@ -3830,13 +3829,14 @@
     color: white;
 }
 
-/* ========== Status Badge — New Statuses ========== */
-.status-badge.inbox { background: rgba(107, 114, 128, 0.15); color: var(--status-inbox); }
-.status-badge.assigned { background: rgba(59, 130, 246, 0.15); color: var(--status-assigned); }
-.status-badge.awaiting_owner { background: rgba(249, 115, 22, 0.15); color: var(--status-awaiting-owner); }
-.status-badge.in_progress { background: rgba(234, 179, 8, 0.15); color: var(--status-in-progress); }
-.status-badge.review { background: rgba(168, 85, 247, 0.15); color: var(--status-review); }
-.status-badge.quality_review { background: rgba(99, 102, 241, 0.15); color: var(--status-quality-review); }
+/* ========== Status Badge — Legacy (backward compat) ========== */
+.status-badge.todo { background: rgba(113, 113, 122, 0.15); color: var(--status-inbox); }
+.status-badge.doing { background: rgba(59, 130, 246, 0.15); color: var(--status-in-progress); }
+.status-badge.assigned { background: rgba(59, 130, 246, 0.15); color: var(--status-in-progress); }
+.status-badge.awaiting_owner { background: rgba(59, 130, 246, 0.15); color: var(--status-in-progress); }
+.status-badge.review { background: rgba(245, 158, 11, 0.15); color: var(--status-in-review); }
+.status-badge.quality_review { background: rgba(245, 158, 11, 0.15); color: var(--status-in-review); }
+.status-badge.cancelled { background: rgba(107, 114, 128, 0.15); color: var(--status-archived); }
 
 /* ========== Plan Mode ========== */
 .plan-mode-indicator {

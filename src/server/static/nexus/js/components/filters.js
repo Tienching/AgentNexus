@@ -34,13 +34,25 @@ class FilterBar {
     /** Static option definitions */
     static STATUS_OPTIONS = [
         { key: 'inbox', label: 'Inbox', color: 'var(--status-inbox)' },
-        { key: 'assigned', label: 'Assigned', color: 'var(--status-assigned)' },
-        { key: 'awaiting_owner', label: 'Awaiting Owner', color: 'var(--status-awaiting-owner)' },
         { key: 'in_progress', label: 'In Progress', color: 'var(--status-in-progress)' },
-        { key: 'review', label: 'Review', color: 'var(--status-review)' },
-        { key: 'quality_review', label: 'QA', color: 'var(--status-quality-review)' },
+        { key: 'in_review', label: 'In Review', color: 'var(--status-in-review)' },
         { key: 'done', label: 'Done', color: 'var(--status-done)' },
+        { key: 'failed', label: 'Failed', color: 'var(--status-failed)' },
+        { key: 'archived', label: 'Archived', color: 'var(--status-archived)' },
     ];
+
+    /** Normalize legacy status values to 6-status model */
+    static STATUS_MAP = {
+        'todo': 'inbox', 'pending': 'inbox',
+        'assigned': 'in_progress', 'awaiting_owner': 'in_progress', 'doing': 'in_progress',
+        'review': 'in_review', 'quality_review': 'in_review',
+        'completed': 'done', 'cancelled': 'archived',
+    };
+
+    static _normalizeStatus(status) {
+        const s = String(status || '').trim().toLowerCase();
+        return FilterBar.STATUS_MAP[s] || (['inbox','in_progress','in_review','done','failed','archived'].includes(s) ? s : 'inbox');
+    }
 
     static PRIORITY_OPTIONS = [
         { key: 'critical', label: 'Critical', color: 'var(--error, #ef4444)' },
@@ -93,7 +105,7 @@ class FilterBar {
 
         tasks.forEach(t => {
             // Status
-            const s = t.status || 'inbox';
+            const s = FilterBar._normalizeStatus(t.status);
             this._counts.status[s] = (this._counts.status[s] || 0) + 1;
 
             // Priority
@@ -164,7 +176,7 @@ class FilterBar {
         return tasks.filter(t => {
             // Status
             if (this.filters.status.values.size > 0) {
-                if (!this.filters.status.values.has(t.status || 'inbox')) return false;
+                if (!this.filters.status.values.has(FilterBar._normalizeStatus(t.status))) return false;
             }
 
             // Priority
