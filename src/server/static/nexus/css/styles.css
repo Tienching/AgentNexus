@@ -1104,6 +1104,7 @@
     background: var(--surface-1);
     border-bottom: 1px solid var(--border-primary);
     min-height: 42px;
+    flex-wrap: wrap;
 }
 
 .task-toolbar-left {
@@ -1115,7 +1116,8 @@
 .task-toolbar-right {
     display: flex;
     align-items: center;
-    gap: var(--spacing-sm);
+    gap: 8px;
+    margin-left: auto;
 }
 
 /* ========== List View ========== */
@@ -4178,4 +4180,40 @@
 .filter-dropdown-reset-btn:disabled {
     opacity: 0.4;
     cursor: default;
+}
+
+.toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-primary);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.toolbar-btn:hover {
+    border-color: var(--primary-500);
+}
+
+.toolbar-btn.has-filter {
+    background: var(--primary-500);
+    color: #fff;
+    border-color: var(--primary-500);
+}
+
+.toolbar-btn.has-filter:hover {
+    background: var(--primary-600);
+    border-color: var(--primary-600);
+}
+
+.filter-dropdown-separator {
+    height: 1px;
+    background: var(--border-primary);
+    margin: 4px 0;
 }

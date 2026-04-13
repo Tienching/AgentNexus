@@ -20,6 +20,9 @@ class TaskBoardPanel {
         this._tasks = [];
         this._filter = '';
         this._projectFilter = '';
+        this._projectsList = [];
+        this._sortBtn = null;
+        this._projectBtn = null;
         this._selectedTask = null;
         this._selectionMode = false;
         this._selectedTaskIds = new Set();
@@ -126,16 +129,7 @@ class TaskBoardPanel {
                                 <button class="view-toggle-btn ${this._viewMode === 'list' ? 'active' : ''}" data-action="set-view" data-view="list" title="List view" style="padding:4px 10px;font-size:12px;border:none;border-left:1px solid var(--border);background:${this._viewMode === 'list' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'list' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">List</button>
                             </div>
                             <div id="filterBar-${pid}" style="display:inline-flex;align-items:center;margin-right:8px;"></div>
-                            <select class="form-input form-select" id="sortFieldSelect-${pid}" style="width:130px;height:28px;font-size:12px;margin-right:4px;" title="Sort by">
-                                <option value="position" ${this._sortField === 'position' ? 'selected' : ''}>Position</option>
-                                <option value="priority" ${this._sortField === 'priority' ? 'selected' : ''}>Priority</option>
-                                <option value="due_date" ${this._sortField === 'due_date' ? 'selected' : ''}>Due Date</option>
-                                <option value="created_at" ${this._sortField === 'created_at' ? 'selected' : ''}>Created</option>
-                            </select>
-                            <button class="action-btn" data-action="toggle-sort-dir" title="Sort direction" style="padding:4px 6px;margin-right:8px;font-size:12px;">${this._sortDirection === 'asc' ? '&#9650;' : '&#9660;'}</button>
-                            <select class="form-input form-select" style="width: 150px; margin-right: 8px;" id="taskProjectFilter-${pid}">
-                                <option value="">All Projects</option>
-                            </select>
+                            <div id="toolbarDropdowns-${pid}" style="display:inline-flex;align-items:center;gap:8px;position:relative;"></div>
                             <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" id="taskSearch-${pid}">
                         </div>
                     </div>
@@ -250,9 +244,6 @@ class TaskBoardPanel {
     // ------------------------------------------------------------------
 
     async _loadProjects() {
-        const pid = this._paneId;
-        const filterEl = document.getElementById(`taskProjectFilter-${pid}`);
-        if (!filterEl) return;
         try {
             let projects;
             if (this._dataStore) {
@@ -265,15 +256,9 @@ class TaskBoardPanel {
                     execUser: this._getExecUser()
                 });
             }
-            const current = filterEl.value;
-            filterEl.innerHTML = '<option value="">All Projects</option>' +
-                projects.map(p => {
-                    const count = (p.todo || 0) + (p.doing || 0);
-                    const label = p.project_name || p.project_id;
-                    return `<option value="${p.project_id}">${label}${count > 0 ? ` (${count})` : ''}</option>`;
-                }).join('');
-            if (current && Array.from(filterEl.options).some(o => o.value === current)) {
-                filterEl.value = current;
+            this._projectsList = projects || [];
+            if (this._projectBtn) {
+                this._projectBtn.setProjects(this._projectsList);
             }
         } catch (e) {
             console.error('Failed to load projects:', e);
@@ -283,10 +268,9 @@ class TaskBoardPanel {
     async _loadTasks() {
         const pid = this._paneId;
         const searchInput = document.getElementById(`taskSearch-${pid}`);
-        const projectFilter = document.getElementById(`taskProjectFilter-${pid}`);
 
         try {
-            if (projectFilter && projectFilter.options.length <= 1) {
+            if (!this._projectsList || this._projectsList.length === 0) {
                 await this._loadProjects();
             }
             let data;
@@ -294,7 +278,7 @@ class TaskBoardPanel {
                 execUser: this._getExecUser(),
                 pageSize: 100,
                 search: searchInput?.value || '',
-                projectId: projectFilter?.value || '',
+                projectId: this._projectFilter || '',
             };
             if (this._dataStore) {
                 data = await this._dataStore.fetch('tasks', taskOpts);
@@ -909,26 +893,13 @@ class TaskBoardPanel {
             btn.addEventListener('click', () => this._setViewMode(btn.dataset.view));
         });
 
-        // K-006: Sort controls
-        document.getElementById(`sortFieldSelect-${pid}`)?.addEventListener('change', (e) => {
-            this._sortField = e.target.value;
-            localStorage.setItem('nexus-kanban-sortField', this._sortField);
-            this._renderKanban();
-        });
-        c.querySelector('[data-action="toggle-sort-dir"]')?.addEventListener('click', () => {
-            this._sortDirection = this._sortDirection === 'asc' ? 'desc' : 'asc';
-            localStorage.setItem('nexus-kanban-sortDir', this._sortDirection);
-            const btn = c.querySelector('[data-action="toggle-sort-dir"]');
-            if (btn) btn.innerHTML = this._sortDirection === 'asc' ? '&#9650;' : '&#9660;';
-            this._renderKanban();
-        });
+        // Sort and project filter are now handled by SortButton/ProjectButton in FilterBar
 
         const searchInput = document.getElementById(`taskSearch-${pid}`);
         if (searchInput) {
             let t;
             searchInput.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => this._loadTasks(), 300); });
         }
-        document.getElementById(`taskProjectFilter-${pid}`)?.addEventListener('change', () => this._loadTasks());
         document.getElementById(`scheduleStatusFilter-${pid}`)?.addEventListener('change', () => this._loadSchedules());
     }
 
@@ -1124,6 +1095,19 @@ class TaskBoardPanel {
         if (!container || typeof FilterBar === 'undefined') return;
         this._filterBar = new FilterBar(this);
         this._filterBar.render(container);
+
+        // Init SortButton and ProjectButton
+        const dropdownsContainer = document.getElementById(`toolbarDropdowns-${pid}`);
+        if (dropdownsContainer) {
+            if (typeof SortButton !== 'undefined') {
+                this._sortBtn = new SortButton(this);
+                this._sortBtn.render(dropdownsContainer);
+            }
+            if (typeof ProjectButton !== 'undefined') {
+                this._projectBtn = new ProjectButton(this);
+                this._projectBtn.render(dropdownsContainer);
+            }
+        }
     }
 
     _initListView() {
@@ -1452,6 +1436,23 @@ class TaskBoardPanel {
                 }
             }
         });
+    }
+
+    _setProjectFilter(projectId) {
+        this._projectFilter = projectId || '';
+        this._loadTasks();
+    }
+
+    _setSortField(field) {
+        this._sortField = field;
+        localStorage.setItem('nexus-kanban-sortField', field);
+        this._renderKanban();
+    }
+
+    _setSortDirection(dir) {
+        this._sortDirection = dir;
+        localStorage.setItem('nexus-kanban-sortDir', dir);
+        this._renderKanban();
     }
 
     /**

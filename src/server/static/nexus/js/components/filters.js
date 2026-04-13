@@ -3,6 +3,8 @@
  *
  * Features:
  * - 5 dimensions: Status, Priority, Assignee, Creator, Due Date
+ * - SortButton: Sort field + direction dropdown
+ * - ProjectButton: Project filter dropdown
  * - Toolbar button group with active count badges
  * - Dropdown menus with search, checkboxes, and real-time counts
  * - localStorage persistence
@@ -28,6 +30,8 @@ class FilterBar {
         this._openDropdown = null;
         this._dropdownEl = null;
         this._container = null;
+        this._sortBtn = null;
+        this._projectBtn = null;
         this._loadPersisted();
     }
 
@@ -54,6 +58,13 @@ class FilterBar {
         { key: 'today', label: 'Today' },
         { key: 'this_week', label: 'This week' },
         { key: 'no_due_date', label: 'No due date' },
+    ];
+
+    static SORT_OPTIONS = [
+        { key: 'position', label: 'Position' },
+        { key: 'priority', label: 'Priority' },
+        { key: 'due_date', label: 'Due Date' },
+        { key: 'created_at', label: 'Created Date' },
     ];
 
     /** Dimensions that support search in dropdown */
@@ -422,4 +433,281 @@ class FilterBar {
     }
 }
 
+// =====================================================================
+// SortButton - Dropdown button for sort field and direction
+// =====================================================================
+
+class SortButton {
+    constructor(taskBoardPanel) {
+        this.panel = taskBoardPanel;
+        this._btnEl = null;
+        this._dropdownEl = null;
+        this._open = false;
+
+        this._sortField = this.panel._sortField || 'position';
+        this._sortDirection = this.panel._sortDirection || 'asc';
+
+        // Close on outside click
+        document.addEventListener('click', (e) => {
+            if (this._dropdownEl && !this._dropdownEl.contains(e.target) &&
+                this._btnEl && !this._btnEl.contains(e.target)) {
+                this._close();
+            }
+        });
+    }
+
+    _fieldLabel(key) {
+        const opt = FilterBar.SORT_OPTIONS.find(o => o.key === key);
+        return opt ? opt.label : key;
+    }
+
+    render(container) {
+        const btn = document.createElement('button');
+        btn.className = 'toolbar-btn';
+        btn.innerHTML = `Sort: ${this._esc(this._fieldLabel(this._sortField))} <span class="filter-btn-arrow">&#9662;</span>`;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._toggle();
+        });
+        container.appendChild(btn);
+        this._btnEl = btn;
+    }
+
+    _toggle() {
+        if (this._open) {
+            this._close();
+        } else {
+            this._openDropdown();
+        }
+    }
+
+    _openDropdown() {
+        this._close();
+        this._open = true;
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'filter-dropdown';
+
+        // Position below the button
+        const rect = this._btnEl.getBoundingClientRect();
+        const parentRect = this._btnEl.parentElement.getBoundingClientRect();
+        dropdown.style.position = 'absolute';
+        dropdown.style.top = `${rect.bottom - parentRect.top + 4}px`;
+        dropdown.style.left = `${rect.left - parentRect.left}px`;
+
+        // Sort field options
+        const fieldsHtml = FilterBar.SORT_OPTIONS.map(o => {
+            const active = o.key === this._sortField;
+            return `<div class="filter-option${active ? ' checked' : ''}" data-sort-field="${this._esc(o.key)}">
+                <span class="filter-option-check">${active ? '&#10003;' : ''}</span>
+                <span class="filter-option-label">${this._esc(o.label)}</span>
+            </div>`;
+        }).join('');
+
+        // Direction toggle
+        const ascActive = this._sortDirection === 'asc';
+        const descActive = this._sortDirection === 'desc';
+        const dirHtml = `
+            <div class="filter-dropdown-separator"></div>
+            <div class="filter-option${ascActive ? ' checked' : ''}" data-sort-dir="asc">
+                <span class="filter-option-check">${ascActive ? '&#10003;' : ''}</span>
+                <span class="filter-option-label">Ascending</span>
+            </div>
+            <div class="filter-option${descActive ? ' checked' : ''}" data-sort-dir="desc">
+                <span class="filter-option-check">${descActive ? '&#10003;' : ''}</span>
+                <span class="filter-option-label">Descending</span>
+            </div>`;
+
+        dropdown.innerHTML = `
+            <div class="filter-dropdown-options">${fieldsHtml}${dirHtml}</div>`;
+
+        this._btnEl.parentElement.style.position = 'relative';
+        this._btnEl.parentElement.appendChild(dropdown);
+        this._dropdownEl = dropdown;
+
+        // Bind field clicks
+        dropdown.querySelectorAll('[data-sort-field]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const field = el.dataset.sortField;
+                this._sortField = field;
+                this.panel._sortField = field;
+                localStorage.setItem('nexus-kanban-sortField', field);
+                this._updateBtnLabel();
+                this._close();
+                this.panel._renderKanban();
+            });
+        });
+
+        // Bind direction clicks
+        dropdown.querySelectorAll('[data-sort-dir]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const dir = el.dataset.sortDir;
+                this._sortDirection = dir;
+                this.panel._sortDirection = dir;
+                localStorage.setItem('nexus-kanban-sortDir', dir);
+                this._updateBtnLabel();
+                this._close();
+                this.panel._renderKanban();
+            });
+        });
+    }
+
+    _close() {
+        if (this._dropdownEl) {
+            this._dropdownEl.remove();
+            this._dropdownEl = null;
+        }
+        this._open = false;
+    }
+
+    _updateBtnLabel() {
+        if (this._btnEl) {
+            this._btnEl.innerHTML = `Sort: ${this._esc(this._fieldLabel(this._sortField))} <span class="filter-btn-arrow">&#9662;</span>`;
+        }
+    }
+
+    _esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+}
+
+// =====================================================================
+// ProjectButton - Dropdown button for project filter
+// =====================================================================
+
+class ProjectButton {
+    constructor(taskBoardPanel) {
+        this.panel = taskBoardPanel;
+        this._btnEl = null;
+        this._dropdownEl = null;
+        this._open = false;
+        this._selectedProjectId = '';
+        this._projects = [];
+
+        // Close on outside click
+        document.addEventListener('click', (e) => {
+            if (this._dropdownEl && !this._dropdownEl.contains(e.target) &&
+                this._btnEl && !this._btnEl.contains(e.target)) {
+                this._close();
+            }
+        });
+    }
+
+    setProjects(projects) {
+        this._projects = projects || [];
+    }
+
+    setSelectedProject(projectId) {
+        this._selectedProjectId = projectId || '';
+        this._updateBtnLabel();
+    }
+
+    render(container) {
+        const btn = document.createElement('button');
+        btn.className = 'toolbar-btn';
+        btn.innerHTML = `Project: All <span class="filter-btn-arrow">&#9662;</span>`;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._toggle();
+        });
+        container.appendChild(btn);
+        this._btnEl = btn;
+    }
+
+    _toggle() {
+        if (this._open) {
+            this._close();
+        } else {
+            this._openDropdown();
+        }
+    }
+
+    _openDropdown() {
+        this._close();
+        this._open = true;
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'filter-dropdown';
+
+        // Position below the button
+        const rect = this._btnEl.getBoundingClientRect();
+        const parentRect = this._btnEl.parentElement.getBoundingClientRect();
+        dropdown.style.position = 'absolute';
+        dropdown.style.top = `${rect.bottom - parentRect.top + 4}px`;
+        dropdown.style.left = `${rect.left - parentRect.left}px`;
+
+        // "All Projects" option
+        const allActive = !this._selectedProjectId;
+        let html = `<div class="filter-option${allActive ? ' checked' : ''}" data-project-id="">
+            <span class="filter-option-check">${allActive ? '&#10003;' : ''}</span>
+            <span class="filter-option-label">All Projects</span>
+        </div>`;
+
+        // Separator + project list
+        if (this._projects.length > 0) {
+            html += '<div class="filter-dropdown-separator"></div>';
+            html += this._projects.map(p => {
+                const label = p.project_name || p.project_id;
+                const active = p.project_id === this._selectedProjectId;
+                const count = (p.todo || 0) + (p.doing || 0);
+                return `<div class="filter-option${active ? ' checked' : ''}" data-project-id="${this._esc(p.project_id)}">
+                    <span class="filter-option-check">${active ? '&#10003;' : ''}</span>
+                    <span class="filter-option-label">${this._esc(label)}</span>
+                    <span class="filter-option-count">${count > 0 ? count : ''}</span>
+                </div>`;
+            }).join('');
+        }
+
+        dropdown.innerHTML = `<div class="filter-dropdown-options">${html}</div>`;
+
+        this._btnEl.parentElement.style.position = 'relative';
+        this._btnEl.parentElement.appendChild(dropdown);
+        this._dropdownEl = dropdown;
+
+        // Bind project clicks
+        dropdown.querySelectorAll('[data-project-id]').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const projectId = el.dataset.projectId;
+                this._selectedProjectId = projectId;
+                this._updateBtnLabel();
+                this._close();
+                // Call panel's project filter method
+                this.panel._setProjectFilter(projectId);
+            });
+        });
+    }
+
+    _close() {
+        if (this._dropdownEl) {
+            this._dropdownEl.remove();
+            this._dropdownEl = null;
+        }
+        this._open = false;
+    }
+
+    _updateBtnLabel() {
+        if (this._btnEl) {
+            const label = this._selectedProjectId
+                ? this._projects.find(p => p.project_id === this._selectedProjectId)?.project_name || this._selectedProjectId
+                : 'All';
+            this._btnEl.innerHTML = `Project: ${this._esc(label)} <span class="filter-btn-arrow">&#9662;</span>`;
+            // Highlight when a project is selected
+            this._btnEl.classList.toggle('has-filter', !!this._selectedProjectId);
+        }
+    }
+
+    _esc(str) {
+        const d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+}
+
 window.FilterBar = FilterBar;
+window.SortButton = SortButton;
+window.ProjectButton = ProjectButton;
