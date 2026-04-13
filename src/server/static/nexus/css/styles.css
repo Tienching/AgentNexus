@@ -1339,14 +1339,21 @@
 }
 
 .kanban-column {
-    flex-shrink: 0;
-    width: 240px;
+    flex: 1 1 280px;
+    min-width: 260px;
+    max-width: 400px;
     display: flex;
     flex-direction: column;
     background: var(--surface-1);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
     overflow: hidden;
+}
+.kanban-column-terminal {
+    flex: 0 0 220px;
+    min-width: auto;
+    max-width: none;
+    opacity: 0.85;
 }
 
 .kanban-column-header {
@@ -1815,16 +1822,40 @@
 
 /* ========== Task Detail Panel ========== */
 .task-detail {
-    width: 380px;
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 420px;
+    max-width: 90vw;
     display: flex;
     flex-direction: column;
-    border-left: 1px solid var(--border-primary);
     background: var(--surface-1);
-    flex-shrink: 0;
+    z-index: 100;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.3);
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+}
+
+.task-detail.open {
+    transform: translateX(0);
 }
 
 .task-detail.hidden {
-    display: none;
+    transform: translateX(100%);
+    pointer-events: none;
+}
+
+.task-detail-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.3);
+    z-index: 99;
+    transition: opacity 0.25s ease;
+}
+
+.task-detail-backdrop.hidden {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .task-detail-header {
@@ -3682,11 +3713,6 @@
     border-left: 1px solid var(--border-primary);
     padding-left: var(--spacing-md);
     margin-left: var(--spacing-sm);
-}
-
-.kanban-column-terminal {
-    opacity: 0.85;
-    width: 220px;
 }
 
 /* ========== Agent Avatar ========== */

@@ -187,6 +187,7 @@ class TaskBoardPanel {
                     </div>
                 </div>
                 <div class="task-detail hidden" id="taskDetail-${pid}"></div>
+                <div class="task-detail-backdrop hidden" id="taskDetailBackdrop-${pid}"></div>
             </div>
         `;
 
@@ -551,8 +552,11 @@ class TaskBoardPanel {
     async _showTaskDetail(taskId) {
         const pid = this._paneId;
         const detailPanel = document.getElementById(`taskDetail-${pid}`);
+        const backdrop = document.getElementById(`taskDetailBackdrop-${pid}`);
         if (!detailPanel) return;
         detailPanel.classList.remove('hidden');
+        detailPanel.classList.add('open');
+        if (backdrop) { backdrop.classList.remove('hidden'); }
         detailPanel.innerHTML = '<div class="empty-state"><div class="loading-spinner"></div></div>';
         try {
             const task = await NexusAPI.getTask(taskId, { execUser: this._getExecUser() });
@@ -651,6 +655,9 @@ class TaskBoardPanel {
         panel.querySelector('[data-action="close-detail"]')?.addEventListener('click', () => {
             this._closeTaskStream(task.id);
             panel.classList.add('hidden');
+            panel.classList.remove('open');
+            const backdrop = document.getElementById(`taskDetailBackdrop-${pid}`);
+            if (backdrop) { backdrop.classList.add('hidden'); }
             this._selectedTask = null;
             document.getElementById(`kanbanBoard-${pid}`)?.querySelectorAll('.task-card').forEach(c => c.classList.remove('selected'));
         });
@@ -880,6 +887,22 @@ class TaskBoardPanel {
         const c = this.container;
         if (!c) return;
         const pid = this._paneId;
+
+        // Backdrop click closes detail overlay
+        const backdrop = document.getElementById(`taskDetailBackdrop-${pid}`);
+        if (backdrop) {
+            backdrop.addEventListener('click', () => {
+                const detailPanel = document.getElementById(`taskDetail-${pid}`);
+                if (detailPanel && !detailPanel.classList.contains('hidden')) {
+                    this._closeTaskStream(this._selectedTask);
+                    detailPanel.classList.add('hidden');
+                    detailPanel.classList.remove('open');
+                    backdrop.classList.add('hidden');
+                    this._selectedTask = null;
+                    document.getElementById(`kanbanBoard-${pid}`)?.querySelectorAll('.task-card').forEach(c => c.classList.remove('selected'));
+                }
+            });
+        }
 
         c.querySelector('[data-action="create-task"]')?.addEventListener('click', () => this._getApp()?.showCreateTaskModal?.('single'));
         c.querySelector('[data-action="toggle-selection"]')?.addEventListener('click', () => this._toggleSelectionMode());
