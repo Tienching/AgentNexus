@@ -79,6 +79,7 @@ class InlinePicker {
             { key: 'critical', label: 'Critical', color: 'var(--error)' },
             { key: 'serious', label: 'Serious', color: 'var(--warning)' },
             { key: 'normal', label: 'Normal', color: 'var(--primary-500)' },
+            { key: 'low', label: 'Low', color: '#9ca3af' },
         ]);
         this.getAssigneeOptions = config.getAssigneeOptions || (() => []);
         this.getAllLabels = config.getAllLabels || (() => []);

@@ -7959,11 +7959,7 @@ class PlanModeManager {
 
     async enterPlanMode() {
         try {
-            const resp = await fetch('/api/nexus/plan/enter', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to enter plan mode');
-            }
+            await NexusAPI.enterPlanMode();
             this._planMode = true;
             this._planContent = null;
             this.indicator.show('Exploring');
@@ -7978,15 +7974,7 @@ class PlanModeManager {
 
     async submitPlan(content) {
         try {
-            const resp = await fetch('/api/nexus/plan/submit', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content }),
-            });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to submit plan');
-            }
+            await NexusAPI.submitPlan(content);
             this._planContent = content;
             this.indicator.setStatus('Awaiting Approval');
             this.editor.hide();
@@ -7999,11 +7987,7 @@ class PlanModeManager {
 
     async approvePlan() {
         try {
-            const resp = await fetch('/api/nexus/plan/approve', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to approve plan');
-            }
+            await NexusAPI.approvePlan();
             this._planMode = false;
             this._planContent = null;
             this.indicator.hide();
@@ -8017,11 +8001,7 @@ class PlanModeManager {
 
     async rejectPlan() {
         try {
-            const resp = await fetch('/api/nexus/plan/reject', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to reject plan');
-            }
+            await NexusAPI.rejectPlan();
             this._planContent = null;
             this.indicator.setStatus('Exploring');
             this.approval.hide();
@@ -8035,11 +8015,7 @@ class PlanModeManager {
 
     async exitPlanMode() {
         try {
-            const resp = await fetch('/api/nexus/plan/exit', { method: 'POST' });
-            if (!resp.ok) {
-                const err = await resp.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to exit plan mode');
-            }
+            await NexusAPI.exitPlanMode();
             this._planMode = false;
             this._planContent = null;
             this.indicator.hide();
@@ -8053,9 +8029,7 @@ class PlanModeManager {
 
     async refreshStatus() {
         try {
-            const resp = await fetch('/api/nexus/plan/status');
-            if (!resp.ok) return;
-            const data = await resp.json();
+            const data = await NexusAPI.getPlanStatus();
             this._planMode = data.plan_mode;
             this._planContent = data.plan_content;
             if (this._planMode) {

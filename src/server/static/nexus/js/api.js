@@ -549,6 +549,26 @@ class NexusAPI {
         return response.json();
     }
 
+    /**
+     * Requeue an orphaned task back into the active queue
+     * @param {string} taskId - Task ID
+     * @param {Object} options - Query options
+     * @returns {Promise<Object>} Requeue response
+     */
+    static async requeueOrphanTask(taskId, options = {}) {
+        const params = new URLSearchParams({
+            exec_user: options.execUser || _defaultExecUser,
+        });
+        const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}/requeue-orphan?${params}`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(`Failed to requeue orphan task: ${response.statusText}${text ? ` - ${text}` : ''}`);
+        }
+        return response.json();
+    }
+
     static async getTaskQualityReviews(taskId, options = {}) {
         const params = new URLSearchParams({
             exec_user: options.execUser || _defaultExecUser,
