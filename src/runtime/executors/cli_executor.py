@@ -208,6 +208,7 @@ class CLIExecutor(BaseExecutor):
         "gemini": "gemini",
         "gemini-internal": "gemini",
         "codebuddy": "codebuddy",
+        "codebuddy-internal": "codebuddy",
         "ccr": "claude",
     }
 
@@ -219,7 +220,7 @@ class CLIExecutor(BaseExecutor):
         """Build CLI command."""
         cleaned_content, inline_model = self._parse_model_param(context.content)
         model_param = inline_model or getattr(context, "model", None) or None
-        cli_session_id = getattr(context, "cli_session_id", None) or None
+        cli_session_id = (getattr(context, "cli_session_id", None) or "").strip() or None
         
         # Determine CLI command name: alias overrides the command map
         cli_alias = (getattr(context, "alias", None) or "").strip().lower()
@@ -246,7 +247,8 @@ class CLIExecutor(BaseExecutor):
         else:
             # Provider-aware continue/resume logic:
             # When cli_session_id is available, use precise session resume:
-            #   - claude/codebuddy: --resume SESSION_ID (instead of -c)
+            #   - claude: --resume SESSION_ID (instead of -c)
+            #   - codebuddy: -r SESSION_ID (instead of -c)
             #   - gemini: --resume SESSION_ID (instead of --resume latest)
             #   - codex: resume SESSION_ID (instead of resume --last)
             session_cleared = getattr(context, "session_cleared", False)
@@ -259,8 +261,13 @@ class CLIExecutor(BaseExecutor):
                         cmd.extend(["--resume", cli_session_id])
                     else:
                         cmd.extend(["--resume", "latest"])
+                elif provider == "codebuddy" or provider.startswith("codebuddy-"):
+                    if cli_session_id:
+                        cmd.extend(["-r", cli_session_id])
+                    else:
+                        cmd.extend(["-c"])
                 else:
-                    # claude / codebuddy
+                    # claude
                     if cli_session_id:
                         cmd.extend(["--resume", cli_session_id])
                     else:
@@ -269,7 +276,7 @@ class CLIExecutor(BaseExecutor):
         
         # Provider-specific command assembly (same logic as server CLIExecutor)
         is_claude = provider == "claude"
-        is_codebuddy = provider == "codebuddy"
+        is_codebuddy = provider == "codebuddy" or provider.startswith("codebuddy-")
 
         if is_codex:
             if model_param:

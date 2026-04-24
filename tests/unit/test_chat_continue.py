@@ -69,14 +69,22 @@ class TestCodebuddyProviderContinue:
         cfg.user_home_base = "/home"
         return CodebuddyCLIExecutor(config=cfg)
 
-    def test_normal_no_continue_flag(self, executor):
+    def test_default_non_inplace_adds_c_flag(self, executor):
         ctx = _make_context("Hello")
         cmd = executor._build_command(ctx)
+        idx_c = cmd.index("-c")
+        idx_p = cmd.index("-p")
+        assert idx_c < idx_p
+
+    def test_inplace_normal_no_continue_flag(self, executor):
+        ctx = _make_context("Hello", cwd_mode="inplace", cwd="/tmp")
+        cmd = executor._build_command(ctx)
         assert "-c" not in cmd
+        assert "-r" not in cmd
         assert "-p" in cmd
 
     def test_chat_continue_adds_c_flag(self, executor):
-        ctx = _make_context("Follow up", run_kind="chat_continue")
+        ctx = _make_context("Follow up", run_kind="chat_continue", cwd_mode="inplace", cwd="/tmp")
         cmd = executor._build_command(ctx)
         idx_c = cmd.index("-c")
         idx_p = cmd.index("-p")

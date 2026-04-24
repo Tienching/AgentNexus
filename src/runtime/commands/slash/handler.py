@@ -2487,6 +2487,8 @@ class SlashCommandHandler:
         provider_label = provider_key
         if found_provider and provider_key != found_provider:
             provider_label = f"{provider_key} ({found_provider})"
+        resume_provider = (found_provider or provider_key or "").strip().lower()
+        resume_flag = f"-r {cli_session_id}" if resume_provider.startswith("codebuddy") else f"--resume {cli_session_id}"
 
         title = (detail.session.title if detail.session else None) or f"History: {cli_session_id}"
         msg_count = len(detail.messages or [])
@@ -2546,7 +2548,7 @@ class SlashCommandHandler:
                 f"| 工作目录 | `{project_path}` |\n"
                 f"| 标题 | {title} |\n"
                 f"| 历史消息数 | {msg_count} |\n\n"
-                f"后续消息将在 `{project_path}` 下通过 `--resume {cli_session_id}` 恢复 CLI 会话。"
+                f"后续消息将在 `{project_path}` 下通过 `{resume_flag}` 恢复 CLI 会话。"
             )
 
         # Legacy fallback: create a new runtime session when no current session is available.
@@ -2619,7 +2621,7 @@ class SlashCommandHandler:
             f"| 工作目录 | `{project_path}` |\n"
             f"| 标题 | {title} |\n"
             f"| 导入消息数 | {msg_count} |\n\n"
-            f"后续消息将在 `{project_path}` 下通过 `--resume {cli_session_id}` 恢复 CLI 会话。"
+            f"后续消息将在 `{project_path}` 下通过 `{resume_flag}` 恢复 CLI 会话。"
         )
 
     # ---- Worktree management ----

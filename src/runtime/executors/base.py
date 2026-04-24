@@ -52,6 +52,12 @@ class RequestContext:
     @classmethod
     def from_request_model(cls, model_obj: Any, exec_user: str = "default") -> "RequestContext":
         """Create from legacy RequestModel for backward compatibility."""
+        metadata = getattr(model_obj, "metadata", None)
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        on_cli_session_id = getattr(model_obj, "on_cli_session_id", None)
+        if callable(on_cli_session_id):
+            metadata["on_cli_session_id"] = on_cli_session_id
+
         return cls(
             content=getattr(model_obj, "content", "") or "",
             user=getattr(model_obj, "user", None) or "anonymous",
@@ -62,6 +68,8 @@ class RequestContext:
             run_kind=getattr(model_obj, "run_kind", "") or "",
             model=getattr(model_obj, "model", None) or None,
             cli_session_id=getattr(model_obj, "cli_session_id", None) or None,
+            session_cleared=bool(getattr(model_obj, "session_cleared", False)),
+            metadata=metadata,
         )
 
 

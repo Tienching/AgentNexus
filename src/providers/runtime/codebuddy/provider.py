@@ -66,6 +66,13 @@ class CodebuddyProvider:
                 session_id=context.session_id,
                 exec_user=context.exec_user or "default",
                 cwd=str(context.workspace) if context.workspace else None,
+                cwd_mode=context.metadata.get("cwd_mode", "") or "",
+                run_kind=context.metadata.get("run_kind", "") or "",
+                alias=context.metadata.get("alias") or None,
+                model=context.model or context.metadata.get("model") or None,
+                cli_session_id=context.metadata.get("cli_session_id") or None,
+                session_cleared=bool(context.metadata.get("session_cleared", False)),
+                metadata=context.metadata,
             )
             async for raw_line in executor._execute_internal(request_ctx):
                 async for evt in self._convert_raw_event(raw_line, context):

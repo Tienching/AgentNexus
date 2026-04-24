@@ -15,7 +15,8 @@ resumption via cli_session_id, across all 6 executor variants:
 Resume Strategy Table:
 | Provider        | No cli_session_id | With cli_session_id      |
 |-----------------|-------------------|--------------------------|
-| Claude/CodeBuddy| -c                | --resume SESSION_ID      |
+| Claude          | -c                | --resume SESSION_ID      |
+| CodeBuddy       | -c                | -r SESSION_ID            |
 | Gemini          | --resume latest   | --resume SESSION_ID      |
 | Codex           | resume --last     | resume SESSION_ID        |
 """
@@ -118,32 +119,64 @@ class TestCodebuddyProviderSessionResume:
         cmd = executor._build_command(ctx)
         assert "-c" in cmd
         assert "--resume" not in cmd
+        assert "-r" not in cmd
 
     def test_with_session_id_uses_resume(self, executor):
-        """With cli_session_id, chat_continue should use --resume SESSION_ID."""
+        """With cli_session_id, chat_continue should use -r SESSION_ID."""
         ctx = _make_context("Follow up", run_kind="chat_continue",
                             cli_session_id=TEST_SESSION_UUID)
         cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
+        idx_resume = cmd.index("-r")
         assert cmd[idx_resume + 1] == TEST_SESSION_UUID
+        assert "--resume" not in cmd
         assert "-c" not in cmd
 
-    def test_session_id_ignored_when_not_continue(self, executor):
-        """cli_session_id should not trigger resume when run_kind is not chat_continue."""
+    def test_session_id_used_for_default_non_inplace_continue(self, executor):
+        """Non-inplace CodeBuddy runs should still restore the bound CLI session."""
         ctx = _make_context("Hello", run_kind="",
                             cli_session_id=TEST_SESSION_UUID)
         cmd = executor._build_command(ctx)
+        idx_resume = cmd.index("-r")
+        assert cmd[idx_resume + 1] == TEST_SESSION_UUID
+        assert "--resume" not in cmd
+        assert "-c" not in cmd
+
+    def test_session_id_ignored_for_inplace_non_continue(self, executor):
+        """Inplace normal runs should not resume unless explicitly continuing."""
+        ctx = _make_context("Hello", run_kind="", cwd_mode="inplace", cwd="/tmp",
+                            cli_session_id=TEST_SESSION_UUID)
+        cmd = executor._build_command(ctx)
+        assert "-r" not in cmd
         assert "--resume" not in cmd
         assert "-c" not in cmd
 
     def test_resume_comes_before_prompt(self, executor):
-        """--resume SESSION_ID should appear before -p."""
+        """-r SESSION_ID should appear before -p."""
         ctx = _make_context("Follow up", run_kind="chat_continue",
                             cli_session_id=TEST_SESSION_UUID)
         cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
+        idx_resume = cmd.index("-r")
         idx_p = cmd.index("-p")
         assert idx_resume < idx_p
+
+    @pytest.mark.asyncio
+    async def test_stream_result_notifies_cli_session_id(self, executor, monkeypatch):
+        """Provider path should expose CodeBuddy's native session id for persistence."""
+        seen = []
+        ctx = _make_context(
+            "Hello",
+            session_id="runtime-session",
+            metadata={"on_cli_session_id": seen.append},
+        )
+
+        async def fake_read_stream(_process, _timeout):
+            yield json.dumps({"type": "result", "session_id": TEST_SESSION_UUID}).encode()
+
+        monkeypatch.setattr(executor, "read_stream", fake_read_stream)
+        lines = [line async for line in executor._process_stream(object(), ctx)]
+
+        assert lines == [json.dumps({"type": "result", "session_id": TEST_SESSION_UUID})]
+        assert seen == [TEST_SESSION_UUID]
 
 
 # ===========================================================================
@@ -373,6 +406,7 @@ class TestCLIRuntimeSessionResume:
         ctx = _make_context("Hello", exec_user="codebuddy_user")
         cmd = ex._build_command(ctx, use_continue=True)
         assert "-c" in cmd
+        assert "-r" not in cmd
         assert "--resume" not in cmd
 
     def test_codebuddy_with_session_id_uses_resume(self):
@@ -380,8 +414,9 @@ class TestCLIRuntimeSessionResume:
         ctx = _make_context("Hello", exec_user="codebuddy_user",
                             cli_session_id=TEST_SESSION_UUID)
         cmd = ex._build_command(ctx, use_continue=True)
-        idx_resume = cmd.index("--resume")
+        idx_resume = cmd.index("-r")
         assert cmd[idx_resume + 1] == TEST_SESSION_UUID
+        assert "--resume" not in cmd
         assert "-c" not in cmd
 
     # --- Edge cases ---
@@ -485,6 +520,7 @@ class TestCLIServerSessionResume:
             use_continue=True, agent_type="codebuddy",
         )
         assert "-c" in cmd
+        assert "-r" not in cmd
         assert "--resume" not in cmd
 
     def test_codebuddy_with_session_id_uses_resume(self, executor):
@@ -493,8 +529,9 @@ class TestCLIServerSessionResume:
             use_continue=True, agent_type="codebuddy",
             cli_session_id=TEST_SESSION_UUID,
         )
-        idx_resume = cmd.index("--resume")
+        idx_resume = cmd.index("-r")
         assert cmd[idx_resume + 1] == TEST_SESSION_UUID
+        assert "--resume" not in cmd
         assert "-c" not in cmd
 
     # --- Edge cases ---
@@ -611,6 +648,28 @@ class TestRequestContextCliSessionId:
         # Mock(spec=[]) won't have cli_session_id, getattr should return None
         ctx = RequestContext.from_request_model(model, exec_user="ubuntu")
         assert ctx.cli_session_id is None
+
+    def test_provider_request_context_carries_session_id_callback(self):
+        from src.providers.base import RequestContext as ProviderRequestContext
+
+        callback = Mock()
+        model = Mock()
+        model.content = "Hello"
+        model.user = "testuser"
+        model.session_id = "sess-1"
+        model.cwd = None
+        model.cwd_mode = ""
+        model.run_kind = ""
+        model.alias = None
+        model.model = None
+        model.cli_session_id = None
+        model.session_cleared = False
+        model.metadata = {}
+        model.on_cli_session_id = callback
+
+        ctx = ProviderRequestContext.from_request_model(model, exec_user="ubuntu")
+
+        assert ctx.metadata["on_cli_session_id"] is callback
 
 
 # ===========================================================================
@@ -828,7 +887,7 @@ class TestCliSessionIdEdgeCases:
 
     def test_none_session_id_in_context(self):
         """Explicit None should not trigger resume."""
-        ctx = _make_context("Hello", cli_session_id=None)
+        ctx = _make_context("Hello", cwd_mode="inplace", cwd="/tmp", cli_session_id=None)
         from src.providers.codebuddy.cli_executor import CodebuddyCLIExecutor
         cfg = Mock()
         cfg.codebuddy_command = "codebuddy"
@@ -836,5 +895,6 @@ class TestCliSessionIdEdgeCases:
         cfg.user_home_base = "/home"
         executor = CodebuddyCLIExecutor(config=cfg)
         cmd = executor._build_command(ctx)
+        assert "-r" not in cmd
         assert "--resume" not in cmd
-        assert "-c" not in cmd  # Not chat_continue
+        assert "-c" not in cmd  # Inplace and not chat_continue

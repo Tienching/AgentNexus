@@ -117,7 +117,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
         try:
             process = await self.run_subprocess(final_cmd)
 
-            async for output in self._process_stream(process):
+            async for output in self._process_stream(process, context):
                 yield output
 
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
@@ -161,21 +161,25 @@ class CodebuddyCLIExecutor(BaseExecutor):
         cleaned_content, inline_model = self._parse_model_param(context.content)
         model_param = inline_model or getattr(context, "model", None) or None
 
+        is_inplace = getattr(context, "cwd_mode", "") == "inplace"
         is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
-        cli_session_id = getattr(context, "cli_session_id", None) or None
+        use_continue = (not is_inplace) or is_chat_continue
+        cli_session_id = (getattr(context, "cli_session_id", None) or "").strip() or None
         session_cleared = getattr(context, "session_cleared", False)
+        is_clear = cleaned_content.lower() == "/clear"
+        message = "你好" if is_clear else cleaned_content
 
         # Use alias as CLI command name if provided, otherwise default
         cli_command = (getattr(context, "alias", None) or "").strip() or self.codebuddy_config.codebuddy_command
         cmd = [cli_command]
-        if is_chat_continue and not session_cleared:
+        if use_continue and not session_cleared and not is_clear:
             if cli_session_id:
-                cmd.extend(["--resume", cli_session_id])
+                cmd.extend(["-r", cli_session_id])
             else:
                 cmd.append("-c")
         cmd.extend([
             "-p",
-            cleaned_content,
+            message,
             "--output-format",
             "stream-json",
             "--dangerously-skip-permissions",
@@ -187,13 +191,29 @@ class CodebuddyCLIExecutor(BaseExecutor):
     async def _process_stream(
         self,
         process: asyncio.subprocess.Process,
+        context: Optional[RequestContext] = None,
     ) -> AsyncGenerator[str, None]:
         """Process subprocess stream output (raw JSON lines only)."""
+        captured_cli_session_id: Optional[str] = None
         async for line in self.read_stream(process, self.config.timeout):
             try:
                 line_str = line.decode("utf-8").strip()
                 if not line_str:
                     continue
+
+                try:
+                    data = json.loads(line_str)
+                except (json.JSONDecodeError, TypeError):
+                    data = None
+                if isinstance(data, dict):
+                    cli_session_id = data.get("session_id") or data.get("thread_id")
+                    if (
+                        cli_session_id
+                        and isinstance(cli_session_id, str)
+                        and cli_session_id != captured_cli_session_id
+                    ):
+                        captured_cli_session_id = cli_session_id
+                        await self._notify_cli_session_id(context, cli_session_id)
 
                 yield line_str
 
@@ -202,6 +222,24 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
         # Drain stderr
         await self.drain_stderr(process)
+
+    async def _notify_cli_session_id(
+        self,
+        context: Optional[RequestContext],
+        cli_session_id: str,
+    ) -> None:
+        """Notify API/runtime layers that CodeBuddy reported its native session ID."""
+        if not context or not cli_session_id:
+            return
+        callback = (getattr(context, "metadata", None) or {}).get("on_cli_session_id")
+        if not callable(callback):
+            return
+        try:
+            result = callback(cli_session_id)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Failed to persist CodeBuddy cli_session_id", exc_info=True)
 
     # Helper methods
 

@@ -506,18 +506,18 @@ class StreamHandler:
         # Check one-time bootstrap context for history->runtime promoted sessions.
         # It is injected into the first follow-up message, then cleared.
         # However, if the session has a stored cli_session_id, the CLI will
-        # use --resume <UUID> to restore the original conversation natively,
+        # use native provider resume flags to restore the original conversation,
         # so injecting bootstrap context would be redundant and waste tokens.
         if session_id and not content_stripped.startswith("/"):
             try:
                 storage = get_session_storage()
                 cli_session_id = storage.get_cli_session_id(session_id)
                 if cli_session_id:
-                    # CLI will --resume into the original session; consume and
+                    # CLI will resume into the original session; consume and
                     # discard bootstrap context so it's not injected later.
                     storage.consume_history_bootstrap_context(session_id)
                     logger.info(
-                        "Skipped history bootstrap context injection: CLI session will be resumed via --resume %s",
+                        "Skipped history bootstrap context injection: CLI session will be resumed natively: %s",
                         cli_session_id,
                     )
                 else:
@@ -645,6 +645,23 @@ class StreamHandler:
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Missing required field: content (or messages for AG-UI)"
             )
+
+        if session_id:
+            def _remember_cli_session_id(cli_session_id: str) -> None:
+                cli_session_id = (cli_session_id or "").strip()
+                if not cli_session_id:
+                    return
+                try:
+                    storage_obj = storage or get_session_storage()
+                    storage_obj.set_cli_session_id(session_id, cli_session_id)
+                    logger.debug(
+                        "Saved cli_session_id from provider stream",
+                        extra={"session_id": session_id, "cli_session_id": cli_session_id},
+                    )
+                except Exception:
+                    logger.debug("Failed to save cli_session_id from provider stream", exc_info=True)
+
+            request_model.on_cli_session_id = _remember_cli_session_id
         
         # 如果有 response_url 且 response_url_callback_enabled 已启用，进入超时回调模式
         # 默认关闭：即使有 response_url 也走标准 AG-UI 流式处理，不主动断连、不主动通告

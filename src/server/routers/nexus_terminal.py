@@ -86,7 +86,12 @@ def _build_tmux_command(session_meta, storage) -> dict:
     cli_session_id = storage.get_cli_session_id(session_id)
 
     cli_parts = [alias]
-    if provider in ("claude", "codebuddy", "claude-internal"):
+    if provider == "codebuddy" or str(provider).startswith("codebuddy-"):
+        if cli_session_id:
+            cli_parts += ["-r", cli_session_id]
+        else:
+            cli_parts.append("-c")
+    elif provider in ("claude", "claude-internal"):
         if cli_session_id:
             cli_parts += ["--resume", cli_session_id]
         else:

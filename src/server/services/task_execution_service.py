@@ -690,7 +690,7 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
         except Exception:
             pass
 
-        # Persist captured CLI session ID for future --resume
+        # Persist captured CLI session ID for future provider-native resume
         if _captured_cli_session_id:
             try:
                 task.cli_session_id = _captured_cli_session_id

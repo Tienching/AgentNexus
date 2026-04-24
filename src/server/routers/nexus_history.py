@@ -446,9 +446,9 @@ async def _resume_history_session(
     storage.set_inherited_session(runtime_session_id, f"history:{provider}:{session_id}")
     storage.set_history_runtime_mapping(provider, session_id, project_path, runtime_session_id)
 
-    # Store the original CLI session ID so that follow-up messages use
-    # --resume <UUID> to precisely restore the CLI session instead of
-    # starting a brand-new session or falling back to -c / --resume latest.
+    # Store the original CLI session ID so that follow-up messages use the
+    # provider's native resume flag to precisely restore the CLI session instead
+    # of starting a brand-new session or falling back to latest-session resume.
     storage.set_cli_session_id(runtime_session_id, session_id)
 
     if compat_route:

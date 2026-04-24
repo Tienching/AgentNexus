@@ -28,7 +28,7 @@ async def test_execute_internal_timeout_awaits_async_kill_without_warnings(monke
     process.stderr = AsyncMock()
     process.stderr.read = AsyncMock(return_value=b"")
 
-    async def timeout_stream(_process):
+    async def timeout_stream(_process, _context=None):
         if False:  # pragma: no cover
             yield ""
         raise asyncio.TimeoutError

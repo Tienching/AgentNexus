@@ -475,7 +475,7 @@ class CLIExecutor:
                 if workspace_provider:
                     logger.info(f"Overriding agent_type with workspace provider: {agent_type} -> {workspace_provider}")
                     agent_type = workspace_provider
-                # Also get the workspace alias for CLI command selection
+            # Also get the workspace alias for CLI command selection
                 if not workspace_alias and storage:
                     workspace_alias = storage.get_workspace_alias(request.session_id)
                 if workspace_alias:
@@ -1176,14 +1176,17 @@ class CLIExecutor:
             alias: CLI 命令名覆盖（如 claude-internal），不影响参数格式
             model: Explicit LLM model name override. Inline --model in content takes priority.
             cli_session_id: Specific CLI session UUID for precise resume.
-                When provided, uses --resume SESSION_ID instead of -c/--resume latest.
+                Provider-specific: claude/gemini use --resume, codebuddy uses -r,
+                codex uses resume SESSION_ID.
             image_paths: Local image file paths to inject into the prompt.
             file_paths: Local file paths (non-image) to inject into the prompt.
             content_parts: Ordered list of content parts preserving text/image interleaving.
         """
         cleaned_content, inline_model = self._parse_model_param(content)
         model_param = inline_model or model or None
+        cli_session_id = (cli_session_id or "").strip() or None
         provider = (agent_type or "").strip().lower()
+        is_codebuddy_provider = provider == "codebuddy" or provider.startswith("codebuddy-")
         provider_command_map = {
             "claude": "claude",
             "codex": "codex",
@@ -1245,7 +1248,8 @@ class CLIExecutor:
 
         # Provider-aware continue/resume logic:
         # When cli_session_id is available, use precise session resume:
-        #   - claude/codebuddy: --resume SESSION_ID (instead of -c which is "latest")
+        #   - claude: --resume SESSION_ID (instead of -c which is "latest")
+        #   - codebuddy: -r SESSION_ID (instead of -c)
         #   - gemini: --resume SESSION_ID (instead of --resume latest)
         #   - codex: resume SESSION_ID (instead of resume --last)
         # Fallback to generic "latest" resume when no specific session ID.
@@ -1257,8 +1261,13 @@ class CLIExecutor:
                     cmd.extend(["--resume", cli_session_id])
                 else:
                     cmd.extend(["--resume", "latest"])
+            elif is_codebuddy_provider:
+                if cli_session_id:
+                    cmd.extend(["-r", cli_session_id])
+                else:
+                    cmd.extend(["-c"])
             else:
-                # claude / codebuddy
+                # claude
                 if cli_session_id:
                     cmd.extend(["--resume", cli_session_id])
                 else:
@@ -1283,7 +1292,7 @@ class CLIExecutor:
         #       safety: --dangerously-bypass-approvals-and-sandbox
 
         is_claude = provider == "claude"
-        is_codebuddy = provider == "codebuddy"
+        is_codebuddy = is_codebuddy_provider
 
         if is_codex:
             if model_param:

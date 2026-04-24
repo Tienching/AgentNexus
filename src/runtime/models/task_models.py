@@ -207,7 +207,7 @@ class Task(BaseModel):
     depends_on: List[str] = Field(default_factory=list)
 
     # CLI session UUID for context resumption (provider-agnostic).
-    # Used with: claude --resume ID, gemini --resume ID, codex resume ID
+    # Used with: claude/gemini --resume ID, codebuddy -r ID, codex resume ID
     cli_session_id: Optional[str] = None
 
     # Control-plane execution binding metadata
