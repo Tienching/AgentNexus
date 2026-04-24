@@ -88,6 +88,8 @@ def test_settings_shell_uses_four_top_level_pages_and_single_page_sections():
     assert "this.settingsPage = new SettingsPage(this);" in app_js
     assert "this.agentsPage = typeof AgentsViewShell === 'function' ? new AgentsViewShell(this) : new AgentsPage(this);" in app_js
     assert "this.settingsView = new SettingsView(this);" not in app_js
+    assert "Agent Templates" in read_text("src/server/static/nexus/js/components/agents-view-shell.js")
+    assert "selectedTemplateName" in read_text("src/server/static/nexus/js/components/agents-store.js")
 
 
 def test_settings_shell_no_longer_exposes_legacy_tab_or_category_markup():
@@ -110,6 +112,8 @@ def test_settings_shell_no_longer_exposes_legacy_tab_or_category_markup():
     assert "async renderWorkflowsTab()" not in shell_views_js
     assert "static async getWorkflowTemplates()" not in api_js
     assert "static async runWorkflowTemplate(" not in api_js
+    assert "static async listAgentTemplates(options = {})" in api_js
+    assert "static async updateAgentTemplate(name, payload = {})" in api_js
     assert "getCurrentUrlSection()" in settings_page_js
     assert "classList.toggle('is-active', isActive)" in settings_page_js
     assert "syncSettingsSection(" in shell_managers_js

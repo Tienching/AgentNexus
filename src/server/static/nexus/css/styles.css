@@ -6933,3 +6933,13 @@ body.kanban-dragging-active {
         grid-template-columns: 1fr;
     }
 }
+
+.agents-template-prompt {
+    min-height: 320px;
+    font-family: var(--font-mono);
+}
+
+.agents-template-json {
+    min-height: 220px;
+    font-family: var(--font-mono);
+}

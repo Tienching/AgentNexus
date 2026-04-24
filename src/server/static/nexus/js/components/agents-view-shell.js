@@ -89,13 +89,16 @@
 
         _renderList(state) {
             const items = this.store.getFilteredItems();
+            const inTemplates = state.mode === 'templates' || state.mode === 'template_detail';
             if (!items.length) {
-                return '<div class="u-empty-state-lg">No agents or teams match the current filters.</div>';
+                return `<div class="u-empty-state-lg">No ${inTemplates ? 'templates' : 'agents or teams'} match the current filters.</div>`;
             }
             return items.map((entry) => {
                 const selected = entry.kind === 'agent'
                     ? state.mode === 'agent_detail' && state.selectedAgentId === entry.id
-                    : state.mode === 'team_detail' && state.selectedTeamName === entry.id;
+                    : entry.kind === 'team'
+                        ? state.mode === 'team_detail' && state.selectedTeamName === entry.id
+                        : state.mode === 'template_detail' && state.selectedTemplateName === entry.id;
                 return `
                     <button class="agents-list-item${selected ? ' is-active' : ''}" data-kind="${this._escape(entry.kind)}" data-id="${this._escape(entry.id)}">
                         <div class="agents-list-body">
@@ -202,6 +205,135 @@
                     ${this._detailSection('Teams Summary', 'Swarm and team coordination at a glance.', teamRows, 'teams')}
                     ${this._detailSection('Token Usage', 'Recent cost and token breakdown by agent.', costRows, 'cost')}
                     ${this._detailSection('Memory Restore', 'Restore memory context from recent sessions without leaving Agents.', this._renderMemoryRestoreList(state.memoryState), 'memory')}
+                </div>
+            `;
+        }
+
+        _splitCsv(value = '') {
+            return String(value || '')
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean);
+        }
+
+        _jsonString(value, fallback) {
+            const input = value == null ? fallback : value;
+            try {
+                return JSON.stringify(input, null, 2);
+            } catch (_) {
+                return JSON.stringify(fallback, null, 2);
+            }
+        }
+
+        _parseJsonInput(selector, fallback) {
+            const raw = this.view.querySelector(selector)?.value || '';
+            if (!raw.trim()) return fallback;
+            return JSON.parse(raw);
+        }
+
+        _renderTemplatesPanel(state) {
+            const templates = state.agentTemplates || [];
+            const presetCount = templates.filter((template) => template.hasDefault).length;
+            const customCount = templates.filter((template) => !template.hasDefault).length;
+            const rows = templates.length ? templates.map((template) => `
+                <div class="panel-list-item">
+                    <div class="panel-list-item-body">
+                        <div class="panel-list-item-title">${this._escape(template.name)}</div>
+                        <div class="panel-list-item-sub">${this._escape(template.role || template.description || '')}</div>
+                    </div>
+                    <div class="u-row-wrap">
+                        <span class="panel-badge">${this._escape(template.hasDefault ? 'preset' : template.source || 'custom')}</span>
+                        <button class="action-btn" data-action="select-template" data-template-name="${this._escape(template.name)}">Configure</button>
+                    </div>
+                </div>
+            `).join('') : '<div class="u-empty-state-lg">No agent templates found.</div>';
+
+            return `
+                <div class="agents-main-inner" id="agentsTemplatesPanel">
+                    <div class="agents-section-header">
+                        <div>
+                            <h2>Agent Templates</h2>
+                            <p>Configure default agent prompts, model defaults, tools, behavior, memory, and guardrails.</p>
+                        </div>
+                        <div class="u-row-wrap">
+                            <button class="action-btn" id="agentsRefreshBtn">Refresh</button>
+                            <button class="action-btn primary" id="newAgentTemplateBtn">New template</button>
+                        </div>
+                    </div>
+                    <div class="agents-overview-grid">
+                        ${this._metricCard('Templates', templates.length, `${presetCount} preset`)}
+                        ${this._metricCard('Custom', customCount, 'runtime editable')}
+                        ${this._metricCard('Default', templates.find((template) => template.name === 'nexus') ? 'nexus' : '—', 'main agent')}
+                    </div>
+                    ${this._detailSection('Template Directory', 'Preset rows are seeded from the top-level agent/templates directory and can be edited here.', rows, 'templates')}
+                </div>
+            `;
+        }
+
+        _renderTemplateDetail(state) {
+            const template = state.templateDraft || this.store.getCurrentTemplate() || {};
+            const toolConfig = template.toolConfig || {};
+            const tokenEstimate = Math.ceil(String(template.systemPrompt || '').length / 4);
+            const isPreset = !!template.hasDefault;
+            const configJson = this._jsonString({
+                skillConfig: template.skillConfig || {},
+                knowledgeConfig: template.knowledgeConfig || {},
+                schedule: template.schedule || null,
+                eventSubscriptions: template.eventSubscriptions || [],
+                guardrails: template.guardrails || {},
+            }, { skillConfig: {}, knowledgeConfig: {}, schedule: null, eventSubscriptions: [], guardrails: {} });
+
+            return `
+                <div class="agents-main-inner" id="agentsTemplateDetail" data-template-name="${this._escape(template.name || state.selectedTemplateName || '')}">
+                    <div class="agents-section-header">
+                        <div>
+                            <button class="action-btn" id="agentsTemplatesBtn">← Templates</button>
+                            <h2>${this._escape(template.name || state.selectedTemplateName || 'Template')}</h2>
+                            <p>${this._escape(template.role || template.description || '')}</p>
+                        </div>
+                        <div class="u-row-wrap">
+                            ${isPreset ? '<button class="action-btn" id="resetAgentTemplateBtn">Reset default</button>' : ''}
+                            <button class="action-btn btn-danger-solid" id="deleteAgentTemplateBtn">Delete</button>
+                            <button class="action-btn primary" id="saveAgentTemplateBtn" ${state.saving ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save template'}</button>
+                        </div>
+                    </div>
+                    ${this._detailSection('Profile', 'Identity, role, and description shown in the agent directory.', `
+                        <div class="agents-detail-grid">
+                            <div class="detail-kv"><div class="detail-kv-label">Name</div><div class="detail-kv-value">${this._escape(template.name || '—')}</div></div>
+                            <div class="detail-kv"><div class="detail-kv-label">Source</div><div class="detail-kv-value">${this._escape(template.hasDefault ? 'preset' : template.source || 'custom')}</div></div>
+                            <label class="detail-kv"><div class="detail-kv-label">Avatar</div><input id="agentTemplateAvatar" class="form-input" value="${this._escape(template.avatarUrl || '')}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Role</div><input id="agentTemplateRole" class="form-input" value="${this._escape(template.role || '')}"></label>
+                            <label class="detail-kv detail-kv-span-full"><div class="detail-kv-label">Description</div><input id="agentTemplateDescription" class="form-input" value="${this._escape(template.description || '')}"></label>
+                        </div>
+                    `, 'template-profile')}
+                    ${this._detailSection('Prompt', `System prompt markdown. Estimated ${tokenEstimate} tokens.`, `
+                        <textarea id="agentTemplateSystemPrompt" class="form-input form-textarea agents-template-prompt">${this._escape(template.systemPrompt || '')}</textarea>
+                        <div class="settings-section-copy">Supports variables such as {{name}}, {{role}}, and {{workspace}}.</div>
+                    `, 'template-prompt')}
+                    ${this._detailSection('Model Defaults', 'Optional model routing defaults inherited by sessions and tasks that use this template.', `
+                        <div class="agents-detail-grid">
+                            <label class="detail-kv"><div class="detail-kv-label">Model Provider</div><input id="agentTemplateModelProvider" class="form-input" value="${this._escape(template.modelProvider || '')}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Model Name</div><input id="agentTemplateModelName" class="form-input" value="${this._escape(template.modelName || '')}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Temperature</div><input id="agentTemplateTemperature" class="form-input" type="number" step="0.1" min="0" max="2" value="${this._escape(template.temperature ?? 0.7)}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Top P</div><input id="agentTemplateTopP" class="form-input" type="number" step="0.05" min="0" max="1" value="${this._escape(template.topP ?? 1)}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Max Tokens</div><input id="agentTemplateMaxTokens" class="form-input" type="number" min="0" value="${this._escape(template.maxTokens ?? '')}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Max Iterations</div><input id="agentTemplateMaxIterations" class="form-input" type="number" min="1" max="80" value="${this._escape(template.maxIterations ?? 15)}"></label>
+                        </div>
+                    `, 'template-model')}
+                    ${this._detailSection('Tools & Capabilities', 'Comma-separated three-state tool loading config, MCP servers, surfaces, and capability tags.', `
+                        <div class="agents-detail-grid">
+                            <label class="detail-kv detail-kv-span-full"><div class="detail-kv-label">Base Tools</div><input id="agentTemplateBaseTools" class="form-input" value="${this._escape((toolConfig.baseTools || []).join(', '))}"></label>
+                            <label class="detail-kv detail-kv-span-full"><div class="detail-kv-label">Deferred Tools</div><input id="agentTemplateDeferredTools" class="form-input" value="${this._escape((toolConfig.deferredTools || []).join(', '))}"></label>
+                            <label class="detail-kv detail-kv-span-full"><div class="detail-kv-label">Disabled Tools</div><input id="agentTemplateDisabledTools" class="form-input" value="${this._escape((toolConfig.disabledTools || []).join(', '))}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">MCP Servers</div><input id="agentTemplateMcp" class="form-input" value="${this._escape((toolConfig.mcp || []).join(', '))}"></label>
+                            <label class="detail-kv"><div class="detail-kv-label">Trigger Mode</div><select id="agentTemplateTriggerMode" class="form-input form-select">${['reactive', 'proactive', 'both'].map((mode) => `<option value="${mode}" ${template.triggerMode === mode ? 'selected' : ''}>${mode}</option>`).join('')}</select></label>
+                            <label class="detail-kv detail-kv-span-full"><div class="detail-kv-label">Surfaces</div><input id="agentTemplateSurfaces" class="form-input" value="${this._escape((template.surfaces || []).join(', '))}"></label>
+                            <label class="detail-kv detail-kv-span-full"><div class="detail-kv-label">Capabilities</div><input id="agentTemplateCapabilities" class="form-input" value="${this._escape((template.capabilities || []).join(', '))}"></label>
+                        </div>
+                    `, 'template-tools')}
+                    ${this._detailSection('Advanced JSON', 'Skill, knowledge, schedule, events, and guardrails. JSON must be valid before saving.', `
+                        <textarea id="agentTemplateAdvancedJson" class="form-input form-textarea agents-template-json">${this._escape(configJson)}</textarea>
+                    `, 'template-advanced')}
                 </div>
             `;
         }
@@ -373,11 +505,16 @@
 
         render(state = this.store.getState()) {
             if (!this.view) return;
+            const templatesMode = state.mode === 'templates' || state.mode === 'template_detail';
             const detailPanel = state.mode === 'agent_detail'
                 ? this._renderAgentDetail(state)
                 : state.mode === 'team_detail'
                     ? this._renderTeamDetail(state)
-                    : this._renderOverviewPanel(state);
+                    : state.mode === 'template_detail'
+                        ? this._renderTemplateDetail(state)
+                        : state.mode === 'templates'
+                            ? this._renderTemplatesPanel(state)
+                            : this._renderOverviewPanel(state);
             this.view.innerHTML = `
                 <div id="agentsPageShell" class="agents-page" data-agents-mode="${this._escape(state.mode)}">
                     <aside class="agents-sidebar">
@@ -386,21 +523,22 @@
                                 <h2>Agents</h2>
                                 <button class="action-btn" id="agentsSidebarRefreshBtn">Refresh</button>
                             </div>
-                            <p class="agents-sidebar-copy">Search, filter, and switch between overview, agent detail, and team detail.</p>
+                            <p class="agents-sidebar-copy">Search, filter, and switch between overview, runtime detail, teams, and templates.</p>
                             <div class="agents-filter-row">
-                                <input id="agentsSearchInput" class="form-input" value="${this._escape(state.searchQuery || '')}" placeholder="Search agents or teams">
-                                <select id="agentsStatusFilter" class="form-input form-select">
+                                <input id="agentsSearchInput" class="form-input" value="${this._escape(state.searchQuery || '')}" placeholder="${templatesMode ? 'Search templates' : 'Search agents or teams'}">
+                                <select id="agentsStatusFilter" class="form-input form-select" ${templatesMode ? 'disabled' : ''}>
                                     ${['all', 'online', 'idle', 'running', 'error', 'offline'].map((status) => `<option value="${status}" ${state.statusFilter === status ? 'selected' : ''}>${status}</option>`).join('')}
                                 </select>
                             </div>
                             <div class="agents-filter-row">
                                 <button class="agents-filter-chip${state.mode === 'overview' ? ' is-active' : ''}" id="agentsSidebarOverviewBtn">Overview</button>
+                                <button class="agents-filter-chip${templatesMode ? ' is-active' : ''}" id="agentsSidebarTemplatesBtn">Templates</button>
                             </div>
                             ${state.error ? `<div class="panel-list-item"><div class="panel-list-item-body"><div class="panel-list-item-title">Load Error</div><div class="panel-list-item-sub">${this._escape(state.error)}</div></div></div>` : ''}
                         </div>
                         <div class="agents-sidebar-body">
                             <div class="agents-sidebar-group">
-                                <div class="agents-sidebar-group-title"><span>Directory</span><span>${this._escape(String(this.store.getFilteredItems().length))}</span></div>
+                                <div class="agents-sidebar-group-title"><span>${templatesMode ? 'Templates' : 'Directory'}</span><span>${this._escape(String(this.store.getFilteredItems().length))}</span></div>
                                 <div id="agentsList" class="agents-list">${this._renderList(state)}</div>
                             </div>
                         </div>
@@ -423,6 +561,8 @@
             });
             this.view.querySelector('#agentsSidebarOverviewBtn')?.addEventListener('click', () => this.store.showOverview());
             this.view.querySelector('#agentsOverviewBtn')?.addEventListener('click', () => this.store.showOverview());
+            this.view.querySelector('#agentsSidebarTemplatesBtn')?.addEventListener('click', () => this.store.showTemplates());
+            this.view.querySelector('#agentsTemplatesBtn')?.addEventListener('click', () => this.store.showTemplates());
             this.view.querySelector('#agentsSidebarRefreshBtn')?.addEventListener('click', () => this.refresh({ restoreSelection: true }));
             this.view.querySelector('#agentsRefreshBtn')?.addEventListener('click', () => this.refresh({ restoreSelection: true }));
             this.view.querySelectorAll('.agents-list-item').forEach((button) => {
@@ -430,6 +570,8 @@
                     try {
                         if (button.dataset.kind === 'team') {
                             await this.store.selectTeam(button.dataset.id);
+                        } else if (button.dataset.kind === 'template') {
+                            await this.store.selectTemplate(button.dataset.id);
                         } else {
                             await this.store.selectAgent(button.dataset.id);
                         }
@@ -437,6 +579,89 @@
                         this._showToast(error.message || 'Failed to load selection', 'error');
                     }
                 });
+            });
+            this.view.querySelectorAll('[data-action="select-template"]').forEach((button) => {
+                button.addEventListener('click', async () => {
+                    try {
+                        await this.store.selectTemplate(button.dataset.templateName || '');
+                    } catch (error) {
+                        this._showToast(error.message || 'Failed to load template', 'error');
+                    }
+                });
+            });
+            this.view.querySelector('#newAgentTemplateBtn')?.addEventListener('click', async () => {
+                const name = prompt('New template name (kebab-case):');
+                if (!name) return;
+                const role = prompt('Role description:', '自定义智能体');
+                if (!role) return;
+                try {
+                    await this.store.createTemplate({
+                        name: name.trim(),
+                        role: role.trim(),
+                        description: '',
+                        systemPrompt: `你是 ${name.trim()}，角色是 ${role.trim()}。`,
+                        capabilities: [],
+                        surfaces: ['messages'],
+                    });
+                    this._showToast('Agent template created', 'success');
+                } catch (error) {
+                    this._showToast(error.message || 'Failed to create template', 'error');
+                }
+            });
+            this.view.querySelector('#saveAgentTemplateBtn')?.addEventListener('click', async () => {
+                try {
+                    const maxTokensRaw = this.view.querySelector('#agentTemplateMaxTokens')?.value || '';
+                    const advanced = this._parseJsonInput('#agentTemplateAdvancedJson', {});
+                    this.store.updateTemplateDraft({
+                        avatarUrl: this.view.querySelector('#agentTemplateAvatar')?.value || '',
+                        role: this.view.querySelector('#agentTemplateRole')?.value || '',
+                        description: this.view.querySelector('#agentTemplateDescription')?.value || '',
+                        systemPrompt: this.view.querySelector('#agentTemplateSystemPrompt')?.value || '',
+                        modelProvider: this.view.querySelector('#agentTemplateModelProvider')?.value || '',
+                        modelName: this.view.querySelector('#agentTemplateModelName')?.value || '',
+                        temperature: Number(this.view.querySelector('#agentTemplateTemperature')?.value || 0.7),
+                        topP: Number(this.view.querySelector('#agentTemplateTopP')?.value || 1),
+                        maxTokens: maxTokensRaw ? Number(maxTokensRaw) : null,
+                        maxIterations: Number(this.view.querySelector('#agentTemplateMaxIterations')?.value || 15),
+                        triggerMode: this.view.querySelector('#agentTemplateTriggerMode')?.value || 'reactive',
+                        toolConfig: {
+                            baseTools: this._splitCsv(this.view.querySelector('#agentTemplateBaseTools')?.value || ''),
+                            deferredTools: this._splitCsv(this.view.querySelector('#agentTemplateDeferredTools')?.value || ''),
+                            disabledTools: this._splitCsv(this.view.querySelector('#agentTemplateDisabledTools')?.value || ''),
+                            mcp: this._splitCsv(this.view.querySelector('#agentTemplateMcp')?.value || ''),
+                        },
+                        surfaces: this._splitCsv(this.view.querySelector('#agentTemplateSurfaces')?.value || ''),
+                        capabilities: this._splitCsv(this.view.querySelector('#agentTemplateCapabilities')?.value || ''),
+                        skillConfig: advanced.skillConfig || {},
+                        knowledgeConfig: advanced.knowledgeConfig || {},
+                        schedule: advanced.schedule || null,
+                        eventSubscriptions: Array.isArray(advanced.eventSubscriptions) ? advanced.eventSubscriptions : [],
+                        guardrails: advanced.guardrails || {},
+                    });
+                    await this.store.saveTemplateDraft();
+                    this._showToast('Agent template saved', 'success');
+                } catch (error) {
+                    this._showToast(error.message || 'Failed to save template', 'error');
+                }
+            });
+            this.view.querySelector('#resetAgentTemplateBtn')?.addEventListener('click', async () => {
+                try {
+                    await this.store.resetTemplate(state.selectedTemplateName);
+                    this._showToast('Agent template reset', 'success');
+                } catch (error) {
+                    this._showToast(error.message || 'Failed to reset template', 'error');
+                }
+            });
+            this.view.querySelector('#deleteAgentTemplateBtn')?.addEventListener('click', async () => {
+                try {
+                    const name = state.selectedTemplateName || state.templateDraft?.name;
+                    if (!name) throw new Error('No template selected');
+                    if (!confirm(`Delete agent template "${name}"?`)) return;
+                    await this.store.deleteTemplate(name);
+                    this._showToast('Agent template deleted', 'success');
+                } catch (error) {
+                    this._showToast(error.message || 'Failed to delete template', 'error');
+                }
             });
             this.view.querySelectorAll('[data-action="restore-memory"]').forEach((button) => {
                 button.addEventListener('click', async () => {

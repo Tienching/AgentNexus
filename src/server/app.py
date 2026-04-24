@@ -32,6 +32,7 @@ from .routers.nexus_evolution import router as nexus_evolution_router
 from .routers.nexus_features import router as nexus_features_router
 from .routers.nexus_permissions import router as nexus_permissions_router
 from .routers.nexus_agents import router as nexus_agents_router
+from .routers.nexus_agent_templates import router as nexus_agent_templates_router
 from .routers.nexus_events import router as nexus_events_router
 from .routers.nexus_teleport import router as nexus_teleport_router
 from .logger import setup_logger, get_logger
@@ -640,6 +641,7 @@ def _configure_app(app: FastAPI, app_settings: Settings) -> None:
     app.include_router(nexus_features_router)
     app.include_router(nexus_permissions_router)
     app.include_router(nexus_agents_router)
+    app.include_router(nexus_agent_templates_router)
     app.include_router(nexus_events_router)
     app.include_router(nexus_teleport_router)
 

@@ -1415,6 +1415,69 @@ class NexusAPI {
         });
     }
 
+    // ============ Agent Template API ============
+
+    static async listAgentTemplates(options = {}) {
+        const params = new URLSearchParams();
+        if (options.source) params.set('source', options.source);
+        const query = params.toString();
+        return NexusAPI._request(`${API_BASE}/agent-templates${query ? '?' + query : ''}`, {}, {
+            errorMessage: 'Failed to fetch agent templates',
+        });
+    }
+
+    static async getAgentTemplate(name) {
+        return NexusAPI._request(`${API_BASE}/agent-templates/${encodeURIComponent(name)}`, {}, {
+            errorMessage: 'Failed to fetch agent template',
+            preferErrorDetail: true,
+            includeStatusText: false,
+        });
+    }
+
+    static async createAgentTemplate(payload = {}) {
+        return NexusAPI._request(`${API_BASE}/agent-templates`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        }, {
+            errorMessage: 'Failed to create agent template',
+            preferErrorDetail: true,
+            includeStatusText: false,
+        });
+    }
+
+    static async updateAgentTemplate(name, payload = {}) {
+        return NexusAPI._request(`${API_BASE}/agent-templates/${encodeURIComponent(name)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        }, {
+            errorMessage: 'Failed to update agent template',
+            preferErrorDetail: true,
+            includeStatusText: false,
+        });
+    }
+
+    static async deleteAgentTemplate(name) {
+        return NexusAPI._request(`${API_BASE}/agent-templates/${encodeURIComponent(name)}`, {
+            method: 'DELETE',
+        }, {
+            errorMessage: 'Failed to delete agent template',
+            preferErrorDetail: true,
+            includeStatusText: false,
+        });
+    }
+
+    static async resetAgentTemplate(name) {
+        return NexusAPI._request(`${API_BASE}/agent-templates/${encodeURIComponent(name)}/reset`, {
+            method: 'POST',
+        }, {
+            errorMessage: 'Failed to reset agent template',
+            preferErrorDetail: true,
+            includeStatusText: false,
+        });
+    }
+
     // ============ Swarm Team API ============
 
     static async createTeam(payload) {

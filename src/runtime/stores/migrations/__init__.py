@@ -39,6 +39,7 @@ _MIGRATION_MODULES = [
     "src.runtime.stores.migrations.v015_session_task_id_column",
     "src.runtime.stores.migrations.v016_task_lifecycle_guards",
     "src.runtime.stores.migrations.v017_netharness_statuses",
+    "src.runtime.stores.migrations.v018_agent_templates",
 ]
 
 

@@ -18,10 +18,14 @@
                 statusFilter: 'all',
                 selectedAgentId: null,
                 selectedTeamName: null,
+                selectedTemplateName: null,
                 overview: null,
                 memoryState: null,
                 agentBinding: null,
                 teamConfig: null,
+                agentTemplates: [],
+                templateDraft: null,
+                templateDirty: false,
                 lastLoadedAt: null,
             };
         }
@@ -29,11 +33,17 @@
         getState() {
             return {
                 ...this._state,
-                overview: this._state.overview ? JSON.parse(JSON.stringify(this._state.overview)) : null,
-                memoryState: this._state.memoryState ? JSON.parse(JSON.stringify(this._state.memoryState)) : null,
-                agentBinding: this._state.agentBinding ? JSON.parse(JSON.stringify(this._state.agentBinding)) : null,
-                teamConfig: this._state.teamConfig ? JSON.parse(JSON.stringify(this._state.teamConfig)) : null,
+                overview: this._clone(this._state.overview),
+                memoryState: this._clone(this._state.memoryState),
+                agentBinding: this._clone(this._state.agentBinding),
+                teamConfig: this._clone(this._state.teamConfig),
+                agentTemplates: this._clone(this._state.agentTemplates || []),
+                templateDraft: this._clone(this._state.templateDraft),
             };
+        }
+
+        _clone(value) {
+            return value == null ? value : JSON.parse(JSON.stringify(value));
         }
 
         subscribe(callback) {
@@ -73,6 +83,7 @@
                 this._state.statusFilter = saved.statusFilter || 'all';
                 this._state.selectedAgentId = saved.selectedAgentId || null;
                 this._state.selectedTeamName = saved.selectedTeamName || null;
+                this._state.selectedTemplateName = saved.selectedTemplateName || null;
             } catch (error) {
                 console.warn('[NexusAgentsStore] failed to restore state:', error);
             }
@@ -86,6 +97,7 @@
                     statusFilter: this._state.statusFilter,
                     selectedAgentId: this._state.selectedAgentId,
                     selectedTeamName: this._state.selectedTeamName,
+                    selectedTemplateName: this._state.selectedTemplateName,
                 }));
             } catch (_) {
                 // Best effort only.
@@ -104,13 +116,15 @@
             const restoreSelection = options.restoreSelection !== false;
             this._setState({ loading: true, error: '' });
             try {
-                const [overview, memoryState] = await Promise.all([
+                const [overview, memoryState, templatePayload] = await Promise.all([
                     NexusAPI.getAgentsOverview(),
                     NexusAPI.getMemoryState().catch(() => null),
+                    NexusAPI.listAgentTemplates().catch(() => ({ items: [] })),
                 ]);
                 this._setState({
                     overview,
                     memoryState,
+                    agentTemplates: templatePayload.items || [],
                     loading: false,
                     error: '',
                     lastLoadedAt: Date.now(),
@@ -129,6 +143,7 @@
             const overview = this._state.overview || {};
             const agents = overview.agents || [];
             const teams = overview.teams || [];
+            const templates = this._state.agentTemplates || [];
             if (this._state.mode === 'agent_detail' && this._state.selectedAgentId) {
                 const exists = agents.some((agent) => agent.id === this._state.selectedAgentId);
                 if (exists) {
@@ -140,6 +155,16 @@
                 if (exists) {
                     return this.selectTeam(this._state.selectedTeamName, { preserveMode: true });
                 }
+            }
+            if (this._state.mode === 'template_detail' && this._state.selectedTemplateName) {
+                const exists = templates.some((template) => template.name === this._state.selectedTemplateName);
+                if (exists) {
+                    return this.selectTemplate(this._state.selectedTemplateName, { preserveMode: true });
+                }
+            }
+            if (this._state.mode === 'templates') {
+                this.showTemplates();
+                return null;
             }
             this.showOverview();
             return null;
@@ -158,8 +183,24 @@
                 mode: 'overview',
                 selectedAgentId: null,
                 selectedTeamName: null,
+                selectedTemplateName: null,
                 agentBinding: null,
                 teamConfig: null,
+                templateDraft: null,
+                templateDirty: false,
+                error: '',
+            });
+        }
+
+        showTemplates() {
+            this._setState({
+                mode: 'templates',
+                selectedAgentId: null,
+                selectedTeamName: null,
+                agentBinding: null,
+                teamConfig: null,
+                templateDraft: null,
+                templateDirty: false,
                 error: '',
             });
         }
@@ -173,7 +214,10 @@
                 mode: 'agent_detail',
                 selectedAgentId: agentId,
                 selectedTeamName: null,
+                selectedTemplateName: null,
                 teamConfig: null,
+                templateDraft: null,
+                templateDirty: false,
                 loading: true,
                 error: '',
             });
@@ -207,7 +251,10 @@
                 mode: 'team_detail',
                 selectedAgentId: null,
                 selectedTeamName: teamName,
+                selectedTemplateName: null,
                 agentBinding: null,
+                templateDraft: null,
+                templateDirty: false,
                 loading: true,
                 error: '',
             });
@@ -230,6 +277,159 @@
                 }
                 throw error;
             }
+        }
+
+        async selectTemplate(templateName, options = {}) {
+            if (!templateName) {
+                this.showTemplates();
+                return null;
+            }
+            const existing = (this._state.agentTemplates || []).find((template) => template.name === templateName);
+            this._setState({
+                mode: 'template_detail',
+                selectedAgentId: null,
+                selectedTeamName: null,
+                selectedTemplateName: templateName,
+                agentBinding: null,
+                teamConfig: null,
+                templateDraft: existing ? this._clone(existing) : null,
+                templateDirty: false,
+                loading: true,
+                error: '',
+            });
+            try {
+                const template = await NexusAPI.getAgentTemplate(templateName);
+                this._setState({
+                    templateDraft: this._clone(template),
+                    agentTemplates: (this._state.agentTemplates || []).some((item) => item.name === template.name)
+                        ? (this._state.agentTemplates || []).map((item) => item.name === template.name ? template : item)
+                        : [...(this._state.agentTemplates || []), template],
+                    loading: false,
+                    error: '',
+                });
+                return template;
+            } catch (error) {
+                this._setState({ loading: false, error: error.message || 'Failed to load agent template' });
+                if (!options.preserveMode) {
+                    this.showTemplates();
+                }
+                throw error;
+            }
+        }
+
+        updateTemplateDraft(patch = {}) {
+            const draft = this._state.templateDraft || {};
+            this._setState({
+                templateDraft: {
+                    ...draft,
+                    ...patch,
+                },
+                templateDirty: true,
+            });
+        }
+
+        async saveTemplateDraft() {
+            const draft = this._state.templateDraft;
+            const name = this._state.selectedTemplateName || draft?.name;
+            if (!name || !draft) {
+                throw new Error('No template selected');
+            }
+            this._setState({ saving: true, error: '' });
+            try {
+                const updated = await NexusAPI.updateAgentTemplate(name, this._templatePatchPayload(draft));
+                this._setState({
+                    templateDraft: this._clone(updated),
+                    agentTemplates: (this._state.agentTemplates || []).map((item) => item.name === updated.name ? updated : item),
+                    selectedTemplateName: updated.name,
+                    templateDirty: false,
+                    saving: false,
+                    error: '',
+                    lastLoadedAt: Date.now(),
+                });
+                return updated;
+            } catch (error) {
+                this._setState({ saving: false, error: error.message || 'Failed to save agent template' });
+                throw error;
+            }
+        }
+
+        async createTemplate(payload = {}) {
+            this._setState({ saving: true, error: '' });
+            try {
+                const created = await NexusAPI.createAgentTemplate(payload);
+                this._setState({
+                    agentTemplates: [...(this._state.agentTemplates || []).filter((item) => item.name !== created.name), created],
+                    selectedTemplateName: created.name,
+                    templateDraft: this._clone(created),
+                    templateDirty: false,
+                    mode: 'template_detail',
+                    saving: false,
+                    error: '',
+                    lastLoadedAt: Date.now(),
+                });
+                return created;
+            } catch (error) {
+                this._setState({ saving: false, error: error.message || 'Failed to create agent template' });
+                throw error;
+            }
+        }
+
+        async resetTemplate(templateName = '') {
+            const name = templateName || this._state.selectedTemplateName;
+            if (!name) throw new Error('No template selected');
+            this._setState({ saving: true, error: '' });
+            try {
+                const reset = await NexusAPI.resetAgentTemplate(name);
+                this._setState({
+                    agentTemplates: (this._state.agentTemplates || []).some((item) => item.name === reset.name)
+                        ? (this._state.agentTemplates || []).map((item) => item.name === reset.name ? reset : item)
+                        : [...(this._state.agentTemplates || []), reset],
+                    selectedTemplateName: reset.name,
+                    templateDraft: this._clone(reset),
+                    templateDirty: false,
+                    saving: false,
+                    error: '',
+                    lastLoadedAt: Date.now(),
+                });
+                return reset;
+            } catch (error) {
+                this._setState({ saving: false, error: error.message || 'Failed to reset agent template' });
+                throw error;
+            }
+        }
+
+        async deleteTemplate(templateName = '') {
+            const name = templateName || this._state.selectedTemplateName;
+            if (!name) throw new Error('No template selected');
+            this._setState({ saving: true, error: '' });
+            try {
+                await NexusAPI.deleteAgentTemplate(name);
+                const templates = (this._state.agentTemplates || []).filter((item) => item.name !== name);
+                this._setState({
+                    agentTemplates: templates,
+                    selectedTemplateName: null,
+                    templateDraft: null,
+                    templateDirty: false,
+                    mode: 'templates',
+                    saving: false,
+                    error: '',
+                    lastLoadedAt: Date.now(),
+                });
+            } catch (error) {
+                this._setState({ saving: false, error: error.message || 'Failed to delete agent template' });
+                throw error;
+            }
+        }
+
+        _templatePatchPayload(draft) {
+            const payload = { ...draft };
+            delete payload.id;
+            delete payload.name;
+            delete payload.source;
+            delete payload.hasDefault;
+            delete payload.createdAt;
+            delete payload.updatedAt;
+            return payload;
         }
 
         async updateAgentBinding(patch = {}) {
@@ -288,6 +488,11 @@
             return (overview.teams || []).find((team) => (team.team_name || team.name) === this._state.selectedTeamName) || null;
         }
 
+        getCurrentTemplate() {
+            const name = this._state.selectedTemplateName;
+            return (this._state.agentTemplates || []).find((template) => template.name === name) || null;
+        }
+
         _matchesStatus(item, statusFilter) {
             if (!statusFilter || statusFilter === 'all') return true;
             const runtime = item.runtime || item.runtime_detail || {};
@@ -307,6 +512,8 @@
                 item.team_name,
                 item.name,
                 item.display_name,
+                item.role,
+                item.description,
                 identity.title,
                 identity.subtitle,
                 identity.owner,
@@ -317,7 +524,25 @@
             return haystack.includes(String(query).trim().toLowerCase());
         }
 
+        getFilteredTemplates() {
+            const searchQuery = this._state.searchQuery || '';
+            return (this._state.agentTemplates || [])
+                .filter((template) => this._matchesSearch(template, searchQuery))
+                .map((template) => ({
+                    kind: 'template',
+                    key: `template:${template.name}`,
+                    id: template.name,
+                    title: template.name,
+                    subtitle: template.role || template.description || '',
+                    status: template.hasDefault ? 'preset' : (template.source || 'custom'),
+                    item: template,
+                }));
+        }
+
         getFilteredItems() {
+            if (this._state.mode === 'templates' || this._state.mode === 'template_detail') {
+                return this.getFilteredTemplates();
+            }
             const overview = this._state.overview || {};
             const searchQuery = this._state.searchQuery || '';
             const statusFilter = this._state.statusFilter || 'all';

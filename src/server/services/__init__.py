@@ -32,6 +32,8 @@ _EXPORTS = {
     "create_archiver": ("src.server.services.stream_archiver", "create_archiver"),
     "TaskQueue": ("src.server.services.task_storage", "TaskQueue"),
     "get_task_queue": ("src.server.services.task_storage", "get_task_queue"),
+    "AgentTemplateStore": ("src.server.services.agent_templates", "AgentTemplateStore"),
+    "get_agent_template_store": ("src.server.services.agent_templates", "get_agent_template_store"),
     "RuntimeStatus": ("src.server.services.agent_runtimes", "RuntimeStatus"),
     "RuntimeDaemon": ("src.server.services.agent_runtimes", "RuntimeDaemon"),
     "RuntimeDaemonRegistry": ("src.server.services.agent_runtimes", "RuntimeDaemonRegistry"),
