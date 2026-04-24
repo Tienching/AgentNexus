@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 from src.core.auth.rbac import ROLE_LEVELS, Role
@@ -19,6 +20,7 @@ from .domain_events import query_domain_events, record_domain_event
 
 
 _VALID_ROLES = {role.value for role in Role}
+_VALID_JOIN_REQUEST_STATUSES = {"pending", "approved", "rejected"}
 
 
 @dataclass
@@ -82,6 +84,44 @@ class MembershipRecord:
             "username": self.username,
             "role": self.role,
             "scopes": self.scopes,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+@dataclass
+class WorkspaceJoinRequestRecord:
+    request_id: str
+    scope_type: str
+    scope_id: str
+    workspace_id: str
+    group_id: str
+    username: str
+    role: str = Role.VIEWER.value
+    scopes: List[str] = field(default_factory=list)
+    status: str = "pending"
+    note: str = ""
+    reviewer: Optional[str] = None
+    review_note: Optional[str] = None
+    reviewed_at: Optional[float] = None
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "scope_type": self.scope_type,
+            "scope_id": self.scope_id,
+            "workspace_id": self.workspace_id,
+            "group_id": self.group_id,
+            "username": self.username,
+            "role": self.role,
+            "scopes": self.scopes,
+            "status": self.status,
+            "note": self.note,
+            "reviewer": self.reviewer,
+            "review_note": self.review_note,
+            "reviewed_at": self.reviewed_at,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -169,6 +209,35 @@ class ControlPlaneService:
         self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_control_plane_memberships_user ON control_plane_memberships(username, updated_at DESC)"
         )
+        self._db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS control_plane_group_workspace_join_requests (
+                request_id TEXT PRIMARY KEY,
+                scope_type TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'viewer',
+                scopes_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                note TEXT NOT NULL DEFAULT '',
+                reviewer TEXT,
+                review_note TEXT,
+                reviewed_at REAL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                FOREIGN KEY(group_id) REFERENCES control_plane_tenants(tenant_id) ON DELETE CASCADE,
+                FOREIGN KEY(workspace_id) REFERENCES control_plane_workspaces(workspace_id) ON DELETE CASCADE
+            )
+            """
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_control_plane_group_workspace_join_requests_scope ON control_plane_group_workspace_join_requests(scope_type, scope_id, username)"
+        )
+        self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_control_plane_group_workspace_join_requests_user ON control_plane_group_workspace_join_requests(username, status, updated_at DESC)"
+        )
 
     @staticmethod
     def _loads_dict(raw: Any) -> Dict[str, Any]:
@@ -221,6 +290,25 @@ class ControlPlaneService:
             username=row["username"],
             role=row.get("role") or Role.VIEWER.value,
             scopes=self._loads_list(row.get("scopes_json")),
+            created_at=float(row.get("created_at") or time.time()),
+            updated_at=float(row.get("updated_at") or time.time()),
+        )
+
+    def _join_request_from_row(self, row: Dict[str, Any]) -> WorkspaceJoinRequestRecord:
+        return WorkspaceJoinRequestRecord(
+            request_id=row["request_id"],
+            scope_type=row["scope_type"],
+            scope_id=row["scope_id"],
+            workspace_id=row["workspace_id"],
+            group_id=row.get("group_id") or "",
+            username=row["username"],
+            role=row.get("role") or Role.VIEWER.value,
+            scopes=self._loads_list(row.get("scopes_json")),
+            status=row.get("status") or "pending",
+            note=row.get("note") or "",
+            reviewer=row.get("reviewer") or None,
+            review_note=row.get("review_note") or None,
+            reviewed_at=row.get("reviewed_at"),
             created_at=float(row.get("created_at") or time.time()),
             updated_at=float(row.get("updated_at") or time.time()),
         )
@@ -468,6 +556,211 @@ class ControlPlaneService:
             (scope_type, scope_id),
         )
         return [self._membership_from_row(row) for row in rows]
+
+    def list_user_memberships(self, username: str) -> List[MembershipRecord]:
+        username = (username or "").strip()
+        if not username:
+            return []
+        rows = self._db.execute_fetchall(
+            "SELECT * FROM control_plane_memberships WHERE username = ? ORDER BY scope_type ASC, scope_id ASC",
+            (username,),
+        )
+        return [self._membership_from_row(row) for row in rows]
+
+    def list_memberships_for_user(self, username: str) -> List[MembershipRecord]:
+        return self.list_user_memberships(username=username)
+
+    def get_user_memberships(self, username: str) -> List[MembershipRecord]:
+        return self.list_user_memberships(username=username)
+
+    def create_workspace_join_request(
+        self,
+        workspace_id: str,
+        username: str,
+        *,
+        role: str = Role.VIEWER.value,
+        scopes: Optional[List[str]] = None,
+        note: str = "",
+        actor: str = "system",
+    ) -> WorkspaceJoinRequestRecord:
+        workspace_id = (workspace_id or "").strip()
+        username = (username or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id is required")
+        if not username:
+            raise ValueError("username is required")
+
+        workspace = self.get_workspace(workspace_id=workspace_id)
+        if workspace is None:
+            raise ValueError(f"workspace not found: {workspace_id}")
+
+        if self.get_membership(scope_type="workspace", scope_id=workspace_id, username=username) is not None:
+            raise ValueError(f"membership already exists for user '{username}' in workspace '{workspace_id}'")
+
+        normalized_role = self._validate_role(role)
+        normalized_scopes = sorted({str(item).strip() for item in (scopes or []) if str(item).strip()})
+
+        now = time.time()
+        existing_pending = self._db.execute_fetchone(
+            """
+            SELECT request_id FROM control_plane_group_workspace_join_requests
+            WHERE workspace_id = ? AND username = ? AND status = 'pending'
+            """,
+            (workspace_id, username),
+        )
+        if existing_pending is not None:
+            raise ValueError(f"pending join request already exists for user '{username}' in workspace '{workspace_id}'")
+
+        record = WorkspaceJoinRequestRecord(
+            request_id=f"join-{uuid4()}",
+            scope_type="workspace",
+            scope_id=workspace_id,
+            workspace_id=workspace_id,
+            group_id=workspace.tenant_id,
+            username=username,
+            role=normalized_role,
+            scopes=normalized_scopes,
+            status="pending",
+            note=(note or "").strip(),
+            reviewer=None,
+            review_note=None,
+            reviewed_at=None,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._db.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO control_plane_group_workspace_join_requests (
+                    request_id, scope_type, scope_id, workspace_id, group_id, username,
+                    role, scopes_json, status, note, reviewer, review_note, reviewed_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.request_id,
+                    record.scope_type,
+                    record.scope_id,
+                    record.workspace_id,
+                    record.group_id,
+                    record.username,
+                    record.role,
+                    json.dumps(record.scopes, ensure_ascii=False),
+                    record.status,
+                    record.note,
+                    record.reviewer,
+                    record.review_note,
+                    record.reviewed_at,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+
+        record_domain_event(
+            "control_plane.workspace.join_request.created",
+            "workspace_join_request",
+            record.request_id,
+            actor=actor,
+            payload=record.to_dict(),
+            tenant_id=record.group_id,
+            workspace_id=record.workspace_id,
+        )
+        return record
+
+    def list_workspace_join_requests(
+        self,
+        workspace_id: str,
+        status: Optional[str] = None,
+    ) -> List[WorkspaceJoinRequestRecord]:
+        workspace_id = (workspace_id or "").strip()
+        if not workspace_id:
+            raise ValueError("workspace_id is required")
+        if self.get_workspace(workspace_id=workspace_id) is None:
+            raise ValueError(f"workspace not found: {workspace_id}")
+
+        query = "SELECT * FROM control_plane_group_workspace_join_requests WHERE workspace_id = ?"
+        params: List[Any] = [workspace_id]
+        if status:
+            normalized_status = (status or "").strip().lower()
+            if normalized_status not in _VALID_JOIN_REQUEST_STATUSES:
+                raise ValueError(f"invalid status: {status}")
+            query += " AND status = ?"
+            params.append(normalized_status)
+        query += " ORDER BY updated_at DESC, created_at DESC, request_id ASC"
+        rows = self._db.execute_fetchall(query, tuple(params))
+        return [self._join_request_from_row(row) for row in rows]
+
+    def get_workspace_join_request(self, request_id: str) -> Optional[WorkspaceJoinRequestRecord]:
+        row = self._db.execute_fetchone(
+            "SELECT * FROM control_plane_group_workspace_join_requests WHERE request_id = ?",
+            (request_id,),
+        )
+        return self._join_request_from_row(row) if row else None
+
+    def resolve_workspace_join_request(
+        self,
+        request_id: str,
+        *,
+        status: str,
+        reviewer: str,
+        review_note: Optional[str] = None,
+    ) -> WorkspaceJoinRequestRecord:
+        request_id = (request_id or "").strip()
+        normalized_status = (status or "").strip().lower()
+        if not request_id:
+            raise ValueError("request_id is required")
+        if normalized_status not in {"approved", "rejected"}:
+            raise ValueError(f"invalid status: {status}")
+
+        item = self.get_workspace_join_request(request_id=request_id)
+        if item is None:
+            raise ValueError(f"join request not found: {request_id}")
+        if item.status != "pending":
+            raise ValueError("join request already resolved")
+
+        now = time.time()
+        item.status = normalized_status
+        item.reviewer = (reviewer or "").strip() or "system"
+        item.review_note = (review_note or "").strip() or None
+        item.reviewed_at = now
+        item.updated_at = now
+
+        with self._db.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE control_plane_group_workspace_join_requests
+                SET status = ?, reviewer = ?, review_note = ?, reviewed_at = ?, updated_at = ?
+                WHERE request_id = ?
+                """,
+                (
+                    item.status,
+                    item.reviewer,
+                    item.review_note,
+                    item.reviewed_at,
+                    item.updated_at,
+                    item.request_id,
+                ),
+            )
+
+        if normalized_status == "approved":
+            self.upsert_membership(
+                scope_type="workspace",
+                scope_id=item.workspace_id,
+                username=item.username,
+                role=item.role,
+                scopes=item.scopes,
+                actor=item.reviewer,
+            )
+
+        record_domain_event(
+            f"control_plane.workspace.join_request.{normalized_status}",
+            "workspace_join_request",
+            item.request_id,
+            actor=item.reviewer or "system",
+            payload=item.to_dict(),
+            tenant_id=item.group_id,
+            workspace_id=item.workspace_id,
+        )
+        return item
 
     @staticmethod
     def _role_level(role: Optional[str]) -> int:
