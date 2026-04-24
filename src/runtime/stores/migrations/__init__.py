@@ -41,6 +41,7 @@ _MIGRATION_MODULES = [
     "src.runtime.stores.migrations.v017_netharness_statuses",
     "src.runtime.stores.migrations.v018_agent_templates",
     "src.runtime.stores.migrations.v019_control_plane_group_workspace",
+    "src.runtime.stores.migrations.v020_control_plane_group_workspace_maintenance",
 ]
 
 

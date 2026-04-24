@@ -8,6 +8,7 @@ access-resolution read models and audit events.
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from uuid import uuid4
@@ -496,38 +497,15 @@ class ControlPlaneService:
 
         normalized_role = self._validate_role(role)
         normalized_scopes = sorted({str(item).strip() for item in (scopes or []) if str(item).strip()})
-        existing = self.get_membership(scope_type=scope_type, scope_id=scope_id, username=username)
-        now = time.time()
-        created_at = existing.created_at if existing else now
-        record = MembershipRecord(
-            scope_type=scope_type,
-            scope_id=scope_id,
-            username=username,
-            role=normalized_role,
-            scopes=normalized_scopes,
-            created_at=created_at,
-            updated_at=now,
-        )
         with self._db.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO control_plane_memberships (
-                    scope_type, scope_id, username, role, scopes_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(scope_type, scope_id, username) DO UPDATE SET
-                    role=excluded.role,
-                    scopes_json=excluded.scopes_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    record.scope_type,
-                    record.scope_id,
-                    record.username,
-                    record.role,
-                    json.dumps(record.scopes, ensure_ascii=False),
-                    record.created_at,
-                    record.updated_at,
-                ),
+            record = self._upsert_membership_with_connection(
+                conn=conn,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                username=username,
+                role=normalized_role,
+                scopes=normalized_scopes,
+                now=time.time(),
             )
 
         workspace = self.get_workspace(scope_id) if scope_type == "workspace" else None
@@ -542,6 +520,76 @@ class ControlPlaneService:
             workspace_id=scope_id if scope_type == "workspace" else None,
         )
         return record
+
+    def _upsert_membership_with_connection(
+        self,
+        *,
+        conn: sqlite3.Connection,
+        scope_type: str,
+        scope_id: str,
+        username: str,
+        role: str,
+        scopes: List[str],
+        now: float,
+    ) -> MembershipRecord:
+        group_id = None
+        workspace_id = None
+        if scope_type == "tenant":
+            group_id = scope_id
+        else:
+            row = conn.execute(
+                "SELECT tenant_id FROM control_plane_workspaces WHERE workspace_id = ?",
+                (scope_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"workspace not found: {scope_id}")
+            workspace_id = scope_id
+            group_id = row["tenant_id"]
+
+        existing = conn.execute(
+            """
+            SELECT created_at FROM control_plane_memberships
+             WHERE scope_type = ? AND scope_id = ? AND username = ?
+            """,
+            (scope_type, scope_id, username),
+        ).fetchone()
+        created_at = float(existing["created_at"] or now) if existing is not None else now
+
+        conn.execute(
+            """
+            INSERT INTO control_plane_memberships (
+                scope_type, scope_id, username, role, scopes_json,
+                group_id, workspace_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(scope_type, scope_id, username) DO UPDATE SET
+                role=excluded.role,
+                scopes_json=excluded.scopes_json,
+                group_id=excluded.group_id,
+                workspace_id=excluded.workspace_id,
+                updated_at=excluded.updated_at
+            """,
+            (
+                scope_type,
+                scope_id,
+                username,
+                role,
+                json.dumps(scopes, ensure_ascii=False),
+                group_id,
+                workspace_id,
+                created_at,
+                now,
+            ),
+        )
+
+        return MembershipRecord(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            username=username,
+            role=role,
+            scopes=sorted({str(item).strip() for item in scopes if str(item).strip()}),
+            created_at=created_at,
+            updated_at=now,
+        )
 
     def get_membership(self, *, scope_type: str, scope_id: str, username: str) -> Optional[MembershipRecord]:
         row = self._db.execute_fetchone(
@@ -629,31 +677,38 @@ class ControlPlaneService:
             updated_at=now,
         )
         with self._db.transaction() as conn:
-            conn.execute(
-                """
-                INSERT INTO control_plane_group_workspace_join_requests (
-                    request_id, scope_type, scope_id, workspace_id, group_id, username,
-                    role, scopes_json, status, note, reviewer, review_note, reviewed_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.request_id,
-                    record.scope_type,
-                    record.scope_id,
-                    record.workspace_id,
-                    record.group_id,
-                    record.username,
-                    record.role,
-                    json.dumps(record.scopes, ensure_ascii=False),
-                    record.status,
-                    record.note,
-                    record.reviewer,
-                    record.review_note,
-                    record.reviewed_at,
-                    record.created_at,
-                    record.updated_at,
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO control_plane_group_workspace_join_requests (
+                        request_id, scope_type, scope_id, workspace_id, group_id, username,
+                        role, scopes_json, status, note, reviewer, review_note, reviewed_at, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.request_id,
+                        record.scope_type,
+                        record.scope_id,
+                        record.workspace_id,
+                        record.group_id,
+                        record.username,
+                        record.role,
+                        json.dumps(record.scopes, ensure_ascii=False),
+                        record.status,
+                        record.note,
+                        record.reviewer,
+                        record.review_note,
+                        record.reviewed_at,
+                        record.created_at,
+                        record.updated_at,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "uq_control_plane_group_workspace_join_requests_workspace_user_pending" in str(exc):
+                    raise ValueError(
+                        f"pending join request already exists for user '{username}' in workspace '{workspace_id}'"
+                    ) from exc
+                raise
 
         record_domain_event(
             "control_plane.workspace.join_request.created",
@@ -711,45 +766,55 @@ class ControlPlaneService:
         if normalized_status not in {"approved", "rejected"}:
             raise ValueError(f"invalid status: {status}")
 
-        item = self.get_workspace_join_request(request_id=request_id)
-        if item is None:
-            raise ValueError(f"join request not found: {request_id}")
-        if item.status != "pending":
-            raise ValueError("join request already resolved")
-
         now = time.time()
-        item.status = normalized_status
-        item.reviewer = (reviewer or "").strip() or "system"
-        item.review_note = (review_note or "").strip() or None
-        item.reviewed_at = now
-        item.updated_at = now
-
         with self._db.transaction() as conn:
-            conn.execute(
+            row = conn.execute(
+                "SELECT * FROM control_plane_group_workspace_join_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"join request not found: {request_id}")
+            item = self._join_request_from_row(dict(row))
+            if item.status != "pending":
+                raise ValueError("join request already resolved")
+            reviewer_name = (reviewer or "").strip() or "system"
+            review_note_text = (review_note or "").strip() or None
+
+            cursor = conn.execute(
                 """
                 UPDATE control_plane_group_workspace_join_requests
                 SET status = ?, reviewer = ?, review_note = ?, reviewed_at = ?, updated_at = ?
-                WHERE request_id = ?
+                WHERE request_id = ? AND status = 'pending'
                 """,
                 (
-                    item.status,
-                    item.reviewer,
-                    item.review_note,
-                    item.reviewed_at,
-                    item.updated_at,
+                    normalized_status,
+                    reviewer_name,
+                    review_note_text,
+                    now,
+                    now,
                     item.request_id,
                 ),
             )
 
-        if normalized_status == "approved":
-            self.upsert_membership(
-                scope_type="workspace",
-                scope_id=item.workspace_id,
-                username=item.username,
-                role=item.role,
-                scopes=item.scopes,
-                actor=item.reviewer,
-            )
+            if cursor.rowcount <= 0:
+                raise ValueError("join request already resolved")
+
+            if normalized_status == "approved":
+                self._upsert_membership_with_connection(
+                    conn=conn,
+                    scope_type="workspace",
+                    scope_id=item.workspace_id,
+                    username=item.username,
+                    role=item.role,
+                    scopes=item.scopes,
+                    now=now,
+                )
+
+            item.status = normalized_status
+            item.reviewer = reviewer_name
+            item.review_note = review_note_text
+            item.reviewed_at = now
+            item.updated_at = now
 
         record_domain_event(
             f"control_plane.workspace.join_request.{normalized_status}",

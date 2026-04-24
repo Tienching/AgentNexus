@@ -3968,6 +3968,70 @@
         }
       }
     },
+    "/api/nexus/control-plane/groups": {
+      "get": {
+        "tags": [
+          "nexus-control-plane"
+        ],
+        "summary": "List Groups",
+        "operationId": "list_groups_api_nexus_control_plane_groups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/GroupItem"
+                  },
+                  "type": "array",
+                  "title": "Response List Groups Api Nexus Control Plane Groups Get"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "nexus-control-plane"
+        ],
+        "summary": "Create Group",
+        "operationId": "create_group_api_nexus_control_plane_groups_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupItem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/nexus/control-plane/workspaces": {
       "get": {
         "tags": [
@@ -4069,6 +4133,179 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WorkspaceItem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/nexus/control-plane/workspaces/{workspace_id}/join-requests": {
+      "get": {
+        "tags": [
+          "nexus-control-plane"
+        ],
+        "summary": "List Workspace Join Requests",
+        "operationId": "list_workspace_join_requests_api_nexus_control_plane_workspaces__workspace_id__join_requests_get",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JoinRequestItem"
+                  },
+                  "title": "Response List Workspace Join Requests Api Nexus Control Plane Workspaces  Workspace Id  Join Requests Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "nexus-control-plane"
+        ],
+        "summary": "Create Workspace Join Request",
+        "operationId": "create_workspace_join_request_api_nexus_control_plane_workspaces__workspace_id__join_requests_post",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateJoinRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestItem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/nexus/control-plane/workspaces/{workspace_id}/join-requests/{request_id}": {
+      "patch": {
+        "tags": [
+          "nexus-control-plane"
+        ],
+        "summary": "Resolve Workspace Join Request",
+        "operationId": "resolve_workspace_join_request_api_nexus_control_plane_workspaces__workspace_id__join_requests__request_id__patch",
+        "parameters": [
+          {
+            "name": "workspace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Workspace Id"
+            }
+          },
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Request Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveJoinRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinRequestItem"
                 }
               }
             }
@@ -12693,6 +12930,38 @@
         ],
         "title": "CreateCommentRequest"
       },
+      "CreateGroupRequest": {
+        "properties": {
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "active"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_id",
+          "name"
+        ],
+        "title": "CreateGroupRequest"
+      },
       "CreateIssueRequest": {
         "properties": {
           "title": {
@@ -12786,6 +13055,40 @@
           "task"
         ],
         "title": "CreateIssueResponse"
+      },
+      "CreateJoinRequest": {
+        "properties": {
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role",
+            "default": "viewer"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "username"
+        ],
+        "title": "CreateJoinRequest"
       },
       "CreateRunRequest": {
         "properties": {
@@ -15008,6 +15311,44 @@
         "title": "FlagInfo",
         "description": "Single feature flag info."
       },
+      "GroupItem": {
+        "properties": {
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "active"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "group_id",
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "GroupItem"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -15650,6 +15991,109 @@
           "provider"
         ],
         "title": "ImportBundledSkillRequest"
+      },
+      "JoinRequestItem": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "scope_type": {
+            "type": "string",
+            "title": "Scope Type"
+          },
+          "scope_id": {
+            "type": "string",
+            "title": "Scope Id"
+          },
+          "workspace_id": {
+            "type": "string",
+            "title": "Workspace Id"
+          },
+          "group_id": {
+            "type": "string",
+            "title": "Group Id"
+          },
+          "username": {
+            "type": "string",
+            "title": "Username"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "note": {
+            "type": "string",
+            "title": "Note",
+            "default": ""
+          },
+          "reviewer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer"
+          },
+          "review_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Note"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "scope_type",
+          "scope_id",
+          "workspace_id",
+          "group_id",
+          "username",
+          "role",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "JoinRequestItem"
       },
       "LoginRequest": {
         "properties": {
@@ -17286,6 +17730,34 @@
         },
         "type": "object",
         "title": "RequeueOrphanTaskRequest"
+      },
+      "ResolveJoinRequest": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "review_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Note"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "ResolveJoinRequest"
       },
       "RestoreMemoryRequest": {
         "properties": {

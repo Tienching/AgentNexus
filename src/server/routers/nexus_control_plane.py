@@ -29,6 +29,15 @@ class TenantItem(BaseModel):
     updated_at: float
 
 
+class GroupItem(BaseModel):
+    group_id: str
+    name: str
+    status: str = "active"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: float
+    updated_at: float
+
+
 class WorkspaceItem(BaseModel):
     workspace_id: str
     tenant_id: str
@@ -69,6 +78,14 @@ class CreateTenantRequest(BaseModel):
     actor: str = Field(default_factory=lambda: settings.exec_user)
 
 
+class CreateGroupRequest(BaseModel):
+    group_id: str
+    name: str
+    status: str = "active"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    actor: str = Field(default_factory=lambda: settings.exec_user)
+
+
 class CreateWorkspaceRequest(BaseModel):
     workspace_id: str
     tenant_id: str
@@ -94,6 +111,38 @@ class ScopedMembershipRequest(BaseModel):
     actor: str = Field(default_factory=lambda: settings.exec_user)
 
 
+class JoinRequestItem(BaseModel):
+    request_id: str
+    scope_type: str
+    scope_id: str
+    workspace_id: str
+    group_id: str
+    username: str
+    role: str
+    scopes: List[str] = Field(default_factory=list)
+    status: str
+    note: str = ""
+    reviewer: Optional[str] = None
+    review_note: Optional[str] = None
+    reviewed_at: Optional[float] = None
+    created_at: float
+    updated_at: float
+
+
+class CreateJoinRequest(BaseModel):
+    username: str
+    role: str = "viewer"
+    scopes: List[str] = Field(default_factory=list)
+    note: str = ""
+    actor: str = Field(default_factory=lambda: settings.exec_user)
+
+
+class ResolveJoinRequest(BaseModel):
+    status: str
+    review_note: Optional[str] = None
+    actor: str = Field(default_factory=lambda: settings.exec_user)
+
+
 class AuditEventItem(BaseModel):
     event_type: str
     aggregate_type: str
@@ -109,10 +158,62 @@ def _actor_name(admin_user: Any) -> str:
     return (getattr(admin_user, "username", None) or settings.exec_user or "system").strip() or "system"
 
 
+def _to_group_item(item: Any) -> GroupItem:
+    return GroupItem(
+        group_id=item.tenant_id,
+        name=item.name,
+        status=item.status,
+        metadata=item.metadata,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _to_join_request_item(item: Any) -> JoinRequestItem:
+    return JoinRequestItem(
+        request_id=item.request_id,
+        scope_type=item.scope_type,
+        scope_id=item.scope_id,
+        workspace_id=item.workspace_id,
+        group_id=item.group_id,
+        username=item.username,
+        role=item.role,
+        scopes=item.scopes,
+        status=item.status,
+        note=item.note,
+        reviewer=item.reviewer,
+        review_note=item.review_note,
+        reviewed_at=item.reviewed_at,
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
+
+
+def _normalize_join_request_status(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    normalized = raw.strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"approve", "approved"}:
+        return "approved"
+    if normalized in {"reject", "rejected"}:
+        return "rejected"
+    if normalized in {"pending", "approved", "rejected"}:
+        return normalized
+    raise ValueError(f"invalid status: {raw}")
+
+
 @router.get("/tenants", response_model=List[TenantItem])
 async def list_tenants():
     service = get_control_plane_service()
     return [TenantItem(**item.to_dict()) for item in service.list_tenants()]
+
+
+@router.get("/groups", response_model=List[GroupItem])
+async def list_groups():
+    service = get_control_plane_service()
+    return [_to_group_item(item) for item in service.list_tenants()]
 
 
 @router.post("/tenants", response_model=TenantItem, status_code=201)
@@ -129,6 +230,22 @@ async def create_tenant(request: CreateTenantRequest, admin_user=Depends(require
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return TenantItem(**item.to_dict())
+
+
+@router.post("/groups", response_model=GroupItem, status_code=201)
+async def create_group(request: CreateGroupRequest, admin_user=Depends(require_nexus_admin)):
+    service = get_control_plane_service()
+    try:
+        item = service.create_tenant(
+            tenant_id=request.group_id,
+            name=request.name,
+            status=request.status,
+            metadata=request.metadata,
+            actor=_actor_name(admin_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_group_item(item)
 
 
 @router.get("/workspaces", response_model=List[WorkspaceItem])
@@ -165,6 +282,80 @@ async def create_workspace(request: CreateWorkspaceRequest, admin_user=Depends(r
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return WorkspaceItem(**item.to_dict())
+
+
+@router.get("/workspaces/{workspace_id}/join-requests", response_model=List[JoinRequestItem])
+async def list_workspace_join_requests(
+    workspace_id: str,
+    status: Optional[str] = Query(None),
+    admin_user=Depends(require_nexus_admin),
+):
+    service = get_control_plane_service()
+    try:
+        normalized_status = _normalize_join_request_status(status)
+        items = service.list_workspace_join_requests(workspace_id=workspace_id, status=normalized_status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return [_to_join_request_item(item) for item in items]
+
+
+@router.post(
+    "/workspaces/{workspace_id}/join-requests",
+    response_model=JoinRequestItem,
+    status_code=201,
+)
+async def create_workspace_join_request(
+    workspace_id: str,
+    request: CreateJoinRequest,
+    admin_user=Depends(require_nexus_admin),
+):
+    service = get_control_plane_service()
+    try:
+        item = service.create_workspace_join_request(
+            workspace_id=workspace_id,
+            username=request.username,
+            role=request.role,
+            scopes=request.scopes,
+            note=request.note,
+            actor=_actor_name(admin_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_join_request_item(item)
+
+
+@router.patch(
+    "/workspaces/{workspace_id}/join-requests/{request_id}",
+    response_model=JoinRequestItem,
+)
+async def resolve_workspace_join_request(
+    workspace_id: str,
+    request_id: str,
+    request: ResolveJoinRequest,
+    admin_user=Depends(require_nexus_admin),
+):
+    service = get_control_plane_service()
+    try:
+        resolved_status = _normalize_join_request_status(request.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if resolved_status is None:
+        raise HTTPException(status_code=400, detail="status is required")
+
+    existing = service.get_workspace_join_request(request_id=request_id)
+    if existing is None or existing.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail=f"join request not found: {request_id}")
+
+    try:
+        item = service.resolve_workspace_join_request(
+            request_id=request_id,
+            status=resolved_status,
+            reviewer=_actor_name(admin_user),
+            review_note=request.review_note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _to_join_request_item(item)
 
 
 @router.get("/memberships", response_model=List[MembershipItem])
