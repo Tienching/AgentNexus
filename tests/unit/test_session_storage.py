@@ -298,6 +298,36 @@ class TestSessionMetadataOperations:
         assert retrieved.execution_binding is not None
         assert retrieved.execution_binding.cli_session_id == "cli-hist-001"
 
+    def test_save_session_meta_preserves_existing_execution_binding_context(self, session_storage):
+        meta = SessionMeta(
+            id="session-preserve-binding",
+            thread_id="thread-preserve-binding",
+            username="testuser",
+            title="Bound Session",
+        )
+        assert session_storage.bind_execution_context(
+            "session-preserve-binding",
+            cli_session_id="cli-001",
+            provider="codebuddy",
+            alias="codebuddy",
+            exec_user="ubuntu",
+            work_dir="/tmp/demo",
+            source_type="chat",
+            session_kind="chat",
+        ) is True
+
+        assert session_storage.save_session_meta(meta) is True
+
+        binding = session_storage.get_execution_binding("session-preserve-binding")
+        assert binding is not None
+        assert binding.cli_session_id == "cli-001"
+        assert binding.provider == "codebuddy"
+        assert binding.alias == "codebuddy"
+        assert binding.exec_user == "ubuntu"
+        assert binding.work_dir == "/tmp/demo"
+        assert binding.source_type == "chat"
+        assert binding.session_kind == "chat"
+
     def test_clear_helpers_clear_execution_binding_fallback_fields(self, session_storage):
         meta = SessionMeta(
             id="session-clear-binding",

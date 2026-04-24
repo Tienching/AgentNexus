@@ -79,7 +79,7 @@ class StreamHandler:
         cli_session_id: Optional[str],
         session_kind: str = "chat",
         source_type: str = "chat",
-    ) -> tuple[Optional[str], list[str]]:
+    ) -> tuple[Optional[str], Optional[str], list[str]]:
         """Resolve and persist the canonical execution binding for a chat session."""
         compat_hits: list[str] = []
         existing_binding = None
@@ -110,6 +110,11 @@ class StreamHandler:
                 )
                 compat_hits.append("resume_lookup_error")
 
+        effective_work_dir = work_dir
+        if not effective_work_dir and existing_binding and getattr(existing_binding, "work_dir", None):
+            effective_work_dir = existing_binding.work_dir
+            compat_hits.append("binding_work_dir")
+
         if storage and session_id:
             try:
                 storage.upsert_execution_binding(
@@ -118,7 +123,7 @@ class StreamHandler:
                     provider=provider,
                     alias=alias,
                     exec_user=exec_user,
-                    work_dir=work_dir,
+                    work_dir=effective_work_dir,
                     source_type=getattr(existing_binding, "source_type", None) or source_type,
                     source_session_id=getattr(existing_binding, "source_session_id", None),
                     task_id=getattr(existing_binding, "task_id", None),
@@ -141,12 +146,12 @@ class StreamHandler:
                 "provider": provider,
                 "alias": alias,
                 "exec_user": exec_user,
-                "work_dir": work_dir,
+                "work_dir": effective_work_dir,
                 "cli_session_id_present": bool(cli_session_id),
                 "compat_hits": compat_hits,
             },
         )
-        return cli_session_id, compat_hits
+        return cli_session_id, effective_work_dir, compat_hits
 
     def _build_conversation_history_text(
         self,
@@ -399,7 +404,7 @@ class StreamHandler:
                     logger.info(f"Workspace exec_dir override: {exec_dir_override}")
 
                 effective_work_dir = exec_dir_override or (requested_work_dir if requested_cwd_mode == "inplace" else (request_model.cwd if getattr(request_model, "cwd_mode", "") == "inplace" else None))
-                binding_cli_session_id, binding_compat_hits = self._sync_execution_binding(
+                binding_cli_session_id, binding_work_dir, binding_compat_hits = self._sync_execution_binding(
                     storage=storage,
                     session_id=session_id,
                     provider=provider,
@@ -412,6 +417,9 @@ class StreamHandler:
                 )
                 if binding_cli_session_id:
                     request_model.cli_session_id = binding_cli_session_id
+                if binding_work_dir and not effective_work_dir:
+                    request_model.cwd = binding_work_dir
+                    request_model.cwd_mode = "inplace"
                 logger.debug(
                     "Execution binding synced for AG-UI session",
                     extra={

@@ -216,7 +216,7 @@ def test_stream_binding_preserves_existing_source_type_for_history_binding():
         )
     )
 
-    cli_session_id, compat_hits = StreamHandler.__new__(StreamHandler)._sync_execution_binding(
+    cli_session_id, work_dir, compat_hits = StreamHandler.__new__(StreamHandler)._sync_execution_binding(
         storage=storage,
         session_id="runtime-1",
         provider="claude",
@@ -229,6 +229,38 @@ def test_stream_binding_preserves_existing_source_type_for_history_binding():
     )
 
     assert cli_session_id == "hist-001"
+    assert work_dir == "/projects/demo"
     assert "binding_cli_session" in compat_hits
     assert storage.upserts[-1]["source_type"] == "history"
     assert storage.upserts[-1]["source_session_id"] == "hist-001"
+
+
+def test_stream_binding_preserves_existing_work_dir_when_followup_omits_cwd():
+    storage = _FakeBindingStorage(
+        ExecutionBinding(
+            session_id="runtime-1",
+            session_kind="chat",
+            provider="codebuddy",
+            alias="codebuddy",
+            exec_user="alice",
+            work_dir="/tmp/kanban-e2e",
+            source_type="chat",
+        )
+    )
+
+    cli_session_id, work_dir, compat_hits = StreamHandler.__new__(StreamHandler)._sync_execution_binding(
+        storage=storage,
+        session_id="runtime-1",
+        provider="codebuddy",
+        alias="codebuddy",
+        exec_user="alice",
+        work_dir=None,
+        cli_session_id=None,
+        session_kind="chat",
+        source_type="chat",
+    )
+
+    assert cli_session_id is None
+    assert work_dir == "/tmp/kanban-e2e"
+    assert "binding_work_dir" in compat_hits
+    assert storage.upserts[-1]["work_dir"] == "/tmp/kanban-e2e"

@@ -15,6 +15,7 @@ LOG_DIR=${LOG_DIR:-./logs}
 PID_FILE="${LOG_DIR}/claude-api.pid"
 UV_SYNC_ARGS=${UV_SYNC_ARGS:---extra dev --group dev}
 PYTHON_BIN=${PYTHON_BIN:-./.venv/bin/python}
+STARTUP_TIMEOUT=${STARTUP_TIMEOUT:-30}
 
 ensure_env() {
     if ! command -v uv &> /dev/null; then
@@ -61,24 +62,40 @@ ensure_env
 echo "   Python: $PYTHON_BIN"
 
 # 直接启动虚拟环境里的 uvicorn，避免额外父进程导致 PID 文件和实际服务进程不一致
-nohup "$PYTHON_BIN" -m uvicorn src.server.app:app \
+setsid "$PYTHON_BIN" -m uvicorn src.server.app:app \
     --host "$HOST" \
     --port "$PORT" \
     --log-level info \
-    > "$LOG_DIR/api.log" 2>&1 &
+    > "$LOG_DIR/api.log" 2>&1 < /dev/null &
 
 # 保存实际 uvicorn 进程 PID
 echo $! > "$PID_FILE"
 
 # 等待服务启动
-sleep 2
+HEALTH_HOST="$HOST"
+if [ "$HEALTH_HOST" = "0.0.0.0" ] || [ "$HEALTH_HOST" = "::" ]; then
+    HEALTH_HOST="127.0.0.1"
+fi
 
 # 检查服务是否成功启动
 if ps -p "$(cat "$PID_FILE")" > /dev/null 2>&1; then
+    for _ in $(seq 1 "$STARTUP_TIMEOUT"); do
+        if curl -fs "http://${HEALTH_HOST}:${PORT}/health" > /tmp/agent-nexus-health.json; then
+            break
+        fi
+        sleep 1
+    done
+
+    if [ ! -s /tmp/agent-nexus-health.json ]; then
+        echo "❌ Agent Nexus 健康检查超时，请检查日志: $LOG_DIR/api.log"
+        tail -20 "$LOG_DIR/api.log" || true
+        exit 1
+    fi
+
     echo "✅ Agent Nexus 成功启动 (PID: $(cat "$PID_FILE"))"
     echo ""
     echo "测试健康检查："
-    curl -s "http://${HOST}:${PORT}/health" | python3 -m json.tool
+    python3 -m json.tool < /tmp/agent-nexus-health.json
     echo ""
     echo "查看日志: tail -f $LOG_DIR/api.log"
     echo "停止服务: ./scripts/stop.sh"

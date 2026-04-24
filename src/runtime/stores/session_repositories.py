@@ -279,7 +279,28 @@ class SessionMetaRepository:
                 },
             )
             try:
-                self._bindings.upsert(conn, meta.to_execution_binding())
+                binding = meta.to_execution_binding()
+                existing_binding = self._bindings.get(meta.id)
+                if existing_binding:
+                    for field in (
+                        "cli_session_id",
+                        "provider",
+                        "alias",
+                        "exec_user",
+                        "work_dir",
+                        "source_type",
+                        "source_session_id",
+                        "task_id",
+                        "expires_at",
+                    ):
+                        if not getattr(binding, field, None) and getattr(existing_binding, field, None):
+                            setattr(binding, field, getattr(existing_binding, field))
+                    if meta.session_kind is None and not meta.task_id and existing_binding.session_kind:
+                        binding.session_kind = existing_binding.session_kind
+                    if not binding.metadata and existing_binding.metadata:
+                        binding.metadata = existing_binding.metadata
+                    binding.created_at = existing_binding.created_at or binding.created_at
+                self._bindings.upsert(conn, binding)
             except Exception as binding_err:
                 logger.debug("Failed to persist execution binding for session %s: %s", meta.id, binding_err)
         return True
