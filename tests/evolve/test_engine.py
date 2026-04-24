@@ -69,7 +69,7 @@ class TestEvolutionEngine:
         task_file = tmp_dir / "task_01.md"
         task_file.write_text(
             "Title: Fix null pointer in executor\n"
-            "Files: src/nanobot/mission/executor.py, tests/test_executor.py\n"
+            "Files: src/nexus/mission/executor.py, tests/test_executor.py\n"
             "Issue: #42\n\n"
             "Description of what to do.\n"
             "More details here.",
@@ -78,7 +78,7 @@ class TestEvolutionEngine:
         task = engine._parse_task_file(task_file)
         assert task.id == "t-001"
         assert task.title == "Fix null pointer in executor"
-        assert "src/nanobot/mission/executor.py" in task.files
+        assert "src/nexus/mission/executor.py" in task.files
         assert task.issue == "#42"
         assert "Description" in task.description
 
@@ -117,7 +117,7 @@ class TestEvolutionEngine:
             encoding="utf-8",
         )
         (session_plan / "task_02.md").write_text(
-            "Title: Fix timeout bug\nFiles: src/nanobot/mission/executor.py\nIssue: none\n\nFix it.",
+            "Title: Fix timeout bug\nFiles: src/nexus/mission/executor.py\nIssue: none\n\nFix it.",
             encoding="utf-8",
         )
 
@@ -178,7 +178,7 @@ class TestEvolutionEngine:
         with patch.object(engine._executor, "execute", return_value=success_result), \
              patch.object(engine, "_run_shell", return_value=(0, "", "")), \
              patch.object(engine, "_get_current_sha", return_value="abc123"), \
-             patch.object(engine, "_get_git_diff_files", return_value=["src/nanobot/mission/types.py"]):
+             patch.object(engine, "_get_git_diff_files", return_value=["src/nexus/mission/types.py"]):
 
             session = await engine.run_full_cycle()
 

@@ -1,0 +1,264 @@
+{
+  "project": "agent-nexus",
+  "description": "API 一致性补全任务清单 — 基于前端/Slash/后端审计报告",
+  "source": "api-audit-frontend.md",
+  "created_at": "2026-04-13",
+  "tasks": [
+    {
+      "id": "AC-001",
+      "category": "Critical",
+      "description": "后端添加 POST /api/nexus/sessions 端点 — 前端 NexusAPI.createSession() 调用此路由但后端不存在，导致 404",
+      "target_location": "src/server/routers/nexus_sessions.py",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-002",
+      "category": "Critical",
+      "description": "后端 audit 端点添加 task_id 查询参数 — 前端 task-components.js Timeline Tab 传递 task_id 过滤审计事件但后端 GET /api/nexus/audit 不支持",
+      "target_location": "src/server/routers/nexus_admin.py",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-003",
+      "category": "Consistency",
+      "description": "InlinePicker 添加 low 优先级选项 — ListView 有 low 但 InlinePicker 只有 critical/serious/normal，需统一",
+      "target_location": "src/server/static/nexus/js/components/inline-picker.js",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-004",
+      "category": "Consistency",
+      "description": "前端识别 orphaned 任务状态 — 后端 TaskStatus 有 orphaned 但前端 _normalizeTaskStatus() 不映射此状态",
+      "target_location": "src/server/static/nexus/js/components/task-board-panel.js",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-005",
+      "category": "Consistency",
+      "description": "PlanModeManager 改用 NexusAPI 封装方法 — 当前 app.js 中直接 fetch() 调用 /api/nexus/plan/*，但 api.js 已有 enterPlanMode/submitPlan 等封装",
+      "target_location": "src/server/static/nexus/js/app.js",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-006",
+      "category": "Consistency",
+      "description": "后端 inbox 状态与前端对齐 — 后端 TaskStatus.INBOX 值为 'inbox'，确认后端 API 返回的任务 status 字段使用新枚举值而非旧的 'todo'",
+      "target_location": "src/core/stores/task_storage.py + src/core/models/task_models.py",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-007",
+      "category": "Slash Commands",
+      "description": "前端添加 Slash 命令输入和自动补全 — 后端有 16 个 slash 命令但前端没有命令输入框、补全或识别",
+      "target_location": "src/server/static/nexus/js/components/slash-completer.js + app.js",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-008",
+      "category": "Slash Commands",
+      "description": "注册 /plan 为正式 slash command — plan.py 模块存在但未列入 SLASH_COMMANDS 列表",
+      "target_location": "src/runtime/commands/slash/handler.py",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-009",
+      "category": "Slash Commands",
+      "description": "前端聊天输入框识别并转发 slash 命令到后端 — 用户在聊天框输入 /cmd 时应被识别为命令而非普通消息",
+      "target_location": "src/server/static/nexus/js/app.js",
+      "complexity": "medium",
+      "dependencies": [
+        "AC-007"
+      ],
+      "passes": true
+    },
+    {
+      "id": "AC-010",
+      "category": "Frontend API",
+      "description": "前端调用 NexusAPI.getScheduleHistory — api.js 已定义但从未使用，Schedule 详情页需展示执行历史",
+      "target_location": "src/server/static/nexus/js/components/task-board-panel.js",
+      "complexity": "low",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-011",
+      "category": "Frontend API",
+      "description": "Settings Agents Tab 连接 Agent lifecycle API — 后端有 register/heartbeat/deregister/stats 端点但前端 Agents Tab 只显示静态信息",
+      "target_location": "src/server/static/nexus/js/app.js (AdminView.renderAgentsTab)",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-012",
+      "category": "Frontend API",
+      "description": "Settings Admin Tab 连接 Feature Flags API — 后端有 GET/PATCH /api/nexus/features 端点但前端 FeatureFlag Tab 未调用",
+      "target_location": "src/server/static/nexus/js/app.js (AdminView.renderAdminTab)",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-013",
+      "category": "Frontend API",
+      "description": "Settings Security Tab 连接 Permission Sync API — 后端有 pending/approve/reject/cache/sync 端点但前端 Security Tab 未调用",
+      "target_location": "src/server/static/nexus/js/app.js (AdminView.renderSecurity)",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-014",
+      "category": "Frontend API",
+      "description": "Settings Security Tab 连接 Hook Profile API — 后端有 GET/PUT /api/nexus/security/hook-profile 但前端未调用",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-015",
+      "category": "Frontend API",
+      "description": "Settings Permissions Tab 连接权限模式 API — 后端有 GET/PUT /api/nexus/permissions 和 /permissions/mode 端点但前端未调用",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-016",
+      "category": "Frontend API",
+      "description": "前端连接 Swarm Team API — 后端有 create/get/shutdown/mailbox/claim 端点但前端无 UI 调用",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "high",
+      "dependencies": [
+        "AC-011"
+      ],
+      "passes": true
+    },
+    {
+      "id": "AC-017",
+      "category": "Frontend API",
+      "description": "前端连接 Teleport REST API — 后端有 7 个 teleport 端点但前端只通过 WebSocket 调用，REST 端点未使用",
+      "target_location": "src/server/static/nexus/js/app.js (AdminView.renderIntegrationsTab) + api.js",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-018",
+      "category": "Frontend API",
+      "description": "前端连接 Session Recovery API — 后端有 interrupted/chain/recover/orphans 端点但前端无 UI",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-019",
+      "category": "Frontend API",
+      "description": "前端连接 Mission API — 后端有完整 CRUD + approve/cancel/pause/resume/log 端点但前端无 UI",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-020",
+      "category": "Frontend API",
+      "description": "前端连接 Runs/Evals API — 后端有 list/create/get/provenance/eval/leaderboard 端点但前端无 UI",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-021",
+      "category": "Frontend API",
+      "description": "前端连接 Evolution API — 后端有 trigger/synthesis/status/memory 端点但前端无 UI",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "high",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-022",
+      "category": "Frontend API",
+      "description": "前端连接 Doctor/Diagnostic API — 后端有 /api/nexus/doctor 和 /doctor/bundle 但前端无 UI",
+      "target_location": "src/server/static/nexus/js/app.js + api.js",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-023",
+      "category": "Frontend API",
+      "description": "前端 Task 详情添加 Continue 对话功能 — 后端有 POST /tasks/{id}/continue 端点但前端用 broadcast 替代",
+      "target_location": "src/server/static/nexus/js/components/task-components.js",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-024",
+      "category": "Frontend API",
+      "description": "前端 Task 详情添加 Outcome 设置功能 — 后端有 PATCH /tasks/{id}/outcome 和 GET /tasks/outcomes 但前端未调用",
+      "target_location": "src/server/static/nexus/js/components/task-components.js + api.js",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-025",
+      "category": "Frontend API",
+      "description": "前端 Memory Tab 连接 Memory State API — 后端有 GET /history/memory/state 和 restore-memory 端点但前端未调用",
+      "target_location": "src/server/static/nexus/js/app.js (AdminView.renderMemoryTab)",
+      "complexity": "medium",
+      "dependencies": [],
+      "passes": true
+    },
+    {
+      "id": "AC-026",
+      "category": "Frontend API",
+      "description": "前端 Requeue Orphan Task 功能 — 后端有 POST /tasks/{id}/requeue-orphan 端点但前端未调用",
+      "target_location": "src/server/static/nexus/js/components/task-board-panel.js + api.js",
+      "complexity": "low",
+      "dependencies": [
+        "AC-004"
+      ],
+      "passes": true
+    }
+  ],
+  "summary": {
+    "total_tasks": 26,
+    "by_category": {
+      "Critical": 2,
+      "Consistency": 4,
+      "Slash Commands": 3,
+      "Frontend API": 17
+    },
+    "by_complexity": {
+      "low": 6,
+      "medium": 10,
+      "high": 10
+    },
+    "passed_tasks": 0,
+    "remaining_tasks": 26
+  }
+}

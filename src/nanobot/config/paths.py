@@ -7,6 +7,17 @@ from pathlib import Path
 from src.nanobot.config.loader import get_config_path
 from src.nanobot.utils.helpers import ensure_dir
 
+_NEXUS_HOME = Path.home() / ".nexus"
+_LEGACY_HOME = Path.home() / ".nanobot"
+
+
+def _prefer_new_or_legacy(new_path: Path, legacy_path: Path) -> Path:
+    if new_path.exists():
+        return new_path
+    if legacy_path.exists():
+        return legacy_path
+    return new_path
+
 
 def get_data_dir() -> Path:
     """Return the instance-level runtime data directory."""
@@ -36,27 +47,41 @@ def get_logs_dir() -> Path:
 
 def get_workspace_path(workspace: str | None = None) -> Path:
     """Resolve and ensure the agent workspace path."""
-    path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
+    default_path = _prefer_new_or_legacy(_NEXUS_HOME / "workspace", _LEGACY_HOME / "workspace")
+    path = Path(workspace).expanduser() if workspace else default_path
     return ensure_dir(path)
 
 
 def is_default_workspace(workspace: str | Path | None) -> bool:
-    """Return whether a workspace resolves to nanobot's default workspace path."""
-    current = Path(workspace).expanduser() if workspace is not None else Path.home() / ".nanobot" / "workspace"
-    default = Path.home() / ".nanobot" / "workspace"
-    return current.resolve(strict=False) == default.resolve(strict=False)
+    """Return whether a workspace resolves to the default workspace path."""
+    current = (
+        Path(workspace).expanduser()
+        if workspace is not None
+        else _prefer_new_or_legacy(_NEXUS_HOME / "workspace", _LEGACY_HOME / "workspace")
+    )
+    default_candidates = [
+        _NEXUS_HOME / "workspace",
+        _LEGACY_HOME / "workspace",
+    ]
+    return any(
+        current.resolve(strict=False) == candidate.resolve(strict=False)
+        for candidate in default_candidates
+    )
 
 
 def get_cli_history_path() -> Path:
     """Return the shared CLI history file path."""
-    return Path.home() / ".nanobot" / "history" / "cli_history"
+    return _prefer_new_or_legacy(
+        _NEXUS_HOME / "history" / "cli_history",
+        _LEGACY_HOME / "history" / "cli_history",
+    )
 
 
 def get_bridge_install_dir() -> Path:
     """Return the shared WhatsApp bridge installation directory."""
-    return Path.home() / ".nanobot" / "bridge"
+    return _prefer_new_or_legacy(_NEXUS_HOME / "bridge", _LEGACY_HOME / "bridge")
 
 
 def get_legacy_sessions_dir() -> Path:
     """Return the legacy global session directory used for migration fallback."""
-    return Path.home() / ".nanobot" / "sessions"
+    return _LEGACY_HOME / "sessions"

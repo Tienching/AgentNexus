@@ -34,6 +34,7 @@ from ..logger import get_logger
 from .user_directory import UserDirectoryManager
 from src.runtime.commands.slash.handler import SlashCommandHandler, SLASH_COMMANDS
 from src.runtime.commands.slash.parser import SlashCommandParseError, parse_slash_command
+from src.runtime.history import HistoryService
 from src.providers.persistent import PersistentProcessManager
 
 logger = get_logger(__name__)
@@ -43,6 +44,16 @@ DEBUG_STREAM = os.environ.get("DEBUG_STREAM", "0") == "1"
 # 安全修复: 不使用世界可读的 /tmp，改用 log 目录或环境变量指定的安全路径
 _debug_stream_default = os.path.join(settings.log_dir, "debug_stream.jsonl")
 DEBUG_STREAM_FILE = os.environ.get("DEBUG_STREAM_FILE", _debug_stream_default)
+
+
+def _resolve_agent_loop():
+    """Best-effort resolver used by runtime slash extensions that need AgentLoop."""
+    try:
+        from src.server.app import get_agent_loop
+
+        return get_agent_loop()
+    except Exception:
+        return None
 
 
 class CLIExecutor:
@@ -75,8 +86,52 @@ class CLIExecutor:
     def _get_slash_handler(self, exec_user: str) -> SlashCommandHandler:
         """Get or create slash command handler for exec_user"""
         if exec_user not in self._slash_handlers:
-            self._slash_handlers[exec_user] = SlashCommandHandler(exec_user, self.config)
+            handler = SlashCommandHandler(exec_user, self.config)
+            handler.agent_loop_resolver = _resolve_agent_loop
+            self._slash_handlers[exec_user] = handler
         return self._slash_handlers[exec_user]
+
+    def _resolve_execution_binding(self, storage, session_id: Optional[str]):
+        """Resolve the best available execution binding for a session."""
+        if not storage or not session_id:
+            return None
+
+        getter = getattr(storage, "get_effective_execution_binding", None)
+        if callable(getter):
+            try:
+                binding = getter(session_id)
+                if binding:
+                    return binding
+            except Exception:
+                pass
+
+        getter = getattr(storage, "get_execution_binding", None)
+        if callable(getter):
+            try:
+                binding = getter(session_id)
+                if binding:
+                    return binding
+            except Exception:
+                pass
+
+        getter = getattr(storage, "get_session_meta", None)
+        if callable(getter):
+            try:
+                meta = getter(session_id)
+            except Exception:
+                meta = None
+            if meta:
+                try:
+                    binding = getattr(meta, "execution_binding", None)
+                    if binding:
+                        return binding
+                except Exception:
+                    pass
+                try:
+                    return meta.to_execution_binding()
+                except Exception:
+                    pass
+        return None
 
     def _is_slash_command(self, content: str) -> bool:
         """Check if content is a slash command (excluding /clear which has special handling)"""
@@ -168,7 +223,7 @@ class CLIExecutor:
                     _clear_storage.set_session_cleared(session_id)
                     _clear_storage.clear_persistent_mode(session_id)
                     # Clear active_model to avoid false model_changed detection
-                    _clear_storage._redis.hdel(f"session:{session_id}:meta", "active_model")
+                    _clear_storage.clear_active_model(session_id)
                     logger.info(f"/clear: cleared Redis resume state for session {session_id}")
                 except Exception as e:
                     logger.warning(f"/clear: failed to clear Redis resume state: {e}")
@@ -228,13 +283,18 @@ class CLIExecutor:
         except Exception:
             run_cwd = None
 
-        # Check for exec_dir override (set by /workspace -t)
+        # Resolve execution binding / legacy overrides for the current session.
+        binding = None
         exec_dir_override = None
         storage = None
         try:
             from ...runtime.stores.session_storage import get_session_storage
             storage = get_session_storage()
-            exec_dir_override = storage.get_exec_dir_override(request.session_id)
+            binding = self._resolve_execution_binding(storage, session_id)
+            if binding and getattr(binding, "work_dir", None):
+                exec_dir_override = binding.work_dir
+            else:
+                exec_dir_override = storage.get_exec_dir_override(request.session_id)
             if exec_dir_override:
                 logger.info(f"Using exec_dir override: {exec_dir_override}", extra={
                     "session_id": request.session_id,
@@ -400,19 +460,24 @@ class CLIExecutor:
             use_continue = (not is_inplace) or is_chat_continue
 
         agent_type = getattr(request, "agent_type", None) or getattr(request, "provider", None)
+        if not agent_type and binding and getattr(binding, "provider", None):
+            agent_type = binding.provider
 
         # In /workspace -t mode, override agent_type with the task's provider
         # so that the correct resume mechanism is used (gemini -> --resume latest,
         # codex -> skip -c, claude -> -c).
-        workspace_alias = None
-        if exec_dir_override:
+        workspace_alias = getattr(binding, "alias", None) if binding else None
+        if exec_dir_override and not workspace_alias:
             try:
-                workspace_provider = storage.get_workspace_provider(request.session_id)
+                workspace_provider = getattr(binding, "provider", None) if binding else None
+                if not workspace_provider and storage:
+                    workspace_provider = storage.get_workspace_provider(request.session_id)
                 if workspace_provider:
                     logger.info(f"Overriding agent_type with workspace provider: {agent_type} -> {workspace_provider}")
                     agent_type = workspace_provider
                 # Also get the workspace alias for CLI command selection
-                workspace_alias = storage.get_workspace_alias(request.session_id)
+                if not workspace_alias and storage:
+                    workspace_alias = storage.get_workspace_alias(request.session_id)
                 if workspace_alias:
                     logger.info(f"Using workspace alias for CLI command: {workspace_alias}")
             except Exception as e:
@@ -421,7 +486,9 @@ class CLIExecutor:
         request_alias = getattr(request, "alias", None) or workspace_alias
         request_model_name = getattr(request, "model", None) or None
         request_cli_session_id = getattr(request, "cli_session_id", None) or None
-        # Fallback: read cli_session_id from session storage (e.g. history-promoted sessions)
+        if not request_cli_session_id and binding and getattr(binding, "cli_session_id", None):
+            request_cli_session_id = binding.cli_session_id
+        # Fallback: read cli_session_id from session storage (legacy redirect / task workspace)
         if not request_cli_session_id and session_id:
             try:
                 if not storage:
@@ -701,10 +768,7 @@ class CLIExecutor:
             # Invalidate history caches so the History UI immediately reflects
             # updated file timestamps from this CLI execution.
             try:
-                from ...runtime.history import HistoryService
-                from ...server.routers.nexus_history import _get_history_service
-                svc = _get_history_service()
-                removed = svc.invalidate_project_caches()
+                removed = HistoryService.invalidate_project_caches_across_instances()
                 if removed:
                     logger.info(f"Invalidated {removed} history cache entries after CLI execution")
             except Exception:
@@ -1075,10 +1139,7 @@ class CLIExecutor:
 
         # Invalidate history caches
         try:
-            from ...runtime.history import HistoryService
-            from ...server.routers.nexus_history import _get_history_service
-            svc = _get_history_service()
-            svc.invalidate_project_caches()
+            HistoryService.invalidate_project_caches_across_instances()
         except Exception:
             pass
 

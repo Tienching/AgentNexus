@@ -84,7 +84,7 @@ class TestIdentityManager:
 
     def test_validate_changes_no_violations(self, manager):
         """Should return valid when no protected files are changed."""
-        is_valid, violations = manager.validate_changes(["src/nanobot/mission/types.py"])
+        is_valid, violations = manager.validate_changes(["src/nexus/mission/types.py"])
         assert is_valid is True
         assert violations == []
 

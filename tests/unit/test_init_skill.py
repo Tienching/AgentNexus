@@ -2,15 +2,24 @@ import importlib.util
 from pathlib import Path
 
 
-SCRIPT_PATH = (
+_SCRIPT_CANDIDATES = [
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "nexus"
+    / "skills"
+    / "skill-creator"
+    / "scripts"
+    / "init_skill.py",
     Path(__file__).resolve().parents[2]
     / "src"
     / "nanobot"
     / "skills"
     / "skill-creator"
     / "scripts"
-    / "init_skill.py"
-)
+    / "init_skill.py",
+]
+
+SCRIPT_PATH = next(path for path in _SCRIPT_CANDIDATES if path.exists())
 
 
 def _load_init_skill_module():

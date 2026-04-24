@@ -270,7 +270,7 @@ async def stream_task_agui_messages(
     async def check_task_idle_timeout() -> bool:
         try:
             task_obj = queue.get_task(task_id)
-            if task_obj and task_obj.status in ("done", "failed", "cancelled"):
+            if task_obj and task_obj.status in ("completed", "failed", "cancelled"):
                 return True
         except Exception:
             pass

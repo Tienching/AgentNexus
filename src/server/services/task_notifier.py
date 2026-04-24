@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from ...runtime.models.session import StoredMessage, MessageStatus
+from .observability import record_sampled_event, telemetry
 from .callback_handler import CallbackHandler
 from .session_storage import get_session_storage
 from .notification import (
@@ -33,6 +34,12 @@ class TaskNotifier:
 
     def __init__(self):
         self.callback_handler = CallbackHandler()
+
+    def _resolve_writeback_session(self, session_id: str, source_session_id: Optional[str]) -> tuple[str, str]:
+        """Resolve where the final assistant result should be written back."""
+        target_session_id = source_session_id or session_id
+        writeback_scope = "source_session" if source_session_id and source_session_id != session_id else "task_session"
+        return target_session_id, writeback_scope
 
     async def notify_task_completion(
         self,
@@ -80,7 +87,7 @@ class TaskNotifier:
             return False
 
         # 1. 归档到 Session (让 Nexus 可见)
-        target_session_id = source_session_id or session_id
+        target_session_id, writeback_scope = self._resolve_writeback_session(session_id, source_session_id)
         try:
             storage = get_session_storage()
             full_content = "".join(messages)
@@ -94,10 +101,39 @@ class TaskNotifier:
             )
 
             storage.add_session_message(target_session_id, archive_msg)
-            logger.info(f"Task {task_id}: notification archived to session {target_session_id}")
+            telemetry.increment("task_notification.writeback.total")
+            telemetry.increment(f"task_notification.writeback.{writeback_scope}")
+            record_sampled_event(
+                "task_notification.writeback",
+                {
+                    "task_id": task_id,
+                    "source_session_id": source_session_id,
+                    "target_session_id": target_session_id,
+                    "writeback_scope": writeback_scope,
+                },
+            )
+            logger.info(
+                "Task notification archived",
+                extra={
+                    "task_id": task_id,
+                    "source_session_id": source_session_id,
+                    "target_session_id": target_session_id,
+                    "writeback_scope": writeback_scope,
+                },
+            )
 
         except Exception as e:
-            logger.error(f"Task {task_id}: failed to archive notification: {e}")
+            telemetry.increment("task_notification.writeback.failed")
+            logger.error(
+                "Task notification archive failed",
+                extra={
+                    "task_id": task_id,
+                    "source_session_id": source_session_id,
+                    "target_session_id": target_session_id,
+                    "writeback_scope": writeback_scope,
+                    "error": str(e),
+                },
+            )
 
         # 2. Send notification via unified handler or legacy callback
         full_content = "".join(messages)
@@ -110,12 +146,36 @@ class TaskNotifier:
                     notification_target, full_content, success=success
                 )
                 if result.success:
-                    logger.info(f"Task {task_id}: notification sent via {notification_target.sink_type}")
+                    telemetry.increment("task_notification.delivery.success")
+                    logger.info(
+                        "Task notification sent",
+                        extra={
+                            "task_id": task_id,
+                            "sink_type": notification_target.sink_type,
+                            "delivery": "unified",
+                        },
+                    )
                     return True
                 else:
-                    logger.warning(f"Task {task_id}: unified notification failed: {result.error}")
+                    telemetry.increment("task_notification.delivery.failed")
+                    logger.warning(
+                        "Task notification unified delivery failed",
+                        extra={
+                            "task_id": task_id,
+                            "sink_type": notification_target.sink_type,
+                            "error": result.error,
+                        },
+                    )
             except Exception as e:
-                logger.error(f"Task {task_id}: unified notification error: {e}")
+                telemetry.increment("task_notification.delivery.failed")
+                logger.error(
+                    "Task notification unified delivery error",
+                    extra={
+                        "task_id": task_id,
+                        "sink_type": getattr(notification_target, "sink_type", None),
+                        "error": str(e),
+                    },
+                )
 
         # Fallback to legacy HTTP webhook
         if response_url:
@@ -131,10 +191,27 @@ class TaskNotifier:
                     request_data=request_data,
                 )
                 if result:
-                    logger.info(f"Task {task_id}: notification sent via response_url")
+                    telemetry.increment("task_notification.delivery.success")
+                    logger.info(
+                        "Task notification sent",
+                        extra={
+                            "task_id": task_id,
+                            "delivery": "response_url",
+                            "target_session_id": target_session_id,
+                        },
+                    )
                 return result
             except Exception as e:
-                logger.error(f"Task {task_id}: failed to send notification: {e}")
+                telemetry.increment("task_notification.delivery.failed")
+                logger.error(
+                    "Task notification delivery failed",
+                    extra={
+                        "task_id": task_id,
+                        "delivery": "response_url",
+                        "target_session_id": target_session_id,
+                        "error": str(e),
+                    },
+                )
                 return False
 
         return False
@@ -178,8 +255,21 @@ class TaskNotifier:
                     if content:
                         messages.append("---\n\n")
                         messages.append(content)
+                        telemetry.increment("task_notification.content.had_assistant_reply")
+                        record_sampled_event(
+                            "task_notification.content.extracted",
+                            {
+                                "session_id": session_id,
+                                "assistant_message_id": getattr(last_msg, "id", None),
+                                "content_length": len(content),
+                            },
+                        )
 
         except Exception as e:
-            logger.warning(f"Failed to get session messages for {session_id}: {e}")
+            telemetry.increment("task_notification.content.read_failed")
+            logger.warning(
+                "Failed to get session messages for notification",
+                extra={"session_id": session_id, "error": str(e)},
+            )
 
         return messages

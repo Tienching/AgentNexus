@@ -77,17 +77,22 @@ _PLAN_SPECS = [
 # Handlers
 # ---------------------------------------------------------------------------
 
-def _get_agent_loop():
-    """Get the AgentLoop instance from the server runtime."""
-    try:
-        from src.server.app import get_agent_loop
-        return get_agent_loop()
-    except Exception:
-        return None
+def _get_agent_loop(handler=None, ctx: Dict[str, Any] | None = None):
+    """Resolve the AgentLoop from an injected runtime callback."""
+    resolver = getattr(handler, "agent_loop_resolver", None)
+    if not callable(resolver) and isinstance(ctx, dict):
+        resolver = ctx.get("agent_loop_resolver")
+
+    if callable(resolver):
+        try:
+            return resolver()
+        except Exception:
+            return None
+    return None
 
 
 def _handle_plan_enter(handler, parsed, ctx: Dict[str, Any]) -> str:
-    loop = _get_agent_loop()
+    loop = _get_agent_loop(handler, ctx)
     if loop is None:
         return "## Error\n\nAgent loop not available."
     if loop._plan_mode:
@@ -104,7 +109,7 @@ def _handle_plan_enter(handler, parsed, ctx: Dict[str, Any]) -> str:
 
 
 def _handle_plan_submit(handler, parsed, ctx: Dict[str, Any]) -> str:
-    loop = _get_agent_loop()
+    loop = _get_agent_loop(handler, ctx)
     if loop is None:
         return "## Error\n\nAgent loop not available."
     content = parsed.free_text.strip()
@@ -123,7 +128,7 @@ def _handle_plan_submit(handler, parsed, ctx: Dict[str, Any]) -> str:
 
 
 def _handle_plan_approve(handler, parsed, ctx: Dict[str, Any]) -> str:
-    loop = _get_agent_loop()
+    loop = _get_agent_loop(handler, ctx)
     if loop is None:
         return "## Error\n\nAgent loop not available."
     if not loop._plan_mode:
@@ -140,7 +145,7 @@ def _handle_plan_approve(handler, parsed, ctx: Dict[str, Any]) -> str:
 
 
 def _handle_plan_reject(handler, parsed, ctx: Dict[str, Any]) -> str:
-    loop = _get_agent_loop()
+    loop = _get_agent_loop(handler, ctx)
     if loop is None:
         return "## Error\n\nAgent loop not available."
     if not loop._plan_mode:
@@ -154,7 +159,7 @@ def _handle_plan_reject(handler, parsed, ctx: Dict[str, Any]) -> str:
 
 
 def _handle_plan_status(handler, parsed, ctx: Dict[str, Any]) -> str:
-    loop = _get_agent_loop()
+    loop = _get_agent_loop(handler, ctx)
     if loop is None:
         return "## Plan Status\n\nAgent loop not available.\n\n- **Plan Mode:** unavailable\n- **Permission Mode:** unknown"
     status = loop.get_plan_status()
@@ -179,7 +184,7 @@ def _handle_plan_status(handler, parsed, ctx: Dict[str, Any]) -> str:
 
 
 def _handle_plan_exit(handler, parsed, ctx: Dict[str, Any]) -> str:
-    loop = _get_agent_loop()
+    loop = _get_agent_loop(handler, ctx)
     if loop is None:
         return "## Error\n\nAgent loop not available."
     if not loop._plan_mode:

@@ -76,10 +76,10 @@ class InlinePicker {
         this.onSelect = config.onSelect || (async () => {});
         this.getStatusColumns = config.getStatusColumns || (() => []);
         this.getPriorityOptions = config.getPriorityOptions || (() => [
-            { key: 'critical', label: 'Critical', color: 'var(--error)' },
+            { key: 'project', label: 'Project', color: 'var(--error)' },
             { key: 'serious', label: 'Serious', color: 'var(--warning)' },
-            { key: 'normal', label: 'Normal', color: 'var(--primary-500)' },
-            { key: 'low', label: 'Low', color: '#9ca3af' },
+            { key: 'thought', label: 'Thought', color: 'var(--primary-500)' },
+            { key: 'generated', label: 'Generated', color: '#9ca3af' },
         ]);
         this.getAssigneeOptions = config.getAssigneeOptions || (() => []);
         this.getAllLabels = config.getAllLabels || (() => []);
@@ -103,21 +103,19 @@ class InlinePicker {
         const options = this._getOptions();
         const el = document.createElement('div');
         el.className = 'inline-picker-popover';
-        this._applyBaseStyles(el);
 
         // Search for assignee
         if (this.field === 'assignee') {
             const searchInput = document.createElement('input');
             searchInput.type = 'text';
             searchInput.placeholder = 'Search...';
-            searchInput.className = 'form-input';
-            searchInput.style.cssText = 'font-size:12px;padding:4px 8px;margin:4px;width:calc(100% - 8px);';
+            searchInput.className = 'form-input inline-picker-search';
             el.appendChild(searchInput);
             searchInput.addEventListener('input', () => {
                 const q = searchInput.value.toLowerCase();
                 el.querySelectorAll('.inline-picker-option').forEach(opt => {
                     const label = opt.dataset.label?.toLowerCase() || '';
-                    opt.style.display = label.includes(q) ? '' : 'none';
+                    opt.classList.toggle('is-hidden', !label.includes(q));
                 });
             });
             requestAnimationFrame(() => searchInput.focus());
@@ -128,37 +126,22 @@ class InlinePicker {
             item.className = `inline-picker-option ${opt.key === this.currentValue ? 'active' : ''}`;
             item.dataset.value = opt.key;
             item.dataset.label = opt.label;
-            item.style.cssText = `
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                padding: 6px 10px;
-                font-size: 12px;
-                cursor: pointer;
-                border-radius: 4px;
-                color: var(--text-primary);
-                background: ${opt.key === this.currentValue ? 'var(--bg-secondary, #2a2a3e)' : 'transparent'};
-            `;
-            item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg-secondary, #2a2a3e)'; });
-            item.addEventListener('mouseleave', () => {
-                item.style.background = opt.key === this.currentValue ? 'var(--bg-secondary, #2a2a3e)' : 'transparent';
-            });
 
             if (opt.color) {
                 const dot = document.createElement('span');
-                dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${opt.color};flex-shrink:0;`;
+                dot.className = `inline-picker-dot ${this._getToneClass(this.field, opt.key)}`.trim();
                 item.appendChild(dot);
             }
 
             const label = document.createElement('span');
+            label.className = 'inline-picker-option-label';
             label.textContent = opt.label;
-            label.style.flex = '1';
             item.appendChild(label);
 
             if (opt.key === this.currentValue) {
                 const check = document.createElement('span');
+                check.className = 'inline-picker-option-check';
                 check.textContent = '\u2713';
-                check.style.cssText = 'color:var(--primary-500);font-weight:600;';
                 item.appendChild(check);
             }
 
@@ -179,42 +162,29 @@ class InlinePicker {
     _renderDueDatePicker() {
         const el = document.createElement('div');
         el.className = 'inline-picker-popover due-date-picker';
-        this._applyBaseStyles(el);
-        el.style.padding = '8px';
-        el.style.minWidth = '200px';
 
         // Header
         const header = document.createElement('div');
         header.textContent = 'Due Date';
-        header.style.cssText = 'font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;';
+        header.className = 'inline-picker-header';
         el.appendChild(header);
 
         // Date input
         const input = document.createElement('input');
         input.type = 'date';
         input.className = 'due-date-input';
-        // currentValue may be a unix timestamp or ISO string
         if (this.currentValue) {
-            let dateVal = this.currentValue;
-            // If it looks like a unix timestamp (digits only), convert to ISO
-            if (/^\d+$/.test(dateVal)) {
-                dateVal = new Date(parseInt(dateVal) * 1000).toISOString().slice(0, 10);
-            } else if (dateVal.length > 10) {
-                dateVal = dateVal.slice(0, 10);
-            }
-            input.value = dateVal;
+            input.value = this._toDateInputValue(this.currentValue);
         }
-        input.style.cssText = 'width:100%;padding:6px;border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-secondary,#2a2a3e);color:var(--text-primary);font-size:12px;';
         el.appendChild(input);
 
         // Footer buttons
         const footer = document.createElement('div');
-        footer.style.cssText = 'display:flex;gap:6px;margin-top:8px;justify-content:flex-end;';
+        footer.className = 'inline-picker-footer';
 
         const clearBtn = document.createElement('button');
         clearBtn.textContent = 'Clear';
         clearBtn.className = 'picker-btn picker-clear-btn';
-        clearBtn.style.cssText = 'padding:4px 12px;font-size:12px;border:1px solid var(--border,#333);border-radius:4px;background:transparent;color:var(--text-primary);cursor:pointer;';
         clearBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this._selectValue(null);
@@ -224,7 +194,6 @@ class InlinePicker {
         const applyBtn = document.createElement('button');
         applyBtn.textContent = 'Apply';
         applyBtn.className = 'picker-btn picker-apply-btn';
-        applyBtn.style.cssText = 'padding:4px 12px;font-size:12px;border:none;border-radius:4px;background:var(--primary-500);color:#fff;cursor:pointer;';
         applyBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this._selectValue(input.value || null);
@@ -234,6 +203,18 @@ class InlinePicker {
         el.appendChild(footer);
         this._showPicker(el);
         requestAnimationFrame(() => input.focus());
+    }
+
+    _toDateInputValue(rawValue) {
+        const value = String(rawValue || '').trim();
+        if (!value) return '';
+        if (/^-?\d+(\.\d+)?$/.test(value)) {
+            const numeric = Number(value);
+            const millis = numeric < 1e12 ? numeric * 1000 : numeric;
+            const date = new Date(millis);
+            return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+        }
+        return value.length > 10 ? value.slice(0, 10) : value;
     }
 
     // ------------------------------------------------------------------
@@ -246,15 +227,11 @@ class InlinePicker {
 
         const el = document.createElement('div');
         el.className = 'inline-picker-popover label-picker';
-        this._applyBaseStyles(el);
-        el.style.padding = '8px';
-        el.style.minWidth = '200px';
-        el.style.maxHeight = '300px';
 
         // Header
         const header = document.createElement('div');
         header.textContent = 'Labels';
-        header.style.cssText = 'font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:4px;';
+        header.className = 'inline-picker-header';
         el.appendChild(header);
 
         // Search input
@@ -262,35 +239,27 @@ class InlinePicker {
         searchInput.type = 'text';
         searchInput.className = 'picker-search';
         searchInput.placeholder = 'Search labels...';
-        searchInput.style.cssText = 'width:100%;padding:6px 8px;margin:4px 0;border:1px solid var(--border,#333);border-radius:4px;background:var(--bg-secondary,#2a2a3e);color:var(--text-primary);font-size:12px;box-sizing:border-box;';
         el.appendChild(searchInput);
 
         // Options list
         const optionsContainer = document.createElement('div');
         optionsContainer.className = 'picker-options';
-        optionsContainer.style.cssText = 'max-height:180px;overflow-y:auto;';
 
         const optionEls = [];
         allLabels.forEach(label => {
             const item = document.createElement('div');
             item.className = `picker-option ${selected.has(label) ? 'checked' : ''}`;
             item.dataset.label = label;
-            item.style.cssText = 'display:flex;align-items:center;padding:4px 8px;cursor:pointer;border-radius:4px;font-size:12px;color:var(--text-primary);';
 
             const checkbox = document.createElement('span');
             checkbox.className = 'picker-checkbox';
             checkbox.textContent = selected.has(label) ? '\u2611' : '\u2610';
-            checkbox.style.cssText = 'width:20px;flex-shrink:0;';
             item.appendChild(checkbox);
 
             const text = document.createElement('span');
             text.className = 'picker-option-text';
             text.textContent = label;
-            text.style.flex = '1';
             item.appendChild(text);
-
-            item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg-secondary, #2a2a3e)'; });
-            item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
 
             item.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -313,18 +282,17 @@ class InlinePicker {
         searchInput.addEventListener('input', () => {
             const q = searchInput.value.toLowerCase();
             optionEls.forEach(({ el, label }) => {
-                el.style.display = label.toLowerCase().includes(q) ? '' : 'none';
+                el.classList.toggle('is-hidden', !label.toLowerCase().includes(q));
             });
         });
 
         // Footer
         const footer = document.createElement('div');
-        footer.style.cssText = 'display:flex;gap:6px;margin-top:8px;justify-content:flex-end;';
+        footer.className = 'inline-picker-footer';
 
         const applyBtn = document.createElement('button');
         applyBtn.textContent = 'Apply';
         applyBtn.className = 'picker-btn picker-apply-btn';
-        applyBtn.style.cssText = 'padding:4px 12px;font-size:12px;border:none;border-radius:4px;background:var(--primary-500);color:#fff;cursor:pointer;';
         applyBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this._selectValue(Array.from(selected));
@@ -340,59 +308,20 @@ class InlinePicker {
     // Unified popover helpers
     // ------------------------------------------------------------------
 
-    /**
-     * Apply base popover styles (shared across all picker types).
-     */
-    _applyBaseStyles(el) {
-        el.style.cssText = `
-            position: fixed;
-            z-index: 10000;
-            background: var(--bg-primary, #1e1e2e);
-            border: 1px solid var(--border, #333);
-            border-radius: 8px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-            padding: 4px;
-            min-width: 140px;
-            max-height: 240px;
-            overflow-y: auto;
-        `;
-    }
-
-    /**
-     * Show the picker element: append to body, position, wire close handlers.
-     */
     _showPicker(el) {
         this.el = el;
-        document.body.appendChild(el);
-        this._position();
+        this.anchor.classList.add('inline-picker-anchor');
+        this.anchor.appendChild(el);
 
         document.addEventListener('keydown', this._onKeydown, true);
         setTimeout(() => document.addEventListener('click', this._onClickOutside, true), 0);
     }
 
-    /**
-     * Position the popover relative to the anchor element.
-     * Prefers below the anchor; flips above if viewport space is insufficient.
-     */
-    _position() {
-        if (!this.el || !this.anchor) return;
-        const anchorRect = this.anchor.getBoundingClientRect();
-        const elRect = this.el.getBoundingClientRect();
-
-        let top = anchorRect.bottom + 4;
-        let left = anchorRect.left;
-
-        // Keep within viewport
-        if (top + elRect.height > window.innerHeight) {
-            top = anchorRect.top - elRect.height - 4;
-        }
-        if (left + elRect.width > window.innerWidth) {
-            left = window.innerWidth - elRect.width - 8;
-        }
-        if (left < 0) left = 8;
-
-        this.el.style.top = top + 'px';
-        this.el.style.left = left + 'px';
+    _getToneClass(field, key) {
+        const normalizedField = String(field || '').toLowerCase();
+        const normalizedKey = String(key || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+        if (!normalizedField || !normalizedKey) return '';
+        return `inline-picker-dot--${normalizedField}-${normalizedKey}`;
     }
 
     _getOptions() {

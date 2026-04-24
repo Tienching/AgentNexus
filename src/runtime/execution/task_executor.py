@@ -259,7 +259,7 @@ class TaskExecutor:
                     logger.info(f"Ralph Loop re-queue for task {task.id}")
                     current_task = self._task_queue.get_task(task.id)
                     if current_task:
-                        self._task_queue._update_task_status(current_task, TaskStatus.INBOX)
+                        self._task_queue._update_task_status(current_task, TaskStatus.PENDING)
                         await asyncio.sleep(self._config.retry_delay)
                         self._task_queue._redis.rpush(
                             self._task_queue._queue_key(task.workspace),
@@ -274,7 +274,7 @@ class TaskExecutor:
                         # Requeue for retry
                         logger.info(f"Task {task.id} will be retried (attempt {current_task.attempt_count}/{self._config.max_retries})")
                         # Reset to TODO status
-                        self._task_queue._update_task_status(current_task, TaskStatus.INBOX)
+                        self._task_queue._update_task_status(current_task, TaskStatus.PENDING)
                         # Re-add to queue after delay
                         await asyncio.sleep(self._config.retry_delay)
                         self._task_queue._redis.rpush(

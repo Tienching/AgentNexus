@@ -82,3 +82,6 @@ class MetricsResponse(BaseModel):
     cli_command: str = Field(..., description="CLI 执行命令")
     requests_total: int = Field(default=0, description="总请求数")
     requests_active: int = Field(default=0, description="活跃请求数")
+    storage_backend: str = Field(default="sqlite", description="Primary persistence backend")
+    storage_path: Optional[str] = Field(None, description="SQLite database path when available")
+    redis_optional: bool = Field(default=True, description="Whether Redis is optional rather than required")

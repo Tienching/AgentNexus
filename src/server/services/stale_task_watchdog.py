@@ -73,7 +73,7 @@ def requeue_stale_tasks(
     """
     active_task_ids = _get_executor_active_task_ids()
 
-    doing_tasks = task_queue.get_in_progress_tasks()
+    doing_tasks = task_queue.get_running_tasks()
 
     if not doing_tasks:
         return {"ok": True, "requeued": 0, "failed": 0, "skipped": 0,

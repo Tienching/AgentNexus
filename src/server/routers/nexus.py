@@ -25,6 +25,10 @@ from .nexus_files import router as files_router
 from .nexus_streaming import router as streaming_router
 from .nexus_skills import router as skills_router
 from .nexus_config import router as config_router
+from .nexus_control_plane import router as control_plane_router
+from .nexus_collaboration import router as collaboration_router
+from .nexus_extensions import router as extensions_router
+from .nexus_operator import router as operator_router
 
 # Composite router — app.py includes this single router
 router = APIRouter()
@@ -36,5 +40,9 @@ for _sub_router in (
     streaming_router,
     skills_router,
     config_router,
+    control_plane_router,
+    collaboration_router,
+    extensions_router,
+    operator_router,
 ):
     router.include_router(_sub_router)

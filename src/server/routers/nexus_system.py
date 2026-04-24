@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.task_storage import TaskQueue
+from ..services.task_storage import get_task_queue
 from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
@@ -292,13 +292,13 @@ def _escalate(current: str, proposed: str) -> str:
 
 def _build_workload(exec_user: str) -> WorkloadResponse:
     """Build workload response by inspecting task queues via Redis."""
-    queue = TaskQueue(db_path=None, exec_user=exec_user)
+    queue = get_task_queue(exec_user)
     now = int(time.time())
 
     # ── capacity ─────────────────────────────────────────────────────────
     try:
         todo_tasks = queue.get_todo_tasks()
-        in_progress = queue.get_in_progress_tasks()
+        in_progress = queue.get_running_tasks()
         active = len(in_progress)
         total_pending = len(todo_tasks) + active
     except Exception:
@@ -424,12 +424,12 @@ def _build_standup(exec_user: str) -> StandupReport:
     per-agent DB rows; all tasks for an exec_user live in one queue.  We
     produce a single-agent summary entry with the full queue counts.
     """
-    queue = TaskQueue(db_path=None, exec_user=exec_user)
+    queue = get_task_queue(exec_user)
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     try:
         todo_tasks = queue.get_todo_tasks()
-        doing_tasks = queue.get_in_progress_tasks()
+        doing_tasks = queue.get_running_tasks()
         todo_count = len(todo_tasks)
         doing_count = len(doing_tasks)
     except Exception:

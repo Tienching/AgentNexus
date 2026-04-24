@@ -32,6 +32,7 @@ from .routers.nexus_evolution import router as nexus_evolution_router
 from .routers.nexus_features import router as nexus_features_router
 from .routers.nexus_permissions import router as nexus_permissions_router
 from .routers.nexus_agents import router as nexus_agents_router
+from .routers.nexus_events import router as nexus_events_router
 from .routers.nexus_teleport import router as nexus_teleport_router
 from .logger import setup_logger, get_logger
 from .services import (
@@ -39,6 +40,7 @@ from .services import (
     TaskExecutor,
     create_and_start_executor,
     get_executor,
+    get_task_queue,
 )
 from src.runtime import __version__ as runtime_version
 from src.runtime.models.task_models import ExecutorConfig
@@ -177,7 +179,7 @@ async def lifespan(app: FastAPI):
     elif app_settings.executor_enabled:
         try:
             # 初始化任务队列
-            _task_queue = TaskQueue(exec_user=exec_user)
+            _task_queue = get_task_queue(exec_user)
 
             # 创建执行器配置（从 Redis 加载并发限制）
             from src.runtime.stores.concurrency_config import get_concurrency_config_store
@@ -638,6 +640,7 @@ def _configure_app(app: FastAPI, app_settings: Settings) -> None:
     app.include_router(nexus_features_router)
     app.include_router(nexus_permissions_router)
     app.include_router(nexus_agents_router)
+    app.include_router(nexus_events_router)
     app.include_router(nexus_teleport_router)
 
     # Mount static files for NexusHub Web UI (with cache-control middleware)

@@ -15,16 +15,16 @@ from urllib import request as urlrequest
 
 from src.runtime.models.task_models import TaskPriority, TaskStatus
 from src.runtime.stores.db import get_db
-from src.runtime.stores.task_storage import TaskQueue
+from src.server.services.task_storage import get_task_queue
 
 
 STATUS_TO_LABEL = {
-    TaskStatus.INBOX.value: "mc:inbox",
-    TaskStatus.ASSIGNED.value: "mc:assigned",
-    TaskStatus.IN_PROGRESS.value: "mc:in-progress",
-    TaskStatus.REVIEW.value: "mc:review",
-    TaskStatus.QUALITY_REVIEW.value: "mc:quality-review",
-    TaskStatus.DONE.value: "mc:done",
+    TaskStatus.PENDING.value: "mc:pending",
+    TaskStatus.RUNNING.value: "mc:running",
+    TaskStatus.IN_REVIEW.value: "mc:in-review",
+    TaskStatus.COMPLETED.value: "mc:completed",
+    TaskStatus.FAILED.value: "mc:failed",
+    TaskStatus.CANCELLED.value: "mc:cancelled",
 }
 
 LABEL_TO_STATUS = {v: k for k, v in STATUS_TO_LABEL.items()}
@@ -123,7 +123,7 @@ class GitHubIssueSync:
         if not number:
             return "skipped"
 
-        queue = TaskQueue(exec_user=exec_user)
+        queue = get_task_queue(exec_user)
         existing = self._find_task_by_issue(repo=repo, issue_number=int(number), exec_user=exec_user)
 
         mapped_status = self._map_issue_status(issue)
@@ -158,7 +158,7 @@ class GitHubIssueSync:
                 provider="github",
                 alias="github-sync",
             )
-            if mapped_status != TaskStatus.INBOX.value:
+            if mapped_status != TaskStatus.PENDING.value:
                 queue.update_task_status(created_task.id, TaskStatus.from_legacy(mapped_status))
             return "created"
 
@@ -196,7 +196,7 @@ class GitHubIssueSync:
             "title": self._task_to_issue_title(task),
             "body": self._task_to_issue_body(task),
             "labels": labels,
-            "state": "closed" if status_value == TaskStatus.DONE.value else "open",
+            "state": "closed" if status_value == TaskStatus.COMPLETED.value else "open",
         }
 
         if getattr(task, "assigned_to", None) and assignee_reverse_map:
@@ -238,13 +238,13 @@ class GitHubIssueSync:
 
     def _map_issue_status(self, issue: Dict[str, Any]) -> str:
         if issue.get("state") == "closed":
-            return TaskStatus.DONE.value
+            return TaskStatus.COMPLETED.value
 
         labels = [l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)]
         for label in labels:
             if label in LABEL_TO_STATUS:
                 return LABEL_TO_STATUS[label]
-        return TaskStatus.INBOX.value
+        return TaskStatus.PENDING.value
 
     @staticmethod
     def _map_issue_priority(issue: Dict[str, Any]) -> TaskPriority:

@@ -7,13 +7,16 @@ Each migration module in this package must define:
   - up(conn): callable  (receives a sqlite3.Connection)
 
 Migrations are applied in version order, tracked in ``_schema_version`` table.
+Discovery is strict by default: missing or malformed modules raise immediately
+so the application cannot continue with an incomplete migration registry.
 """
 
 from __future__ import annotations
 
 import importlib
 import logging
-from typing import List, Dict, Any
+from types import ModuleType
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -31,22 +34,81 @@ _MIGRATION_MODULES = [
     "src.runtime.stores.migrations.v010_quality_reviews_table",
     "src.runtime.stores.migrations.v011_task_runtime_state_columns",
     "src.runtime.stores.migrations.v012_schedule_durability_and_lock",
+    "src.runtime.stores.migrations.v013_migrate_task_statuses",
+    "src.runtime.stores.migrations.v014_execution_bindings",
+    "src.runtime.stores.migrations.v015_session_task_id_column",
+    "src.runtime.stores.migrations.v016_task_lifecycle_guards",
+    "src.runtime.stores.migrations.v017_netharness_statuses",
 ]
 
 
-def get_all_migrations() -> List[Dict[str, Any]]:
-    """Load and return all migration descriptors sorted by version."""
+class MigrationDiscoveryError(RuntimeError):
+    """Raised when the migration registry cannot be loaded safely."""
+
+
+def _load_migration_module(module_path: str) -> ModuleType:
+    """Import a migration module or raise a descriptive discovery error."""
+    try:
+        return importlib.import_module(module_path)
+    except Exception as exc:  # pragma: no cover - exercised via tests/mocks
+        raise MigrationDiscoveryError(
+            f"Failed to import migration module {module_path}: {exc}"
+        ) from exc
+
+
+def _build_descriptor(module_path: str, mod: ModuleType) -> Dict[str, Any]:
+    """Validate a migration module and convert it into a descriptor."""
+    missing = [attr for attr in ("VERSION", "NAME", "up") if not hasattr(mod, attr)]
+    if missing:
+        raise MigrationDiscoveryError(
+            f"Invalid migration module {module_path}: missing {', '.join(missing)}"
+        )
+
+    version = getattr(mod, "VERSION")
+    name = getattr(mod, "NAME")
+    up = getattr(mod, "up")
+
+    if not isinstance(version, int) or version <= 0:
+        raise MigrationDiscoveryError(
+            f"Invalid migration module {module_path}: VERSION must be a positive integer"
+        )
+    if not isinstance(name, str) or not name.strip():
+        raise MigrationDiscoveryError(
+            f"Invalid migration module {module_path}: NAME must be a non-empty string"
+        )
+    if not callable(up):
+        raise MigrationDiscoveryError(
+            f"Invalid migration module {module_path}: up must be callable"
+        )
+
+    return {
+        "version": version,
+        "name": name,
+        "up": up,
+    }
+
+
+def get_all_migrations(strict: bool = True) -> List[Dict[str, Any]]:
+    """Load and return all migration descriptors sorted by version.
+
+    When ``strict`` is true, any import/validation problem raises
+    :class:`MigrationDiscoveryError`.
+    """
     migrations = []
     for module_path in _MIGRATION_MODULES:
         try:
-            mod = importlib.import_module(module_path)
-            migrations.append({
-                "version": mod.VERSION,
-                "name": mod.NAME,
-                "up": mod.up,
-            })
-        except ImportError as e:
-            logger.debug(f"Migration module not loaded: {module_path} ({e})")
-        except AttributeError as e:
-            logger.warning(f"Invalid migration module {module_path}: {e}")
-    return sorted(migrations, key=lambda m: m["version"])
+            migrations.append(_build_descriptor(module_path, _load_migration_module(module_path)))
+        except MigrationDiscoveryError:
+            if strict:
+                raise
+            logger.exception("Migration module could not be loaded: %s", module_path)
+
+    ordered = sorted(migrations, key=lambda m: m["version"])
+    versions = [int(m["version"]) for m in ordered]
+    if len(set(versions)) != len(versions):
+        raise MigrationDiscoveryError(f"Duplicate migration versions detected: {versions}")
+    if versions and versions != list(range(1, len(versions) + 1)):
+        raise MigrationDiscoveryError(
+            f"Migration versions must be contiguous starting at 1; got {versions}"
+        )
+    return ordered

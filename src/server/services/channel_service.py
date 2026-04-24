@@ -20,6 +20,7 @@ from typing import Any, Callable, Coroutine, Dict, List, Optional
 from ..config import settings
 from ..logger import get_logger
 from src.channels import (
+    ChannelConfig,
     ChannelManager,
     InboundMessage,
     TelegramConfig,

@@ -287,7 +287,7 @@ def normalize_provider(name: Optional[str]) -> str:
     
     Unknown/empty values fall back to "claude".
     
-    Returns: "claude", "gemini", "codex", "codebuddy", or "nanobot"
+    Returns: "claude", "gemini", "codex", "codebuddy", or "nexus"
     """
 ```
 
@@ -311,7 +311,7 @@ def create_all_executors(*, config=None) -> dict:
     """Pre-create one executor per known provider.
     
     Returns:
-        Dict with keys: "claude", "gemini", "codex", "codebuddy", "nanobot"
+        Dict with keys: "claude", "gemini", "codex", "codebuddy", "nexus"
     """
 ```
 
@@ -419,12 +419,12 @@ class ServerSettings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8081
     cli_timeout: int = 600                 # CLI timeout in seconds
-    nanobot_model: str = "gpt-4o"          # Already exists
-    nanobot_missions_enabled: bool = True  # Already exists
-    # Add these for nanobot:
-    nanobot_command: str = "nanobot"       # CLI command to invoke
-    nanobot_workspace: str = ""            # Default workspace
-    nanobot_max_iterations: int = 20       # Max iterations
+    nexus_model: str = "gpt-4o"          # Already exists
+    nexus_missions_enabled: bool = True  # Already exists
+    # Add these for nexus:
+    nexus_command: str = "nexus"       # CLI command to invoke
+    nexus_workspace: str = ""            # Default workspace
+    nexus_max_iterations: int = 20       # Max iterations
 ```
 
 ---
@@ -476,9 +476,9 @@ data: {"type":"RUN_FINISHED","runId":"run-123"}
 
 ### Test executor:
 ```python
-async def test_nanobot_executor():
-    config = NanobotExecutorConfig()
-    executor = NanobotExecutor(config)
+async def test_nexus_executor():
+    config = NexusExecutorConfig()
+    executor = NexusExecutor(config)
     
     context = RequestContext(
         content="test prompt",
@@ -499,8 +499,8 @@ async def test_nanobot_executor():
 
 ### Test adapter:
 ```python
-async def test_nanobot_adapter():
-    adapter = NanobotAGUIAdapter()
+async def test_nexus_adapter():
+    adapter = NexusAGUIAdapter()
     adapter.init_state("thread-123", "run-456")
     
     # Test event conversion

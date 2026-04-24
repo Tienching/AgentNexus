@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Nanobot provider package for agent-nexus.
+"""Legacy nanobot provider package.
 
-Exposes the in-process executor and AG-UI adapter that allow nanobot's
-AgentLoop to serve as a chat provider alongside Claude, Gemini, etc.
+This module now re-exports the canonical nexus provider implementation.
 """
 
-from src.providers.nanobot.adapter import NanobotAGUIAdapter
-from src.providers.nanobot.executor import NanobotExecutor
+from src.providers.nexus import NexusAGUIAdapter, NexusExecutor
 
-__all__ = ["NanobotExecutor", "NanobotAGUIAdapter"]
+NanobotAGUIAdapter = NexusAGUIAdapter
+NanobotExecutor = NexusExecutor
+
+__all__ = ["NexusExecutor", "NexusAGUIAdapter", "NanobotExecutor", "NanobotAGUIAdapter"]

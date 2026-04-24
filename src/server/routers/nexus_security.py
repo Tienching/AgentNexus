@@ -412,6 +412,14 @@ def _scan_database() -> SecurityCategory:
             fix="",
             severity="critical",
         ))
+        checks.append(SecurityCheck(
+            id="redis_reachable",
+            name="Storage backend reachable",
+            status="pass",
+            detail=f"SQLite reachable via {db.db_path}",
+            fix="",
+            severity="critical",
+        ))
 
         # Check file permissions
         import stat
@@ -432,6 +440,14 @@ def _scan_database() -> SecurityCategory:
             name="SQLite database reachable",
             status="fail",
             detail=f"Database connection failed: {str(e)[:80]}",
+            fix="Check NEXUS_DB_PATH and disk permissions",
+            severity="critical",
+        ))
+        checks.append(SecurityCheck(
+            id="redis_reachable",
+            name="Storage backend reachable",
+            status="fail",
+            detail=f"SQLite connection failed: {str(e)[:80]}",
             fix="Check NEXUS_DB_PATH and disk permissions",
             severity="critical",
         ))

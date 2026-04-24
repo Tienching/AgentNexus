@@ -45,6 +45,7 @@ class AppDataStore {
         this._ttl = {
             tasks:        15000,   // 15s
             sessions:     20000,   // 20s
+            historySessions: 20000, // 20s
             agents:       60000,   // 60s
             schedules:    30000,   // 30s
             diagnostics:  30000,   // 30s
@@ -63,6 +64,7 @@ class AppDataStore {
         this._fetchers = {
             tasks:       (opts) => NexusAPI.getTasks(opts),
             sessions:    (opts) => NexusAPI.getSessions(opts),
+            historySessions: (opts) => NexusAPI.getHistorySessions(opts),
             agents:      ()     => NexusAPI.getAgents(),
             schedules:   (opts) => NexusAPI.getSchedules(opts),
             diagnostics: ()     => NexusAPI.getDiagnostics(),
@@ -140,15 +142,18 @@ class AppDataStore {
      */
     async fetch(key, opts = {}) {
         const force = opts.force;
+        const fetchOpts = { ...opts };
+        delete fetchOpts.force;
+        const cacheKey = this._cacheKey(key, fetchOpts);
 
         // Return cache if fresh and not forced
-        if (!force && this._cache.has(key) && !this._isStale(key)) {
-            return this._cache.get(key);
+        if (!force && this._cache.has(cacheKey) && !this._isStale(cacheKey, key)) {
+            return this._cache.get(cacheKey);
         }
 
         // Dedup: if a fetch for this key is already in-flight, return that promise
-        if (this._pending.has(key)) {
-            return this._pending.get(key);
+        if (this._pending.has(cacheKey)) {
+            return this._pending.get(cacheKey);
         }
 
         const fetcher = this._fetchers[key];
@@ -156,25 +161,22 @@ class AppDataStore {
             throw new Error(`[AppDataStore] Unknown data source: '${key}'`);
         }
 
-        // Strip internal flags before passing to fetcher
-        const fetchOpts = { ...opts };
-        delete fetchOpts.force;
         this._lastOpts.set(key, fetchOpts);
 
         const promise = fetcher(fetchOpts)
             .then(data => {
-                this._cache.set(key, data);
-                this._timestamps.set(key, Date.now());
-                this._pending.delete(key);
+                this._cache.set(cacheKey, data);
+                this._timestamps.set(cacheKey, Date.now());
+                this._pending.delete(cacheKey);
                 this._notify(key, data);
                 return data;
             })
             .catch(err => {
-                this._pending.delete(key);
+                this._pending.delete(cacheKey);
                 throw err;
             });
 
-        this._pending.set(key, promise);
+        this._pending.set(cacheKey, promise);
         return promise;
     }
 
@@ -183,8 +185,8 @@ class AppDataStore {
      * @param {string} key
      * @returns {any|undefined}
      */
-    get(key) {
-        return this._cache.get(key);
+    get(key, opts = {}) {
+        return this._cache.get(this._cacheKey(key, opts));
     }
 
     /**
@@ -192,8 +194,9 @@ class AppDataStore {
      * @param {string} key
      * @returns {boolean}
      */
-    isFresh(key) {
-        return this._cache.has(key) && !this._isStale(key);
+    isFresh(key, opts = {}) {
+        const cacheKey = this._cacheKey(key, opts);
+        return this._cache.has(cacheKey) && !this._isStale(cacheKey, key);
     }
 
     /**
@@ -202,9 +205,10 @@ class AppDataStore {
      * @param {string} key
      * @param {any} data
      */
-    set(key, data) {
-        this._cache.set(key, data);
-        this._timestamps.set(key, Date.now());
+    set(key, data, opts = {}) {
+        const cacheKey = this._cacheKey(key, opts);
+        this._cache.set(cacheKey, data);
+        this._timestamps.set(cacheKey, Date.now());
         this._notify(key, data);
     }
 
@@ -215,7 +219,9 @@ class AppDataStore {
     invalidate(...keys) {
         const targets = keys.length > 0 ? keys : [...this._cache.keys()];
         for (const key of targets) {
-            this._timestamps.delete(key);
+            for (const cacheKey of this._matchingCacheKeys(key)) {
+                this._timestamps.delete(cacheKey);
+            }
         }
     }
 
@@ -285,12 +291,39 @@ class AppDataStore {
     // ------------------------------------------------------------------
 
     /** @private */
-    _isStale(key) {
-        const ts = this._timestamps.get(key);
+    _isStale(cacheKey, key = cacheKey) {
+        const ts = this._timestamps.get(cacheKey);
         if (ts == null) return true;
         const ttl = this._ttl[key] ?? 30000;
         if (ttl <= 0) return true;
         return Date.now() - ts > ttl;
+    }
+
+    /** @private */
+    _cacheKey(key, opts = {}) {
+        const stableOpts = this._stableSerialize(opts || {});
+        return stableOpts === '{}' ? key : `${key}:${stableOpts}`;
+    }
+
+    /** @private */
+    _stableSerialize(value) {
+        if (Array.isArray(value)) {
+            return `[${value.map(v => this._stableSerialize(v)).join(',')}]`;
+        }
+        if (value && typeof value === 'object') {
+            return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${this._stableSerialize(value[k])}`).join(',')}}`;
+        }
+        return JSON.stringify(value);
+    }
+
+    /** @private */
+    _matchingCacheKeys(key) {
+        const prefix = `${key}:`;
+        return [...new Set([
+            ...[...this._cache.keys()].filter(cacheKey => cacheKey === key || cacheKey.startsWith(prefix)),
+            ...[...this._timestamps.keys()].filter(cacheKey => cacheKey === key || cacheKey.startsWith(prefix)),
+            ...[...this._pending.keys()].filter(cacheKey => cacheKey === key || cacheKey.startsWith(prefix)),
+        ])];
     }
 
     /** @private Notify key-specific + global listeners */

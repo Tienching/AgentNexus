@@ -46,6 +46,7 @@ all-channels = [
 dev = [
     { name = "black" },
     { name = "mypy" },
+    { name = "playwright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -74,6 +75,7 @@ whatsapp = [
 [package.dev-dependencies]
 dev = [
     { name = "black" },
+    { name = "mypy" },
     { name = "playwright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -101,6 +103,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.26.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "openai", specifier = ">=2.8.0" },
+    { name = "playwright", marker = "extra == 'dev'", specifier = ">=1.58.0" },
     { name = "pydantic", specifier = ">=2.5.0" },
     { name = "pydantic-settings", specifier = ">=2.1.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.3" },
@@ -128,6 +131,7 @@ provides-extras = ["dev", "mission", "wecom", "slack", "telegram", "discord", "w
 [package.metadata.requires-dev]
 dev = [
     { name = "black", specifier = ">=23.11.0" },
+    { name = "mypy", specifier = ">=1.7.0" },
     { name = "playwright", specifier = ">=1.58.0" },
     { name = "pytest", specifier = ">=7.4.3" },
     { name = "pytest-asyncio", specifier = ">=0.21.1" },

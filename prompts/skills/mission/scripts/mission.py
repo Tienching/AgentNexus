@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mission CLI — autonomous goal execution via nanobot's mission system.
+Mission CLI — autonomous goal execution via nexus's mission system.
 
 Subcommands:
     plan      Decompose goal into milestones/tasks (status=planned)

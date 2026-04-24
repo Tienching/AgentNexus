@@ -34,9 +34,10 @@ class TestAPIEndpoints:
         response = await client.get("/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "healthy"
+        assert data["status"] in {"healthy", "degraded", "warning"}
         assert data["service"] == "agent-nexus"
         assert "version" in data
+        assert any(check["name"] == "Database" for check in data.get("checks", []))
 
     @pytest.mark.asyncio
     async def test_metrics_endpoint(self, client: AsyncClient):

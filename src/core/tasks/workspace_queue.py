@@ -195,7 +195,7 @@ class WorkspaceQueueManager:
                 stale_tasks = set()
                 for task_id in state.executing_tasks:
                     task = self._task_queue.get_task(task_id)
-                    if not task or task.status not in (TaskStatus.IN_PROGRESS.value, TaskStatus.IN_PROGRESS):
+                    if not task or task.status not in (TaskStatus.RUNNING.value, TaskStatus.RUNNING):
                         stale_tasks.add(task_id)
                 
                 for task_id in stale_tasks:

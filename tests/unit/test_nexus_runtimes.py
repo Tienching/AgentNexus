@@ -54,7 +54,7 @@ class TestAgentRuntimes:
         assert "total" in data
         assert "installed_count" in data
         assert isinstance(data["runtimes"], list)
-        assert data["total"] >= 1  # at least nanobot should be detected
+        assert data["total"] >= 1  # at least one nexus-compatible runtime should be detected
 
     def test_runtime_item_shape(self, client):
         resp = client.get("/api/nexus/agent-runtimes", headers=_auth_headers())
@@ -77,7 +77,7 @@ class TestAgentRuntimes:
         assert "codex" in ids
         assert "gemini" in ids
         assert "codebuddy" in ids
-        assert "nanobot" in ids
+        assert {"nanobot", "nexus"} & ids
 
     def test_single_runtime_filter(self, client):
         resp = client.get(
@@ -134,7 +134,7 @@ class TestAgentRuntimesService:
         from src.server.services.agent_runtimes import detect_all_runtimes
         results = detect_all_runtimes()
         assert isinstance(results, list)
-        assert len(results) == 5  # claude, codex, gemini, codebuddy, nanobot
+        assert len(results) == 5  # claude, codex, gemini, codebuddy, and the 5th agent runtime
 
     @patch("shutil.which", return_value="/usr/local/bin/claude")
     @patch("subprocess.run")

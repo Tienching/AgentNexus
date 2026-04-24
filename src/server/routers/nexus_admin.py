@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.task_storage import TaskQueue
+from ..services.task_storage import get_task_queue
 from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
@@ -53,20 +53,20 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_events_action ON audit_events(action);
 CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(timestamp DESC);
 """
-_audit_schema_done = False
+_audit_schema_ready_paths: set[str] = set()
 
 
 def _audit_db():
     from src.runtime.stores.db import get_db
-    global _audit_schema_done
     db = get_db()
-    if not _audit_schema_done:
+    db_path = str(getattr(db, "db_path", ""))
+    if db_path not in _audit_schema_ready_paths:
         try:
             with db.transaction() as conn:
                 conn.executescript(_AUDIT_SCHEMA)
-            _audit_schema_done = True
+            _audit_schema_ready_paths.add(db_path)
         except Exception:
-            _audit_schema_done = True
+            logger.debug("Failed to ensure audit schema for %s", db_path, exc_info=True)
     return db
 
 
@@ -388,7 +388,7 @@ def _get_redis_info() -> DiagRedis:
 def _get_task_info() -> DiagTasks:
     """Count tasks by status."""
     exec_user = getattr(settings, "exec_user", None) or "default"
-    queue = TaskQueue(db_path=None, exec_user=exec_user)
+    queue = get_task_queue(exec_user)
     by_status: Dict[str, int] = {}
     total = 0
     for status in ("inbox", "in_progress", "done", "failed", "archived"):
@@ -495,7 +495,6 @@ async def doctor():
     import shutil
 
     checks: List[DoctorCheck] = []
-    all_passed = True
 
     # Check 1: Python environment
     checks.append(DoctorCheck(
@@ -515,7 +514,6 @@ async def doctor():
                 message=f"Low disk space: {free_gb:.1f}GB free",
                 detail="Less than 1GB free. Clean up old logs or data.",
             ))
-            all_passed = False
         elif free_gb < 5:
             checks.append(DoctorCheck(
                 name="disk_space",
@@ -581,7 +579,6 @@ async def doctor():
             message="Database connection failed",
             detail=str(e),
         ))
-        all_passed = False
 
     # Check 5: Redis (optional)
     try:
@@ -711,7 +708,7 @@ async def doctor_bundle():
 
     # Add recent logs
     try:
-        logger_instance = get_logger()
+        get_logger()
         bundle["logs"] = "Log retrieval not implemented - check server logs directly"
     except Exception:
         bundle["logs"] = "Logger not accessible"
@@ -725,12 +722,26 @@ async def doctor_bundle():
 
 @router.get("/metrics", summary="Get observability metrics snapshot")
 async def get_metrics(path_prefix: str = Query("", description="Filter latency by path prefix")):
-    """Return a snapshot of telemetry metrics: latency, token usage, cost, events."""
+    """Return a SQLite-first observability snapshot: telemetry plus backend info."""
     from ..services.observability import telemetry
+    storage_backend = "sqlite"
+    storage_path = None
+    try:
+        from src.runtime.stores.db import get_db
+
+        storage_path = get_db().db_path
+    except Exception:
+        storage_path = None
 
     if path_prefix:
         snapshot = telemetry.snapshot()
         snapshot["latency"] = telemetry.latency_for_path(path_prefix)
-        return snapshot
+    else:
+        snapshot = telemetry.snapshot()
 
-    return telemetry.snapshot()
+    snapshot["storage"] = {
+        "backend": storage_backend,
+        "path": storage_path,
+        "redis_optional": True,
+    }
+    return snapshot

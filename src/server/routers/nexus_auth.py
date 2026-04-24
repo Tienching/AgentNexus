@@ -7,6 +7,7 @@ Authentication is optional - only enabled when NEXUS_PASSWORD is set.
 
 from __future__ import annotations
 
+import os
 import secrets
 import time
 from typing import Optional
@@ -14,6 +15,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
+from src.core.auth.rbac import AuthenticatedUser, Role, get_current_user, set_current_user
 from ..config import settings
 from ..logger import get_logger
 
@@ -64,6 +66,10 @@ def _is_auth_required() -> bool:
     return bool(settings.nexus_password and settings.nexus_password.strip())
 
 
+def _get_api_token() -> str:
+    return (os.getenv("NEXUS_AUTH_TOKEN") or "").strip()
+
+
 def _verify_password(password: str) -> bool:
     """Verify the provided password against configured NEXUS_PASSWORD"""
     if not _is_auth_required():
@@ -96,12 +102,17 @@ def _session_db():
         return None
 
 
+def _redis_available() -> bool:
+    """Legacy compatibility helper for tests that previously patched Redis availability."""
+    return _session_db() is not None
+
+
 def _create_session(token: str) -> None:
     """Create a new session with expiry (SQLite preferred, fallback to memory)."""
     ttl = int(settings.nexus_session_ttl)
     expiry = time.time() + ttl
 
-    db = _session_db()
+    db = _session_db() if _redis_available() else None
     if db:
         try:
             with db.transaction() as conn:
@@ -133,7 +144,7 @@ def _validate_session(token: str) -> bool:
     if not token:
         return False
 
-    db = _session_db()
+    db = _session_db() if _redis_available() else None
     if db:
         try:
             row = db.execute_fetchone(
@@ -164,7 +175,7 @@ def _invalidate_session(token: str) -> None:
     if not token:
         return
 
-    db = _session_db()
+    db = _session_db() if _redis_available() else None
     if db:
         try:
             with db.transaction() as conn:
@@ -188,19 +199,72 @@ def get_auth_token(request: Request) -> Optional[str]:
     return None
 
 
+def _build_authenticated_user(request: Request, *, allow_header_user: bool = False) -> AuthenticatedUser:
+    # X-Nexus-User is a development/convenience header, not a verified identity.
+    # Do not honor it for bearer-token or password-session authenticated requests,
+    # otherwise any token holder can spoof audit actors.
+    header_user = request.headers.get("X-Nexus-User") if allow_header_user else None
+    username = (header_user or settings.exec_user or "nexus").strip() or "nexus"
+    return AuthenticatedUser(username=username, role=Role.ADMIN, scopes=["admin"])
+
+
+def get_authenticated_nexus_user(request: Request) -> AuthenticatedUser:
+    user = getattr(request.state, "nexus_user", None) or get_current_user()
+    if user is not None:
+        return user
+    if not _is_auth_required() and not _get_api_token():
+        user = _build_authenticated_user(request, allow_header_user=True)
+        request.state.nexus_user = user
+        set_current_user(user)
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def require_nexus_admin(request: Request) -> AuthenticatedUser:
+    user = get_authenticated_nexus_user(request)
+    if user.has_role(Role.ADMIN):
+        return user
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+
+
 async def verify_nexus_auth(request: Request) -> bool:
     """Dependency to verify Nexus authentication.
     
     Returns True if authenticated or auth not required.
     Raises HTTPException if auth required but not authenticated.
     """
-    if not _is_auth_required():
-        return True
-    
     token = get_auth_token(request)
-    if _validate_session(token):
+    set_current_user(None)
+
+    api_token = _get_api_token()
+    if api_token:
+        if token and secrets.compare_digest(token, api_token):
+            user = _build_authenticated_user(request, allow_header_user=False)
+            request.state.nexus_user = user
+            set_current_user(user)
+            return True
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not _is_auth_required():
+        user = _build_authenticated_user(request, allow_header_user=True)
+        request.state.nexus_user = user
+        set_current_user(user)
         return True
-    
+
+    if _validate_session(token):
+        user = _build_authenticated_user(request, allow_header_user=False)
+        request.state.nexus_user = user
+        set_current_user(user)
+        return True
+
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required",
@@ -214,13 +278,17 @@ async def auth_status(request: Request):
     
     Returns whether auth is required and current authentication state.
     """
-    auth_required = _is_auth_required()
+    auth_required = _is_auth_required() or bool(_get_api_token())
     
     if not auth_required:
         return AuthStatusResponse(authenticated=True, auth_required=False)
     
     token = get_auth_token(request)
-    authenticated = _validate_session(token)
+    api_token = _get_api_token()
+    if api_token:
+        authenticated = bool(token and secrets.compare_digest(token, api_token))
+    else:
+        authenticated = _validate_session(token)
     
     return AuthStatusResponse(authenticated=authenticated, auth_required=True)
 

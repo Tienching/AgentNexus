@@ -27,35 +27,41 @@ class TestNormalizeProvider:
         assert self.normalize("gemini") == "gemini"
         assert self.normalize("codex") == "codex"
         assert self.normalize("codebuddy") == "codebuddy"
-        assert self.normalize("nanobot") == "nanobot"
+        assert self.normalize("nexus") == "nexus"
+        assert self.normalize("nanobot") == "nexus"
 
     def test_claude_explicit(self):
         assert self.normalize("claude") == "claude"
 
-    def test_none_defaults_to_nanobot(self):
-        assert self.normalize(None) == "nanobot"
+    def test_none_defaults_to_nexus(self):
+        default_alias = self.normalize(None)
+        assert default_alias == "nexus"
+        assert self.normalize("") == default_alias
+        assert self.normalize("   ") == default_alias
 
-    def test_empty_string_defaults_to_nanobot(self):
-        assert self.normalize("") == "nanobot"
+    def test_empty_string_defaults_to_nexus(self):
+        assert self.normalize("") == "nexus"
 
-    def test_whitespace_defaults_to_nanobot(self):
-        assert self.normalize("   ") == "nanobot"
+    def test_whitespace_defaults_to_nexus(self):
+        assert self.normalize("   ") == "nexus"
 
     def test_case_insensitive(self):
         assert self.normalize("Gemini") == "gemini"
         assert self.normalize("CODEX") == "codex"
         assert self.normalize("CodeBuddy") == "codebuddy"
         assert self.normalize("CLAUDE") == "claude"
-        assert self.normalize("Nanobot") == "nanobot"
+        assert self.normalize("Nexus") == "nexus"
 
     def test_leading_trailing_whitespace_stripped(self):
         assert self.normalize("  gemini  ") == "gemini"
         assert self.normalize("\tcodex\n") == "codex"
 
-    def test_unknown_provider_falls_back_to_nanobot(self):
-        assert self.normalize("openai") == "nanobot"
-        assert self.normalize("gpt4") == "nanobot"
-        assert self.normalize("anthropic") == "nanobot"
+    def test_unknown_provider_falls_back_to_nexus(self):
+        default_alias = self.normalize(None)
+        assert default_alias == "nexus"
+        assert self.normalize("openai") == default_alias
+        assert self.normalize("gpt4") == default_alias
+        assert self.normalize("anthropic") == default_alias
 
 
 # ---------------------------------------------------------------------------
@@ -99,32 +105,32 @@ class TestCreateExecutor:
             result = create_executor("codebuddy", config=mock_config)
             MockCB.assert_called_once_with(config=mock_config)
 
-    def test_nanobot_creates_nanobot_executor(self):
+    def test_nexus_creates_nexus_executor(self):
         mock_config = MagicMock()
-        mock_config.nanobot_workspace = "/tmp/test"
-        mock_config.nanobot_model = "gpt-4o"
+        mock_config.nexus_workspace = "/tmp/test"
+        mock_config.nexus_model = "gpt-4o"
         from src.providers.dispatcher import create_executor
-        from src.providers.nanobot.executor import NanobotExecutor
-        result = create_executor("nanobot", config=mock_config)
-        assert isinstance(result, NanobotExecutor)
+        from src.providers.nexus.executor import NexusExecutor
+        result = create_executor("nexus", config=mock_config)
+        assert isinstance(result, NexusExecutor)
 
-    def test_unknown_provider_falls_back_to_nanobot(self):
+    def test_unknown_provider_falls_back_to_nexus(self):
         mock_config = MagicMock()
-        mock_config.nanobot_workspace = "/tmp/test"
-        mock_config.nanobot_model = "gpt-4o"
+        mock_config.nexus_workspace = "/tmp/test"
+        mock_config.nexus_model = "gpt-4o"
         from src.providers.dispatcher import create_executor
-        from src.providers.nanobot.executor import NanobotExecutor
+        from src.providers.nexus.executor import NexusExecutor
         result = create_executor("unknown_provider", config=mock_config)
-        assert isinstance(result, NanobotExecutor)
+        assert isinstance(result, NexusExecutor)
 
-    def test_none_provider_falls_back_to_nanobot(self):
+    def test_none_provider_falls_back_to_nexus(self):
         mock_config = MagicMock()
-        mock_config.nanobot_workspace = "/tmp/test"
-        mock_config.nanobot_model = "gpt-4o"
+        mock_config.nexus_workspace = "/tmp/test"
+        mock_config.nexus_model = "gpt-4o"
         from src.providers.dispatcher import create_executor
-        from src.providers.nanobot.executor import NanobotExecutor
+        from src.providers.nexus.executor import NexusExecutor
         result = create_executor(None, config=mock_config)
-        assert isinstance(result, NanobotExecutor)
+        assert isinstance(result, NexusExecutor)
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +168,17 @@ class TestCreateAdapter:
             result = create_adapter("claude")
             MockAdapter.assert_called_once()
 
-    def test_nanobot_creates_nanobot_adapter(self):
+    def test_nexus_creates_nexus_adapter(self):
         from src.providers.dispatcher import create_adapter
-        from src.providers.nanobot.adapter import NanobotAGUIAdapter
-        result = create_adapter("nanobot")
-        assert isinstance(result, NanobotAGUIAdapter)
+        from src.providers.nexus.adapter import NexusAGUIAdapter
+        result = create_adapter("nexus")
+        assert isinstance(result, NexusAGUIAdapter)
 
-    def test_unknown_provider_uses_nanobot_adapter(self):
+    def test_unknown_provider_uses_nexus_adapter(self):
         from src.providers.dispatcher import create_adapter
-        from src.providers.nanobot.adapter import NanobotAGUIAdapter
+        from src.providers.nexus.adapter import NexusAGUIAdapter
         result = create_adapter("unknown")
-        assert isinstance(result, NanobotAGUIAdapter)
+        assert isinstance(result, NexusAGUIAdapter)
 
 
 # ---------------------------------------------------------------------------
@@ -184,24 +190,27 @@ class TestCreateAllExecutors:
 
     def test_returns_all_five_providers(self):
         mock_config = MagicMock()
+        mock_config.nexus_workspace = "/tmp/test"
+        mock_config.nexus_model = "gpt-4o"
         with (
             patch("src.server.services.cli_executor.CLIExecutor") as MockCLI,
             patch("src.providers.gemini.GeminiExecutor") as MockGemini,
             patch("src.providers.codex.CodexCLIExecutor") as MockCodex,
             patch("src.providers.codebuddy.CodebuddyCLIExecutor") as MockCB,
-            patch("src.providers.nanobot.executor.NanobotExecutor") as MockNB,
+            patch("src.providers.nexus.executor.NexusExecutor") as MockNB,
         ):
             MockCLI.return_value = MagicMock(name="CLIExecutor")
             MockGemini.return_value = MagicMock(name="GeminiExecutor")
             MockCodex.return_value = MagicMock(name="CodexCLIExecutor")
             MockCB.return_value = MagicMock(name="CodebuddyCLIExecutor")
-            MockNB.return_value = MagicMock(name="NanobotExecutor")
+            MockNB.return_value = MagicMock(name="NexusExecutor")
 
             from src.providers.dispatcher import create_all_executors
             result = create_all_executors(config=mock_config)
 
-            assert set(result.keys()) == {"claude", "gemini", "codex", "codebuddy", "nanobot"}
-            assert len(result) == 5
+            assert set(result.keys()) == {"claude", "gemini", "codex", "codebuddy", "nexus", "nanobot"}
+            assert result["nanobot"] is result["nexus"]
+            assert len(result) == 6
 
     def test_each_value_is_unique_instance(self):
         mock_config = MagicMock()
@@ -214,10 +223,30 @@ class TestCreateAllExecutors:
             from src.providers.dispatcher import create_all_executors
             result = create_all_executors(config=mock_config)
 
-            values = list(result.values())
-            for i in range(len(values)):
-                for j in range(i + 1, len(values)):
-                    assert values[i] is not values[j], (
-                        f"Executor {list(result.keys())[i]} and "
-                        f"{list(result.keys())[j]} should be distinct instances"
+            assert result["nanobot"] is result["nexus"]
+
+            canonical_values = [result[key] for key in ("claude", "gemini", "codex", "codebuddy", "nexus")]
+            for i in range(len(canonical_values)):
+                for j in range(i + 1, len(canonical_values)):
+                    assert canonical_values[i] is not canonical_values[j], (
+                        "Canonical executors should be distinct instances"
                     )
+
+
+def test_legacy_nanobot_executor_private_imports_and_agent_loop_lookup(monkeypatch):
+    from src.providers.nanobot.executor import _LoopPool, _NanobotPool, _serialise_event
+    from src.providers.nexus.event_schema import TextStartEvent
+    from src.server.app import get_agent_loop
+
+    sentinel_loop = object()
+    original_instances = dict(_LoopPool._instances)
+    try:
+        _LoopPool._instances.clear()
+        _LoopPool._instances["/tmp/legacy"] = sentinel_loop
+
+        assert _NanobotPool is _LoopPool
+        assert _serialise_event(TextStartEvent(message_id="msg_legacy")) == '{"type": "text_start", "message_id": "msg_legacy"}'
+        assert get_agent_loop() is sentinel_loop
+    finally:
+        _LoopPool._instances.clear()
+        _LoopPool._instances.update(original_instances)

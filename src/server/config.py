@@ -81,13 +81,18 @@ class ServerSettings(BaseSettings):
     # Channel 服务配置
     channels_enabled: bool = True
 
-    # Nanobot Mission System
+    # Nexus Mission System
+    nexus_model: str = ""  # Empty = use ~/.nexus/config.json setting
+    nexus_workspace: str = ""  # Default: ~/Projects
+    nexus_missions_enabled: bool = True
+
+    # Legacy nanobot aliases kept for compatibility
     nanobot_model: str = ""  # Empty = use ~/.nanobot/config.json setting
     nanobot_workspace: str = ""  # Default: ~/Projects
     nanobot_missions_enabled: bool = True
 
     # Default chat provider (can be overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
-    default_chat_provider: str = "claude"  # "claude", "nanobot", "gemini", etc.
+    default_chat_provider: str = "nexus"  # "claude", "nexus", "gemini", etc.
     
     # Telegram 配置
     telegram_bot_token: str | None = None
@@ -177,7 +182,7 @@ class ServerSettings(BaseSettings):
         "env_file": ".env",
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
-        "extra": "ignore",  # Ignore NANOBOT_* env vars used by nanobot config
+        "extra": "ignore",  # Ignore legacy env vars used by compatibility layers
     }
 
 
@@ -193,7 +198,7 @@ class ProviderSettings(BaseSettings):
     gemini_command: str = "gemini"
     
     # 默认 Provider 和 Exec User
-    default_provider: str = "nanobot"
+    default_provider: str = "nexus"
     default_alias: str = ""
     default_exec_user: str = ""
 

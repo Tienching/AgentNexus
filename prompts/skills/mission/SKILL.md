@@ -183,7 +183,7 @@ A mission consists of:
 | Error | Cause | Action |
 |-------|-------|--------|
 | `[ERROR] Mission not found` | Invalid mission ID | Check with `list` |
-| `[ERROR] Import failed` | nanobot not installed | Install with `pip install -e ../nanobot` |
+| `[ERROR] Import failed` | nexus not installed | Install with `pip install -e ../nexus` |
 | `[ERROR] Mission not in planned status` | Already running/completed | Check `status` first |
 | `[ERROR] API key not set` | Missing OPENAI_API_KEY | Set env var |
 
@@ -195,5 +195,5 @@ A mission consists of:
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | (required) | LLM API key |
 | `OPENAI_API_BASE` | (OpenAI default) | API base URL |
-| `NANOBOT_MODEL` | `gpt-4o` | Default model for task execution |
-| `NANOBOT_WORKSPACE` | `~/Projects` | Default workspace directory |
+| `NEXUS_MODEL` | `gpt-4o` | Default model for task execution |
+| `NEXUS_WORKSPACE` | `~/Projects` | Default workspace directory |

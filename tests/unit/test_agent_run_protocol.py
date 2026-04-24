@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -57,6 +58,16 @@ def _make_redis():
     mock.zrem.side_effect = zrem
     mock.zrangebyscore.side_effect = zrangebyscore
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _isolate_run_db(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "test_runs.db")
+    monkeypatch.setenv("NEXUS_DB_PATH", db_path)
+    from src.runtime.stores.db import Database
+    Database._instance = None
+    yield Path(db_path)
+    Database._instance = None
 
 
 def _make_svc(redis=None):

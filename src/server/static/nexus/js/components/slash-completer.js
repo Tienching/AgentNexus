@@ -125,15 +125,11 @@ class SlashCompleter {
             });
         });
 
-        // Position below input
-        const rect = this.input.getBoundingClientRect();
-        this.dropdown.style.position = 'fixed';
-        this.dropdown.style.left = rect.left + 'px';
-        this.dropdown.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
-        this.dropdown.style.maxWidth = rect.width + 'px';
+        const host = this.input.parentElement || this.input;
+        host.classList.add('slash-completer-host');
 
         if (!this.dropdown.parentNode) {
-            document.body.appendChild(this.dropdown);
+            host.appendChild(this.dropdown);
         }
     }
 

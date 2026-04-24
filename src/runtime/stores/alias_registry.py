@@ -24,6 +24,8 @@ KNOWN_PROVIDERS = frozenset({"claude", "codex", "gemini", "codebuddy"})
 class AliasRegistry:
     """Global alias -> provider mapping stored in SQLite."""
 
+    REDIS_KEY = "alias_registry"
+
     # Built-in aliases that don't need explicit registration.
     # Keys are alias names, values are the canonical provider.
     BUILTIN: Dict[str, str] = {
@@ -36,8 +38,9 @@ class AliasRegistry:
         "codebuddy": "codebuddy",
     }
 
-    def __init__(self, db: Optional[Database] = None):
+    def __init__(self, db: Optional[Database] = None, redis_client=None):
         self._db = db or get_db()
+        self._redis = redis_client
 
     # ------------------------------------------------------------------
     # Public API
@@ -61,6 +64,10 @@ class AliasRegistry:
                 f"Must be one of: {', '.join(sorted(KNOWN_PROVIDERS))}"
             )
         try:
+            if self._redis is not None:
+                self._redis.hset(self.REDIS_KEY, {alias: provider})
+                logger.info(f"Registered alias: {alias} -> {provider}")
+                return True
             with self._db.transaction() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO aliases (name, target) VALUES (?, ?)",
@@ -82,7 +89,16 @@ class AliasRegistry:
         if not alias:
             return None
 
-        # 1. Check SQLite
+        # 1. Check legacy Redis compatibility layer
+        if self._redis is not None:
+            try:
+                value = self._redis.hget(self.REDIS_KEY, alias)
+                if value:
+                    return value
+            except Exception as e:
+                logger.warning(f"Failed to query alias registry: {e}")
+
+        # 2. Check SQLite
         try:
             row = self._db.execute_fetchone(
                 "SELECT target FROM aliases WHERE name = ?", (alias,)
@@ -92,7 +108,7 @@ class AliasRegistry:
         except Exception as e:
             logger.warning(f"Failed to query alias registry: {e}")
 
-        # 2. Fallback to built-in
+        # 3. Fallback to built-in
         return self.BUILTIN.get(alias)
 
     def unregister(self, alias: str) -> bool:
@@ -108,6 +124,8 @@ class AliasRegistry:
             logger.warning(f"Cannot unregister built-in alias: {alias}")
             return False
         try:
+            if self._redis is not None:
+                return bool(self._redis.hdel(self.REDIS_KEY, alias))
             with self._db.transaction() as conn:
                 cursor = conn.execute(
                     "DELETE FROM aliases WHERE name = ?", (alias,)
@@ -124,6 +142,11 @@ class AliasRegistry:
         """
         result = dict(self.BUILTIN)
         try:
+            if self._redis is not None:
+                rows = self._redis.hgetall(self.REDIS_KEY) or {}
+                for name, target in rows.items():
+                    result[name] = target
+                return result
             rows = self._db.execute_fetchall("SELECT name, target FROM aliases")
             for row in rows:
                 result[row["name"]] = row["target"]

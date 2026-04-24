@@ -246,6 +246,59 @@ class TestAuditLog:
         assert len(rows) >= 2
         assert rows[0]["action"] == "test_action"
 
+    def test_record_and_query_after_db_singleton_reset(self, monkeypatch, tmp_path):
+        from src.runtime.stores.db import Database
+        from src.server.routers import nexus_admin
+
+        first_db = tmp_path / "audit-first.db"
+        second_db = tmp_path / "audit-second.db"
+
+        monkeypatch.setenv("NEXUS_DB_PATH", str(first_db))
+        Database._instance = None
+        nexus_admin.record_audit_event("first_action", actor="tester")
+
+        monkeypatch.setenv("NEXUS_DB_PATH", str(second_db))
+        Database._instance = None
+        nexus_admin.record_audit_event("second_action", actor="tester")
+
+        db = nexus_admin._audit_db()
+        rows = db.execute_fetchall("SELECT action FROM audit_events ORDER BY id ASC")
+        assert [row["action"] for row in rows] == ["second_action"]
+
+
+class TestDatabaseResetIsolation:
+    """Verify the Database singleton can be reset between isolated DB files."""
+
+    def test_reset_instances_switches_to_a_fresh_database_file(self, monkeypatch, tmp_path):
+        from src.runtime.stores.db import Database, get_db
+
+        first_db = tmp_path / "first.db"
+        second_db = tmp_path / "second.db"
+
+        monkeypatch.setenv("NEXUS_DB_PATH", str(first_db))
+        Database.reset_instances()
+        db1 = get_db()
+
+        with db1.transaction() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT)")
+            conn.execute("DELETE FROM marker")
+            conn.execute("INSERT INTO marker (value) VALUES (?)", ("first",))
+
+        assert db1.db_path == str(first_db)
+        assert db1.execute_fetchall("SELECT value FROM marker") == [{"value": "first"}]
+
+        monkeypatch.setenv("NEXUS_DB_PATH", str(second_db))
+        Database.reset_instances()
+        db2 = get_db()
+
+        assert db2.db_path == str(second_db)
+        assert db2.execute_fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='marker'"
+        ) == []
+
+        # The original object should still point at the first database file after reset.
+        assert db1.execute_fetchall("SELECT value FROM marker") == [{"value": "first"}]
+
 
 # ---------------------------------------------------------------------------
 # R-006: Auth sessions — SQLite
@@ -338,3 +391,91 @@ class TestSessionStorageSingleton:
         # Singletons may be different due to DB reset per test, but both should work
         assert s1 is not None
         assert s2 is not None
+
+
+class TestMigrationStrictness:
+    """Regression tests for migration atomicity and strict backfills."""
+
+    def test_v013_status_migration_stays_inside_outer_transaction(self):
+        from src.runtime.stores.migrations import v013_migrate_task_statuses as migration
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE tasks (status TEXT)")
+        conn.execute("CREATE TABLE core_tasks (status TEXT)")
+        conn.execute("INSERT INTO tasks(status) VALUES ('todo')")
+        conn.execute("INSERT INTO core_tasks(status) VALUES ('review')")
+        conn.commit()
+
+        conn.execute("BEGIN")
+        migration.up(conn)
+        conn.rollback()
+
+        task_status = conn.execute("SELECT status FROM tasks").fetchone()[0]
+        core_status = conn.execute("SELECT status FROM core_tasks").fetchone()[0]
+        assert task_status == "todo"
+        assert core_status == "review"
+
+    def test_v014_backfill_raises_when_sessions_table_lacks_id_column(self):
+        from src.runtime.stores.migrations import v014_execution_bindings as migration
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE sessions (session_key TEXT PRIMARY KEY)")
+
+        with pytest.raises(sqlite3.OperationalError):
+            migration.up(conn)
+
+    def test_v017_rebuilds_active_session_index_after_terminal_status_migration(self):
+        from src.runtime.stores.migrations import v017_netharness_statuses as migration
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE tasks (
+                id TEXT NOT NULL,
+                exec_user TEXT NOT NULL,
+                status TEXT,
+                session_id TEXT,
+                deleted_at REAL
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO tasks(id, exec_user, status, session_id, deleted_at) VALUES (?, ?, ?, ?, NULL)",
+            [
+                ("done-task", "alice", "done", "session-1"),
+                ("inbox-task", "alice", "inbox", "session-1"),
+                ("done-task-2", "alice", "done", "session-2"),
+                ("done-task-3", "alice", "done", "session-2"),
+            ],
+        )
+
+        migration.up(conn)
+
+        rows = conn.execute("SELECT id, status, session_id FROM tasks ORDER BY id").fetchall()
+        assert rows == [
+            ("done-task", "completed", "session-1"),
+            ("done-task-2", "completed", "session-2"),
+            ("done-task-3", "completed", "session-2"),
+            ("inbox-task", "pending", "session-1"),
+        ]
+
+    def test_v017_deduplicates_colliding_active_sessions_before_index(self):
+        from src.runtime.stores.migrations import v017_netharness_statuses as migration
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("""
+            CREATE TABLE tasks (
+                id TEXT NOT NULL,
+                exec_user TEXT NOT NULL,
+                status TEXT,
+                session_id TEXT,
+                deleted_at REAL
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO tasks(id, exec_user, status, session_id, deleted_at) VALUES (?, ?, ?, ?, NULL)",
+            [("a", "alice", "inbox", "session-1"), ("b", "alice", "assigned", "session-1")],
+        )
+
+        migration.up(conn)
+
+        session_ids = {row[0] for row in conn.execute("SELECT session_id FROM tasks").fetchall()}
+        assert session_ids == {"session-1", "session-1:dedup:a"}

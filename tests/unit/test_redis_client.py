@@ -3,7 +3,10 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
-import redis
+
+redis = pytest.importorskip("redis", reason="redis extra is optional for the default test suite")
+
+pytestmark = pytest.mark.optional_backend
 
 from src.runtime.stores.redis_client import RedisClient, get_redis_client
 

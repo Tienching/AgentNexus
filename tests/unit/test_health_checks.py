@@ -233,12 +233,13 @@ class TestCheckDiskSpace:
 class TestPerformHealthCheck:
     def test_all_healthy_returns_healthy(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check()
         assert result.status == "healthy"
-        assert len(result.checks) == 3
+        assert len(result.checks) == 4
 
     def test_includes_startup_subsystem_checks(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
@@ -258,7 +259,8 @@ class TestPerformHealthCheck:
                 "detail": {"configured": False},
             },
         }
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check(startup_states=startup_states)
@@ -279,7 +281,8 @@ class TestPerformHealthCheck:
                 "detail": {"error": "executor boom"},
             }
         }
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check(startup_states=startup_states)
@@ -303,7 +306,8 @@ class TestPerformHealthCheck:
                 "detail": {"configured": True},
             }
         }
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check(startup_states=startup_states)
@@ -316,27 +320,30 @@ class TestPerformHealthCheck:
             for check in result.checks
         )
 
-    def test_one_warning_degrades_overall(self):
+    def test_optional_redis_warning_does_not_degrade_overall(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
         warn = HealthCheck(name="Redis", status="warning", message="slow")
-        with patch("src.server.routers.health._check_redis", return_value=warn), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=warn), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check()
-        assert result.status == "warning"
+        assert result.status == "healthy"
 
-    def test_unhealthy_redis_propagates(self):
+    def test_optional_redis_unhealthy_does_not_degrade_overall(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
         bad = HealthCheck(name="Redis", status="unhealthy", message="down")
-        with patch("src.server.routers.health._check_redis", return_value=bad), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=bad), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check()
-        assert result.status == "unhealthy"
+        assert result.status == "healthy"
 
     def test_response_has_service_and_version(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check()
@@ -345,7 +352,8 @@ class TestPerformHealthCheck:
 
     def test_uptime_seconds_is_non_negative(self):
         healthy = HealthCheck(name="X", status="healthy", message="OK")
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = _perform_health_check()
@@ -450,7 +458,8 @@ class TestHealthRoute:
         )
         healthy = HealthCheck(name="Redis", status="healthy", message="OK")
 
-        with patch("src.server.routers.health._check_redis", return_value=healthy), \
+        with patch("src.server.routers.health._check_database", return_value=healthy), \
+             patch("src.server.routers.health._check_redis", return_value=healthy), \
              patch("src.server.routers.health._check_process_memory", return_value=healthy), \
              patch("src.server.routers.health._check_disk_space", return_value=healthy):
             result = await health_check(request)

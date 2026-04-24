@@ -32,38 +32,47 @@ class TaskPriority(str, Enum):
 
 
 class TaskStatus(str, Enum):
-    """Task status states — aligned with Multica workflow
-    
-    Simplified from 9 frontend-only statuses to 6 unified statuses:
-    INBOX → IN_PROGRESS → IN_REVIEW → DONE
-                                   ↘ FAILED
-                                   ↘ ARCHIVED
+    """Task status states — aligned with netharness 7-status model
+
+    Simplified unified statuses:
+    PENDING → RUNNING → IN_REVIEW → COMPLETED
+                    ↘ CANCELLED    ↘ FAILED
+                                     ↘ ARCHIVED
     """
-    INBOX = "inbox"               # New/unprocessed tasks (was TODO)
-    IN_PROGRESS = "in_progress"   # Actively being worked on (was DOING)
-    IN_REVIEW = "in_review"       # Under review/quality gate (NEW)
-    DONE = "done"                 # Completed successfully
+    PENDING = "pending"            # New/unprocessed tasks
+    RUNNING = "running"            # Actively being worked on
+    IN_REVIEW = "in_review"       # Under review/quality gate
+    COMPLETED = "completed"       # Completed successfully
     FAILED = "failed"             # Execution failed
-    ARCHIVED = "archived"         # Archived/cancelled (hidden from main board)
-    
+    CANCELLED = "cancelled"       # Cancelled by user
+    ARCHIVED = "archived"         # Archived (hidden from main board)
+
     # Aliases for backward compatibility
     @classmethod
     def from_legacy(cls, value: str) -> "TaskStatus":
         """Convert legacy status values to new format"""
         legacy_map = {
-            "pending": cls.INBOX,
-            "todo": cls.INBOX,
-            "doing": cls.IN_PROGRESS,
-            "in_progress": cls.IN_PROGRESS,
-            "assigned": cls.IN_PROGRESS,
-            "awaiting_owner": cls.IN_PROGRESS,
+            # New canonical values
+            "pending": cls.PENDING,
+            "running": cls.RUNNING,
+            "in_review": cls.IN_REVIEW,
+            "completed": cls.COMPLETED,
+            "failed": cls.FAILED,
+            "cancelled": cls.CANCELLED,
+            "archived": cls.ARCHIVED,
+            # Old 10-status model mappings
+            "inbox": cls.PENDING,
+            "assigned": cls.PENDING,
+            "awaiting_owner": cls.PENDING,
+            "in_progress": cls.RUNNING,
             "review": cls.IN_REVIEW,
             "quality_review": cls.IN_REVIEW,
-            "completed": cls.DONE,
-            "done": cls.DONE,
-            "failed": cls.FAILED,
-            "cancelled": cls.ARCHIVED,
-            "archived": cls.ARCHIVED,
+            "done": cls.COMPLETED,
+            # Legacy aliases
+            "todo": cls.PENDING,
+            "doing": cls.RUNNING,
+            # Runtime-only status
+            "orphaned": cls.PENDING,
         }
         if value in legacy_map:
             return legacy_map[value]
@@ -82,7 +91,7 @@ class Task(BaseModel):
     id: str = Field(default_factory=_generate_task_id)
     description: str
     priority: TaskPriority = TaskPriority.THOUGHT
-    status: TaskStatus = TaskStatus.INBOX
+    status: TaskStatus = TaskStatus.PENDING
     
     # Timing
     created_at: datetime = Field(default_factory=_utcnow)
@@ -104,7 +113,12 @@ class Task(BaseModel):
     
     # Working directory for task execution
     workspace: Optional[str] = None
-    
+    prior_work_dir: Optional[str] = None
+    prior_session_id: Optional[str] = None
+    repo_url: Optional[str] = None
+    repo_root: Optional[str] = None
+    worktree_path: Optional[str] = None
+
     # Exec user isolation (Linux user for su command)
     exec_user: Optional[str] = None
 

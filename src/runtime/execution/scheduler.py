@@ -19,7 +19,7 @@ from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind
 from ..models.task_models import TaskPriority
 from ..stores.schedule_storage import ScheduleStorage
 from ..stores.task_storage import TaskQueue
-from ...server.services.stale_task_watchdog import (
+from .stale_task_watchdog import (
     requeue_stale_tasks,
     STALE_THRESHOLD_SECONDS,
 )

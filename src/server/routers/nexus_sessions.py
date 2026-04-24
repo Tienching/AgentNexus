@@ -25,6 +25,7 @@ from ..models import (
     MessageStatus,
 )
 from ..services.session_storage import get_session_storage
+from ..services.domain_events import query_domain_events
 from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
 from .nexus_models import (
@@ -92,7 +93,7 @@ async def get_agents():
         usernames = ["ubuntu"]
 
     agent_types = [
-        {"type": "nanobot", "label": "nanobot"},
+        {"type": "nexus", "label": "nexus"},
         {"type": "claude", "label": "claude"},
         {"type": "gemini", "label": "gemini"},
         {"type": "codex", "label": "codex"},
@@ -131,6 +132,7 @@ async def create_session(request: CreateSessionRequest):
 
     username = request.username or settings.exec_user
     exec_user = request.exec_user or username
+    provider = request.provider or getattr(settings, "default_provider", None) or "nexus"
 
     meta = SessionMeta(
         id=session_id,
@@ -138,12 +140,25 @@ async def create_session(request: CreateSessionRequest):
         title=request.title or "New Session",
         username=username,
         exec_user=exec_user,
-        provider=request.provider,
-        alias=request.alias or request.provider,
+        provider=provider,
+        alias=request.alias or provider,
         exec_dir=request.exec_dir,
+        session_kind="chat",
+        prior_session_id=request.prior_session_id,
+        prior_work_dir=request.prior_work_dir or request.exec_dir,
     )
 
     storage.save_session_meta(meta)
+    if request.prior_session_id:
+        try:
+            storage.set_inherited_session(session_id, request.prior_session_id)
+        except Exception:
+            pass
+    if request.prior_work_dir:
+        try:
+            storage.set_exec_dir_override(session_id, request.prior_work_dir)
+        except Exception:
+            pass
     logger.info(f"Created session {session_id} for user={username}")
 
     return meta
@@ -219,6 +234,18 @@ async def list_sessions(
     )
 
 
+@router.get("/sessions/archived", response_model=SessionListResponse)
+async def list_archived_sessions(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Page size"),
+    search: Optional[str] = Query(None, description="Search term for title"),
+):
+    """Get archived sessions only."""
+    storage = get_session_storage()
+    sessions, total = storage.get_archived_sessions(page=page, page_size=page_size, search=search)
+    return SessionListResponse(total=total, page=page, page_size=page_size, sessions=sessions)
+
+
 # ============ Session Detail API ============
 
 @router.get("/sessions/{session_id}", response_model=SessionMeta)
@@ -237,6 +264,30 @@ async def get_session(session_id: str):
         )
 
     return session
+
+
+@router.post("/sessions/{session_id}/archive", response_model=SuccessResponse)
+async def archive_session(session_id: str):
+    """Archive a session instead of deleting it."""
+    storage = get_session_storage()
+    session = storage.get_session_meta(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session not found: {session_id}")
+    if not storage.archive_session(session_id):
+        raise HTTPException(status_code=500, detail=f"Failed to archive session: {session_id}")
+    return SuccessResponse(success=True, message=f"Session {session_id} archived")
+
+
+@router.post("/sessions/{session_id}/restore", response_model=SuccessResponse)
+async def restore_session(session_id: str):
+    """Restore an archived session back to active."""
+    storage = get_session_storage()
+    session = storage.get_session_meta(session_id)
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Session not found: {session_id}")
+    if not storage.restore_session(session_id):
+        raise HTTPException(status_code=500, detail=f"Failed to restore session: {session_id}")
+    return SuccessResponse(success=True, message=f"Session {session_id} restored")
 
 
 # ============ Session Messages API ============
@@ -278,6 +329,46 @@ async def get_session_messages(session_id: str):
         session=session,
         cli_session_id=cli_session_id or None,
     )
+
+
+@router.get("/sessions/{session_id}/events")
+async def get_session_events(
+    session_id: str,
+    start: int = Query(0, ge=0, description="Start index"),
+    end: int = Query(-1, description="End index (-1 for tail)"),
+):
+    """Get structured AG-UI / lifecycle events for a session."""
+    storage = get_session_storage()
+    session = storage.get_session_meta(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session not found: {session_id}"
+        )
+    events = storage.get_agui_events(session_id, start=start, end=end)
+    domain_events = [
+        {
+            "id": evt.id,
+            "event_type": evt.event_type,
+            "aggregate_type": evt.aggregate_type,
+            "aggregate_id": evt.aggregate_id,
+            "actor": evt.actor,
+            "payload": evt.payload,
+            "workspace_id": evt.workspace_id,
+            "tenant_id": evt.tenant_id,
+            "task_id": evt.task_id,
+            "runtime_id": evt.runtime_id,
+            "created_at": evt.created_at,
+        }
+        for evt in query_domain_events(session_id=session_id, aggregate_type="session", aggregate_id=session_id, limit=500)
+    ]
+    return {
+        "session_id": session_id,
+        "count": len(events),
+        "events": events,
+        "domain_events": domain_events,
+        "domain_event_count": len(domain_events),
+    }
 
 
 # ============ Delete Session API ============

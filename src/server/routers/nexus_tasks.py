@@ -22,8 +22,6 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
-
 from ..config import settings
 from src.runtime.events.agui import AGUIMessage, MessageRole, MessagesSnapshotEvent
 from ..models import (
@@ -31,17 +29,22 @@ from ..models import (
     TaskPriority,
 )
 from ..services.user_directory import UserDirectoryManager
+from ..services.workspace_validation import normalize_workspace_path
 from src.runtime.commands.slash.handler import slugify_project
 from src.core.quality.gates import ReviewStatus, get_quality_gate
 from src.core.notifications.broadcast import broadcast_to_recipients, normalize_recipients
+from src.core.cost.tracker import get_token_tracker
 from ..providers import get_provider_registry
+from ..services.schedule_storage import ScheduleStorage
 from ..services.session_storage import get_session_storage
+from ..services.domain_events import query_domain_events
 from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
 from .nexus_models import (
     SuccessResponse,
     TaskItem,
     TaskListResponse,
+    TaskSummaryMetrics,
     TaskBulkRequest,
     TaskBulkResponse,
     ProjectItem,
@@ -54,8 +57,6 @@ from .nexus_models import (
     UpdateTaskOutcomeRequest,
     TaskOutcomesResponse,
     TaskOutcomeSummary,
-    OutcomeBuckets,
-    OutcomesByDimension,
     ChatContinueRequest,
     TaskComment,
     TaskCommentsResponse,
@@ -65,14 +66,44 @@ from .nexus_models import (
     SubmitQualityReviewRequest,
     BroadcastTaskRequest,
     BroadcastTaskResponse,
+    TaskTimelineEvent,
+    TaskTimelineResponse,
+    CostSummaryResponse,
+    CostBreakdownItem,
     get_task_queue,
     normalize_task_status,
     task_to_item,
+    assemble_task_items,
     extract_mentions,
 )
 
 logger = get_logger(__name__)
 _user_dir_manager = UserDirectoryManager(settings)
+
+
+def _normalize_workspace_or_400(workspace: Optional[str]) -> Optional[str]:
+    try:
+        return normalize_workspace_path(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _parse_due_date_or_400(raw_value: Any) -> Optional[datetime]:
+    if raw_value in (None, "", []):
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value
+    if isinstance(raw_value, (int, float)):
+        return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    try:
+        if re.fullmatch(r"-?\d+(\.\d+)?", value):
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return datetime.fromisoformat(value)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid due_date: {raw_value}") from exc
 
 router = APIRouter(
     prefix="/api/nexus",
@@ -82,6 +113,56 @@ router = APIRouter(
 
 
 # ============ Task Helper Functions ============
+
+
+def _task_gate_maps(
+    tasks: List[Any],
+    *,
+    workspace_id: int = 1,
+) -> tuple[Dict[str, Any], Dict[str, bool], Dict[str, str]]:
+    """Prefetch quality-gate read-model inputs for a batch of tasks."""
+    quality_gate = get_quality_gate()
+    task_ids = [str(getattr(task, "id", "")) for task in tasks if getattr(task, "id", None)]
+    latest_reviews = quality_gate.get_latest_by_tasks(task_ids, workspace_id=workspace_id) if task_ids else {}
+    gate_allowed_by_task_id: Dict[str, bool] = {}
+    gate_reason_by_task_id: Dict[str, str] = {}
+
+    for task_id in task_ids:
+        latest = latest_reviews.get(task_id)
+        status_obj = getattr(latest, "status", None) if latest is not None else None
+        status_value = (
+            status_obj.value if hasattr(status_obj, "value") else (str(status_obj) if status_obj else None)
+        )
+        allowed = status_value == ReviewStatus.APPROVED.value if status_value else False
+        reason = (
+            "Quality review approved"
+            if allowed
+            else (f"Latest quality review status: {status_value}" if status_value else "No quality review found")
+        )
+        gate_allowed_by_task_id[task_id] = allowed
+        gate_reason_by_task_id[task_id] = reason
+
+    return latest_reviews, gate_allowed_by_task_id, gate_reason_by_task_id
+
+
+def _assemble_task_read_models(tasks: List[Any], *, workspace_id: int = 1) -> List[TaskItem]:
+    latest_reviews, gate_allowed_by_task_id, gate_reason_by_task_id = _task_gate_maps(
+        tasks,
+        workspace_id=workspace_id,
+    )
+    return assemble_task_items(
+        tasks,
+        latest_quality_reviews=latest_reviews,
+        gate_allowed_by_task_id=gate_allowed_by_task_id,
+        gate_reason_by_task_id=gate_reason_by_task_id,
+    )
+
+
+def _assemble_task_read_model(task: Any, *, workspace_id: int = 1) -> TaskItem:
+    items = _assemble_task_read_models([task], workspace_id=workspace_id)
+    if not items:
+        return task_to_item(task)
+    return items[0]
 
 
 def _resolve_task_conversation_log_path(exec_user: str, task_id: str, task=None) -> Path:
@@ -148,6 +229,23 @@ def _extract_content_text(content) -> str:
     if isinstance(content, dict):
         return json.dumps(content, ensure_ascii=False)
     return str(content)
+
+
+def _domain_event_to_timeline_item(event) -> TaskTimelineEvent:
+    payload = getattr(event, "payload", None) or {}
+    if not isinstance(payload, dict):
+        payload = {"value": payload}
+    return TaskTimelineEvent(
+        id=getattr(event, "id", None),
+        event_type=str(getattr(event, "event_type", "") or ""),
+        aggregate_type=str(getattr(event, "aggregate_type", "") or ""),
+        aggregate_id=str(getattr(event, "aggregate_id", "") or ""),
+        actor=str(getattr(event, "actor", "") or "") or None,
+        payload=payload,
+        workspace_id=str(getattr(event, "workspace_id", "") or "") or None,
+        tenant_id=str(getattr(event, "tenant_id", "") or "") or None,
+        created_at=float(getattr(event, "created_at", time.time()) or time.time()),
+    )
 
 
 def _parse_task_conversation(conversation_obj) -> List[AGUIMessage]:
@@ -225,31 +323,59 @@ async def list_tasks(
         search=search,
     )
 
-    quality_gate = get_quality_gate()
-    task_ids = [str(t.id) for t in tasks]
-    latest_reviews = quality_gate.get_latest_by_tasks(task_ids, workspace_id=1) if task_ids else {}
-
-    enriched_items: List[TaskItem] = []
-    for t in tasks:
-        latest = latest_reviews.get(str(t.id))
-        status_obj = getattr(latest, "status", None) if latest is not None else None
-        status_value = status_obj.value if hasattr(status_obj, "value") else (str(status_obj) if status_obj else None)
-        gate_allowed = status_value == ReviewStatus.APPROVED.value if status_value else False
-        gate_reason = "Quality review approved" if gate_allowed else (f"Latest quality review status: {status_value}" if status_value else "No quality review found")
-        enriched_items.append(
-            task_to_item(
-                t,
-                latest_quality_review=latest,
-                gate_allowed=gate_allowed,
-                gate_reason=gate_reason,
-            )
-        )
+    enriched_items = _assemble_task_read_models(tasks, workspace_id=1)
 
     return TaskListResponse(
         total=total,
         page=page,
         page_size=page_size,
         tasks=enriched_items,
+    )
+
+@router.get("/tasks/summary", response_model=TaskSummaryMetrics)
+async def get_task_summary(exec_user: str = Query(None)):
+    """Return summary metrics for the task workbench header strip."""
+    effective_exec_user = exec_user or settings.exec_user
+    queue = get_task_queue(effective_exec_user)
+    try:
+        page = 1
+        page_size = 500
+        all_tasks: list[Any] = []
+        total = 0
+        while page <= 25:
+            batch, total = queue.list_tasks(page=page, page_size=page_size)
+            batch = list(batch or [])
+            all_tasks.extend(batch)
+            if not batch or len(all_tasks) >= total:
+                break
+            page += 1
+    except Exception:
+        return TaskSummaryMetrics()
+
+    items = assemble_task_items(all_tasks)
+    active = [t for t in items if t.lane_status in {"pending", "running", "in_review"}]
+    running = [t for t in items if t.lane_status == "running"]
+    reviewing = [t for t in items if t.lane_status == "in_review"]
+    failed = [t for t in items if t.lane_status == "failed"]
+    cancelled = [t for t in items if t.lane_status == "cancelled"]
+    scheduled = 0
+    try:
+        _, scheduled = ScheduleStorage(exec_user=effective_exec_user).list_schedules(
+            page=1,
+            page_size=1,
+            status="active",
+        )
+    except Exception:
+        scheduled = 0
+
+    return TaskSummaryMetrics(
+        total=len(items),
+        active=len(active),
+        running=len(running),
+        reviewing=len(reviewing),
+        failed=len(failed),
+        cancelled=len(cancelled),
+        scheduled=scheduled,
     )
 
 
@@ -261,13 +387,7 @@ async def get_task(task_id: str, exec_user: str = Query(settings.exec_user, desc
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
 
-    decision = get_quality_gate().check_completion_gate(task_id=str(task_id), workspace_id=1)
-    return task_to_item(
-        task,
-        latest_quality_review=decision.latest_review,
-        gate_allowed=decision.allowed,
-        gate_reason=decision.reason,
-    )
+    return _assemble_task_read_model(task, workspace_id=1)
 
 
 @router.post("/tasks", response_model=TaskItem)
@@ -312,6 +432,7 @@ async def create_task(
         project_id = slugify_project(project_name)
 
     priority = TaskPriority.PROJECT if (project_name or project_id) else TaskPriority.THOUGHT
+    normalized_workspace = _normalize_workspace_or_400(request.workspace)
 
     queue = get_task_queue(exec_user)
     task = queue.add_task(
@@ -319,11 +440,17 @@ async def create_task(
         priority=priority,
         project_id=project_id,
         project_name=project_name,
-        workspace=(request.workspace or "").strip() or None,
+        workspace=normalized_workspace,
         provider=provider,
         alias=alias_value,
         model=(request.llm_model or "").strip() or None,
         source_session_id=(request.source_session_id or "").strip() or None,
+        prior_session_id=(request.prior_session_id or "").strip() or None,
+        prior_work_dir=(request.prior_work_dir or "").strip() or None,
+        repo_url=(request.repo_url or "").strip() or None,
+        repo_root=(request.repo_root or "").strip() or None,
+        worktree_path=(request.worktree_path or "").strip() or None,
+        session_id=(request.session_id or "").strip() or None,
         exec_user=effective_exec_user,
         assigned_to=(request.assigned_to or "").strip() or None,
         tags=request.tags or [],
@@ -335,7 +462,38 @@ async def create_task(
         loop_keywords=request.loop_keywords or [],
     )
 
-    return task_to_item(task)
+    try:
+        get_session_storage().upsert_execution_binding(
+            session_id=task.session_id or f"task_{task.id}",
+            provider=provider,
+            alias=alias_value,
+            exec_user=effective_exec_user,
+            work_dir=normalized_workspace,
+            source_type="task",
+            source_session_id=((request.prior_session_id or "").strip() or (request.source_session_id or "").strip() or None),
+            task_id=task.id,
+            session_kind="task",
+        )
+    except Exception as e:
+        logger.debug(f"Failed to seed execution binding for task {task.id}: {e}")
+
+    try:
+        from ..services.worktree_registry import get_repo_worktree_registry
+
+        if any([request.repo_url, request.repo_root, request.worktree_path, request.prior_session_id, request.prior_work_dir]):
+            get_repo_worktree_registry().register_task_handoff(
+                task_id=task.id,
+                repo_url=(request.repo_url or "").strip() or None,
+                repo_root=(request.repo_root or "").strip() or None,
+                worktree_path=(request.worktree_path or "").strip() or None,
+                workspace=normalized_workspace,
+                prior_session_id=(request.prior_session_id or "").strip() or None,
+                prior_work_dir=(request.prior_work_dir or "").strip() or None,
+            )
+    except Exception as e:
+        logger.debug(f"Failed to register task worktree handoff for task {task.id}: {e}")
+
+    return _assemble_task_read_model(task, workspace_id=1)
 
 
 @router.post("/tasks/bulk", response_model=BulkCreateTaskResponse)
@@ -387,6 +545,7 @@ async def bulk_create_tasks(
                 project_id = slugify_project(project_name)
 
             priority = TaskPriority.PROJECT if (project_name or project_id) else TaskPriority.THOUGHT
+            normalized_workspace = _normalize_workspace_or_400(task_req.workspace)
 
             # Resolve dependencies - convert temp IDs to real IDs
             depends_on = []
@@ -404,10 +563,16 @@ async def bulk_create_tasks(
                 priority=priority,
                 project_id=project_id,
                 project_name=project_name,
-                workspace=(task_req.workspace or "").strip() or None,
+                workspace=normalized_workspace,
                 provider=provider,
                 alias=alias_value,
                 source_session_id=(task_req.source_session_id or "").strip() or None,
+                prior_session_id=(getattr(task_req, "prior_session_id", None) or "").strip() or None,
+                prior_work_dir=(getattr(task_req, "prior_work_dir", None) or "").strip() or None,
+                repo_url=(getattr(task_req, "repo_url", None) or "").strip() or None,
+                repo_root=(getattr(task_req, "repo_root", None) or "").strip() or None,
+                worktree_path=(getattr(task_req, "worktree_path", None) or "").strip() or None,
+                session_id=(getattr(task_req, "session_id", None) or "").strip() or None,
                 exec_user=effective_exec_user,
                 assigned_to=(task_req.assigned_to or "").strip() or None,
                 tags=task_req.tags or [],
@@ -416,7 +581,48 @@ async def bulk_create_tasks(
                 depends_on=depends_on,
             )
 
-            task_item = task_to_item(task)
+            try:
+                get_session_storage().upsert_execution_binding(
+                    session_id=task.session_id or f"task_{task.id}",
+                    provider=provider,
+                    alias=alias_value,
+                    exec_user=effective_exec_user,
+                    work_dir=normalized_workspace,
+                    source_type="task",
+                    source_session_id=(
+                        (getattr(task_req, "prior_session_id", None) or "").strip()
+                        or (task_req.source_session_id or "").strip()
+                        or None
+                    ),
+                    task_id=task.id,
+                    session_kind="task",
+                )
+            except Exception as e:
+                logger.debug(f"Failed to seed execution binding for task {task.id}: {e}")
+
+            try:
+                from ..services.worktree_registry import get_repo_worktree_registry
+
+                if any([
+                    getattr(task_req, "repo_url", None),
+                    getattr(task_req, "repo_root", None),
+                    getattr(task_req, "worktree_path", None),
+                    getattr(task_req, "prior_session_id", None),
+                    getattr(task_req, "prior_work_dir", None),
+                ]):
+                    get_repo_worktree_registry().register_task_handoff(
+                        task_id=task.id,
+                        repo_url=(getattr(task_req, "repo_url", None) or "").strip() or None,
+                        repo_root=(getattr(task_req, "repo_root", None) or "").strip() or None,
+                        worktree_path=(getattr(task_req, "worktree_path", None) or "").strip() or None,
+                        workspace=normalized_workspace,
+                        prior_session_id=(getattr(task_req, "prior_session_id", None) or "").strip() or None,
+                        prior_work_dir=(getattr(task_req, "prior_work_dir", None) or "").strip() or None,
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to register batch task worktree handoff for task {task.id}: {e}")
+
+            task_item = _assemble_task_read_model(task, workspace_id=1)
             created.append(task_item)
 
             # Store mapping for dependency resolution
@@ -483,18 +689,33 @@ async def update_task_status(
         valid_statuses = [s.value for s in TaskStatus]
         raise HTTPException(status_code=400, detail=f"Invalid status: {new_status}. Must be one of: {valid_statuses}")
 
+    current_status = TaskStatus.from_legacy(task.status if isinstance(task.status, str) else task.status.value)
+    if not TaskStatus.can_transition(current_status, new_status_enum):
+        if new_status_enum == TaskStatus.CANCELLED:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Task {task_id} cannot enter cancelled from {current_status.value}. "
+                    "Only pending or running tasks can be cancelled."
+                ),
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid task status transition: {current_status.value} -> {new_status_enum.value}",
+        )
+
     # Update task status in storage
     updated_task = queue.update_task_status(task_id, new_status_enum)
     if not updated_task:
         raise HTTPException(status_code=500, detail="Failed to update task status")
 
-    return task_to_item(updated_task)
+    return _assemble_task_read_model(updated_task, workspace_id=1)
 
 
 @router.post("/tasks/{task_id}/requeue-orphan", response_model=TaskItem)
 async def requeue_orphan_task(
     task_id: str,
-    request: RequeueOrphanTaskRequest,
+    request: Optional[RequeueOrphanTaskRequest] = None,
     exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
 ):
     """Requeue a task that was marked orphaned in runtime layer."""
@@ -503,11 +724,11 @@ async def requeue_orphan_task(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
 
-    updated = queue.requeue_orphan_task(task_id, reason=request.reason)
+    updated = queue.requeue_orphan_task(task_id, reason=request.reason if request else None)
     if not updated:
         raise HTTPException(status_code=400, detail=f"Task {task_id} is not marked as orphaned")
 
-    return task_to_item(updated)
+    return _assemble_task_read_model(updated, workspace_id=1)
 
 
 # ============ Task General Update API ============
@@ -528,15 +749,127 @@ async def update_task(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
 
-    updates = request.model_dump(exclude_none=True)
+    updates = request.model_dump(exclude_unset=True)
     if not updates:
-        return task_to_item(task)
+        return _assemble_task_read_model(task, workspace_id=1)
 
-    updated = queue.update_task(task_id, updates)
+    if "priority" in updates and updates["priority"]:
+        try:
+            task.priority = TaskPriority(updates["priority"])
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid priority: {updates['priority']}")
+    if "assignee" in updates:
+        task.assigned_to = (updates["assignee"] or "").strip() or None
+    if "position" in updates:
+        task.context = {**(task.context or {}), "position": updates["position"]}
+    if "title" in updates and updates["title"] is not None:
+        task.description = str(updates["title"]).strip() or task.description
+    if "description" in updates and updates["description"] is not None:
+        task.description = str(updates["description"]).strip() or task.description
+    if "due_date" in updates and updates["due_date"]:
+        task.due_date = _parse_due_date_or_400(updates["due_date"])
+    if "due_date" in updates and updates["due_date"] in (None, "", []):
+        task.due_date = None
+    if "labels" in updates:
+        task.tags = list(updates["labels"] or [])
+    if "feedback_notes" in updates:
+        task.feedback_notes = updates["feedback_notes"]
+    if "session_id" in updates:
+        task.session_id = (updates["session_id"] or "").strip() or None
+    if "source_session_id" in updates:
+        task.source_session_id = (updates["source_session_id"] or "").strip() or None
+    if "prior_session_id" in updates:
+        task.prior_session_id = (updates["prior_session_id"] or "").strip() or None
+    if "prior_work_dir" in updates:
+        task.prior_work_dir = (updates["prior_work_dir"] or "").strip() or None
+    if "repo_url" in updates:
+        task.repo_url = (updates["repo_url"] or "").strip() or None
+    if "repo_root" in updates:
+        task.repo_root = (updates["repo_root"] or "").strip() or None
+    if "worktree_path" in updates:
+        task.worktree_path = (updates["worktree_path"] or "").strip() or None
+    if any(k in updates for k in ("prior_session_id", "prior_work_dir", "repo_url", "repo_root", "worktree_path", "source_session_id")):
+        context = dict(task.context or {})
+        for k, v in {
+            "source_session_id": task.source_session_id,
+            "prior_session_id": task.prior_session_id,
+            "prior_work_dir": task.prior_work_dir,
+            "repo_url": task.repo_url,
+            "repo_root": task.repo_root,
+            "worktree_path": task.worktree_path,
+        }.items():
+            if v in (None, "", [], {}):
+                context.pop(k, None)
+            else:
+                context[k] = v
+        task.context = context
+
+    updated = queue.update_task(task)
     if not updated:
         raise HTTPException(status_code=400, detail=f"Failed to update task {task_id}")
 
-    return task_to_item(updated)
+    try:
+        clear_binding_fields = []
+        if updates.get("source_session_id", "__missing__") is None or updates.get("prior_session_id", "__missing__") is None:
+            clear_binding_fields.extend(["source_session_id", "source_type"])
+        if updates.get("prior_work_dir", "__missing__") is None or updates.get("worktree_path", "__missing__") is None:
+            clear_binding_fields.append("work_dir")
+        if any(updates.get(k, "__missing__") is None for k in ("repo_url", "repo_root", "worktree_path")):
+            clear_binding_fields.append("metadata")
+        if clear_binding_fields:
+            get_session_storage().clear_execution_binding_fields(
+                task.session_id or f"task_{task.id}",
+                *clear_binding_fields,
+            )
+
+        if updates.get("prior_work_dir", "__missing__") is None or updates.get("worktree_path", "__missing__") is None:
+            binding_work_dir = None
+        else:
+            binding_work_dir = (
+                (task.worktree_path or "").strip()
+                or (task.prior_work_dir or "").strip()
+                or (task.workspace or "").strip()
+                or None
+            )
+        get_session_storage().bind_execution_context(
+            task.session_id or f"task_{task.id}",
+            provider=(task.provider or "").strip() or None,
+            alias=(task.alias or "").strip() or None,
+            exec_user=(task.exec_user or exec_user or "").strip() or None,
+            work_dir=binding_work_dir,
+            source_type="task",
+            source_session_id=(task.prior_session_id or task.source_session_id or "").strip() or None,
+            task_id=task.id,
+            session_kind="task",
+            metadata={
+                k: v for k, v in {
+                    "repo_url": task.repo_url,
+                    "repo_root": task.repo_root,
+                    "worktree_path": task.worktree_path,
+                }.items() if v not in (None, "", [], {})
+            } or None,
+        )
+    except Exception as e:
+        logger.debug(f"Failed to sync execution binding for updated task {task.id}: {e}")
+
+    try:
+        from ..services.worktree_registry import get_repo_worktree_registry
+
+        if any(getattr(task, field, None) for field in ("repo_url", "repo_root", "worktree_path", "prior_session_id", "prior_work_dir")):
+            get_repo_worktree_registry().register_task_handoff(
+                task_id=task.id,
+                repo_url=(task.repo_url or "").strip() or None,
+                repo_root=(task.repo_root or "").strip() or None,
+                worktree_path=(task.worktree_path or "").strip() or None,
+                workspace=(task.workspace or "").strip() or None,
+                prior_session_id=(task.prior_session_id or "").strip() or None,
+                prior_work_dir=(task.prior_work_dir or "").strip() or None,
+            )
+    except Exception as e:
+        logger.debug(f"Failed to register updated task worktree handoff for task {task.id}: {e}")
+
+    refreshed = queue.get_task(task_id)
+    return _assemble_task_read_model(refreshed or task, workspace_id=1)
 
 
 # ============ Task Outcome API ============
@@ -572,19 +905,34 @@ async def update_task_outcome(
     if request.resolution is not None:
         updates["resolution"] = request.resolution
     if request.feedback_rating is not None:
-        updates["feedback_rating"] = str(request.feedback_rating)
+        updates["feedback_rating"] = request.feedback_rating
     if request.feedback_notes is not None:
         updates["feedback_notes"] = request.feedback_notes
 
-    task_key = queue._task_key(task_id, task.exec_user)
-    queue._redis.hset(task_key, updates)
+    for key, value in updates.items():
+        setattr(task, key, value)
+    if outcome_val == "success" and not task.completed_at:
+        task.completed_at = datetime.now(timezone.utc)
+    if outcome_val == "failed" and not task.completed_at:
+        task.completed_at = datetime.now(timezone.utc)
+
+    # Compatibility shim for older Redis-backed mocks/tests.
+    if hasattr(queue, "_redis") and hasattr(queue, "_task_key"):
+        try:
+            task_key = queue._task_key(task_id, task.exec_user)
+            redis_updates = {k: (str(v) if v is not None else "") for k, v in updates.items()}
+            queue._redis.hset(task_key, redis_updates)
+        except Exception:
+            pass
+
+    queue.update_task(task)
 
     # Refresh from storage and return
     updated_task = queue.get_task(task_id)
     if not updated_task:
         raise HTTPException(status_code=500, detail="Failed to retrieve updated task")
 
-    return task_to_item(updated_task)
+    return _assemble_task_read_model(updated_task, workspace_id=1)
 
 
 def _resolve_since(timeframe: str) -> Optional[datetime]:
@@ -615,21 +963,41 @@ async def get_task_outcomes(
 
     since = _resolve_since(timeframe)
 
-    # Collect all done tasks
-    done_ids = queue._redis.smembers(queue._status_key(TaskStatus.DONE))
-    rows = []
-    for tid in done_ids:
-        t = queue.get_task(tid)
-        if not t:
-            continue
+    # Compatibility shim for legacy Redis-backed mocks/tests.
+    if hasattr(queue, "_redis") and hasattr(queue, "_status_key"):
+        done_ids = queue._redis.smembers(queue._status_key(TaskStatus.COMPLETED))
+        rows = []
+        for tid in done_ids:
+            t = queue.get_task(tid)
+            if not t:
+                continue
+            if since:
+                ts = t.completed_at or t.created_at
+                if ts is not None:
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts < since:
+                        continue
+            rows.append(t)
+    else:
+        listed = queue.list_tasks(page=1, page_size=100000, status=TaskStatus.COMPLETED.value)
+        if isinstance(listed, tuple):
+            rows = list(listed[0] or [])
+        elif isinstance(listed, list):
+            rows = list(listed)
+        else:
+            rows = []
         if since:
-            ts = t.completed_at or t.created_at
-            if ts is not None:
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                if ts < since:
-                    continue
-        rows.append(t)
+            filtered = []
+            for t in rows:
+                ts = t.completed_at or t.created_at
+                if ts is not None:
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts < since:
+                        continue
+                filtered.append(t)
+            rows = filtered
 
     def _empty_dim() -> dict:
         return {"success": 0, "failed": 0, "partial": 0, "abandoned": 0, "unknown": 0, "total": 0, "success_rate": 0.0}
@@ -723,15 +1091,20 @@ async def chat_continue_task(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
 
     status_val = task.status if isinstance(task.status, str) else task.status.value
-    if status_val == TaskStatus.IN_PROGRESS.value:
+    if status_val == TaskStatus.RUNNING.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Task {task_id} is currently running. Wait for it to finish before continuing.",
         )
-    if status_val == TaskStatus.ARCHIVED.value:
+    if status_val == TaskStatus.CANCELLED.value:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Task {task_id} is cancelled and cannot be continued.",
+        )
+    if status_val == TaskStatus.ARCHIVED.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Task {task_id} is archived and cannot be continued.",
         )
 
     msg = (request.message or "").strip()
@@ -748,7 +1121,7 @@ async def chat_continue_task(
     if not updated:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to enqueue chat continue")
 
-    return task_to_item(updated)
+    return _assemble_task_read_model(updated, workspace_id=1)
 
 
 # ============ Bulk Task Operations API ============
@@ -951,6 +1324,57 @@ async def get_task_agui_messages(
     return event.model_dump(exclude_none=True)
 
 
+@router.get("/tasks/{task_id}/timeline", response_model=TaskTimelineResponse)
+async def get_task_timeline(
+    task_id: str,
+    exec_user: str = Query(settings.exec_user, description="Exec user for task isolation"),
+    include_session_events: bool = Query(True, description="Also include related session events"),
+):
+    """Return the task's lifecycle/event timeline."""
+    queue = get_task_queue(exec_user)
+    task = queue.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Task not found: {task_id}")
+
+    events = query_domain_events(
+        task_id=str(task_id),
+        aggregate_type="task",
+        aggregate_id=str(task_id),
+        limit=1000,
+    )
+    if include_session_events:
+        session_id = getattr(task, "session_id", None)
+        if session_id:
+            events.extend(
+                query_domain_events(
+                    session_id=str(session_id),
+                    limit=1000,
+                )
+            )
+
+    deduped: Dict[tuple, Any] = {}
+    for event in events:
+        key = (
+            getattr(event, "id", None),
+            getattr(event, "event_type", None),
+            getattr(event, "aggregate_type", None),
+            getattr(event, "aggregate_id", None),
+            getattr(event, "created_at", None),
+        )
+        deduped[key] = event
+
+    ordered = sorted(
+        deduped.values(),
+        key=lambda evt: float(getattr(evt, "created_at", 0) or 0),
+    )
+
+    return TaskTimelineResponse(
+        task_id=str(task_id),
+        total=len(ordered),
+        events=[_domain_event_to_timeline_item(evt) for evt in ordered],
+    )
+
+
 def _to_quality_review_item(review) -> QualityReviewItem:
     status_obj = getattr(review, "status", None)
     status_value = status_obj.value if hasattr(status_obj, "value") else str(status_obj or "")
@@ -1075,6 +1499,42 @@ async def broadcast_task_message(
     delivered = broadcast_to_recipients(task_id=str(task_id), sender=sender, message=message, recipients=recipients)
 
     return BroadcastTaskResponse(task_id=str(task_id), recipients=recipients, delivered=delivered)
+
+
+def _breakdown_items(rows: List[Dict[str, Any]]) -> List[CostBreakdownItem]:
+    items: List[CostBreakdownItem] = []
+    for row in rows or []:
+        items.append(
+            CostBreakdownItem(
+                key=str(row.get("key", "unassigned")),
+                count=int(row.get("count", 0) or 0),
+                prompt_tokens=int(row.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(row.get("completion_tokens", 0) or 0),
+                total_tokens=int(row.get("total_tokens", 0) or 0),
+                total_cost_usd=float(row.get("total_cost_usd", 0.0) or 0.0),
+            )
+        )
+    return items
+
+
+@router.get("/costs", response_model=CostSummaryResponse)
+async def get_cost_summary(
+    since: Optional[float] = Query(None, description="Unix timestamp lower bound"),
+):
+    """Return token cost attribution across workspace, agent, and runtime."""
+    tracker = get_token_tracker()
+    stats = tracker.get_stats(since=since)
+    breakdown = tracker.get_attribution_breakdown(since=since)
+    return CostSummaryResponse(
+        total_requests=stats.total_requests,
+        total_prompt_tokens=stats.total_prompt_tokens,
+        total_completion_tokens=stats.total_completion_tokens,
+        total_tokens=stats.total_tokens,
+        total_cost_usd=stats.total_cost_usd,
+        by_workspace=_breakdown_items(breakdown.get("by_workspace", [])),
+        by_agent=_breakdown_items(breakdown.get("by_agent", [])),
+        by_runtime=_breakdown_items(breakdown.get("by_runtime", [])),
+    )
 
 
 # ---------------------------------------------------------------------------

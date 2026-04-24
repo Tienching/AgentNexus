@@ -97,6 +97,10 @@ def _upgrade_legacy_request(body_dict: dict[str, Any]) -> dict[str, Any]:
     if provider:
         agui_body["provider"] = provider
 
+    for passthrough_key in ("cwd", "cwd_mode", "run_kind", "cli_session_id", "image_paths", "file_paths", "content_parts"):
+        if passthrough_key in body_dict and body_dict.get(passthrough_key) not in (None, "", [], {}):
+            agui_body[passthrough_key] = body_dict.get(passthrough_key)
+
     return agui_body
 
 

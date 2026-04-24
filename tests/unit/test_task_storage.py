@@ -5,7 +5,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone
 
-from src.runtime.stores.task_storage import TaskQueue
+from src.runtime.stores.task_storage import (
+    DuplicatePendingTaskError,
+    InvalidTaskTransitionError,
+    TaskQueue,
+)
 from src.server.models import Task, TaskPriority, TaskStatus
 
 
@@ -220,12 +224,17 @@ def mock_redis():
 
 
 @pytest.fixture
-def task_queue(mock_redis):
+def task_queue(mock_redis, tmp_path, monkeypatch):
     """Create TaskQueue instance with mock Redis"""
+    from src.runtime.stores.db import Database
+
+    monkeypatch.setenv("NEXUS_DB_PATH", str(tmp_path / "task-storage.db"))
+    Database.reset_instances()
     with patch('src.runtime.stores.task_storage.get_redis_client', return_value=mock_redis):
         queue = TaskQueue(db_path=None, exec_user="test_agent")
         queue._redis = mock_redis
-        return queue
+        yield queue
+    Database.reset_instances()
 
 
 class TestTaskQueue:
@@ -243,7 +252,7 @@ class TestTaskQueue:
         assert task.priority == TaskPriority.THOUGHT
         assert task.status == TaskStatus.TODO
         assert task.exec_user == "test_agent"
-        assert task.provider == "claude"
+        assert task.provider == "nexus"
 
     def test_add_task_with_provider(self, task_queue):
         task = task_queue.add_task(
@@ -322,8 +331,8 @@ class TestTaskQueue:
         
         status = task_queue.get_queue_status()
         assert status["total"] == 3
-        assert status["todo"] == 2
-        assert status["done"] == 0
+        assert status["pending"] == 2
+        assert status["completed"] == 0
 
     def test_get_projects(self, task_queue):
         """Test getting projects"""
@@ -434,7 +443,7 @@ class TestTaskQueue:
         
         # Verify tasks are cancelled
         project = task_queue.get_project_by_id("to-delete")
-        assert project["todo"] == 0
+        assert project["pending"] == 0
 
     def test_archive_unarchive_clear_tasks(self, task_queue):
         """Test archive/unarchive/clear batch operations"""
@@ -455,7 +464,7 @@ class TestTaskQueue:
         result2 = task_queue.unarchive_tasks([t.id])
         assert result2["count"] == 1
         unarchived = task_queue.get_task(t.id)
-        assert unarchived.status == TaskStatus.DONE
+        assert unarchived.status == TaskStatus.COMPLETED
         assert unarchived.completed_at == before_completed_at
 
         # archived_at should be cleared (hash field removed)
@@ -581,7 +590,7 @@ class TestTaskModel:
         assert hash_data["id"] == "test123"
         assert hash_data["description"] == "Test task"
         assert hash_data["priority"] == "serious"
-        assert hash_data["status"] == "todo"
+        assert hash_data["status"] == "pending"
         assert hash_data["project_id"] == "proj-1"
 
     def test_task_from_redis_hash(self):
@@ -748,6 +757,29 @@ class TestSessionIndex:
         # Index should map session_id → task_id
         index_key = task_queue._session_index_key(task.session_id)
         assert mock_redis.get(index_key) == task.id
+
+
+    def test_duplicate_active_session_guard(self, task_queue):
+        task_queue.add_task(description="First", session_id="shared-session")
+        with pytest.raises(DuplicatePendingTaskError):
+            task_queue.add_task(description="Second", session_id="shared-session")
+
+    def test_db_trigger_rejects_invalid_status_transition(self, task_queue):
+        task = task_queue.add_task(description="Invalid transition")
+        task.status = TaskStatus.DONE
+        with pytest.raises(InvalidTaskTransitionError):
+            task_queue.update_task(task)
+
+    def test_start_task_is_compare_and_swap_safe(self, task_queue):
+        task = task_queue.add_task(description="CAS")
+        first = task_queue.start_task(task.id)
+        second = task_queue.start_task(task.id)
+        assert first is not None
+        assert second is None
+        refreshed = task_queue.get_task(task.id)
+        assert refreshed is not None
+        assert refreshed.status == TaskStatus.DOING
+        assert refreshed.attempt_count == 1
 
 
 class TestListTasksOptimized:

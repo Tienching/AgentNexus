@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from src.runtime.stores.task_storage import TaskQueue as _RuntimeTaskQueue
 from src.runtime.stores.redis_client import get_redis_client, RedisClient
+from .app_container import get_app_container
 
 
 class TaskQueue(_RuntimeTaskQueue):
@@ -22,4 +23,9 @@ class TaskQueue(_RuntimeTaskQueue):
         super().__init__(db_path=db_path, exec_user=exec_user)
 
 
-__all__ = ["TaskQueue", "get_redis_client", "RedisClient"]
+def get_task_queue(exec_user: str = "default") -> TaskQueue:
+    """Return the app-scoped TaskQueue for an exec_user."""
+    return get_app_container().task_queue(exec_user)
+
+
+__all__ = ["TaskQueue", "get_redis_client", "RedisClient", "get_task_queue"]

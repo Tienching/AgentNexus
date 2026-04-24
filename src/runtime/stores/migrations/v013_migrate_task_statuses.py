@@ -33,16 +33,15 @@ def up(conn: sqlite3.Connection) -> None:
             "UPDATE tasks SET status = ? WHERE status = ?",
             (new_status, old_status),
         )
-        # Also try core_tasks table (alternative schema)
-        try:
+        # Also migrate the legacy core_tasks table when it exists.
+        core_tasks_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'core_tasks'"
+        ).fetchone()
+        if core_tasks_exists:
             conn.execute(
                 "UPDATE core_tasks SET status = ? WHERE status = ?",
                 (new_status, old_status),
             )
-        except Exception:
-            pass
-
-    conn.commit()
 
 
 def down(conn: sqlite3.Connection) -> None:
@@ -57,12 +56,11 @@ def down(conn: sqlite3.Connection) -> None:
             "UPDATE tasks SET status = ? WHERE status = ?",
             (old_status, new_status),
         )
-        try:
+        core_tasks_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'core_tasks'"
+        ).fetchone()
+        if core_tasks_exists:
             conn.execute(
                 "UPDATE core_tasks SET status = ? WHERE status = ?",
                 (old_status, new_status),
             )
-        except Exception:
-            pass
-
-    conn.commit()

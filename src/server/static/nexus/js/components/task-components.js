@@ -38,17 +38,28 @@ function _tcGetApp() {
     return window.nexusApp || window.app;
 }
 
+function _tcCommentDepthClass(depth) {
+    const normalizedDepth = Math.max(0, Math.min(Number(depth) || 0, 3));
+    return `task-comment-card depth-${normalizedDepth}`;
+}
+
+function _tcTimelineStatusClass(action) {
+    const value = String(action || '').toLowerCase();
+    if (value.includes('fail')) return 'is-error';
+    if (value.includes('complet')) return 'is-success';
+    return 'is-warning';
+}
+
 /* ------------------------------------------------------------------ */
 /* Comments                                                            */
 /* ------------------------------------------------------------------ */
 
 function _renderCommentNode(comment, depth, ctx) {
     const replies = Array.isArray(comment?.replies) ? comment.replies : [];
-    const margin = Math.min(depth * 14, 42);
     const rawCommentId = String(comment?.id || '');
     const domCommentId = rawCommentId.replace(/[^A-Za-z0-9_-]/g, '_');
     const mentions = Array.isArray(comment?.mentions) && comment.mentions.length
-        ? `<div style="font-size:10px;color:var(--text-muted);margin-top:3px;">Mentions: ${_tcEsc(comment.mentions.map((m) => `@${m}`).join(' '))}</div>`
+        ? `<div class="task-comment-mentions">Mentions: ${_tcEsc(comment.mentions.map((m) => `@${m}`).join(' '))}</div>`
         : '';
     const app = _tcGetApp();
     const contentHtml = app?.chatView?.formatMessageContent
@@ -56,21 +67,21 @@ function _renderCommentNode(comment, depth, ctx) {
         : _tcEsc(comment.content || '');
 
     return `
-        <div style="margin-left:${margin}px;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);display:flex;flex-direction:column;gap:6px;">
-            <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
-                <span style="font-size:11px;font-weight:600;color:var(--text-primary);">${_tcEsc(comment.author || 'user')}</span>
-                <span style="font-size:10px;color:var(--text-muted);">${_tcFormatTime((comment.created_at || 0) * 1000)}</span>
+        <div class="${_tcCommentDepthClass(depth)}">
+            <div class="task-comment-header">
+                <span class="task-comment-author">${_tcEsc(comment.author || 'user')}</span>
+                <span class="task-comment-time">${_tcFormatTime((comment.created_at || 0) * 1000)}</span>
             </div>
-            <div class="message-text" style="font-size:12px;">${contentHtml}</div>
+            <div class="message-text task-comment-body">${contentHtml}</div>
             ${mentions}
-            <div style="display:flex;gap:6px;">
-                <button class="action-btn" data-action="reply-comment" data-comment-id="${_tcEsc(rawCommentId)}" data-comment-dom-id="${domCommentId}" style="padding:2px 8px;font-size:11px;">Reply</button>
+            <div class="task-comment-actions">
+                <button class="action-btn task-comment-reply-btn" data-action="reply-comment" data-comment-id="${_tcEsc(rawCommentId)}" data-comment-dom-id="${domCommentId}">Reply</button>
             </div>
-            <div id="replyForm-${domCommentId}" style="display:none;gap:6px;">
+            <div id="replyForm-${domCommentId}" class="task-comment-reply-form" hidden>
                 <textarea id="replyInput-${domCommentId}" class="form-input" rows="2" placeholder="Write a reply... use @name for mentions"></textarea>
-                <button class="action-btn primary" data-action="submit-reply" data-comment-id="${_tcEsc(rawCommentId)}" data-comment-dom-id="${domCommentId}" style="padding:4px 10px;font-size:11px;">Post Reply</button>
+                <button class="action-btn primary task-comment-submit-btn" data-action="submit-reply" data-comment-id="${_tcEsc(rawCommentId)}" data-comment-dom-id="${domCommentId}">Post Reply</button>
             </div>
-            ${replies.length ? `<div style="display:flex;flex-direction:column;gap:6px;">${replies.map((r) => _renderCommentNode(r, depth + 1, ctx)).join('')}</div>` : ''}
+            ${replies.length ? `<div class="task-comment-replies">${replies.map((r) => _renderCommentNode(r, depth + 1, ctx)).join('')}</div>` : ''}
         </div>
     `;
 }
@@ -123,18 +134,18 @@ async function renderTaskComments(container, taskId, ctx) {
         const comments = Array.isArray(data?.comments) ? data.comments : [];
 
         commentsRoot.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                <strong style="font-size:12px;color:var(--text-primary);">Comments</strong>
-                <span style="font-size:11px;color:var(--text-muted);">${comments.length}</span>
+            <div class="task-pane-header">
+                <strong class="task-pane-title">Comments</strong>
+                <span class="task-pane-count">${comments.length}</span>
             </div>
-            <div style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;margin-bottom:10px;">
-                ${comments.length ? comments.map((c) => _renderCommentNode(c, 0, ctx)).join('') : '<div style="font-size:11px;color:var(--text-muted);">No comments yet.</div>'}
+            <div class="task-comment-list">
+                ${comments.length ? comments.map((c) => _renderCommentNode(c, 0, ctx)).join('') : '<div class="task-pane-empty">No comments yet.</div>'}
             </div>
-            <div style="border-top:1px solid var(--border);padding-top:8px;display:grid;gap:6px;">
-                <label style="font-size:11px;color:var(--text-muted);">New comment</label>
+            <div class="task-pane-form">
+                <label class="task-pane-label">New comment</label>
                 <textarea id="taskCommentInput-${paneId}" class="form-input" rows="3" placeholder="Write a comment... use @name for mentions"></textarea>
-                <div style="display:flex;gap:6px;justify-content:flex-end;">
-                    <button class="action-btn primary" data-action="submit-comment" style="padding:4px 12px;">Post</button>
+                <div class="task-pane-actions">
+                    <button class="action-btn primary task-comment-submit-btn" data-action="submit-comment">Post</button>
                 </div>
             </div>
         `;
@@ -159,7 +170,7 @@ async function renderTaskComments(container, taskId, ctx) {
                 const domId = btn.getAttribute('data-comment-dom-id') || '';
                 const form = document.getElementById(`replyForm-${domId}`);
                 if (!form) return;
-                form.style.display = form.style.display === 'none' ? 'grid' : 'none';
+                form.hidden = !form.hidden;
             });
         });
 
@@ -192,7 +203,7 @@ async function renderTaskComments(container, taskId, ctx) {
         }
     } catch (error) {
         console.error('Failed to load task comments:', error);
-        commentsRoot.innerHTML = `<div style="font-size:12px;color:var(--error);">Failed to load comments</div>`;
+        commentsRoot.innerHTML = '<div class="task-pane-error">Failed to load comments</div>';
     }
 }
 
@@ -224,50 +235,50 @@ async function renderQualityGate(container, taskId, ctx) {
         const latest = data?.latest_review;
         const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
         qualityRoot.innerHTML = `
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-                <strong style="font-size: 12px; color: var(--text-primary);">Aegis Quality</strong>
-                <span style="font-size: 11px; color: ${data?.gate_allowed ? 'var(--success)' : 'var(--warning)'};">
+            <div class="task-pane-header">
+                <strong class="task-pane-title">Aegis Quality</strong>
+                <span class="task-quality-state ${data?.gate_allowed ? 'is-passed' : 'is-blocked'}">
                     ${data?.gate_allowed ? 'Gate Passed' : 'Gate Blocked'}
                 </span>
             </div>
-            <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">
+            <div class="task-pane-caption">
                 ${_tcEsc(data?.gate_reason || '')}
             </div>
             ${latest ? `
-                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 10px;">
+                <div class="task-pane-note">
                     Latest: <strong>${_tcEsc(String(latest.status || ''))}</strong>
                     by ${_tcEsc(String(latest.reviewer || 'unknown'))}
                     · ${_tcFormatTime((latest.created_at || 0) * 1000)}
                 </div>
-            ` : '<div style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">No reviews yet.</div>'}
-            <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; max-height: 180px; overflow-y: auto;">
+            ` : '<div class="task-pane-empty is-compact">No reviews yet.</div>'}
+            <div class="task-quality-history">
                 ${reviews.length ? reviews.map((review) => `
-                    <div style="border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg-secondary);">
-                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px;">
-                            <span style="font-size: 11px; font-weight: 600; color: var(--text-primary);">${_tcEsc(String(review.status || ''))}</span>
-                            <span style="font-size: 10px; color: var(--text-muted);">${_tcFormatTime((review.created_at || 0) * 1000)}</span>
+                    <div class="task-quality-review-card">
+                        <div class="task-quality-review-header">
+                            <span class="task-quality-review-status">${_tcEsc(String(review.status || ''))}</span>
+                            <span class="task-quality-review-time">${_tcFormatTime((review.created_at || 0) * 1000)}</span>
                         </div>
-                        <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">Reviewer: ${_tcEsc(String(review.reviewer || 'unknown'))}</div>
-                        ${review.notes ? `<div class="message-text" style="font-size: 11px; color: var(--text-secondary);">${app?.chatView?.formatMessageContent ? app.chatView.formatMessageContent(String(review.notes)) : _tcEsc(String(review.notes))}</div>` : ''}
+                        <div class="task-quality-reviewer">Reviewer: ${_tcEsc(String(review.reviewer || 'unknown'))}</div>
+                        ${review.notes ? `<div class="message-text task-quality-review-notes">${app?.chatView?.formatMessageContent ? app.chatView.formatMessageContent(String(review.notes)) : _tcEsc(String(review.notes))}</div>` : ''}
                     </div>
-                `).join('') : '<div style="font-size: 11px; color: var(--text-muted);">No history entries.</div>'}
+                `).join('') : '<div class="task-pane-empty is-compact">No history entries.</div>'}
             </div>
-            <div style="border-top: 1px solid var(--border); padding-top: 10px; display: grid; gap: 6px;">
-                <label style="font-size: 11px; color: var(--text-muted);">Reviewer</label>
+            <div class="task-pane-form task-pane-form-lg">
+                <label class="task-pane-label">Reviewer</label>
                 <input id="qualityReviewer-${paneId}" type="text" class="form-input" value="aegis" placeholder="reviewer">
-                <label style="font-size: 11px; color: var(--text-muted);">Status</label>
+                <label class="task-pane-label">Status</label>
                 <select id="qualityStatus-${paneId}" class="form-input form-select">
                     <option value="approved">approved</option>
                     <option value="needs_changes">needs_changes</option>
                     <option value="rejected">rejected</option>
                 </select>
-                <label style="font-size: 11px; color: var(--text-muted);">Notes (Markdown)</label>
+                <label class="task-pane-label">Notes (Markdown)</label>
                 <textarea id="qualityNotes-${paneId}" class="form-input" rows="3" placeholder="Review notes"></textarea>
-                <div style="display:flex;gap:6px;justify-content:flex-end;">
-                    <button class="action-btn" type="button" data-action="toggle-quality-preview" data-task-id="${taskId}" style="padding:4px 10px;">Preview</button>
-                    <button class="action-btn primary" data-action="submit-quality-review" data-task-id="${taskId}" style="justify-content: center;">Submit Review</button>
+                <div class="task-pane-actions">
+                    <button class="action-btn task-quality-preview-btn" type="button" data-action="toggle-quality-preview" data-task-id="${taskId}">Preview</button>
+                    <button class="action-btn primary task-quality-submit-btn" data-action="submit-quality-review" data-task-id="${taskId}">Submit Review</button>
                 </div>
-                <div id="qualityPreview-${paneId}" style="display:none;border:1px solid var(--border);border-radius:6px;padding:8px;background:var(--bg-secondary);">
+                <div id="qualityPreview-${paneId}" class="task-quality-preview" hidden>
                     <div class="message-empty">Nothing to preview</div>
                 </div>
             </div>
@@ -296,8 +307,8 @@ async function renderQualityGate(container, taskId, ctx) {
                 const preview = document.getElementById(`qualityPreview-${paneId}`);
                 const notesValue = document.getElementById(`qualityNotes-${paneId}`)?.value || '';
                 if (!preview) return;
-                const shouldShow = preview.style.display === 'none';
-                preview.style.display = shouldShow ? '' : 'none';
+                const shouldShow = preview.hidden;
+                preview.hidden = !preview.hidden;
                 if (!shouldShow) return;
                 const renderer = app?.chatView?.markdownRenderer;
                 if (renderer && typeof renderer.renderPreview === 'function') {
@@ -309,7 +320,7 @@ async function renderQualityGate(container, taskId, ctx) {
         }
     } catch (error) {
         console.error('Failed to load quality reviews:', error);
-        qualityRoot.innerHTML = `<div style="font-size: 12px; color: var(--error);">Failed to load quality reviews</div>`;
+        qualityRoot.innerHTML = '<div class="task-pane-error">Failed to load quality reviews</div>';
     }
 }
 
@@ -340,23 +351,22 @@ async function renderTaskTimeline(container, taskId, ctx) {
         const events = Array.isArray(data?.entries || data?.logs) ? (data.entries || data.logs) : [];
 
         timelineRoot.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                <strong style="font-size:12px;color:var(--text-primary);">Timeline</strong>
-                <span style="font-size:11px;color:var(--text-muted);">${events.length} events</span>
+            <div class="task-pane-header">
+                <strong class="task-pane-title">Timeline</strong>
+                <span class="task-pane-count">${events.length} events</span>
             </div>
-            ${events.length === 0 ? '<div style="font-size:11px;color:var(--text-muted);">No task events recorded</div>' : `
-            <div style="display:flex;flex-direction:column;gap:2px;max-height:320px;overflow-y:auto;">
+            ${events.length === 0 ? '<div class="task-pane-empty is-compact">No task events recorded</div>' : `
+            <div class="task-timeline-list">
                 ${events.map(ev => {
                     const time = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '';
-                    const statusClass = ev.action?.includes('fail') ? 'status-offline' :
-                                       ev.action?.includes('complet') ? 'status-online' : 'status-warn';
+                    const statusClass = _tcTimelineStatusClass(ev.action || ev.event_type);
                     return `
-                    <div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;">
-                        <div style="width:8px;height:8px;border-radius:50%;margin-top:4px;flex-shrink:0;background:${statusClass === 'status-online' ? 'var(--success, #22c55e)' : statusClass === 'status-offline' ? 'var(--error, #ef4444)' : 'var(--warning, #f59e0b)'};"></div>
-                        <div style="flex:1;min-width:0;">
-                            <div style="font-size:11px;font-weight:600;color:var(--text-primary);">${_tcEsc(ev.action || ev.event_type || 'Event')}</div>
-                            <div style="font-size:10px;color:var(--text-muted);">${time}${ev.task_id ? ' · ' + _tcEsc(ev.task_id.slice(0,8)) : ''}</div>
-                            ${ev.detail ? `<div style="font-size:11px;color:var(--text-secondary);margin-top:2px;">${_tcEsc(ev.detail)}</div>` : ''}
+                    <div class="task-timeline-row">
+                        <div class="task-timeline-dot ${statusClass}"></div>
+                        <div class="task-timeline-body">
+                            <div class="task-timeline-title">${_tcEsc(ev.action || ev.event_type || 'Event')}</div>
+                            <div class="task-timeline-meta">${time}${ev.task_id ? ' · ' + _tcEsc(ev.task_id.slice(0,8)) : ''}</div>
+                            ${ev.detail ? `<div class="task-timeline-detail">${_tcEsc(ev.detail)}</div>` : ''}
                         </div>
                     </div>`;
                 }).join('')}
@@ -364,7 +374,7 @@ async function renderTaskTimeline(container, taskId, ctx) {
         `;
     } catch (error) {
         console.error('Failed to load task timeline:', error);
-        timelineRoot.innerHTML = `<div style="font-size:12px;color:var(--error);">Failed to load timeline</div>`;
+        timelineRoot.innerHTML = '<div class="task-pane-error">Failed to load timeline</div>';
     }
 }
 

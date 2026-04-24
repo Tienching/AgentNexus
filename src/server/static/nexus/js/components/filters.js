@@ -2,7 +2,7 @@
  * FilterBar - Toolbar dropdown filter system for the task board.
  *
  * Features:
- * - 5 dimensions: Status, Priority, Assignee, Creator, Due Date
+ * - 3 dimensions: Status, Priority, Assignee
  * - SortButton: Sort field + direction dropdown
  * - ProjectButton: Project filter dropdown
  * - Toolbar button group with active count badges
@@ -23,10 +23,8 @@ class FilterBar {
             status: { label: 'Status', values: new Set(), options: [] },
             priority: { label: 'Priority', values: new Set(), options: [] },
             assignee: { label: 'Assignee', values: new Set(), options: [] },
-            creator: { label: 'Creator', values: new Set(), options: [] },
-            dueDate: { label: 'Due Date', values: new Set(), options: [] },
         };
-        this._counts = { status: {}, priority: {}, assignee: {}, creator: {}, dueDate: {} };
+        this._counts = { status: {}, priority: {}, assignee: {} };
         this._openDropdown = null;
         this._dropdownEl = null;
         this._container = null;
@@ -37,33 +35,74 @@ class FilterBar {
 
     /** Static option definitions */
     static STATUS_OPTIONS = [
-        { key: 'inbox', label: 'Inbox', color: 'var(--status-inbox)' },
-        { key: 'in_progress', label: 'In Progress', color: 'var(--status-in-progress)' },
+        { key: 'pending',   label: 'To Do',     color: 'var(--status-pending)' },
+        { key: 'running',   label: 'Doing',     color: 'var(--status-running)' },
         { key: 'in_review', label: 'In Review', color: 'var(--status-in-review)' },
-        { key: 'done', label: 'Done', color: 'var(--status-done)' },
-        { key: 'failed', label: 'Failed', color: 'var(--status-failed)' },
-        { key: 'archived', label: 'Archived', color: 'var(--status-archived)' },
+        { key: 'completed', label: 'Done',      color: 'var(--status-completed)' },
+        { key: 'failed',    label: 'Failed',    color: 'var(--status-failed)' },
+        { key: 'cancelled', label: 'Cancelled', color: 'var(--status-cancelled)' },
+        { key: 'archived',  label: 'Archived',  color: 'var(--status-archived)' },
     ];
 
-    /** Normalize legacy status values to 6-status model */
+    /** Normalize legacy status values to the new 7-status model */
     static STATUS_MAP = {
-        'todo': 'inbox', 'pending': 'inbox',
-        'assigned': 'in_progress', 'awaiting_owner': 'in_progress', 'doing': 'in_progress',
-        'review': 'in_review', 'quality_review': 'in_review',
-        'completed': 'done', 'cancelled': 'archived',
+        // Old 10-status model → new 7-status model
+        'inbox':          'pending',
+        'assigned':       'pending',
+        'awaiting_owner': 'pending',
+        'todo':           'pending',
+        'doing':          'running',
+        'in_progress':    'running',
+        'running':        'running',  // pass-through
+        'review':         'in_review',
+        'quality_review': 'in_review',
+        'in_review':      'in_review',  // pass-through
+        'done':           'completed',
+        'completed':      'completed',  // pass-through
+        'orphaned':       'pending',
     };
+
+    static KNOWN_STATUS_KEYS = new Set(FilterBar.STATUS_OPTIONS.map(option => option.key));
 
     static _normalizeStatus(status) {
         const s = String(status || '').trim().toLowerCase();
-        return FilterBar.STATUS_MAP[s] || (['inbox','in_progress','in_review','done','failed','archived'].includes(s) ? s : 'inbox');
+        const normalized = FilterBar.STATUS_MAP[s] || s;
+        return FilterBar.KNOWN_STATUS_KEYS.has(normalized) ? normalized : 'pending';
     }
 
     static PRIORITY_OPTIONS = [
-        { key: 'critical', label: 'Critical', color: 'var(--error, #ef4444)' },
+        { key: 'project', label: 'Project', color: 'var(--error, #ef4444)' },
         { key: 'serious', label: 'Serious', color: 'var(--warning, #f59e0b)' },
-        { key: 'normal', label: 'Normal', color: 'var(--primary-500)' },
-        { key: 'low', label: 'Low', color: 'var(--text-muted)' },
+        { key: 'thought', label: 'Thought', color: 'var(--primary-500)' },
+        { key: 'generated', label: 'Generated', color: 'var(--text-muted)' },
     ];
+
+    static KNOWN_PRIORITY_KEYS = new Set(FilterBar.PRIORITY_OPTIONS.map(option => option.key));
+
+    static _normalizePriority(priority) {
+        const normalized = String(priority || '').trim().toLowerCase();
+        return FilterBar.KNOWN_PRIORITY_KEYS.has(normalized) ? normalized : 'thought';
+    }
+
+    static _getDueDateDate(rawDueDate) {
+        if (!rawDueDate) return null;
+        if (rawDueDate instanceof Date) return Number.isNaN(rawDueDate.getTime()) ? null : rawDueDate;
+        if (typeof rawDueDate === 'number') {
+            const millis = rawDueDate < 1e12 ? rawDueDate * 1000 : rawDueDate;
+            const date = new Date(millis);
+            return Number.isNaN(date.getTime()) ? null : date;
+        }
+        const value = String(rawDueDate).trim();
+        if (!value) return null;
+        if (/^-?\d+(\.\d+)?$/.test(value)) {
+            const numeric = Number(value);
+            const millis = numeric < 1e12 ? numeric * 1000 : numeric;
+            const date = new Date(millis);
+            return Number.isNaN(date.getTime()) ? null : date;
+        }
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
 
     static DUE_DATE_OPTIONS = [
         { key: 'overdue', label: 'Overdue' },
@@ -80,7 +119,7 @@ class FilterBar {
     ];
 
     /** Dimensions that support search in dropdown */
-    static SEARCHABLE = new Set(['assignee', 'creator']);
+    static SEARCHABLE = new Set(['assignee']);
 
     hasActiveFilters() {
         return Object.values(this.filters).some(f => f.values.size > 0);
@@ -110,9 +149,8 @@ class FilterBar {
      * @param {Array} tasks - full (unfiltered) task list
      */
     updateCounts(tasks) {
-        this._counts = { status: {}, priority: {}, assignee: {}, creator: {}, dueDate: {} };
+        this._counts = { status: {}, priority: {}, assignee: {} };
         const assigneeSet = new Set();
-        const creatorSet = new Set();
 
         tasks.forEach(t => {
             // Status
@@ -120,7 +158,7 @@ class FilterBar {
             this._counts.status[s] = (this._counts.status[s] || 0) + 1;
 
             // Priority
-            const p = t.priority || 'normal';
+            const p = FilterBar._normalizePriority(t.priority);
             this._counts.priority[p] = (this._counts.priority[p] || 0) + 1;
 
             // Assignee
@@ -130,52 +168,19 @@ class FilterBar {
                 this._counts.assignee[a] = (this._counts.assignee[a] || 0) + 1;
             }
             this._counts.assignee['__none__'] = (this._counts.assignee['__none__'] || 0) + (a ? 0 : 1);
-
-            // Creator
-            const c = t.created_by || '';
-            if (c) {
-                creatorSet.add(c);
-                this._counts.creator[c] = (this._counts.creator[c] || 0) + 1;
-            }
-
-            // Due Date
-            this._computeDueDateCount(t);
         });
 
         // Set static options
         this.filters.status.options = FilterBar.STATUS_OPTIONS;
         this.filters.priority.options = FilterBar.PRIORITY_OPTIONS;
-        this.filters.dueDate.options = FilterBar.DUE_DATE_OPTIONS;
 
         // Set dynamic options
         this.filters.assignee.options = [
             { key: '__none__', label: 'No assignee' },
             ...Array.from(assigneeSet).sort().map(a => ({ key: a, label: a })),
         ];
-        this.filters.creator.options = Array.from(creatorSet).sort().map(c => ({ key: c, label: c }));
 
         this._renderButtons();
-    }
-
-    _computeDueDateCount(t) {
-        const due = t.due_date;
-        if (!due) {
-            this._counts.dueDate['no_due_date'] = (this._counts.dueDate['no_due_date'] || 0) + 1;
-            return;
-        }
-        const d = new Date(due);
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const endOfWeek = new Date(today);
-        endOfWeek.setDate(endOfWeek.getDate() + (7 - endOfWeek.getDay()));
-
-        if (d < today) {
-            this._counts.dueDate['overdue'] = (this._counts.dueDate['overdue'] || 0) + 1;
-        } else if (d.toDateString() === today.toDateString()) {
-            this._counts.dueDate['today'] = (this._counts.dueDate['today'] || 0) + 1;
-        } else if (d <= endOfWeek) {
-            this._counts.dueDate['this_week'] = (this._counts.dueDate['this_week'] || 0) + 1;
-        }
     }
 
     /**
@@ -192,7 +197,7 @@ class FilterBar {
 
             // Priority
             if (this.filters.priority.values.size > 0) {
-                if (!this.filters.priority.values.has(t.priority || 'normal')) return false;
+                if (!this.filters.priority.values.has(FilterBar._normalizePriority(t.priority))) return false;
             }
 
             // Assignee
@@ -202,35 +207,8 @@ class FilterBar {
                 if (!this.filters.assignee.values.has(key)) return false;
             }
 
-            // Creator
-            if (this.filters.creator.values.size > 0) {
-                const c = t.created_by || '';
-                if (!this.filters.creator.values.has(c)) return false;
-            }
-
-            // Due Date
-            if (this.filters.dueDate.values.size > 0) {
-                const key = this._getDueDateKey(t);
-                if (!this.filters.dueDate.values.has(key)) return false;
-            }
-
             return true;
         });
-    }
-
-    _getDueDateKey(t) {
-        const due = t.due_date;
-        if (!due) return 'no_due_date';
-        const d = new Date(due);
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const endOfWeek = new Date(today);
-        endOfWeek.setDate(endOfWeek.getDate() + (7 - endOfWeek.getDay()));
-
-        if (d < today) return 'overdue';
-        if (d.toDateString() === today.toDateString()) return 'today';
-        if (d <= endOfWeek) return 'this_week';
-        return null; // beyond this week, not in any bucket
     }
 
     /**
@@ -256,10 +234,12 @@ class FilterBar {
         if (!this._container) return;
 
         this._container.innerHTML = '';
-        const keys = ['status', 'priority', 'assignee', 'creator', 'dueDate'];
+        const keys = ['status', 'priority', 'assignee'];
         keys.forEach(key => {
             const f = this.filters[key];
             const activeCount = f.values.size;
+            const wrap = document.createElement('div');
+            wrap.className = 'filter-btn-wrap';
             const btn = document.createElement('button');
             btn.className = `filter-btn${activeCount > 0 ? ' has-filter' : ''}`;
             btn.dataset.filterKey = key;
@@ -270,7 +250,8 @@ class FilterBar {
                 this._toggleDropdown(key, btn);
             });
 
-            this._container.appendChild(btn);
+            wrap.appendChild(btn);
+            this._container.appendChild(wrap);
         });
     }
 
@@ -297,19 +278,12 @@ class FilterBar {
         const dropdown = document.createElement('div');
         dropdown.className = 'filter-dropdown';
 
-        // Position below the button
-        const rect = anchorEl.getBoundingClientRect();
-        const containerRect = this._container.getBoundingClientRect();
-        dropdown.style.position = 'absolute';
-        dropdown.style.top = `${rect.bottom - containerRect.top + 4}px`;
-        dropdown.style.left = `${rect.left - containerRect.left}px`;
-
         const searchable = FilterBar.SEARCHABLE.has(filterKey);
         let searchHtml = '';
         if (searchable) {
             searchHtml = `
                 <div class="filter-dropdown-search">
-                    <input type="text" class="form-input filter-dropdown-search-input" placeholder="Search ${f.label.toLowerCase()}..." style="width:100%;font-size:12px;padding:4px 8px;">
+                    <input type="text" class="form-input filter-dropdown-search-input" placeholder="Search ${f.label.toLowerCase()}...">
                 </div>`;
         }
 
@@ -323,8 +297,7 @@ class FilterBar {
             </div>
         `;
 
-        this._container.style.position = 'relative';
-        this._container.appendChild(dropdown);
+        (anchorEl.parentElement || this._container).appendChild(dropdown);
         this._dropdownEl = dropdown;
 
         // Bind search
@@ -360,7 +333,8 @@ class FilterBar {
         return options.map(o => {
             const checked = this.filters[filterKey].values.has(o.key);
             const count = this._counts[filterKey]?.[o.key] || 0;
-            const colorDot = o.color ? `<span class="filter-option-dot" style="background:${o.color};"></span>` : '';
+            const toneClass = o.color ? this._dotToneClass(filterKey, o.key) : '';
+            const colorDot = o.color ? `<span class="filter-option-dot ${toneClass}"></span>` : '';
             return `
                 <label class="filter-option${checked ? ' checked' : ''}" data-key="${this._esc(o.key)}">
                     <span class="filter-option-check">${checked ? '&#10003;' : ''}</span>
@@ -430,11 +404,18 @@ class FilterBar {
             const raw = localStorage.getItem('nexus-filterbar');
             if (!raw) return;
             const data = JSON.parse(raw);
+            let removedHiddenFilters = false;
             for (const [key, arr] of Object.entries(data)) {
                 if (this.filters[key] && Array.isArray(arr)) {
-                    this.filters[key].values = new Set(arr);
+                    const values = key === 'status'
+                        ? arr.map(v => FilterBar._normalizeStatus(v))
+                        : arr;
+                    this.filters[key].values = new Set(values);
+                } else if (key === 'creator' || key === 'dueDate') {
+                    removedHiddenFilters = true;
                 }
             }
+            if (removedHiddenFilters) this._persist();
         } catch {}
     }
 
@@ -442,6 +423,11 @@ class FilterBar {
         const d = document.createElement('div');
         d.textContent = str || '';
         return d.innerHTML;
+    }
+
+    _dotToneClass(filterKey, optionKey) {
+        const safeKey = String(optionKey || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+        return `filter-option-dot--${filterKey}-${safeKey}`;
     }
 }
 
@@ -474,6 +460,8 @@ class SortButton {
     }
 
     render(container) {
+        const wrap = document.createElement('div');
+        wrap.className = 'toolbar-btn-wrap';
         const btn = document.createElement('button');
         btn.className = 'toolbar-btn';
         btn.innerHTML = `Sort: ${this._esc(this._fieldLabel(this._sortField))} <span class="filter-btn-arrow">&#9662;</span>`;
@@ -481,7 +469,8 @@ class SortButton {
             e.stopPropagation();
             this._toggle();
         });
-        container.appendChild(btn);
+        wrap.appendChild(btn);
+        container.appendChild(wrap);
         this._btnEl = btn;
     }
 
@@ -499,13 +488,6 @@ class SortButton {
 
         const dropdown = document.createElement('div');
         dropdown.className = 'filter-dropdown';
-
-        // Position below the button
-        const rect = this._btnEl.getBoundingClientRect();
-        const parentRect = this._btnEl.parentElement.getBoundingClientRect();
-        dropdown.style.position = 'absolute';
-        dropdown.style.top = `${rect.bottom - parentRect.top + 4}px`;
-        dropdown.style.left = `${rect.left - parentRect.left}px`;
 
         // Sort field options
         const fieldsHtml = FilterBar.SORT_OPTIONS.map(o => {
@@ -533,7 +515,6 @@ class SortButton {
         dropdown.innerHTML = `
             <div class="filter-dropdown-options">${fieldsHtml}${dirHtml}</div>`;
 
-        this._btnEl.parentElement.style.position = 'relative';
         this._btnEl.parentElement.appendChild(dropdown);
         this._dropdownEl = dropdown;
 
@@ -619,6 +600,8 @@ class ProjectButton {
     }
 
     render(container) {
+        const wrap = document.createElement('div');
+        wrap.className = 'toolbar-btn-wrap';
         const btn = document.createElement('button');
         btn.className = 'toolbar-btn';
         btn.innerHTML = `Project: All <span class="filter-btn-arrow">&#9662;</span>`;
@@ -626,7 +609,8 @@ class ProjectButton {
             e.stopPropagation();
             this._toggle();
         });
-        container.appendChild(btn);
+        wrap.appendChild(btn);
+        container.appendChild(wrap);
         this._btnEl = btn;
     }
 
@@ -644,13 +628,6 @@ class ProjectButton {
 
         const dropdown = document.createElement('div');
         dropdown.className = 'filter-dropdown';
-
-        // Position below the button
-        const rect = this._btnEl.getBoundingClientRect();
-        const parentRect = this._btnEl.parentElement.getBoundingClientRect();
-        dropdown.style.position = 'absolute';
-        dropdown.style.top = `${rect.bottom - parentRect.top + 4}px`;
-        dropdown.style.left = `${rect.left - parentRect.left}px`;
 
         // "All Projects" option
         const allActive = !this._selectedProjectId;
@@ -676,7 +653,6 @@ class ProjectButton {
 
         dropdown.innerHTML = `<div class="filter-dropdown-options">${html}</div>`;
 
-        this._btnEl.parentElement.style.position = 'relative';
         this._btnEl.parentElement.appendChild(dropdown);
         this._dropdownEl = dropdown;
 

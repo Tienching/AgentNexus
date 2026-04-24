@@ -46,17 +46,49 @@ class ListView {
         return new Set(this._selectedIds);
     }
 
+    _getAllColumns() {
+        return [...this.statusColumns, ...this.terminalColumns];
+    }
+
+    _normalizePriority(priority) {
+        const value = String(priority || '').trim().toLowerCase();
+        return ['project', 'serious', 'thought', 'generated'].includes(value) ? value : 'thought';
+    }
+
+    _getPriorityLabel(priority) {
+        const key = this._normalizePriority(priority);
+        return {
+            project: 'Project',
+            serious: 'Serious',
+            thought: 'Thought',
+            generated: 'Generated',
+        }[key] || 'Thought';
+    }
+
+    _getDueDateMs(rawDueDate) {
+        if (!rawDueDate) return null;
+        if (typeof rawDueDate === 'number') {
+            return rawDueDate < 1e12 ? rawDueDate * 1000 : rawDueDate;
+        }
+        const value = String(rawDueDate).trim();
+        if (!value) return null;
+        if (/^-?\d+(\.\d+)?$/.test(value)) {
+            const numeric = Number(value);
+            return numeric < 1e12 ? numeric * 1000 : numeric;
+        }
+        const millis = Date.parse(value);
+        return Number.isNaN(millis) ? null : millis;
+    }
+
     render() {
         if (!this.container) return;
-        const allColumns = [...this.statusColumns, ...this.terminalColumns];
+        const allColumns = this._getAllColumns();
         const grouped = {};
         allColumns.forEach(col => { grouped[col.key] = []; });
         this.tasks.forEach(t => {
-            const s = (t.status || 'inbox').toLowerCase();
-            (grouped[s] || grouped['inbox']).push(t);
+            const s = (t.status || 'pending').toLowerCase();
+            (grouped[s] || grouped['pending']).push(t);
         });
-
-        const hasSelected = this._selectedIds.size > 0;
 
         this.container.innerHTML = `
             <div class="list-view">
@@ -83,30 +115,32 @@ class ListView {
 
     _renderBatchToolbar() {
         const count = this._selectedIds.size;
-        const display = count > 0 ? 'flex' : 'none';
+        const allColumns = this._getAllColumns();
         return `
-            <div class="batch-toolbar" style="display:${display}">
+            <div class="batch-toolbar${count > 0 ? '' : ' is-hidden'}">
                 <span class="batch-count">${count} selected</span>
                 <div class="batch-actions">
-                    <select class="form-input form-select batch-status-select" style="width:140px;height:28px;font-size:12px;">
+                    <select class="form-input form-select batch-status-select list-view-compact-select">
                         <option value="">Change Status...</option>
                         ${allColumns.map(c => `<option value="${c.key}">${this._esc(c.title)}</option>`).join('')}
                     </select>
-                    <select class="form-input form-select batch-priority-select" style="width:130px;height:28px;font-size:12px;">
+                    <select class="form-input form-select batch-priority-select list-view-compact-select list-view-compact-select-priority">
                         <option value="">Change Priority...</option>
-                        <option value="critical">Critical</option>
+                        <option value="project">Project</option>
                         <option value="serious">Serious</option>
-                        <option value="normal">Normal</option>
-                        <option value="low">Low</option>
+                        <option value="thought">Thought</option>
+                        <option value="generated">Generated</option>
                     </select>
-                    <button class="action-btn batch-assign-btn" style="padding:4px 10px;font-size:12px;" title="Assign to...">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;vertical-align:middle;margin-right:2px;">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
-                        </svg>
-                        Assign
-                    </button>
-                    <button class="action-btn danger batch-delete-btn" style="padding:4px 10px;font-size:12px;">Delete</button>
-                    <button class="action-btn batch-clear-btn" style="padding:4px 10px;font-size:12px;">Clear</button>
+                    <div class="batch-assign-anchor">
+                        <button class="action-btn batch-assign-btn list-view-compact-btn" title="Assign to...">
+                            <svg class="list-view-inline-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                            </svg>
+                            Assign
+                        </button>
+                    </div>
+                    <button class="action-btn danger batch-delete-btn list-view-compact-btn">Delete</button>
+                    <button class="action-btn batch-clear-btn list-view-compact-btn">Clear</button>
                 </div>
             </div>
         `;
@@ -120,31 +154,31 @@ class ListView {
         const someSelected = selectedInGroup > 0 && !allSelected;
 
         return `
-            <div class="list-view-section" data-status="${col.key}">
+            <div class="list-view-section${isExpanded ? '' : ' is-collapsed'}" data-status="${col.key}">
                 <div class="list-view-section-header" data-action="toggle-section" data-status="${col.key}">
                     <div class="list-view-section-header-left">
                         <input type="checkbox" class="list-view-group-checkbox" data-status="${col.key}"
                             ${allSelected ? 'checked' : ''} ${someSelected ? 'data-indeterminate="true"' : ''}
                             title="Select all ${this._esc(col.title)} tasks">
-                        <svg class="list-view-chevron ${isExpanded ? 'expanded' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;transition:transform 0.2s;">
+                        <svg class="list-view-chevron ${isExpanded ? 'expanded' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                         </svg>
-                        <span class="list-view-section-dot" style="background:${col.color};"></span>
+                        <span class="list-view-section-dot list-view-section-dot--${this._esc(col.key)}"></span>
                         <span class="list-view-section-title">${this._esc(col.title)}</span>
                         <span class="list-view-section-count">${items.length}</span>
                     </div>
                 </div>
-                <div class="list-view-section-body" style="${isExpanded ? '' : 'display:none;'}">
+                <div class="list-view-section-body">
                     ${items.length === 0 ? '<div class="list-view-empty">No tasks</div>' :
                     `<table class="list-view-table">
                         <thead>
                             <tr>
-                                <th style="width:32px;"></th>
+                                <th class="list-view-col-checkbox"></th>
                                 <th>Title</th>
-                                <th style="width:90px;">Priority</th>
-                                <th style="width:120px;">Assignee</th>
-                                <th style="width:100px;">Due Date</th>
-                                <th style="width:100px;">Updated</th>
+                                <th class="list-view-col-priority">Priority</th>
+                                <th class="list-view-col-assignee">Assignee</th>
+                                <th class="list-view-col-date">Due Date</th>
+                                <th class="list-view-col-date">Updated</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -160,10 +194,12 @@ class ListView {
 
     _renderRow(task) {
         const checked = this._selectedIds.has(task.id);
-        const priorityColors = { critical: 'var(--error)', serious: 'var(--warning)', normal: 'var(--primary-500)' };
-        const dueStr = task.due_date ? new Date(task.due_date * 1000).toLocaleDateString() : '-';
+        const dueDateMs = this._getDueDateMs(task.due_date);
+        const dueStr = dueDateMs ? new Date(dueDateMs).toLocaleDateString() : '-';
         const updatedStr = this._formatTime(task.updated_at || task.created_at);
-        const isOverdue = task.due_date && (task.due_date * 1000 < Date.now()) && task.status !== 'done';
+        const isOverdue = dueDateMs !== null && dueDateMs < Date.now() && task.status !== 'completed';
+        const priorityKey = this._esc(this._normalizePriority(task.priority));
+        const priorityLabel = this._getPriorityLabel(task.priority);
 
         return `
             <tr class="list-view-row ${checked ? 'selected' : ''} ${isOverdue ? 'overdue' : ''}" data-task-id="${task.id}">
@@ -177,13 +213,13 @@ class ListView {
                     <span>${this._esc(task.description || 'No description')}</span>
                 </td>
                 <td>
-                    <span class="list-view-priority" style="color:${priorityColors[task.priority] || priorityColors.normal};">
-                        ${this._esc(task.priority || 'normal')}
+                    <span class="list-view-priority list-view-priority--${priorityKey}">
+                        ${this._esc(priorityLabel)}
                     </span>
                 </td>
                 <td>${this._esc(task.assigned_to || task.alias || '-')}</td>
                 <td class="${isOverdue ? 'list-view-overdue' : ''}">${dueStr}</td>
-                <td style="color:var(--text-muted);">${updatedStr}</td>
+                <td class="list-view-updated">${updatedStr}</td>
             </tr>
         `;
     }
@@ -201,22 +237,14 @@ class ListView {
         dropdown.className = 'batch-assignee-dropdown';
         dropdown.innerHTML = `
             <div class="batch-assignee-dropdown-inner">
-                <input type="text" class="form-input batch-assignee-search" placeholder="Type assignee name..." style="width:100%;height:28px;font-size:12px;box-sizing:border-box;">
+                <input type="text" class="form-input batch-assignee-search list-view-compact-search" placeholder="Type assignee name...">
                 <div class="batch-assignee-list">
                     ${assignees.map(a => `<div class="batch-assignee-option" data-assignee="${this._esc(a)}">${this._esc(a)}</div>`).join('')}
                 </div>
             </div>
         `;
 
-        // Position near the button
-        const rect = anchorEl.getBoundingClientRect();
-        const containerRect = this.container.getBoundingClientRect();
-        dropdown.style.position = 'absolute';
-        dropdown.style.top = `${rect.bottom - containerRect.top + 4}px`;
-        dropdown.style.left = `${rect.left - containerRect.left}px`;
-        dropdown.style.zIndex = '100';
-
-        this.container.querySelector('.list-view').appendChild(dropdown);
+        (anchorEl.closest('.batch-assign-anchor') || anchorEl.parentElement || this.container).appendChild(dropdown);
 
         // Focus search
         const searchInput = dropdown.querySelector('.batch-assignee-search');
@@ -226,7 +254,7 @@ class ListView {
         searchInput.addEventListener('input', () => {
             const q = searchInput.value.toLowerCase();
             dropdown.querySelectorAll('.batch-assignee-option').forEach(opt => {
-                opt.style.display = opt.dataset.assignee.toLowerCase().includes(q) ? '' : 'none';
+                opt.classList.toggle('is-hidden', !opt.dataset.assignee.toLowerCase().includes(q));
             });
         });
 

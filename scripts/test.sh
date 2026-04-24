@@ -1,44 +1,60 @@
 #!/bin/bash
 
-# 测试脚本 - 使用 uv 运行测试
+# 测试脚本 - 使用统一的 uv bootstrap 路径运行测试
 
-# 检查是否安装了 uv
-if ! command -v uv &> /dev/null; then
-    echo "Error: uv is not installed. Please install it first:"
-    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
-    exit 1
-fi
+set -euo pipefail
 
-# 确保虚拟环境存在
-if [ ! -d ".venv" ]; then
-    echo "Creating virtual environment..."
-    uv venv
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 
-# 安装依赖（包括开发依赖）
-echo "Installing dependencies..."
-uv pip install -e ".[dev]"
+UV_SYNC_ARGS=${UV_SYNC_ARGS:---extra dev --group dev}
+PYTHON_BIN="./.venv/bin/python"
+
+ensure_env() {
+    if ! command -v uv &> /dev/null; then
+        echo "Error: uv is not installed. Please install it first:"
+        echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+        exit 1
+    fi
+
+    if [ ! -d ".venv" ]; then
+        echo "Creating virtual environment..."
+        uv venv
+    fi
+
+    echo "Syncing project environment with: uv sync $UV_SYNC_ARGS"
+    uv sync $UV_SYNC_ARGS
+
+    if [ ! -x "$PYTHON_BIN" ]; then
+        echo "Error: expected virtual environment interpreter not found: $PYTHON_BIN"
+        exit 1
+    fi
+}
+
+ensure_env
 
 # 默认测试模式
 TEST_MODE=${1:-all}
+PYTEST_EXPR=${PYTEST_EXPR:-not optional_backend}
 
 case $TEST_MODE in
     unit)
         echo "Running unit tests..."
-        uv run pytest tests/unit/ -v --tb=short
+        "$PYTHON_BIN" -m pytest tests/ -v --tb=short -m "($PYTEST_EXPR) and unit"
         ;;
     integration)
         echo "Running integration tests..."
-        uv run pytest tests/integration/ -v --tb=short
+        "$PYTHON_BIN" -m pytest tests/ -v --tb=short -m "($PYTEST_EXPR) and integration"
         ;;
     coverage)
         echo "Running tests with coverage..."
-        uv run pytest tests/ -v --cov=src/claude_code_api --cov-report=html --cov-report=term
+        "$PYTHON_BIN" -m pytest tests/ -v -m "$PYTEST_EXPR" --cov=src --cov-report=html --cov-report=term
         echo "Coverage report generated in htmlcov/index.html"
         ;;
     all)
         echo "Running all tests..."
-        uv run pytest tests/ -v --tb=short
+        "$PYTHON_BIN" -m pytest tests/ -v --tb=short -m "$PYTEST_EXPR"
         ;;
     *)
         echo "Usage: $0 [unit|integration|coverage|all]"
@@ -50,10 +66,4 @@ case $TEST_MODE in
         ;;
 esac
 
-# 显示测试结果
-if [ $? -eq 0 ]; then
-    echo "✅ Tests passed successfully!"
-else
-    echo "❌ Tests failed!"
-    exit 1
-fi
+echo "✅ Tests passed successfully!"

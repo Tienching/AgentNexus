@@ -18,6 +18,7 @@ from ..models import RequestModel
 from src.runtime.events.agui import AGUIRequest
 from ..config import settings
 from ..logger import get_logger
+from .observability import record_sampled_event, telemetry
 from ..providers import get_provider_registry
 from ..utils.ids import resolve_session_id
 from .callback_handler import CallbackHandler
@@ -66,6 +67,86 @@ class StreamHandler:
     def _get_agui_adapter(self, provider: str):
         """Create a fresh AG-UI adapter via the centralized dispatcher."""
         return create_adapter(provider)
+
+    def _sync_execution_binding(
+        self,
+        storage,
+        session_id: str,
+        provider: str,
+        alias: str,
+        exec_user: str,
+        work_dir: Optional[str],
+        cli_session_id: Optional[str],
+        session_kind: str = "chat",
+        source_type: str = "chat",
+    ) -> tuple[Optional[str], list[str]]:
+        """Resolve and persist the canonical execution binding for a chat session."""
+        compat_hits: list[str] = []
+        existing_binding = None
+        if storage and session_id:
+            try:
+                existing_binding = storage.get_execution_binding(session_id)
+            except Exception as e:
+                logger.debug(
+                    "Execution binding lookup failed",
+                    extra={"session_id": session_id, "provider": provider, "error": str(e)},
+                )
+
+        if existing_binding and getattr(existing_binding, "cli_session_id", None):
+            cli_session_id = existing_binding.cli_session_id
+            compat_hits.append("binding_cli_session")
+        elif storage and session_id and not cli_session_id:
+            try:
+                fallback_cli = storage.get_cli_session_id(session_id)
+                if fallback_cli:
+                    cli_session_id = fallback_cli
+                    compat_hits.append("resume_storage_lookup")
+                else:
+                    compat_hits.append("resume_fallback_to_provider_default")
+            except Exception as e:
+                logger.debug(
+                    "CLI session resume lookup failed",
+                    extra={"session_id": session_id, "provider": provider, "error": str(e)},
+                )
+                compat_hits.append("resume_lookup_error")
+
+        if storage and session_id:
+            try:
+                storage.upsert_execution_binding(
+                    session_id=session_id,
+                    cli_session_id=cli_session_id,
+                    provider=provider,
+                    alias=alias,
+                    exec_user=exec_user,
+                    work_dir=work_dir,
+                    source_type=getattr(existing_binding, "source_type", None) or source_type,
+                    source_session_id=getattr(existing_binding, "source_session_id", None),
+                    task_id=getattr(existing_binding, "task_id", None),
+                    session_kind=session_kind,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to persist execution binding",
+                    extra={"session_id": session_id, "provider": provider, "error": str(e)},
+                )
+                compat_hits.append("binding_persist_failed")
+
+        telemetry.increment("stream_handler.binding_resolved")
+        for hit in compat_hits:
+            telemetry.increment(f"stream_handler.compat.{hit}")
+        record_sampled_event(
+            "stream_handler.binding_resolved",
+            {
+                "session_id": session_id,
+                "provider": provider,
+                "alias": alias,
+                "exec_user": exec_user,
+                "work_dir": work_dir,
+                "cli_session_id_present": bool(cli_session_id),
+                "compat_hits": compat_hits,
+            },
+        )
+        return cli_session_id, compat_hits
 
     def _build_conversation_history_text(
         self,
@@ -243,6 +324,9 @@ class StreamHandler:
             )
         
         legacy_data = agui_request.to_legacy_request()
+        for passthrough_key in ("cwd", "cwd_mode", "run_kind", "cli_session_id", "image_paths", "file_paths", "content_parts"):
+            if body_dict.get(passthrough_key) not in (None, "", [], {}):
+                legacy_data[passthrough_key] = body_dict.get(passthrough_key)
         # Username is optional for AG-UI callers; use an internal default.
         if not legacy_data.get("user"):
             legacy_data["user"] = "anonymous"
@@ -253,6 +337,14 @@ class StreamHandler:
 
         request_model = RequestModel.model_validate(legacy_data)
         request_model.session_id = resolved_session_id
+        for passthrough_key in ("cwd", "cwd_mode", "run_kind", "cli_session_id", "image_paths", "file_paths", "content_parts"):
+            if legacy_data.get(passthrough_key) not in (None, "", [], {}):
+                setattr(request_model, passthrough_key, legacy_data.get(passthrough_key))
+        requested_cwd_mode = str(legacy_data.get("cwd_mode") or body_dict.get("cwd_mode") or getattr(request_model, "cwd_mode", "") or "").strip()
+        requested_work_dir = str(legacy_data.get("cwd") or body_dict.get("cwd") or getattr(request_model, "cwd", "") or "").strip()
+        if requested_work_dir and requested_cwd_mode == "inplace":
+            request_model.cwd = requested_work_dir
+            request_model.cwd_mode = "inplace"
         agui_request.threadId = resolved_session_id
 
         # In /workspace -t mode, the workspace provider (stored in Redis session)
@@ -305,6 +397,32 @@ class StreamHandler:
                     request_model.cwd = exec_dir_override
                     request_model.cwd_mode = "inplace"
                     logger.info(f"Workspace exec_dir override: {exec_dir_override}")
+
+                effective_work_dir = exec_dir_override or (requested_work_dir if requested_cwd_mode == "inplace" else (request_model.cwd if getattr(request_model, "cwd_mode", "") == "inplace" else None))
+                binding_cli_session_id, binding_compat_hits = self._sync_execution_binding(
+                    storage=storage,
+                    session_id=session_id,
+                    provider=provider,
+                    alias=workspace_alias or provider,
+                    exec_user=exec_user,
+                    work_dir=effective_work_dir,
+                    cli_session_id=getattr(request_model, "cli_session_id", None),
+                    session_kind="chat",
+                    source_type="chat",
+                )
+                if binding_cli_session_id:
+                    request_model.cli_session_id = binding_cli_session_id
+                logger.debug(
+                    "Execution binding synced for AG-UI session",
+                    extra={
+                        "session_id": session_id,
+                        "provider": provider,
+                        "alias": workspace_alias or provider,
+                        "exec_user": exec_user,
+                        "cli_session_id_present": bool(binding_cli_session_id),
+                        "compat_hits": binding_compat_hits,
+                    },
+                )
             except Exception as e:
                 logger.warning(f"Failed to check workspace/switch provider/alias/exec_user: {e}")
 

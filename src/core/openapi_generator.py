@@ -44,7 +44,8 @@ Nexus is an AI agent management platform that provides:
 - **Agent Lifecycle Management** - Register, heartbeat, and monitor agents
 - **Task Queue & Scheduling** - Priority-based task queue with cron scheduling
 - **Session Management** - Conversation sessions with message chain tracking
-- **Observability** - API latency, token usage, and event telemetry
+- **Observability** - SQLite-first health/metrics snapshots with optional Redis compatibility
+- **Setup Readiness** - Guided onboarding checks for CLI/runtime/workspace prerequisites
 - **Feature Flags** - Progressive feature rollout
 
 ## Authentication

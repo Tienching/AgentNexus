@@ -14,6 +14,8 @@ try:
     from redis import Redis, ConnectionPool
     _REDIS_AVAILABLE = True
 except ImportError:
+    Redis = Any  # type: ignore[assignment]
+    ConnectionPool = Any  # type: ignore[assignment]
     _REDIS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
@@ -25,10 +27,6 @@ def is_redis_available() -> bool:
 
 class RedisClient:
     """Redis client wrapper with connection pool management"""
-    
-    def __init__(self, *args, **kwargs):
-        if not _REDIS_AVAILABLE:
-            raise ImportError("redis package not installed. Install with: pip install redis")
 
     _instance: Optional["RedisClient"] = None
     _pool: Optional[ConnectionPool] = None
@@ -43,6 +41,8 @@ class RedisClient:
     
     def __init__(self):
         """Initialize Redis client with connection pool"""
+        if not _REDIS_AVAILABLE:
+            raise ImportError("redis package not installed. Install with: pip install redis")
         if self._initialized:
             return
         

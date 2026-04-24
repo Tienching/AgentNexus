@@ -30,6 +30,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail
+from .cache_store import CacheStore, FileStamp, stat_paths
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,6 @@ class GeminiHistoryParser(BaseHistoryParser):
             return []
 
         all_sessions: List[SessionMeta] = []
-        now_ms = int(time.time() * 1000)
 
         for hash_dir in tmp_dir.iterdir():
             if not hash_dir.is_dir():
@@ -112,64 +112,14 @@ class GeminiHistoryParser(BaseHistoryParser):
                 reverse=True,
             )
 
-            for session_file in session_files:
-                data = self._safe_read_json(session_file)
-                if not data:
-                    continue
-
-                session_id = data.get("sessionId", "")
-                if not session_id:
-                    session_id = self._session_id_from_filename(session_file.name)
-
-                messages = data.get("messages", [])
-                if not isinstance(messages, list):
-                    continue
-
-                message_count = 0
-                last_user_message = ""
-                last_assistant_message = ""
-
-                for msg in messages:
-                    if not isinstance(msg, dict):
-                        continue
-                    msg_type = msg.get("type", "")
-                    content = msg.get("content", "")
-
-                    if msg_type in _SKIP_MSG_TYPES:
-                        continue
-
-                    if msg_type == "user" and content:
-                        if isinstance(content, str):
-                            message_count += 1
-                            last_user_message = content[:100]
-                    elif msg_type == "gemini":
-                        text = content if isinstance(content, str) else ""
-                        if text:
-                            message_count += 1
-                            last_assistant_message = text[:100]
-
-                title = last_user_message or last_assistant_message or "New Session"
-                title = " ".join(title.split())
-
-                start_time = self._parse_iso_timestamp_ms(data.get("startTime", ""))
-                last_updated = self._parse_iso_timestamp_ms(data.get("lastUpdated", ""))
-                created_at = start_time or now_ms
-                updated_at = last_updated or start_time or now_ms
-
-                all_sessions.append(SessionMeta(
-                    id=session_id,
-                    thread_id=session_id,
-                    title=title[:100],
-                    username="",
-                    provider="gemini",
-                    status=SessionStatus.COMPLETED,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    message_count=message_count,
-                    source="history",
-                    exec_dir=f"[gemini:{hash_dir.name[:12]}...]",
-                    exec_user=linux_user,
-                ))
+            # Cache-aware per-file parsing. Shards carry no exec_dir;
+            # we inject the hash tag here so changing the exec_dir
+            # format never forces cache misses.
+            for meta in self._collect_file_metas(session_files):
+                meta.exec_dir = f"[gemini:{hash_dir.name[:12]}...]"
+                if linux_user and not meta.exec_user:
+                    meta.exec_user = linux_user
+                all_sessions.append(meta)
 
         all_sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return all_sessions
@@ -194,73 +144,114 @@ class GeminiHistoryParser(BaseHistoryParser):
         if not session_files:
             return []
 
-        sessions: List[SessionMeta] = []
-        now_ms = int(time.time() * 1000)
-
-        for session_file in session_files:
-            data = self._safe_read_json(session_file)
-            if not data:
-                continue
-
-            session_id = data.get("sessionId", "")
-            if not session_id:
-                # Extract from filename: session-{datetime}-{sessionId}.json
-                session_id = self._session_id_from_filename(session_file.name)
-
-            messages = data.get("messages", [])
-            if not isinstance(messages, list):
-                continue
-
-            # Count user-facing messages
-            message_count = 0
-            last_user_message = ""
-            last_assistant_message = ""
-
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    continue
-                msg_type = msg.get("type", "")
-                content = msg.get("content", "")
-
-                if msg_type in _SKIP_MSG_TYPES:
-                    continue
-
-                if msg_type == "user" and content:
-                    if isinstance(content, str):
-                        message_count += 1
-                        last_user_message = content[:100]
-
-                elif msg_type == "gemini":
-                    text = content if isinstance(content, str) else ""
-                    if text:
-                        message_count += 1
-                        last_assistant_message = text[:100]
-
-            # Determine title
-            title = last_user_message or last_assistant_message or "New Session"
-            title = " ".join(title.split())
-
-            # Parse timestamps
-            start_time = self._parse_iso_timestamp_ms(data.get("startTime", ""))
-            last_updated = self._parse_iso_timestamp_ms(data.get("lastUpdated", ""))
-            created_at = start_time or now_ms
-            updated_at = last_updated or start_time or now_ms
-
-            sessions.append(SessionMeta(
-                id=session_id,
-                thread_id=session_id,
-                title=title[:100],
-                username="",
-                provider="gemini",
-                status=SessionStatus.COMPLETED,
-                created_at=created_at,
-                updated_at=updated_at,
-                message_count=message_count,
-                source="history",
-            ))
-
+        # Cache hit path — shards have no exec_dir so we don't touch it.
+        sessions = list(self._collect_file_metas(session_files))
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
+
+    def _collect_file_metas(self, session_files: List[Path]) -> List[SessionMeta]:
+        """Cache-aware batch extraction of SessionMeta (one per JSON file).
+
+        Shards carry no exec_dir / exec_user; both fields are injected
+        by the caller after cache lookup so cache entries are reusable
+        regardless of how the caller tags them.
+        """
+        stamps = stat_paths(session_files)
+        cache = CacheStore.get_default()
+        try:
+            cached = cache.lookup_many(self.provider_name, stamps)
+        except Exception:
+            logger.debug("gemini cache lookup failed; falling through", exc_info=True)
+            cached = {}
+
+        metas: List[SessionMeta] = []
+        to_persist: List = []
+        for session_file, stamp in stamps.items():
+            if session_file in cached:
+                for cached_meta in cached[session_file]:
+                    # Shards are cached without exec_dir; reset for caller.
+                    cached_meta.exec_dir = None
+                    cached_meta.exec_user = None
+                    metas.append(cached_meta)
+                continue
+            parsed = self._parse_file_to_meta(session_file)
+            shard = [parsed] if parsed else []
+            if parsed:
+                metas.append(parsed)
+            to_persist.append((session_file, stamp, shard))
+
+        if to_persist:
+            try:
+                cache.store_many(self.provider_name, to_persist)
+            except Exception:
+                logger.debug("gemini cache store failed; continuing", exc_info=True)
+
+        return metas
+
+    def _parse_file_to_meta(self, session_file: Path) -> Optional[SessionMeta]:
+        """Parse a single Gemini session JSON file into a SessionMeta.
+
+        Returns None if the file is unreadable or malformed.
+        The returned SessionMeta has exec_dir=None; the caller is
+        responsible for injecting exec_dir / exec_user.
+        """
+        data = self._safe_read_json(session_file)
+        if not data:
+            return None
+
+        session_id = data.get("sessionId", "")
+        if not session_id:
+            session_id = self._session_id_from_filename(session_file.name)
+
+        messages = data.get("messages", [])
+        if not isinstance(messages, list):
+            return None
+
+        message_count = 0
+        last_user_message = ""
+        last_assistant_message = ""
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            msg_type = msg.get("type", "")
+            content = msg.get("content", "")
+
+            if msg_type in _SKIP_MSG_TYPES:
+                continue
+
+            if msg_type == "user" and content:
+                if isinstance(content, str):
+                    message_count += 1
+                    last_user_message = content[:100]
+
+            elif msg_type == "gemini":
+                text = content if isinstance(content, str) else ""
+                if text:
+                    message_count += 1
+                    last_assistant_message = text[:100]
+
+        title = last_user_message or last_assistant_message or "New Session"
+        title = " ".join(title.split())
+
+        now_ms = int(time.time() * 1000)
+        start_time = self._parse_iso_timestamp_ms(data.get("startTime", ""))
+        last_updated = self._parse_iso_timestamp_ms(data.get("lastUpdated", ""))
+        created_at = start_time or now_ms
+        updated_at = last_updated or start_time or now_ms
+
+        return SessionMeta(
+            id=session_id,
+            thread_id=session_id,
+            title=title[:100],
+            username="",
+            provider="gemini",
+            status=SessionStatus.COMPLETED,
+            created_at=created_at,
+            updated_at=updated_at,
+            message_count=message_count,
+            source="history",
+        )
 
     def get_session_detail(self, config_path: Path, session_id: str) -> Optional[HistorySessionDetail]:
         """Get full message detail for a Gemini session.

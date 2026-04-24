@@ -27,7 +27,7 @@ For each task, create `session_plan/task_01.md`:
 
 ```
 Title: [Short imperative title, e.g. "Add timeout handling to mission executor"]
-Files: src/nanobot/mission/executor.py, tests/test_mission.py
+Files: src/nexus/mission/executor.py, tests/test_mission.py
 Issue: none
 
 [2-3 paragraphs describing:]

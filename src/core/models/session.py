@@ -18,6 +18,7 @@ class SessionStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
+    ARCHIVED = "archived"
 
 
 class SessionMeta(BaseModel):
@@ -30,6 +31,8 @@ class SessionMeta(BaseModel):
     exec_user: Optional[str] = Field(None, description="Linux exec user for command execution")
     provider: Optional[str] = Field(None, description="Provider (e.g., claude, gemini)")
     alias: Optional[str] = Field(None, description="Alias (optional, defaults to provider)")
+    prior_session_id: Optional[str] = Field(None, description="Explicit resume source session ID")
+    prior_work_dir: Optional[str] = Field(None, description="Explicit prior working directory")
     created_at: int = Field(default_factory=lambda: int(time.time() * 1000), description="Created timestamp (ms)")
     updated_at: int = Field(default_factory=lambda: int(time.time() * 1000), description="Updated timestamp (ms)")
     message_count: int = Field(0, description="Total message count")

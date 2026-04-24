@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,11 @@ from ...models.session import StoredMessage
 from ...stores.task_storage import TaskQueue
 from ...stores.user_config import UserConfigStore
 from ...stores.concurrency_config import get_concurrency_config_store
-from ....server.services.user_directory import UserDirectoryManager
+from src.runtime.history.alias_resolution import (
+    build_alias_config_map as shared_build_alias_config_map,
+    resolve_history_user_homes as shared_resolve_history_user_homes,
+)
+from src.runtime.utils.user_directory import UserDirectoryResolver
 from .worktree import (
     NotGitRepoError,
     WorktreeDirConflictError,
@@ -150,7 +155,8 @@ class SlashCommandHandler:
 
         # User config store (Redis)
         self._user_config_store = UserConfigStore()
-        self._user_dir_manager = UserDirectoryManager(config)
+        self._user_dir_manager = UserDirectoryResolver(config)
+        self.agent_loop_resolver = None
 
         # Store startup CWD for /exit command
         # Prefer the effective exec_user home root rather than the current process home.
@@ -183,6 +189,82 @@ class SlashCommandHandler:
         task_exec_user = (getattr(task, "exec_user", None) or self.exec_user or "").strip() or self.exec_user
         task_session_id = (getattr(task, "session_id", None) or "").strip() or None
         return self._user_dir_manager.resolve_task_session_directory(task_exec_user, str(task.id), task_session_id)
+
+    def _bind_execution_context(
+        self,
+        storage,
+        session_id: Optional[str],
+        *,
+        cli_session_id: Optional[str] = None,
+        provider: Optional[str] = None,
+        alias: Optional[str] = None,
+        exec_user: Optional[str] = None,
+        work_dir: Optional[str] = None,
+        exec_dir_override: Optional[str] = None,
+        source_type: Optional[str] = None,
+        source_session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+        session_kind: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Persist execution binding with a compatibility fallback."""
+        if not storage or not session_id:
+            return False
+
+        binder = getattr(storage, "bind_execution_context", None)
+        if callable(binder):
+            try:
+                return bool(
+                    binder(
+                        session_id,
+                        cli_session_id=cli_session_id,
+                        provider=provider,
+                        alias=alias,
+                        exec_user=exec_user,
+                        work_dir=work_dir,
+                        exec_dir_override=exec_dir_override,
+                        source_type=source_type,
+                        source_session_id=source_session_id,
+                        task_id=task_id,
+                        session_kind=session_kind,
+                        metadata=metadata,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"bind_execution_context failed for {session_id}: {e}", exc_info=True)
+
+        updated = False
+        if work_dir:
+            try:
+                updated = bool(storage.set_exec_dir_override(session_id, work_dir)) or updated
+            except Exception:
+                pass
+        if cli_session_id:
+            try:
+                updated = bool(storage.set_cli_session_id(session_id, cli_session_id)) or updated
+            except Exception:
+                pass
+        if provider:
+            try:
+                updated = bool(storage.set_workspace_provider(session_id, provider)) or updated
+            except Exception:
+                pass
+        if alias:
+            try:
+                updated = bool(storage.set_workspace_alias(session_id, alias)) or updated
+            except Exception:
+                pass
+        if exec_user:
+            try:
+                updated = bool(storage.set_session_exec_user(session_id, exec_user, user_home_base=getattr(self.config, "user_home_base", None))) or updated
+            except Exception:
+                pass
+        if source_type == "history" and source_session_id:
+            try:
+                updated = bool(storage.set_inherited_session(session_id, f"history:{provider or alias or ''}:{source_session_id}")) or updated
+            except Exception:
+                pass
+        return updated
 
     def is_slash_command(self, content: str) -> bool:
         """Check if content starts with a known slash command"""
@@ -408,6 +490,7 @@ class SlashCommandHandler:
                         "notification_sink_type": notification_sink_type,
                         "notification_channel": notification_channel,
                         "notification_chat_id": notification_chat_id,
+                        "agent_loop_resolver": getattr(self, "agent_loop_resolver", None),
                     },
                 )
 
@@ -831,7 +914,7 @@ class SlashCommandHandler:
             return f"## ❌ Not Found\n\n任务 `{task_id}` 不存在。"
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val == TaskStatus.IN_PROGRESS.value:
+        if status_val == TaskStatus.RUNNING.value:
             return (
                 f"## ⏳ 已在执行中\n\n"
                 f"任务 `#{task.id}` 正在执行中，请稍后再试。\n\n"
@@ -885,11 +968,16 @@ class SlashCommandHandler:
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
         status_icons = {
+            "completed": "✅",
+            "running": "🔄",
+            "pending": "🕒",
+            "in_review": "🔍",
+            "failed": "❌",
+            "cancelled": "🗑️",
+            # Legacy support
             "done": "✅",
             "doing": "🔄",
             "todo": "🕒",
-            "failed": "❌",
-            "cancelled": "🗑️",
         }
         status_icon = status_icons.get(status_val, "•")
 
@@ -1154,17 +1242,23 @@ class SlashCommandHandler:
             response += "| ID | Status | Priority | Description |\n"
             response += "|----|--------|----------|-------------|\n"
             status_icons = {
-                TaskStatus.DONE: "✅",
-                TaskStatus.IN_PROGRESS: "🔄",
-                TaskStatus.INBOX: "🕒",
+                TaskStatus.COMPLETED: "✅",
+                TaskStatus.RUNNING: "🔄",
+                TaskStatus.PENDING: "🕒",
+                TaskStatus.IN_REVIEW: "🔍",
                 TaskStatus.FAILED: "❌",
-                TaskStatus.ARCHIVED: "🗑️",
+                TaskStatus.CANCELLED: "🗑️",
+                TaskStatus.ARCHIVED: "📦",
                 # Legacy support
+                "completed": "✅",
+                "running": "🔄",
+                "pending": "🕒",
+                "in_review": "🔍",
+                "failed": "❌",
+                "cancelled": "🗑️",
                 "done": "✅",
                 "doing": "🔄",
                 "todo": "🕒",
-                "failed": "❌",
-                "cancelled": "🗑️",
             }
             for task in recent_tasks:
                 status_val = task.status if isinstance(task.status, str) else task.status.value
@@ -1636,33 +1730,44 @@ class SlashCommandHandler:
             if task_id and not path_arg:
                 response += f"\n(Switched to task #{task_id} workspace)"
 
-                # Set exec_dir override for subsequent commands to use -c in this directory
+                # Set exec_dir override for subsequent commands to use the task-bound
+                # execution context instead of building a parallel runtime session.
                 if current_session_id:
                     storage = get_session_storage()
-                    storage.set_exec_dir_override(current_session_id, str(p))
-                    # Also set target_session_id so messages get archived to task's session
-                    if found_session_id:
-                        storage.set_target_session_id(current_session_id, found_session_id)
+                    task_binding = getattr(task, "execution_binding", None)
+                    task_provider = getattr(task_binding, "provider", None) or getattr(task, "provider", None) or "codebuddy"
+                    task_alias = getattr(task_binding, "alias", None) or getattr(task, "alias", None)
+                    task_cli_session_id = getattr(task_binding, "cli_session_id", None) or getattr(task, "cli_session_id", None)
+                    task_source_session_id = (
+                        getattr(task_binding, "source_session_id", None)
+                        or getattr(task, "source_session_id", None)
+                        or found_session_id
+                        or f"task_{task.id}"
+                    )
+                    task_source_type = getattr(task_binding, "source_type", None) or "task"
+                    bound = self._bind_execution_context(
+                        storage,
+                        current_session_id,
+                        cli_session_id=task_cli_session_id,
+                        provider=task_provider,
+                        alias=task_alias,
+                        work_dir=str(p),
+                        exec_dir_override=str(p),
+                        source_type=task_source_type,
+                        source_session_id=task_source_session_id,
+                        task_id=str(task.id),
+                        session_kind="chat",
+                    )
+                    if not bound:
+                        # Legacy fallback: preserve the old workspace override behavior.
+                        storage.set_exec_dir_override(current_session_id, str(p))
+                        storage.set_workspace_provider(current_session_id, task_provider)
+                        if task_alias:
+                            storage.set_workspace_alias(current_session_id, task_alias)
+                        if task_cli_session_id:
+                            storage.set_cli_session_id(current_session_id, task_cli_session_id)
 
-                        # Import task session history into current session for context continuity.
-                        # This ensures:
-                        # 1. Web UI can display the full conversation history
-                        # 2. If Claude CLI's -c cannot restore (e.g., different user, cleaned
-                        #    ~/.claude), the history is still available in Redis
-                        self._import_history(found_session_id, current_session_id)
-
-                    # Store the task's provider so CLI executor uses the correct
-                    # resume mechanism (e.g., gemini -> --resume latest, codex -> resume --last)
-                    task_provider = getattr(task, "provider", None) or "codebuddy"
-                    storage.set_workspace_provider(current_session_id, task_provider)
-
-                    # Store the task's original alias so CLI executor uses the correct
-                    # CLI command (e.g., 'gemini-internal' instead of 'gemini')
-                    task_alias = getattr(task, "alias", None)
-                    if task_alias:
-                        storage.set_workspace_alias(current_session_id, task_alias)
-
-                    response += f"\n(Provider: {task_provider}, Alias: {task_alias or 'none'}, context will be restored)"
+                    response += f"\n(Provider: {task_provider}, Alias: {task_alias or 'none'}, bound to current session)"
 
             return response
 
@@ -2006,44 +2111,15 @@ class SlashCommandHandler:
 
     def _create_history_service(self):
         from src.runtime.history import HistoryService
-        from src.runtime.history.claude_parser import ClaudeHistoryParser
-        from src.runtime.history.codex_parser import CodexHistoryParser
-        from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
-        from src.runtime.history.gemini_parser import GeminiHistoryParser
 
-        service = HistoryService()
-        service.register_parser(ClaudeHistoryParser())
-        service.register_parser(CodexHistoryParser())
-        service.register_parser(CodeBuddyHistoryParser())
-        service.register_parser(GeminiHistoryParser())
-        return service
+        return HistoryService.create_default()
 
     def _resolve_history_user_homes(self, user_filter: Optional[str] = None) -> List[Path]:
-        selected_user = (user_filter or "").strip()
-        if selected_user:
-            candidate = Path("/home") / selected_user
-            if candidate.is_dir():
-                return [candidate]
-            fallback = Path(self.config.user_home_base) / selected_user
-            if fallback.is_dir():
-                return [fallback]
-            return [candidate]
-
-        user_home = Path(self.config.user_home_base)
-        if str(user_home).strip() == "/home":
-            user_home = Path.home()
-
-        user_homes: List[Path] = []
-        home_root = Path("/home")
-        if home_root.is_dir():
-            for entry in sorted(home_root.iterdir()):
-                if entry.is_dir():
-                    user_homes.append(entry)
-        if user_home not in user_homes:
-            user_homes.append(user_home)
-        if not user_homes:
-            user_homes = [user_home]
-        return user_homes
+        return shared_resolve_history_user_homes(
+            exec_user=user_filter or "",
+            user_home_base=str(self.config.user_home_base),
+            fallback_exec_user=getattr(self.config, "exec_user", "ubuntu") or "ubuntu",
+        )
 
     def _get_alias_registry_map(self) -> dict:
         try:
@@ -2059,55 +2135,12 @@ class SlashCommandHandler:
         provider_filter: Optional[str] = None,
         alias_registry_map: Optional[dict] = None,
     ) -> dict:
-        provider_config_dirs = {
-            "claude": ".claude",
-            "codebuddy": ".codebuddy",
-            "codex": ".codex",
-            "gemini": ".gemini",
-        }
-
-        alias_map = {}
-        for provider_name, config_dir in provider_config_dirs.items():
-            if provider_filter and provider_name != provider_filter:
-                continue
-            config_path = home / config_dir
-            try:
-                if config_path.exists():
-                    alias_map[provider_name] = config_path
-            except OSError:
-                continue
-
-        registry_map = alias_registry_map or {}
-        for alias_name, provider_name in registry_map.items():
-            if alias_name in alias_map:
-                continue
-            if provider_filter and provider_name != provider_filter and alias_name != provider_filter:
-                continue
-            config_dir = home / f".{alias_name}"
-            try:
-                if config_dir.exists():
-                    alias_map[alias_name] = config_dir
-            except OSError:
-                continue
-
-        try:
-            for entry in home.iterdir():
-                if not entry.is_dir():
-                    continue
-                if not entry.name.startswith("."):
-                    continue
-                alias_name = entry.name[1:]
-                if not alias_name or alias_name in alias_map:
-                    continue
-                if not any(alias_name.startswith(p) for p in provider_config_dirs):
-                    continue
-                if provider_filter and alias_name != provider_filter and not alias_name.startswith(provider_filter):
-                    continue
-                alias_map[alias_name] = entry
-        except Exception:
-            pass
-
-        return alias_map
+        return shared_build_alias_config_map(
+            user_home=home,
+            provider_filter=provider_filter,
+            alias_registry_map=alias_registry_map or {},
+            custom_paths_str="",
+        )
 
     def _run_history_async(self, coro):
         import asyncio
@@ -2198,7 +2231,15 @@ class SlashCommandHandler:
                 if prev is None or (s.updated_at or 0) > (prev.updated_at or 0):
                     merged[key] = s
 
-        sessions = sorted(merged.values(), key=lambda s: s.updated_at or 0, reverse=True)[:num]
+        def _provider_alias_key(item) -> Tuple[str, str]:
+            provider = (getattr(item, "provider", "") or "").strip()
+            alias = (getattr(item, "alias", "") or provider or "").strip()
+            return provider.lower() or "?", alias.lower() or provider.lower() or "?"
+
+        sessions = sorted(
+            merged.values(),
+            key=lambda s: (_provider_alias_key(s)[0], _provider_alias_key(s)[1], -(s.updated_at or 0)),
+        )[:num]
 
         filters = []
         if provider_filter:
@@ -2208,37 +2249,50 @@ class SlashCommandHandler:
         filter_hint = f"（{'，'.join(filters)}）" if filters else ""
 
         if not sessions:
-            return f"## 📂 CLI 历史会话{filter_hint}\n\n暂无历史会话。"
+            return f"## 📂 History{filter_hint}\n\n暂无历史会话。"
 
         from datetime import datetime, timezone
 
-        response = f"## 📂 CLI 历史会话{filter_hint}"
+        response = f"## 📂 History{filter_hint}"
         response += f"\n\n**显示:** {len(sessions)} / {total_sessions} 个会话\n\n"
-        response += "| # | 用户 | Provider | Session ID | 标题 | 项目 | 更新时间 |\n"
-        response += "|---|------|----------|-----------|------|------|----------|\n"
+        response += "_按 Provider / Alias 分组，组内按更新时间倒序显示。_\n\n"
 
-        for i, s in enumerate(sessions, 1):
-            provider_name = getattr(s, "provider", "") or getattr(s, "alias", "") or "?"
-            sid = s.id or "?"
-            title = (s.title or "无标题")[:40]
-            if len(s.title or "") > 40:
-                title += "..."
-            exec_user = getattr(s, "exec_user", "") or "?"
-            # Show shortened project path
-            project = s.exec_dir or ""
-            if project and len(project) > 30:
-                project = "..." + project[-27:]
-            try:
-                dt = datetime.fromtimestamp(s.updated_at / 1000, tz=timezone.utc)
-                time_str = dt.strftime("%m-%d %H:%M")
-            except Exception:
-                time_str = "?"
-            response += f"| {i} | {exec_user} | {provider_name} | `{sid}` | {title} | {project} | {time_str} |\n"
+        grouped: Dict[Tuple[str, str], List[Any]] = {}
+        for item in sessions:
+            provider_name = (getattr(item, "provider", "") or getattr(item, "alias", "") or "?").strip() or "?"
+            alias_name = (getattr(item, "alias", "") or provider_name).strip() or provider_name
+            grouped.setdefault((provider_name, alias_name), []).append(item)
+
+        row_index = 1
+        for (provider_name, alias_name) in sorted(grouped.keys(), key=lambda pair: (pair[0].lower(), pair[1].lower())):
+            items = sorted(grouped[(provider_name, alias_name)], key=lambda s: s.updated_at or 0, reverse=True)
+            section_label = provider_name if provider_name == alias_name else f"{provider_name} / {alias_name}"
+            response += f"### {section_label}\n\n"
+            response += "| # | 用户 | Session ID | 标题 | 项目 | 更新时间 |\n"
+            response += "|---|------|-----------|------|------|----------|\n"
+
+            for s in items:
+                sid = s.id or "?"
+                title = (s.title or "无标题")[:40]
+                if len(s.title or "") > 40:
+                    title += "..."
+                exec_user = getattr(s, "exec_user", "") or "?"
+                project = s.exec_dir or ""
+                if project and len(project) > 30:
+                    project = "..." + project[-27:]
+                try:
+                    dt = datetime.fromtimestamp(s.updated_at / 1000, tz=timezone.utc)
+                    time_str = dt.strftime("%m-%d %H:%M")
+                except Exception:
+                    time_str = "?"
+                response += f"| {row_index} | {exec_user} | `{sid}` | {title} | {project} | {time_str} |\n"
+                row_index += 1
+            response += "\n"
 
         response += "\n**操作：**\n"
         response += "- `/history -s <session_id>` — 查看详情\n"
-        response += "- `/history -f -s <session_id>` — 从 CLI 文件刷新当前 Runtime session\n"
-        response += "- `/history -c -s <session_id>` — 恢复为 Runtime session\n"
+        response += "- `/history -f -s <session_id>` — 从 CLI 文件刷新当前会话\n"
+        response += "- `/history -c -s <session_id>` — 绑定并恢复为当前会话\n"
         response += "- `/history -u <user>` — 按用户筛选（默认全部用户）\n"
         return response
 
@@ -2264,7 +2318,7 @@ class SlashCommandHandler:
 
         from datetime import datetime, timezone
 
-        response = f"## 📋 历史会话详情\n\n"
+        response = f"## 📋 History 详情\n\n"
         response += f"| 项 | 值 |\n|---|---|\n"
         provider_label = found_alias or found_provider or "?"
         if found_provider and found_alias and found_alias != found_provider:
@@ -2301,8 +2355,8 @@ class SlashCommandHandler:
                 response += f"**{prefix}:** {content}\n\n"
 
         response += "\n**操作：**\n"
-        response += f"- `/history -f -s {session_id}` — 从 CLI 文件刷新当前 Runtime session\n"
-        response += f"- `/history -c -s {session_id}` — 恢复为 Runtime session\n"
+        response += f"- `/history -f -s {session_id}` — 从 CLI 文件刷新当前会话\n"
+        response += f"- `/history -c -s {session_id}` — 绑定并恢复为当前会话\n"
         return response
 
     def _handle_history_fetch(
@@ -2311,7 +2365,7 @@ class SlashCommandHandler:
         user_filter: Optional[str] = None,
         current_session_id: Optional[str] = None,
     ) -> str:
-        """Handle `/history -f -s <session_id>` — fetch/refresh CLI data into current Runtime session."""
+        """Handle `/history -f -s <session_id>` — fetch/refresh CLI data into current session."""
         from ...models.session import MessageStatus
 
         cli_session_id = (cli_session_id or "").strip()
@@ -2336,6 +2390,8 @@ class SlashCommandHandler:
 
         if not detail:
             return f"## ❌ 未找到\n\n历史会话 `{cli_session_id}` 未找到。"
+
+        project_path = (detail.session.exec_dir if detail.session else None) or str(Path.cwd())
 
         # Clear existing messages and tool calls, then re-import
         storage.clear_session_messages(current_session_id)
@@ -2373,9 +2429,23 @@ class SlashCommandHandler:
         if found_provider and found_alias and found_alias != found_provider:
             provider_label = f"{found_alias} ({found_provider})"
 
+        if current_session_id:
+            self._bind_execution_context(
+                storage,
+                current_session_id,
+                cli_session_id=cli_session_id,
+                provider=found_provider or provider_label,
+                alias=found_alias or provider_label,
+                work_dir=project_path,
+                exec_dir_override=project_path,
+                source_type="history",
+                source_session_id=cli_session_id,
+                session_kind="chat",
+            )
+
         return (
             f"## ✅ 已刷新\n\n"
-            f"从 CLI 文件重新加载了历史数据到当前 Runtime session。\n\n"
+            f"从 CLI 文件重新加载了历史数据到当前会话。\n\n"
             f"| 项 | 值 |\n|---|---|\n"
             f"| Provider | {provider_label} |\n"
             f"| 用户 | {found_linux_user or '?'} |\n"
@@ -2390,7 +2460,7 @@ class SlashCommandHandler:
         user_filter: Optional[str] = None,
         current_session_id: Optional[str] = None,
     ) -> str:
-        """Handle `/history -c -s <session_id>` — create a new Runtime session from history (= promote)."""
+        """Handle `/history -c -s <session_id>` — bind the current session to history and resume it."""
         from ...models.session import SessionStatus, MessageStatus
         import time as time_mod
 
@@ -2410,30 +2480,80 @@ class SlashCommandHandler:
             return f"## ❌ 未找到\n\n历史会话 `{cli_session_id}` 未找到。"
 
         storage = get_session_storage()
-
-        # Use the history session's original working directory (exec_dir) if available,
-        # so that --resume runs in the same directory as the original session.
-        # This is equivalent to `-w <history_path>` inplace mode.
         history_exec_dir = (detail.session.exec_dir if detail.session else None) or None
         project_path = history_exec_dir or str(Path.cwd())
 
         provider_key = found_alias or found_provider or "unknown"
+        provider_label = provider_key
+        if found_provider and provider_key != found_provider:
+            provider_label = f"{provider_key} ({found_provider})"
 
-        # Check idempotent mapping
-        mapped = storage.get_history_runtime_mapping(provider_key, cli_session_id, project_path)
-        if mapped and storage.get_session_meta(mapped):
+        title = (detail.session.title if detail.session else None) or f"History: {cli_session_id}"
+        msg_count = len(detail.messages or [])
+
+        if current_session_id:
+            bound = self._bind_execution_context(
+                storage,
+                current_session_id,
+                cli_session_id=cli_session_id,
+                provider=found_provider or provider_key,
+                alias=provider_key,
+                work_dir=project_path,
+                exec_dir_override=project_path,
+                source_type="history",
+                source_session_id=cli_session_id,
+                session_kind="chat",
+            )
+            if bound:
+                try:
+                    storage.set_history_runtime_mapping(provider_key, cli_session_id, project_path, current_session_id)
+                except Exception:
+                    pass
+
+                try:
+                    storage.clear_session_messages(current_session_id)
+                    storage.clear_session_tool_calls(current_session_id)
+                    for msg in detail.messages or []:
+                        role = msg.role if msg.role in ("user", "assistant", "system") else "assistant"
+                        imported = StoredMessage(
+                            id=f"hist-{msg.id}",
+                            role=role,
+                            content=msg.content or "",
+                            status=MessageStatus.COMPLETE,
+                            tool_call_ids=msg.tool_call_ids,
+                            content_segments=msg.content_segments,
+                        )
+                        storage.add_session_message(current_session_id, imported)
+
+                    for tc in detail.tool_calls or []:
+                        from ...models.session import StoredToolCall
+                        tc_copy = tc.model_copy(deep=True)
+                        tc_copy.id = f"hist-{tc.id}"
+                        if tc_copy.parent_message_id:
+                            tc_copy.parent_message_id = f"hist-{tc_copy.parent_message_id}"
+                        storage.save_tool_call(current_session_id, tc_copy)
+                except Exception as e:
+                    logger.debug(f"Failed to import history into current session {current_session_id}: {e}")
+
             return (
-                f"## ℹ️ 已存在\n\n"
-                f"此历史会话已恢复为 Runtime session: `{mapped}`。\n\n"
-                f"如需刷新数据，请使用 `/history -f -s {cli_session_id}`。"
+                f"## ✅ 已绑定\n\n"
+                f"历史会话已绑定到当前会话，并将通过 CLI 会话继续执行。\n\n"
+                f"| 项 | 值 |\n|---|---|\n"
+                f"| Current Session ID | `{current_session_id}` |\n"
+                f"| CLI Session ID | `{cli_session_id}` |\n"
+                f"| Provider | {provider_label} |\n"
+                f"| 用户 | {found_linux_user or '?'} |\n"
+                f"| 工作目录 | `{project_path}` |\n"
+                f"| 标题 | {title} |\n"
+                f"| 历史消息数 | {msg_count} |\n\n"
+                f"后续消息将在 `{project_path}` 下通过 `--resume {cli_session_id}` 恢复 CLI 会话。"
             )
 
-        # Create new runtime session
-        from src.server.utils.ids import gen_session_id
+        # Legacy fallback: create a new runtime session when no current session is available.
+        from src.runtime.utils.ids import gen_session_id
         runtime_session_id = gen_session_id()
 
         now_ms = int(time_mod.time() * 1000)
-        title = (detail.session.title if detail.session else None) or f"History: {cli_session_id}"
         from ...models.session import SessionMeta as SessionMetaModel
         meta = SessionMetaModel(
             id=runtime_session_id,
@@ -2452,7 +2572,6 @@ class SlashCommandHandler:
         )
         storage.save_session_meta(meta)
 
-        # Import messages
         msg_count = 0
         for msg in detail.messages or []:
             role = msg.role if msg.role in ("user", "assistant", "system") else "assistant"
@@ -2475,23 +2594,25 @@ class SlashCommandHandler:
                 tc_copy.parent_message_id = f"hist-{tc_copy.parent_message_id}"
             storage.save_tool_call(runtime_session_id, tc_copy)
 
-        # Set up runtime state
-        storage.set_exec_dir_override(runtime_session_id, project_path)
-        storage.set_workspace_provider(runtime_session_id, found_provider or provider_key)
-        storage.set_workspace_alias(runtime_session_id, provider_key)
-        storage.set_inherited_session(runtime_session_id, f"history:{provider_key}:{cli_session_id}")
+        storage.bind_execution_context(
+            runtime_session_id,
+            cli_session_id=cli_session_id,
+            provider=found_provider or provider_key,
+            alias=provider_key,
+            work_dir=project_path,
+            exec_dir_override=project_path,
+            source_type="history",
+            source_session_id=cli_session_id,
+            session_kind="chat",
+        )
         storage.set_history_runtime_mapping(provider_key, cli_session_id, project_path, runtime_session_id)
         storage.set_cli_session_id(runtime_session_id, cli_session_id)
 
-        provider_label = provider_key
-        if found_provider and provider_key != found_provider:
-            provider_label = f"{provider_key} ({found_provider})"
-
         return (
             f"## ✅ 已恢复\n\n"
-            f"历史会话已恢复为新的 Runtime session。\n\n"
+            f"历史会话已恢复为新的会话。\n\n"
             f"| 项 | 值 |\n|---|---|\n"
-            f"| Runtime Session ID | `{runtime_session_id}` |\n"
+            f"| Session ID | `{runtime_session_id}` |\n"
             f"| CLI Session ID | `{cli_session_id}` |\n"
             f"| Provider | {provider_label} |\n"
             f"| 用户 | {found_linux_user or '?'} |\n"
@@ -2806,11 +2927,16 @@ class SlashCommandHandler:
         # 构建任务信息
         status_val = task.status if isinstance(task.status, str) else task.status.value
         status_icons = {
+            "completed": "✅",
+            "running": "🔄",
+            "pending": "🕒",
+            "in_review": "🔍",
+            "failed": "❌",
+            "cancelled": "🗑️",
+            # Legacy support
             "done": "✅",
             "doing": "🔄",
             "todo": "🕒",
-            "failed": "❌",
-            "cancelled": "🗑️",
         }
         status_icon = status_icons.get(status_val, "•")
         
@@ -2973,9 +3099,9 @@ class SlashCommandHandler:
                     logger.debug(f"Could not read task log: {e}")
             else:
                 response += "\n### 💬 对话记录\n\n"
-                if status_val == "todo":
+                if status_val == "pending":
                     response += "任务尚未执行，暂无日志。\n"
-                elif status_val == "doing":
+                elif status_val == "running":
                     response += "任务正在执行中...\n"
                 else:
                     response += "暂无对话记录。\n"

@@ -257,6 +257,13 @@ class AGUIRequest(BaseModel):
     context: List[AGUIContext] = Field(default_factory=list, description="上下文信息")
     forwardedProps: Dict[str, Any] = Field(default_factory=dict, description="转发的属性")
     state: Dict[str, Any] = Field(default_factory=dict, description="状态信息")
+    cwd: Optional[str] = Field(default=None, description="Working directory for inplace runs")
+    cwd_mode: Optional[str] = Field(default=None, description="CWD mode (e.g. inplace)")
+    run_kind: Optional[str] = Field(default=None, description="Run kind hint for legacy bridge")
+    cli_session_id: Optional[str] = Field(default=None, description="Underlying CLI session id for precise resume")
+    image_paths: List[str] = Field(default_factory=list, description="Local image paths")
+    file_paths: List[str] = Field(default_factory=list, description="Local file paths")
+    content_parts: List[Dict[str, Any]] = Field(default_factory=list, description="Ordered content parts")
     
     def get_user_content(self) -> str:
         """获取最后一条用户消息内容"""
@@ -301,6 +308,20 @@ class AGUIRequest(BaseModel):
         alias = self.get_alias()
         if alias:
             result["alias"] = alias
+        if self.cwd:
+            result["cwd"] = self.cwd
+        if self.cwd_mode:
+            result["cwd_mode"] = self.cwd_mode
+        if self.run_kind:
+            result["run_kind"] = self.run_kind
+        if self.cli_session_id:
+            result["cli_session_id"] = self.cli_session_id
+        if self.image_paths:
+            result["image_paths"] = self.image_paths
+        if self.file_paths:
+            result["file_paths"] = self.file_paths
+        if self.content_parts:
+            result["content_parts"] = self.content_parts
         return result
 
 

@@ -33,6 +33,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail, decode_encoded_project_path
+from .cache_store import CacheStore, FileStamp, stat_paths
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,9 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
 
         Reads all *.jsonl (excluding agent-*) in projects_dir,
         groups entries by sessionId, and returns session metadata.
+
+        Per-file parsed shards are persisted to CacheStore, so the
+        second call on an unchanged directory only touches mtime/size.
         """
         jsonl_files = sorted(
             [f for f in projects_dir.glob("*.jsonl") if not f.name.startswith("agent-")],
@@ -165,94 +169,202 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
         if not jsonl_files:
             return []
 
+        stamps = stat_paths(jsonl_files)
+        cache = CacheStore.get_default()
+        try:
+            cached = cache.lookup_many(self.provider_name, stamps)
+        except Exception:
+            logger.debug("codebuddy cache lookup failed; falling through", exc_info=True)
+            cached = {}
+
+        shards_by_file: Dict[Path, List[SessionMeta]] = {}
+        to_persist: List = []
+        for jsonl_file, stamp in stamps.items():
+            if jsonl_file in cached:
+                shards_by_file[jsonl_file] = cached[jsonl_file]
+                continue
+            file_shards = self._parse_file_to_shards(jsonl_file)
+            shards_by_file[jsonl_file] = file_shards
+            to_persist.append((jsonl_file, stamp, file_shards))
+
+        if to_persist:
+            try:
+                cache.store_many(self.provider_name, to_persist)
+            except Exception:
+                logger.debug("codebuddy cache store failed; continuing", exc_info=True)
+
+        return self._aggregate_shards(shards_by_file)
+
+    def _parse_file_to_shards(self, jsonl_file: Path) -> List[SessionMeta]:
+        """Parse ONE jsonl file into per-sessionId shards.
+
+        Cross-file merging happens later in ``_aggregate_shards``.
+        """
         sessions_map: Dict[str, dict] = {}
 
-        for jsonl_file in jsonl_files:
-            for entry in self.safe_read_jsonl(jsonl_file):
-                session_id = entry.get("sessionId")
-                if not session_id:
+        for entry in self.safe_read_jsonl(jsonl_file):
+            session_id = entry.get("sessionId")
+            if not session_id:
+                continue
+
+            if session_id not in sessions_map:
+                sessions_map[session_id] = {
+                    "id": session_id,
+                    "title": "",
+                    "message_count": 0,
+                    "last_activity": 0,
+                    "cwd": entry.get("cwd", ""),
+                    "last_user_message": "",
+                    "last_assistant_message": "",
+                    "model": "",
+                }
+
+            sdata = sessions_map[session_id]
+
+            # Track timestamps
+            ts_ms = self._get_timestamp_ms(entry)
+            if ts_ms > sdata["last_activity"]:
+                sdata["last_activity"] = ts_ms
+
+            entry_type = entry.get("type", "")
+
+            # Topic entries provide session title
+            if entry_type == "topic":
+                topic = entry.get("topic", "")
+                if topic:
+                    sdata["title"] = topic[:100]
+                continue
+
+            # Skip non-message entry types
+            if entry_type in _SKIP_ENTRY_TYPES:
+                continue
+
+            # Skip function_call and function_call_result for counting
+            if entry_type in ("function_call", "function_call_result"):
+                continue
+
+            # Only process "message" type entries
+            if entry_type != "message":
+                continue
+
+            role = entry.get("role", "")
+            content = entry.get("content", "")
+            text = self._extract_text_from_content(content)
+
+            # Extract model info
+            provider_data = entry.get("providerData", {})
+            if isinstance(provider_data, dict) and provider_data.get("model"):
+                sdata["model"] = provider_data["model"]
+
+            if role == "user" and text:
+                if any(text.startswith(prefix) for prefix in _SKIP_USER_PREFIXES):
                     continue
-
-                if session_id not in sessions_map:
-                    sessions_map[session_id] = {
-                        "id": session_id,
-                        "title": "",
-                        "message_count": 0,
-                        "last_activity": 0,
-                        "cwd": entry.get("cwd", ""),
-                        "last_user_message": "",
-                        "last_assistant_message": "",
-                        "model": "",
-                    }
-
-                sdata = sessions_map[session_id]
-
-                # Track timestamps
-                ts_ms = self._get_timestamp_ms(entry)
-                if ts_ms > sdata["last_activity"]:
-                    sdata["last_activity"] = ts_ms
-
-                entry_type = entry.get("type", "")
-
-                # Topic entries provide session title
-                if entry_type == "topic":
-                    topic = entry.get("topic", "")
-                    if topic:
-                        sdata["title"] = topic[:100]
+                if text.strip().startswith('{ "'):
                     continue
+                sdata["message_count"] += 1
+                sdata["last_user_message"] = text[:100]
 
-                # Skip non-message entry types
-                if entry_type in _SKIP_ENTRY_TYPES:
+            elif role == "assistant" and text:
+                if text.strip().startswith('{ "'):
                     continue
+                sdata["message_count"] += 1
+                sdata["last_assistant_message"] = text[:100]
 
-                # Skip function_call and function_call_result for counting
-                if entry_type in ("function_call", "function_call_result"):
-                    continue
-
-                # Only process "message" type entries
-                if entry_type != "message":
-                    continue
-
-                role = entry.get("role", "")
-                content = entry.get("content", "")
-                text = self._extract_text_from_content(content)
-
-                # Extract model info
-                provider_data = entry.get("providerData", {})
-                if isinstance(provider_data, dict) and provider_data.get("model"):
-                    sdata["model"] = provider_data["model"]
-
-                if role == "user" and text:
-                    if any(text.startswith(prefix) for prefix in _SKIP_USER_PREFIXES):
-                        continue
-                    if text.strip().startswith('{ "'):
-                        continue
-                    sdata["message_count"] += 1
-                    sdata["last_user_message"] = text[:100]
-
-                elif role == "assistant" and text:
-                    if text.strip().startswith('{ "'):
-                        continue
-                    sdata["message_count"] += 1
-                    sdata["last_assistant_message"] = text[:100]
-
-        # Build SessionMeta list
-        sessions: List[SessionMeta] = []
         now_ms = int(time.time() * 1000)
-
+        shards: List[SessionMeta] = []
         for sid, sdata in sessions_map.items():
-            title = sdata["title"]
-            if not title:
-                title = sdata["last_user_message"] or sdata["last_assistant_message"] or "New Session"
+            last_activity = sdata["last_activity"] or now_ms
+            shards.append(SessionMeta(
+                id=sid,
+                thread_id=sid,
+                # Pack title candidates so cross-file aggregation can
+                # still resolve the best title after merge.
+                title=self._pack_title_shard(
+                    topic=sdata["title"],
+                    last_user=sdata["last_user_message"],
+                    last_assistant=sdata["last_assistant_message"],
+                ),
+                username="",
+                provider="codebuddy",
+                status=SessionStatus.COMPLETED,
+                created_at=last_activity,
+                updated_at=last_activity,
+                message_count=sdata["message_count"],
+                source="history",
+            ))
+        return shards
 
-            # Clean title
+    @staticmethod
+    def _pack_title_shard(topic: str, last_user: str, last_assistant: str) -> str:
+        """Pack title candidates using control-char separators."""
+        return "\u0001" + (topic or "") + "\u0002" + (last_user or "") + "\u0003" + (last_assistant or "")
+
+    @staticmethod
+    def _unpack_title_shard(packed: str) -> tuple:
+        if not packed or not packed.startswith("\u0001"):
+            return (packed or "", "", "")
+        rest = packed[1:]
+        try:
+            topic, tail = rest.split("\u0002", 1)
+            last_user, last_assistant = tail.split("\u0003", 1)
+        except ValueError:
+            return (rest, "", "")
+        return (topic, last_user, last_assistant)
+
+    def _aggregate_shards(
+        self,
+        shards_by_file: Dict[Path, List[SessionMeta]],
+    ) -> List[SessionMeta]:
+        """Merge per-file shards into final session list."""
+        agg: Dict[str, dict] = {}
+
+        for _file, shards in shards_by_file.items():
+            for shard in shards:
+                sid = shard.id
+                topic, last_user, last_assistant = self._unpack_title_shard(shard.title)
+                shard_activity = int(shard.updated_at or 0)
+                entry = agg.get(sid)
+                if entry is None:
+                    agg[sid] = {
+                        "topic": topic,
+                        "topic_ts": shard_activity if topic else 0,
+                        "last_user": last_user,
+                        "last_user_ts": shard_activity if last_user else 0,
+                        "last_assistant": last_assistant,
+                        "last_assistant_ts": shard_activity if last_assistant else 0,
+                        "message_count": int(shard.message_count or 0),
+                        "last_activity": shard_activity,
+                    }
+                    continue
+
+                entry["message_count"] += int(shard.message_count or 0)
+                if shard_activity > entry["last_activity"]:
+                    entry["last_activity"] = shard_activity
+
+                if topic and shard_activity >= entry["topic_ts"]:
+                    entry["topic"] = topic
+                    entry["topic_ts"] = shard_activity
+                if last_user and shard_activity >= entry["last_user_ts"]:
+                    entry["last_user"] = last_user
+                    entry["last_user_ts"] = shard_activity
+                if last_assistant and shard_activity >= entry["last_assistant_ts"]:
+                    entry["last_assistant"] = last_assistant
+                    entry["last_assistant_ts"] = shard_activity
+
+        now_ms = int(time.time() * 1000)
+        sessions: List[SessionMeta] = []
+        for sid, state in agg.items():
+            title = state["topic"]
+            if not title:
+                title = state["last_user"] or state["last_assistant"] or "New Session"
+
             title = " ".join(title.split())
 
             # Skip JSON-only sessions
             if title.strip().startswith('{ "'):
                 continue
 
-            last_activity = sdata["last_activity"] or now_ms
+            last_activity = state["last_activity"] or now_ms
 
             sessions.append(SessionMeta(
                 id=sid,
@@ -263,7 +375,7 @@ class CodeBuddyHistoryParser(BaseHistoryParser):
                 status=SessionStatus.COMPLETED,
                 created_at=last_activity,
                 updated_at=last_activity,
-                message_count=sdata["message_count"],
+                message_count=state["message_count"],
                 source="history",
             ))
 

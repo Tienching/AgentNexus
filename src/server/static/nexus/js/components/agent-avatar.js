@@ -170,20 +170,21 @@ class AgentAvatar {
      *
      * @example
      * AgentAvatar.render('claude', { size: 'xs', status: 'online' })
-     * // => '<div class="agent-avatar agent-avatar-xs" style="background: #8b5cf6;"><span class="agent-avatar-initials">Cl</span><span class="agent-avatar-status agent-avatar-status-online"></span></div>'
+     * // => '<div class="agent-avatar agent-avatar-xs agent-avatar-color-1"><span class="agent-avatar-initials">Cl</span><span class="agent-avatar-status agent-avatar-status-online"></span></div>'
      *
      * AgentAvatar.render('codex', { size: 'sm' })
-     * // => '<div class="agent-avatar agent-avatar-sm" style="background: #f97316;"><span class="agent-avatar-initials">Co</span></div>'
+     * // => '<div class="agent-avatar agent-avatar-sm agent-avatar-color-3"><span class="agent-avatar-initials">Co</span></div>'
      */
     static render(name, options = {}) {
         const size = options.size || 'md';
         const status = options.status || 'none';
 
-        const color = AgentAvatar.getColor(name);
+        const colorIndex = AgentAvatar._hash(name || '');
         const initials = AgentAvatar._initials(name);
 
         const sizeClass = `agent-avatar-${size}`;
-        const parts = [`<div class="agent-avatar ${sizeClass}" style="background: ${color};">`];
+        const colorClass = `agent-avatar-color-${colorIndex}`;
+        const parts = [`<div class="agent-avatar ${sizeClass} ${colorClass}">`];
         parts.push(`<span class="agent-avatar-initials">${initials}</span>`);
 
         if (status && status !== 'none' && AgentAvatar.STATUSES.includes(status)) {

@@ -1,10 +1,12 @@
 """Subagent manager for background task execution."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -18,6 +20,10 @@ from src.nanobot.bus.queue import MessageBus
 from src.nanobot.config.schema import ExecToolConfig
 from src.nanobot.providers.base import LLMProvider
 from src.nanobot.utils.helpers import build_assistant_message
+
+if TYPE_CHECKING:
+    from src.nanobot.config.schema import WebSearchConfig
+    from src.nanobot.swarm import SwarmCoordinator, SwarmMailbox, TeamFile
 
 
 class SubagentManager:

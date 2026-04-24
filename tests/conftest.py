@@ -1,9 +1,32 @@
 """Pytest配置和fixtures"""
 
-import pytest
 import asyncio
+from pathlib import Path
 from typing import Any, AsyncGenerator
-from httpx import AsyncClient, ASGITransport
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+
+def pytest_collection_modifyitems(config, items):
+    """Attach semantic markers based on test location when missing.
+
+    This lets the suite select `unit` / `integration` / `slow` by marker rather
+    than relying only on directory slicing in shell scripts.
+    """
+    for item in items:
+        marker_names = {mark.name for mark in item.iter_markers()}
+        path = Path(str(item.fspath))
+        parts = set(path.parts)
+        if "unit" in parts and "unit" not in marker_names:
+            item.add_marker(pytest.mark.unit)
+        if "integration" in parts and "integration" not in marker_names:
+            item.add_marker(pytest.mark.integration)
+        if "e2e" in parts:
+            if "integration" not in marker_names:
+                item.add_marker(pytest.mark.integration)
+            if "slow" not in marker_names:
+                item.add_marker(pytest.mark.slow)
 
 
 @pytest.fixture(scope="session")

@@ -269,6 +269,73 @@ class TestSessionMetadataOperations:
         assert retrieved.username == "testuser"
         assert retrieved.title == "Test Session"
 
+    def test_get_session_meta_merges_cli_session_id_from_execution_binding(self, session_storage):
+        """Reading a bound history/runtime session should not fail when binding carries cli_session_id."""
+        meta = SessionMeta(
+            id="session-bound",
+            thread_id="thread-bound",
+            username="testuser",
+            title="Bound Session",
+            source="history",
+        )
+        assert session_storage.save_session_meta(meta) is True
+        assert session_storage.bind_execution_context(
+            "session-bound",
+            cli_session_id="cli-hist-001",
+            provider="codebuddy",
+            alias="codebuddy",
+            work_dir="/tmp/demo",
+            source_type="history",
+            source_session_id="hist-001",
+            session_kind="chat",
+        ) is True
+
+        retrieved = session_storage.get_session_meta("session-bound")
+
+        assert retrieved is not None
+        assert retrieved.cli_session_id == "cli-hist-001"
+        assert retrieved.claude_session_id == "cli-hist-001"
+        assert retrieved.execution_binding is not None
+        assert retrieved.execution_binding.cli_session_id == "cli-hist-001"
+
+    def test_clear_helpers_clear_execution_binding_fallback_fields(self, session_storage):
+        meta = SessionMeta(
+            id="session-clear-binding",
+            thread_id="thread-clear-binding",
+            username="testuser",
+            title="Clear Binding Session",
+        )
+        assert session_storage.save_session_meta(meta) is True
+        assert session_storage.set_inherited_session("session-clear-binding", "history:codebuddy:hist-001") is True
+        assert session_storage.set_exec_dir_override("session-clear-binding", "/tmp/work") is True
+        assert session_storage.set_workspace_provider("session-clear-binding", "codebuddy") is True
+        assert session_storage.set_workspace_alias("session-clear-binding", "cb") is True
+        assert session_storage.set_cli_session_id("session-clear-binding", "cli-001") is True
+        assert session_storage.set_task_id("session-clear-binding", "task-001") is True
+
+        assert session_storage.clear_inherited_session("session-clear-binding") is True
+        assert session_storage.clear_exec_dir_override("session-clear-binding") is True
+        assert session_storage.clear_workspace_provider("session-clear-binding") is True
+        assert session_storage.clear_workspace_alias("session-clear-binding") is True
+        assert session_storage.clear_cli_session_id("session-clear-binding") is True
+        assert session_storage.clear_task_id("session-clear-binding") is True
+
+        binding = session_storage.get_execution_binding("session-clear-binding")
+        assert binding is not None
+        assert binding.source_session_id is None
+        assert binding.source_type is None
+        assert binding.work_dir is None
+        assert binding.provider is None
+        assert binding.alias is None
+        assert binding.cli_session_id is None
+        assert binding.task_id is None
+        assert session_storage.get_inherited_session("session-clear-binding") is None
+        assert session_storage.get_exec_dir_override("session-clear-binding") is None
+        assert session_storage.get_workspace_provider("session-clear-binding") is None
+        assert session_storage.get_workspace_alias("session-clear-binding") is None
+        assert session_storage.get_cli_session_id("session-clear-binding") is None
+        assert session_storage.get_task_id("session-clear-binding") is None
+
     def test_get_session_meta_not_found(self, session_storage):
         """Test getting non-existent session metadata"""
         result = session_storage.get_session_meta("nonexistent")

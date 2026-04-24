@@ -67,7 +67,7 @@ class MentionTextarea {
     }
 
     _onKeyDown(event) {
-        if (!this.menu || this.menu.style.display === 'none') return;
+        if (!this.menu || this.menu.classList.contains('is-hidden')) return;
 
         if (event.key === 'ArrowDown') {
             event.preventDefault();
@@ -141,48 +141,37 @@ class MentionTextarea {
     _ensureMenu() {
         if (this.menu) return this.menu;
         const menu = document.createElement('div');
-        menu.className = 'mention-textarea-menu';
-        menu.style.position = 'fixed';
-        menu.style.zIndex = '9999';
-        menu.style.minWidth = '180px';
-        menu.style.maxWidth = '280px';
-        menu.style.maxHeight = '220px';
-        menu.style.overflowY = 'auto';
-        menu.style.border = '1px solid var(--border)';
-        menu.style.borderRadius = '8px';
-        menu.style.background = 'var(--bg-primary)';
-        menu.style.boxShadow = '0 8px 24px rgba(0,0,0,0.2)';
-        menu.style.padding = '4px';
-        menu.style.display = 'none';
-        document.body.appendChild(menu);
+        menu.className = 'mention-textarea-menu is-hidden';
+        this._ensureHost().appendChild(menu);
         this.menu = menu;
         return menu;
     }
 
+    _ensureHost() {
+        const host = this.textarea?.parentElement || this.textarea;
+        if (host) host.classList.add('mention-textarea-host');
+        return host;
+    }
+
     _showMenu() {
-        const menu = this._ensureMenu();
-        const rect = this.textarea.getBoundingClientRect();
-        menu.style.left = `${Math.max(8, rect.left)}px`;
-        menu.style.top = `${Math.min(window.innerHeight - 240, rect.bottom + 4)}px`;
-        menu.style.display = 'block';
+        this._ensureMenu().classList.remove('is-hidden');
     }
 
     _hideMenu() {
         if (!this.menu) return;
-        this.menu.style.display = 'none';
+        this.menu.classList.add('is-hidden');
     }
 
     _renderMenuItems() {
         const menu = this._ensureMenu();
         menu.innerHTML = this.items.map((item, index) => {
             const active = index === this.activeIndex;
-            const bg = active ? 'var(--bg-hover)' : 'transparent';
             const type = MentionTextarea.escapeHtml(item.type || 'user');
             const label = MentionTextarea.escapeHtml(item.label || '');
             return `
-                <button type="button" data-mention-index="${index}" style="width:100%;display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border:none;background:${bg};border-radius:6px;cursor:pointer;color:var(--text-primary);font-size:12px;text-align:left;">
-                    <span>@${label}</span>
-                    <span style="font-size:10px;color:var(--text-muted);">${type}</span>
+                <button type="button" class="mention-textarea-item${active ? ' is-active' : ''}" data-mention-index="${index}">
+                    <span class="mention-textarea-item-label">@${label}</span>
+                    <span class="mention-textarea-item-type">${type}</span>
                 </button>
             `;
         }).join('');

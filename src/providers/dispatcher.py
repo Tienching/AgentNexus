@@ -11,13 +11,35 @@ from __future__ import annotations
 from typing import Optional
 
 
+class ProviderExecutorMap(dict):
+    """Dictionary-like executor registry with legacy provider aliases."""
+
+    _ALIASES = {"nanobot": "nexus"}
+
+    def _resolve_key(self, key):
+        if isinstance(key, str):
+            return self._ALIASES.get(key, key)
+        return key
+
+    def __getitem__(self, key):
+        return super().__getitem__(self._resolve_key(key))
+
+    def get(self, key, default=None):
+        return super().get(self._resolve_key(key), default)
+
+    def __contains__(self, key):
+        return super().__contains__(self._resolve_key(key))
+
+
 def normalize_provider(name: Optional[str]) -> str:
     """Normalize a provider name to its canonical key.
 
     Unknown / empty values fall back to the default provider.
     """
     n = (name or "").strip().lower()
-    if n in ("gemini", "codex", "codebuddy", "claude", "nanobot"):
+    if n in ("gemini", "codex", "codebuddy", "claude", "nexus", "nanobot"):
+        if n == "nanobot":
+            return "nexus"
         return n
     return _default_provider()
 
@@ -25,7 +47,8 @@ def normalize_provider(name: Optional[str]) -> str:
 def _default_provider() -> str:
     """Return the default provider key (configurable via env var)."""
     import os
-    return os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", "nanobot")
+    default = os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", "nexus").strip().lower()
+    return "nexus" if default == "nanobot" else default
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +70,9 @@ def create_executor(provider: str, *, config=None):
 
     key = normalize_provider(provider)
 
-    if key == "nanobot":
-        from src.providers.nanobot import NanobotExecutor
-        return NanobotExecutor(config=config)
+    if key == "nexus":
+        from src.providers.nexus import NexusExecutor
+        return NexusExecutor(config=config)
 
     if key == "gemini":
         from src.providers.gemini import GeminiExecutor
@@ -77,13 +100,16 @@ def create_all_executors(*, config=None) -> dict:
         from src.server.config import settings as _settings
         config = _settings
 
-    return {
+    nexus_executor = create_executor("nexus", config=config)
+    executors = ProviderExecutorMap({
         "claude":    create_executor("claude", config=config),
         "gemini":    create_executor("gemini", config=config),
         "codex":     create_executor("codex", config=config),
         "codebuddy": create_executor("codebuddy", config=config),
-        "nanobot":   create_executor("nanobot", config=config),
-    }
+        "nexus":     nexus_executor,
+        "nanobot":   nexus_executor,
+    })
+    return executors
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +120,9 @@ def create_adapter(provider: str):
     """Create a **new** AG-UI adapter instance for *provider*."""
     key = normalize_provider(provider)
 
-    if key == "nanobot":
-        from src.providers.nanobot import NanobotAGUIAdapter
-        return NanobotAGUIAdapter()
+    if key == "nexus":
+        from src.providers.nexus import NexusAGUIAdapter
+        return NexusAGUIAdapter()
 
     if key == "gemini":
         from src.runtime.adapters.gemini import GeminiAGUIAdapter

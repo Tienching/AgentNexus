@@ -162,7 +162,7 @@ class StreamingRenderer {
         });
 
         // 在 DOM 中标记 withheld 状态
-        this._markWithheldInDOM(blockId, reason);
+        this._markWithheldInDOM(block_id, reason);
 
         // 触发事件
         this._emit('chunk-hold', data);

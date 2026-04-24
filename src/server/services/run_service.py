@@ -137,6 +137,40 @@ class RunService:
     def __init__(self, exec_user: str = _DEFAULT_EXEC_USER, db: Optional[Database] = None, redis_client=None):
         self.exec_user = exec_user
         self._db = db or get_db()
+        self._redis = redis_client
+
+    def _redis_run_key(self, run_id: str) -> str:
+        return f"runs:{self.exec_user}:run:{run_id}"
+
+    def _redis_index_all(self) -> str:
+        return f"runs:{self.exec_user}:all"
+
+    def _redis_index_agent(self, agent_id: str) -> str:
+        return f"runs:{self.exec_user}:by_agent:{agent_id}"
+
+    def _redis_index_status(self, status: str) -> str:
+        return f"runs:{self.exec_user}:by_status:{status}"
+
+    def _redis_index_task(self, task_id: str) -> str:
+        return f"runs:{self.exec_user}:by_task:{task_id}"
+
+    def _sync_redis_indexes(self, run: dict, *, previous_status: Optional[str] = None) -> None:
+        if self._redis is None:
+            return
+        score = time.time()
+        run_id = run.get("id", "")
+        agent_id = run.get("agent_id", "")
+        status = run.get("status", "pending")
+        task_id = run.get("task_id")
+        self._redis.hset(self._redis_run_key(run_id), mapping={"data": json.dumps(run)})
+        self._redis.zadd(self._redis_index_all(), {run_id: score})
+        if agent_id:
+            self._redis.zadd(self._redis_index_agent(agent_id), {run_id: score})
+        self._redis.zadd(self._redis_index_status(status), {run_id: score})
+        if previous_status and previous_status != status:
+            self._redis.zrem(self._redis_index_status(previous_status), run_id)
+        if task_id:
+            self._redis.zadd(self._redis_index_task(task_id), {run_id: score})
 
     def create_run(self, run: dict) -> dict:
         run_id = run.get("id") or str(uuid.uuid4())
@@ -178,6 +212,7 @@ class RunService:
         with self._db.transaction() as conn:
             conn.execute(f"INSERT INTO agent_runs ({_RUN_COLUMNS}) VALUES ({_RUN_PLACEHOLDERS})", values)
 
+        self._sync_redis_indexes(record)
         logger.info(f"run.created id={run_id} agent={record['agent_id']}")
         return record
 
@@ -194,6 +229,7 @@ class RunService:
         existing = self.get_run(run_id)
         if existing is None:
             return None
+        previous_status = existing.get("status")
         for field in ("status", "outcome", "ended_at", "duration_ms", "error", "model", "provider", "git_branch", "git_commit"):
             if field in updates and updates[field] is not None:
                 existing[field] = updates[field]
@@ -206,6 +242,7 @@ class RunService:
         values = [row[k] for k in update_cols] + [self.exec_user, run_id]
         with self._db.transaction() as conn:
             conn.execute(f"UPDATE agent_runs SET {set_clause} WHERE exec_user = ? AND id = ?", values)
+        self._sync_redis_indexes(existing, previous_status=previous_status)
         logger.debug(f"run.updated id={run_id} status={existing.get('status', '')}")
         return existing
 
@@ -220,6 +257,7 @@ class RunService:
         values = [row[k] for k in update_cols] + [self.exec_user, run_id]
         with self._db.transaction() as conn:
             conn.execute(f"UPDATE agent_runs SET {set_clause} WHERE exec_user = ? AND id = ?", values)
+        self._sync_redis_indexes(existing)
         logger.debug(f"run.eval_attached id={run_id}")
         return existing
 

@@ -17,7 +17,7 @@ Your job: implement ONE task from the session plan and commit.
 ## Rules
 
 - Only work on the assigned task
-- Do not modify: IDENTITY.md, PERSONALITY.md, or src/nanobot/evolve/
+- Do not modify: IDENTITY.md, PERSONALITY.md, or src/nexus/evolve/
 - If tests still fail after 3 attempts: `git checkout -- .` and stop
 - Commit message format: `Day N: [task title]`
 

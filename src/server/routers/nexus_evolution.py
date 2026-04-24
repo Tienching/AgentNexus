@@ -51,7 +51,9 @@ class EvolutionStatusResponse(BaseModel):
     codebuddy_path: str
     current_session: EvolutionSessionResponse | None = None
     recent_sessions: list[EvolutionSessionResponse] = Field(default_factory=list)
-    schedules: dict[str, Any] = Field(default_factory=dict)
+    cron_jobs: Any = None
+
+    model_config = {"extra": "allow"}
 
 
 class EvolutionMemoryResponse(BaseModel):

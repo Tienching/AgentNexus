@@ -62,3 +62,12 @@ ralph-test.txt
 
 # Evolution worktrees (auto-created, auto-deleted during evolution sessions)
 .evolve/
+
+# Local agent/session tooling artifacts
+.omc/
+.omx/
+task.*.pre_*_backup.json
+task-batches.json
+.omb/
+task.json
+*.zip

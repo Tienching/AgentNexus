@@ -8,6 +8,9 @@ from loguru import logger
 
 from src.nanobot.config.schema import Config
 
+_NEXUS_CONFIG_PATH = Path.home() / ".nexus" / "config.json"
+_LEGACY_CONFIG_PATH = Path.home() / ".nanobot" / "config.json"
+
 # Global variable to store current config path (for multi-instance support)
 _current_config_path: Path | None = None
 
@@ -22,7 +25,11 @@ def get_config_path() -> Path:
     """Get the configuration file path."""
     if _current_config_path:
         return _current_config_path
-    return Path.home() / ".nanobot" / "config.json"
+    if _NEXUS_CONFIG_PATH.exists():
+        return _NEXUS_CONFIG_PATH
+    if _LEGACY_CONFIG_PATH.exists():
+        return _LEGACY_CONFIG_PATH
+    return _NEXUS_CONFIG_PATH
 
 
 def load_config(config_path: Path | None = None) -> Config:

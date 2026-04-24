@@ -109,7 +109,7 @@ def _resolve_session_folder(session_id: str, exec_user: str) -> Optional[Path]:
     # Check if this is a task session (has task_id in meta) and has an inplace workspace
     try:
         storage = get_session_storage()
-        task_id = storage._redis.hget(f"session:{session_id}:meta", "task_id")
+        task_id = storage.get_task_id(session_id)
         if task_id:
             queue = get_task_queue(exec_user)
             task = queue.get_task(task_id)

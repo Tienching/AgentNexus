@@ -18,6 +18,11 @@ from typing import Optional, List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from src.runtime.history.alias_resolution import (
+    PROVIDER_CONFIG_DIRS,
+    build_alias_config_map,
+)
+
 from ..config import settings
 from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
@@ -39,16 +44,8 @@ router = APIRouter(
 
 # ============ Skills Constants ============
 
-# Default provider -> config directory name mapping
-_PROVIDER_CONFIG_DIRS = {
-    "claude": ".claude",
-    "codebuddy": ".codebuddy",
-    "codex": ".codex",
-    "gemini": ".gemini",
-}
-
 # Known providers that have standard skills directories
-_KNOWN_PROVIDERS = set(_PROVIDER_CONFIG_DIRS.keys())
+_KNOWN_PROVIDERS = set(PROVIDER_CONFIG_DIRS.keys())
 
 # Valid skill name pattern (prevent path injection)
 _SKILL_NAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]*$')
@@ -133,15 +130,20 @@ async def get_skills(
         return Path(path_str)
 
     def _scan_all():
-        # Scan default providers
-        for provider, config_dir in _PROVIDER_CONFIG_DIRS.items():
-            skills_dir = user_home / config_dir / "skills"
-            result[provider] = _scan_skills_dir(skills_dir, provider)
+        config_map = build_alias_config_map(
+            user_home=user_home,
+            alias_registry_map={},
+            custom_paths_str=json.dumps(alias_paths),
+        )
 
-        # Scan custom alias paths
+        for alias_name, config_path in config_map.items():
+            skills_dir = config_path / "skills"
+            result[alias_name] = _scan_skills_dir(skills_dir, alias_name)
+
+        # Preserve explicit custom aliases that point directly at a skills dir.
         for alias_name, path_str in alias_paths.items():
-            if alias_name in _KNOWN_PROVIDERS:
-                continue  # Skip if it's a known provider (already scanned)
+            if alias_name in result or alias_name in _KNOWN_PROVIDERS:
+                continue
             skills_dir = _resolve_tilde(path_str)
             if skills_dir.is_absolute():
                 result[alias_name] = _scan_skills_dir(skills_dir, alias_name)
@@ -181,8 +183,8 @@ async def create_skill(request: CreateSkillRequest):
             skills_dir = Path(raw)
         if not skills_dir.is_absolute():
             raise HTTPException(status_code=400, detail="skills_path must be an absolute path")
-    elif provider in _PROVIDER_CONFIG_DIRS:
-        skills_dir = user_home / _PROVIDER_CONFIG_DIRS[provider] / "skills"
+    elif provider in PROVIDER_CONFIG_DIRS:
+        skills_dir = user_home / PROVIDER_CONFIG_DIRS[provider] / "skills"
     else:
         raise HTTPException(
             status_code=400,
@@ -243,8 +245,8 @@ async def delete_skill(
             skills_dir = Path(raw)
         if not skills_dir.is_absolute():
             raise HTTPException(status_code=400, detail="skills_path must be an absolute path")
-    elif provider in _PROVIDER_CONFIG_DIRS:
-        skills_dir = user_home / _PROVIDER_CONFIG_DIRS[provider] / "skills"
+    elif provider in PROVIDER_CONFIG_DIRS:
+        skills_dir = user_home / PROVIDER_CONFIG_DIRS[provider] / "skills"
     else:
         raise HTTPException(
             status_code=400,

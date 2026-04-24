@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
+from ..services.workspace_validation import normalize_workspace_path
 from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
@@ -175,6 +176,13 @@ def _schedule_to_item(schedule) -> ScheduleItem:
     )
 
 
+def _normalize_workspace_or_400(workspace: Optional[str]) -> Optional[str]:
+    try:
+        return normalize_workspace_path(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ============ List Schedules ============
 
 
@@ -277,6 +285,7 @@ async def create_schedule(request: CreateScheduleRequest):
     effective_exec_user = (request.exec_user or "").strip() or default_exec_user
 
     storage = _get_schedule_storage()
+    normalized_workspace = _normalize_workspace_or_400(request.workspace)
 
     try:
         schedule = storage.add_schedule(
@@ -288,7 +297,7 @@ async def create_schedule(request: CreateScheduleRequest):
             provider=provider,
             alias=alias_value,
             model=(request.llm_model or "").strip() or None,
-            workspace=(request.workspace or "").strip() or None,
+            workspace=normalized_workspace,
             project_id=(request.project_id or "").strip() or None,
             project_name=(request.project_name or "").strip() or None,
             exec_user=effective_exec_user,
@@ -360,7 +369,7 @@ async def update_schedule(schedule_id: str, request: UpdateScheduleRequest):
     if request.llm_model is not None:
         schedule.model = request.llm_model.strip() or None
     if request.workspace is not None:
-        schedule.workspace = request.workspace.strip() or None
+        schedule.workspace = _normalize_workspace_or_400(request.workspace)
     if request.project_id is not None:
         schedule.project_id = request.project_id.strip() or None
     if request.project_name is not None:

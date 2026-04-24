@@ -1,15 +1,15 @@
-# Agent-Nexus Codebase Structure - Nanobot Provider Integration Guide
+# Agent-Nexus Codebase Structure - Nexus Provider Integration Guide
 
 ## Executive Summary
 The agent-nexus codebase follows a clean provider architecture with **two main layers**:
 1. **Provider Layer** (`src/providers/`): CLI subprocess executors specific to each provider
 2. **Runtime Layer** (`src/runtime/adapters/`): Protocol adapters that transform provider events to AG-UI format
 
-To integrate Nanobot, we need to:
-- Create `src/providers/nanobot/` with executor + config
-- Create `src/runtime/adapters/nanobot/` with AG-UI adapter
+To integrate Nexus, we need to:
+- Create `src/providers/nexus/` with executor + config
+- Create `src/runtime/adapters/nexus/` with AG-UI adapter
 - Update `src/providers/dispatcher.py` to register the provider
-- Update `src/server/config.py` with nanobot configuration options
+- Update `src/server/config.py` with nexus configuration options
 
 ---
 
@@ -39,7 +39,7 @@ src/providers/
 │   ├── process_manager.py
 │   └── __init__.py
 ├── runtime/                         # Shared runtime infrastructure
-└── [NEEDS CREATION] nanobot/        # Where you'll add nanobot provider
+└── [NEEDS CREATION] nexus/        # Where you'll add nexus provider
 
 src/runtime/adapters/
 ├── base.py                          # BaseAdapter, AdapterState, ProtocolType
@@ -57,7 +57,7 @@ src/runtime/adapters/
 ├── gemini/
 │   ├── agui_adapter.py              # GeminiAGUIAdapter(BaseAdapter)
 │   └── __init__.py
-└── [NEEDS CREATION] nanobot/        # Where you'll add nanobot adapter
+└── [NEEDS CREATION] nexus/        # Where you'll add nexus adapter
 ```
 
 ---
@@ -128,7 +128,7 @@ class ExecutorConfig:
 
 ### Example: CodebuddyCLIExecutor (src/providers/codebuddy/cli_executor.py)
 
-**Pattern to follow for Nanobot:**
+**Pattern to follow for Nexus:**
 ```python
 class CodebuddyExecutorConfig(ExecutorConfig):
     def __init__(
@@ -265,7 +265,7 @@ class BaseAdapter(ABC):
 
 ### Example: CodebuddyAGUIAdapter (src/runtime/adapters/codebuddy/agui_adapter.py)
 
-**Pattern to follow for Nanobot:**
+**Pattern to follow for Nexus:**
 ```python
 class CodebuddyAGUIAdapter(BaseAdapter):
     def __init__(self):
@@ -448,8 +448,8 @@ def create_adapter(provider: str):
 class ServerSettings(BaseSettings):
     # ... existing fields ...
     cli_timeout: int = 600              # Already exists
-    nanobot_model: str = "gpt-4o"       # Already exists
-    nanobot_missions_enabled: bool = True  # Already exists
+    nexus_model: str = "gpt-4o"       # Already exists
+    nexus_missions_enabled: bool = True  # Already exists
 
 class ProviderSettings(BaseSettings):
     # ... existing fields ...
@@ -458,14 +458,14 @@ class ProviderSettings(BaseSettings):
     default_exec_user: str = ""
 ```
 
-To add nanobot config:
+To add nexus config:
 ```python
 class ServerSettings(BaseSettings):
     # Add these fields:
-    nanobot_command: str = "nanobot"
-    nanobot_model: str = "gpt-4o"
-    nanobot_workspace: str = ""
-    nanobot_max_iterations: int = 20
+    nexus_command: str = "nexus"
+    nexus_model: str = "gpt-4o"
+    nexus_workspace: str = ""
+    nexus_max_iterations: int = 20
     # ... etc
 ```
 
@@ -501,22 +501,22 @@ async def chat_stream(request: Request, exec_user: str):
 
 ## 7. KEY FUNCTION SIGNATURES TO IMPLEMENT
 
-### For Executor (src/providers/nanobot/executor.py):
+### For Executor (src/providers/nexus/executor.py):
 
 ```python
-class NanobotExecutorConfig(ExecutorConfig):
+class NexusExecutorConfig(ExecutorConfig):
     def __init__(
         self,
         timeout: float = 600.0,
         user_home_base: str = "/home",
-        nanobot_command: str = "nanobot",
+        nexus_command: str = "nexus",
         **kwargs,
     ):
         super().__init__(timeout=timeout, user_home_base=user_home_base)
-        self.nanobot_command = nanobot_command
+        self.nexus_command = nexus_command
         self.extra.update(kwargs)
 
-class NanobotExecutor(BaseExecutor):
+class NexusExecutor(BaseExecutor):
     async def execute(
         self,
         context: RequestContext,
@@ -524,25 +524,25 @@ class NanobotExecutor(BaseExecutor):
     ) -> AsyncGenerator[str, None]:
         """Yield JSON lines (stream-json format)"""
         # 1. Validate context
-        # 2. Build command: ["nanobot", "--json", context.content]
+        # 2. Build command: ["nexus", "--json", context.content]
         # 3. Execute subprocess
         # 4. Read lines from stdout
         # 5. Yield JSON lines
         pass
     
     def _build_command(self, context: RequestContext) -> List[str]:
-        """Return ['nanobot', '--json', context.content]"""
+        """Return ['nexus', '--json', context.content]"""
         pass
 ```
 
-### For Adapter (src/runtime/adapters/nanobot/agui_adapter.py):
+### For Adapter (src/runtime/adapters/nexus/agui_adapter.py):
 
 ```python
-class NanobotAGUIAdapter(BaseAdapter):
+class NexusAGUIAdapter(BaseAdapter):
     def convert(self, event: Dict[str, Any]) -> Optional[str]:
-        """Transform nanobot event to AG-UI format.
+        """Transform nexus event to AG-UI format.
         
-        Expected nanobot event types (from docs):
+        Expected nexus event types (from docs):
         - "message_delta": Text content
         - "tool_use": Tool call
         - "tool_result": Tool result
@@ -593,15 +593,15 @@ class NanobotAGUIAdapter(BaseAdapter):
 ```python
 def normalize_provider(name: Optional[str]) -> str:
     n = (name or "").strip().lower()
-    if n in ("gemini", "codex", "codebuddy", "nanobot"):  # ADD nanobot
+    if n in ("gemini", "codex", "codebuddy", "nexus"):  # ADD nexus
         return n
     return "claude"
 
 def create_executor(provider: str, *, config=None):
     # ... existing code ...
-    if key == "nanobot":  # ADD THIS BLOCK
-        from src.providers.nanobot import NanobotExecutor
-        return NanobotExecutor(config=config)
+    if key == "nexus":  # ADD THIS BLOCK
+        from src.providers.nexus import NexusExecutor
+        return NexusExecutor(config=config)
     # ... rest of function ...
 
 def create_all_executors(*, config=None) -> dict:
@@ -611,25 +611,25 @@ def create_all_executors(*, config=None) -> dict:
         "gemini":    create_executor("gemini", config=config),
         "codex":     create_executor("codex", config=config),
         "codebuddy": create_executor("codebuddy", config=config),
-        "nanobot":   create_executor("nanobot", config=config),  # ADD
+        "nexus":   create_executor("nexus", config=config),  # ADD
     }
 
 def create_adapter(provider: str):
     # ... existing code ...
-    if key == "nanobot":  # ADD THIS BLOCK
-        from src.runtime.adapters.nanobot import NanobotAGUIAdapter
-        return NanobotAGUIAdapter()
+    if key == "nexus":  # ADD THIS BLOCK
+        from src.runtime.adapters.nexus import NexusAGUIAdapter
+        return NexusAGUIAdapter()
     # ... rest of function ...
 ```
 
 ### In src/runtime/adapters/__init__.py:
 
 ```python
-from .nanobot import NanobotAGUIAdapter  # ADD
+from .nexus import NexusAGUIAdapter  # ADD
 
 __all__ = [
     # ... existing exports ...
-    "NanobotAGUIAdapter",  # ADD
+    "NexusAGUIAdapter",  # ADD
 ]
 ```
 
@@ -637,11 +637,11 @@ __all__ = [
 
 ```python
 class ServerSettings(BaseSettings):
-    # Add nanobot config fields:
-    nanobot_command: str = "nanobot"
-    nanobot_model: str = "gpt-4o"
-    nanobot_workspace: str = ""
-    nanobot_max_iterations: int = 20
+    # Add nexus config fields:
+    nexus_command: str = "nexus"
+    nexus_model: str = "gpt-4o"
+    nexus_workspace: str = ""
+    nexus_max_iterations: int = 20
     # ... existing fields ...
 ```
 
@@ -717,27 +717,27 @@ Each event has a `.to_sse()` method that returns SSE-formatted string.
 
 ## SUMMARY: MINIMAL CHECKLIST
 
-To add Nanobot provider, you need:
+To add Nexus provider, you need:
 
-1. **Create src/providers/nanobot/**
-   - `executor.py`: NanobotExecutor(BaseExecutor)
-   - `__init__.py`: Export NanobotExecutor
+1. **Create src/providers/nexus/**
+   - `executor.py`: NexusExecutor(BaseExecutor)
+   - `__init__.py`: Export NexusExecutor
 
-2. **Create src/runtime/adapters/nanobot/**
-   - `agui_adapter.py`: NanobotAGUIAdapter(BaseAdapter)
-   - `__init__.py`: Export NanobotAGUIAdapter
+2. **Create src/runtime/adapters/nexus/**
+   - `agui_adapter.py`: NexusAGUIAdapter(BaseAdapter)
+   - `__init__.py`: Export NexusAGUIAdapter
 
 3. **Update src/providers/dispatcher.py**
-   - Add "nanobot" to normalize_provider() check
-   - Add nanobot block to create_executor()
-   - Add nanobot block to create_all_executors()
-   - Add nanobot block to create_adapter()
+   - Add "nexus" to normalize_provider() check
+   - Add nexus block to create_executor()
+   - Add nexus block to create_all_executors()
+   - Add nexus block to create_adapter()
 
 4. **Update src/runtime/adapters/__init__.py**
-   - Import and export NanobotAGUIAdapter
+   - Import and export NexusAGUIAdapter
 
 5. **Update src/server/config.py**
-   - Add nanobot_command, nanobot_model, etc. to ServerSettings
+   - Add nexus_command, nexus_model, etc. to ServerSettings
 
 6. **Optional: Update chat.py if special handling needed**
    - Usually not necessary—dispatcher handles it automatically

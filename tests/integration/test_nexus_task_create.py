@@ -24,6 +24,7 @@ class MockTaskQueue:
         model=None,
         task_id=None,
         source_session_id=None,
+        session_id=None,
         exec_user=None,
         depends_on=None,
         **kwargs,
@@ -39,7 +40,7 @@ class MockTaskQueue:
             alias=alias,
             model=model,
             exec_user=exec_user,
-            session_id=(source_session_id + "_" if source_session_id else "task_") + (task_id or "new"),
+            session_id=session_id or (source_session_id + "_" if source_session_id else "task_") + (task_id or "new"),
         )
         self._tasks[t.id] = t
         return t
@@ -47,8 +48,10 @@ class MockTaskQueue:
 
 class TestNexusCreateTask:
     @pytest.mark.asyncio
-    async def test_create_task_success(self, client):
+    async def test_create_task_success(self, client, tmp_path):
         q = MockTaskQueue()
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
         with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
@@ -56,7 +59,7 @@ class TestNexusCreateTask:
                 json={
                     "description": "Build feature",
                     "provider": "gemini",
-                    "workspace": "/tmp/ws",
+                    "workspace": str(workspace),
                     "agent": "ubuntu",
                 },
             )
@@ -65,13 +68,15 @@ class TestNexusCreateTask:
         data = resp.json()
         assert data["description"] == "Build feature"
         assert data["provider"] == "gemini"
-        assert data["status"] == "inbox"
-        assert data["workspace"] == "/tmp/ws"
+        assert data["status"] == "pending"
+        assert data["workspace"] == str(workspace.resolve())
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider", ["claude", "gemini", "codex", "codebuddy"])
-    async def test_create_task_valid_providers_success(self, client, provider):
+    async def test_create_task_valid_providers_success(self, client, provider, tmp_path):
         q = MockTaskQueue()
+        workspace = tmp_path / f"ws-{provider}"
+        workspace.mkdir()
         with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
@@ -79,7 +84,7 @@ class TestNexusCreateTask:
                 json={
                     "description": "Build feature",
                     "provider": provider,
-                    "workspace": "/tmp/ws",
+                    "workspace": str(workspace),
                     "agent": "ubuntu",
                 },
             )
@@ -89,8 +94,10 @@ class TestNexusCreateTask:
         assert data["provider"] == provider
 
     @pytest.mark.asyncio
-    async def test_create_task_alias_uses_base_provider_success(self, client):
+    async def test_create_task_alias_uses_base_provider_success(self, client, tmp_path):
         q = MockTaskQueue()
+        workspace = tmp_path / "ws-alias"
+        workspace.mkdir()
         with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
@@ -99,7 +106,7 @@ class TestNexusCreateTask:
                     "description": "Build feature",
                     "provider": "claude",
                     "alias": "claude-internal",
-                    "workspace": "/tmp/ws",
+                    "workspace": str(workspace),
                     "agent": "ubuntu",
                 },
             )
@@ -114,6 +121,7 @@ class TestNexusCreateTask:
     async def test_create_task_internal_aliases_rejected_as_provider(self, client, alias):
         """Aliases like -internal are not valid provider names and should be rejected."""
         q = MockTaskQueue()
+        workspace = "/tmp"
         with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
             resp = await client.post(
                 "/api/nexus/tasks",
@@ -121,12 +129,52 @@ class TestNexusCreateTask:
                 json={
                     "description": "Build feature",
                     "provider": alias,
-                    "workspace": "/tmp/ws",
+                    "workspace": workspace,
                     "agent": "ubuntu",
                 },
             )
 
         assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_create_task_rejects_missing_workspace(self, client):
+        q = MockTaskQueue()
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
+            resp = await client.post(
+                "/api/nexus/tasks",
+                params={"exec_user": "ubuntu"},
+                json={
+                    "description": "Build feature",
+                    "provider": "claude",
+                    "workspace": "definitely-missing-workspace-dir",
+                },
+            )
+
+        assert resp.status_code == 400
+        assert "workspace 不存在或不是目录" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_create_task_resolves_relative_workspace(self, client, tmp_path, monkeypatch):
+        q = MockTaskQueue()
+        base = tmp_path / "current"
+        base.mkdir()
+        workspace = base / "nested"
+        workspace.mkdir()
+
+        monkeypatch.chdir(base)
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
+            resp = await client.post(
+                "/api/nexus/tasks",
+                params={"exec_user": "ubuntu"},
+                json={
+                    "description": "Build feature",
+                    "provider": "claude",
+                    "workspace": "nested",
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["workspace"] == str(workspace.resolve())
 
     @pytest.mark.asyncio
     async def test_create_task_invalid_provider(self, client):
@@ -157,3 +205,22 @@ class TestNexusCreateTask:
             )
 
         assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_create_task_can_attach_to_existing_session(self, client):
+        q = MockTaskQueue()
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
+            resp = await client.post(
+                "/api/nexus/tasks",
+                params={"exec_user": "ubuntu"},
+                json={
+                    "description": "Build feature",
+                    "provider": "claude",
+                    "session_id": "existing-session-123",
+                    "agent": "ubuntu",
+                },
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "existing-session-123"

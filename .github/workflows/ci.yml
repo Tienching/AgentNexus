@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "feature/**"
+      - "feature-*"
+  pull_request:
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync environment
+        run: uv sync --extra dev --group dev
+
+      - name: Ruff critical checks
+        run: uv run ruff check --select=E9,F63,F7,F82 src tests scripts
+
+      - name: Smoke compile key Python modules
+        run: uv run python -m py_compile src/runtime/stores/db.py src/server/services/cli_executor.py src/runtime/execution/task.py
+
+      - name: Migration discovery gate
+        run: uv run pytest -q tests/unit/test_migration_discovery.py tests/integration/test_sqlite_migration.py
+
+      - name: OpenAPI parity gate
+        run: |
+          uv run python -m src.core.openapi_generator
+          git diff --exit-code -- docs/openapi.json
+
+      - name: Packaging gate
+        run: uv build
+
+      - name: Verify frontend bundles parse
+        run: |
+          node --check src/server/static/nexus/js/app.js
+          node --check src/server/static/nexus/js/api.js
+          node --check src/server/static/nexus/js/components/task-board-panel.js
+          node --check src/server/static/nexus/js/components/filters.js
+          node --check src/server/static/nexus/js/components/inline-picker.js
+          node --check src/server/static/nexus/js/components/list-view.js
+          node --check src/server/static/nexus/js/components/agents-store.js
+          node --check src/server/static/nexus/js/components/agents-view-shell.js
+          node --check src/server/static/nexus/js/components/settings-basic-section.js
+          node --check src/server/static/nexus/js/components/settings-extensions-section.js
+          node --check src/server/static/nexus/js/components/settings-safety-section.js
+          node --check src/server/static/nexus/js/components/settings-page.js
+          node --check src/server/static/nexus/js/shell-managers.js
+          node --check src/server/static/nexus/js/shell-views.js
+
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: quality-gates
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync environment
+        run: uv sync --extra dev --group dev
+
+      - name: Run unit and integration tests with coverage
+        run: uv run pytest -q -m "not slow and not optional_backend" --cov=src --cov-report=term --cov-report=xml tests/unit tests/integration tests/providers
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: quality-gates
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync environment
+        run: uv sync --extra dev --group dev
+
+      - name: Install Playwright browsers
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run browser/API E2E
+        run: uv run pytest -q tests/e2e

@@ -21,7 +21,7 @@
 - **Python files:** 268 files
 - **Total lines:** ~69,849 lines of Python code
 - **Major modules:**
-  - `src/nanobot/` — Core orchestrator (mission, agent, evolve, cron, session)
+  - `src/nexus/` — Core orchestrator (mission, agent, evolve, cron, session)
   - `src/providers/` — AI provider adapters (Claude, Gemini, CodeBuddy, etc.)
   - `src/channels/` — Channel integrations (Slack, Discord, Telegram, WeChat, etc.)
   - `src/runtime/` — Runtime infrastructure (stores, execution, plugins)
@@ -37,7 +37,7 @@
 
 1. **Redis dependency without in-memory fallback** — Session storage and audit log require Redis. When Redis is unavailable, the system returns None/empty for most operations. This blocks development without Redis.
 
-2. **Inline prompts still in prompts.py** — The `DEFAULT_TEMPLATES` dict in `src/nanobot/evolve/prompts.py` contains fallback templates that are now redundant since external prompt files exist in `evolve/prompts/`.
+2. **Inline prompts still in prompts.py** — The `DEFAULT_TEMPLATES` dict in `src/nexus/evolve/prompts.py` contains fallback templates that are now redundant since external prompt files exist in `evolve/prompts/`.
 
 3. **Incomplete test coverage for redis_client** — The `test_redis_client.py` only tests connection handling. Core operations like zrevrange, scan_iter are not tested.
 

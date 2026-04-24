@@ -337,7 +337,7 @@ class SlashCommandHandler:
             return f"## ❌ Not Found\n\n任务 `{task_id}` 不存在。"
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
-        if status_val == TaskStatus.IN_PROGRESS.value:
+        if status_val == TaskStatus.RUNNING.value:
             return (
                 f"## ⏳ 已在执行中\n\n"
                 f"任务 `#{task.id}` 正在执行中，请稍后再试。\n\n"
@@ -381,11 +381,16 @@ class SlashCommandHandler:
 
         status_val = task.status if isinstance(task.status, str) else task.status.value
         status_icons = {
+            "completed": "✅",
+            "running": "🔄",
+            "pending": "🕒",
+            "in_review": "🔍",
+            "failed": "❌",
+            "cancelled": "🗑️",
+            # Legacy support
             "done": "✅",
             "doing": "🔄",
             "todo": "🕒",
-            "failed": "❌",
-            "cancelled": "🗑️",
         }
         status_icon = status_icons.get(status_val, "•")
 
@@ -644,17 +649,23 @@ class SlashCommandHandler:
             response += "| ID | Status | Priority | Description |\n"
             response += "|----|--------|----------|-------------|\n"
             status_icons = {
-                TaskStatus.DONE: "✅",
-                TaskStatus.IN_PROGRESS: "🔄",
-                TaskStatus.INBOX: "🕒",
+                TaskStatus.COMPLETED: "✅",
+                TaskStatus.RUNNING: "🔄",
+                TaskStatus.PENDING: "🕒",
+                TaskStatus.IN_REVIEW: "🔍",
                 TaskStatus.FAILED: "❌",
-                TaskStatus.ARCHIVED: "🗑️",
+                TaskStatus.CANCELLED: "🗑️",
+                TaskStatus.ARCHIVED: "📦",
                 # Legacy support
+                "completed": "✅",
+                "running": "🔄",
+                "pending": "🕒",
+                "in_review": "🔍",
+                "failed": "❌",
+                "cancelled": "🗑️",
                 "done": "✅",
                 "doing": "🔄",
                 "todo": "🕒",
-                "failed": "❌",
-                "cancelled": "🗑️",
             }
             for task in recent_tasks:
                 status_val = task.status if isinstance(task.status, str) else task.status.value
@@ -1081,11 +1092,16 @@ class SlashCommandHandler:
         # 构建任务信息
         status_val = task.status if isinstance(task.status, str) else task.status.value
         status_icons = {
+            "completed": "✅",
+            "running": "🔄",
+            "pending": "🕒",
+            "in_review": "🔍",
+            "failed": "❌",
+            "cancelled": "🗑️",
+            # Legacy support
             "done": "✅",
             "doing": "🔄",
             "todo": "🕒",
-            "failed": "❌",
-            "cancelled": "🗑️",
         }
         status_icon = status_icons.get(status_val, "•")
         
@@ -1242,9 +1258,9 @@ class SlashCommandHandler:
                     logger.debug(f"Could not read task log: {e}")
             else:
                 response += "\n### 💬 对话记录\n\n"
-                if status_val == "todo":
+                if status_val == "pending":
                     response += "任务尚未执行，暂无日志。\n"
-                elif status_val == "doing":
+                elif status_val == "running":
                     response += "任务正在执行中...\n"
                 else:
                     response += "暂无对话记录。\n"

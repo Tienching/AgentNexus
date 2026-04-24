@@ -1,5 +1,5 @@
 Title: Remove inline DEFAULT_TEMPLATES from prompts.py
-Files: src/nanobot/evolve/prompts.py
+Files: src/nexus/evolve/prompts.py
 Issue: none
 
 ## Problem
@@ -16,7 +16,7 @@ The `load_prompt_template()` function loads external files first, then falls bac
 
 ## Solution
 
-1. Remove the `DEFAULT_TEMPLATES` dict (lines 19-24) from `src/nanobot/evolve/prompts.py`
+1. Remove the `DEFAULT_TEMPLATES` dict (lines 19-24) from `src/nexus/evolve/prompts.py`
 2. Update `load_prompt_template()` to raise a clear `FileNotFoundError` with the attempted paths if no prompt file is found
 3. Keep `LEGACY_PROMPT_FILES` mapping for backward compatibility with old paths
 
@@ -28,8 +28,8 @@ Run: `python3 -m pytest tests/evolve/test_prompts.py -v`
 
 Tests should pass. Verify that loading each prompt works:
 ```python
-from src.nanobot.evolve.prompts import load_prompt_template
-from src.nanobot.evolve.models import EvolutionConfig
+from src.nexus.evolve.prompts import load_prompt_template
+from src.nexus.evolve.models import EvolutionConfig
 config = EvolutionConfig(working_dir=".")
 for name in ["assessment", "planning", "implementation", "conflict_resolution"]:
     content = load_prompt_template(config, name)

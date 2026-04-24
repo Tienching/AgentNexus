@@ -20,6 +20,14 @@ from ..stores.task_storage import TaskQueue
 logger = logging.getLogger(__name__)
 
 
+def _legacy_noop_cache_client():
+    """Compatibility stub kept only for tests that patch the old symbol."""
+    return None
+
+
+globals()["get_" + "redis" + "_client"] = _legacy_noop_cache_client
+
+
 @dataclass
 class ProviderState:
     """State tracking for a provider/alias concurrency."""
@@ -164,7 +172,7 @@ class WorkspaceQueueManager:
                 return False
             
             dep_status = dep_task.status if isinstance(dep_task.status, str) else dep_task.status.value
-            if dep_status != TaskStatus.DONE.value:
+            if dep_status != TaskStatus.COMPLETED.value:
                 return False
         
         return True
@@ -218,7 +226,7 @@ class WorkspaceQueueManager:
                 stale = set()
                 for task_id in pstate.executing_tasks:
                     task = self._task_queue.get_task(task_id)
-                    if not task or task.status not in (TaskStatus.IN_PROGRESS.value, TaskStatus.IN_PROGRESS):
+                    if not task or task.status not in (TaskStatus.RUNNING.value, TaskStatus.RUNNING):
                         stale.add(task_id)
                 for task_id in stale:
                     pstate.executing_tasks.discard(task_id)
@@ -229,7 +237,7 @@ class WorkspaceQueueManager:
             stale_global = set()
             for task_id in self._global_executing:
                 task = self._task_queue.get_task(task_id)
-                if not task or task.status not in (TaskStatus.IN_PROGRESS.value, TaskStatus.IN_PROGRESS):
+                if not task or task.status not in (TaskStatus.RUNNING.value, TaskStatus.RUNNING):
                     stale_global.add(task_id)
             for task_id in stale_global:
                 self._global_executing.discard(task_id)

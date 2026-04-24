@@ -192,6 +192,25 @@ class TestSessionMeta:
         assert restored.message_count == original.message_count
         assert restored.status == original.status
 
+    def test_session_meta_cli_session_id_roundtrip(self):
+        """cli_session_id should survive Redis roundtrip and legacy compat fields."""
+        original = SessionMeta(
+            id="session-123",
+            thread_id="thread-123",
+            username="testuser",
+            cli_session_id="cli-abc-123",
+        )
+
+        hash_data = original.to_redis_hash()
+
+        assert hash_data["cli_session_id"] == "cli-abc-123"
+        assert hash_data["claude_session_id"] == "cli-abc-123"
+
+        restored = SessionMeta.from_redis_hash(hash_data)
+
+        assert restored.cli_session_id == "cli-abc-123"
+        assert restored.claude_session_id == "cli-abc-123"
+
 
 class TestMessageStatus:
     """MessageStatus enum tests"""

@@ -30,6 +30,7 @@ from src.runtime import __version__ as runtime_version
 from ..models import HealthCheck, HealthResponse, MetricsResponse
 from ..config import settings
 from ..logger import get_logger
+from ..services.redis_client import get_redis_client
 
 router = APIRouter(tags=["health"])
 logger = get_logger(__name__)
@@ -94,27 +95,89 @@ def _check_database() -> HealthCheck:
         )
 
 
-def _check_redis_optional() -> HealthCheck:
-    """Check Redis as optional backend — degraded, never unhealthy."""
+def _check_redis() -> HealthCheck:
+    """Legacy Redis health check used by tests and compatibility callers."""
     try:
-        from ..services.redis_client import get_redis_client
         r = get_redis_client()
         t0 = time.monotonic()
         r.ping()
         elapsed_ms = (time.monotonic() - t0) * 1000
+        status = "warning" if elapsed_ms >= 100 else "healthy"
+        label = "Redis slow" if status == "warning" else "Redis reachable"
+        return HealthCheck(
+            name="Redis",
+            status=status,
+            message=f"{label} ({elapsed_ms:.0f} ms)",
+            detail={"latency_ms": round(elapsed_ms, 1)},
+        )
+    except Exception as exc:
+        return HealthCheck(
+            name="Redis",
+            status="unhealthy",
+            message=f"Redis connectivity failed: {exc}",
+            detail={
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "hint": "Redis is optional, but this compatibility check expects connectivity.",
+            },
+        )
+
+
+def _check_redis_optional(result: HealthCheck | None = None) -> HealthCheck:
+    """Check Redis as optional backend — degraded, never unhealthy."""
+    result = result or _check_redis()
+    if result.status == "healthy":
         return HealthCheck(
             name="Redis (optional)",
             status="healthy",
-            message=f"Redis reachable ({elapsed_ms:.0f} ms)",
-            detail={"latency_ms": round(elapsed_ms, 1)},
+            message=result.message,
+            detail=result.detail,
         )
+    return HealthCheck(
+        name="Redis (optional)",
+        status="degraded",
+        message="Redis not available — using SQLite backend",
+        detail={"hint": "Redis is optional. All data is stored in SQLite."},
+    )
+
+
+def _check_history_observability() -> HealthCheck | None:
+    """Surface history read failures in health while compat hits remain log/metric only.
+
+    Compatibility-path usage is intentionally *not* elevated into the core
+    health payload on its own; otherwise a single legacy fallback can keep the
+    overall service health degraded for the lifetime of the process. We still
+    track compat hits in the history observability snapshot/logs.
+    """
+    try:
+        from .nexus_history import get_history_observability_snapshot
     except Exception:
-        return HealthCheck(
-            name="Redis (optional)",
-            status="degraded",
-            message="Redis not available — using SQLite backend",
-            detail={"hint": "Redis is optional. All data is stored in SQLite."},
-        )
+        return None
+
+    snapshot = get_history_observability_snapshot()
+    read_failures = int(snapshot.get("read_failures", 0) or 0)
+    compat_hits = int(snapshot.get("compat_hits", 0) or 0)
+    if not read_failures:
+        return None
+
+    last_failure = snapshot.get("last_read_failure") or {}
+    last_compat = snapshot.get("last_compat_hit") or {}
+    status = "warning"
+    message = f"History read failures detected ({read_failures})"
+
+    return HealthCheck(
+        name="History",
+        status=status,
+        message=message,
+        detail={
+            "read_failures": read_failures,
+            "compat_hits": compat_hits,
+            "read_failures_by_kind": snapshot.get("read_failures_by_kind", {}),
+            "compat_hits_by_kind": snapshot.get("compat_hits_by_kind", {}),
+            "last_read_failure": last_failure or None,
+            "last_compat_hit": last_compat or None,
+        },
+    )
 
 
 def _check_process_memory() -> HealthCheck:
@@ -291,16 +354,21 @@ def _perform_health_check(
     """
     checks: List[HealthCheck] = [
         _check_database(),
-        _check_redis_optional(),
+        _check_redis_optional(_check_redis()),
         _check_process_memory(),
         _check_disk_space(),
     ]
+    history_check = _check_history_observability()
+    if history_check is not None:
+        checks.append(history_check)
     startup_checks, startup_failures = _build_startup_subsystem_checks(startup_states)
     checks.extend(startup_checks)
 
-    # Use database + memory + disk for overall status (skip optional Redis)
-    core_checks = [c for c in checks if c.name != "Redis (optional)"]
-    overall = _worst([c.status for c in core_checks[:3]] + startup_failures)
+    # Use the fixed core checks + explicit History observability, while keeping
+    # optional startup subsystems from degrading the overall status.
+    core_check_names = {"Database", "Process Memory", "Disk Space", "History"}
+    core_checks = [c for c in checks if c.name in core_check_names]
+    overall = _worst([c.status for c in core_checks] + startup_failures)
 
     return HealthResponse(
         status=overall,
@@ -356,18 +424,26 @@ async def health_check(request: Request):
 @router.get("/metrics", response_model=MetricsResponse)
 async def get_metrics():
     """
-    获取服务指标
-
-    返回请求统计等信息
+    Return a SQLite-first metrics snapshot for the UI and health probes.
     """
     # 从全局 metrics 获取数据
     from ..app import metrics
+    storage_path = None
+    try:
+        from src.runtime.stores.db import get_db
+
+        storage_path = get_db().db_path
+    except Exception:
+        storage_path = None
 
     return MetricsResponse(
-        version="0.1.0",
+        version=settings.version if hasattr(settings, "version") else "0.1.0",
         cli_command=settings.cli_command,
         requests_total=metrics["requests_total"],
         requests_active=metrics["requests_active"],
+        storage_backend="sqlite",
+        storage_path=storage_path,
+        redis_optional=True,
     )
 
 

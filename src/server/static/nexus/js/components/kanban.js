@@ -72,9 +72,6 @@ class KanbanDragDrop {
         // Create custom ghost preview element
         const ghost = card.cloneNode(true);
         ghost.classList.add('task-card-ghost');
-        ghost.style.width = card.offsetWidth + 'px';
-        ghost.style.position = 'absolute';
-        ghost.style.top = '-1000px';
         document.body.appendChild(ghost);
         if (event.dataTransfer) {
             event.dataTransfer.setDragImage(ghost, 20, 20);
@@ -83,8 +80,6 @@ class KanbanDragDrop {
 
         // Drag lifecycle: suppress text selection and add body class
         document.body.classList.add('kanban-dragging-active');
-        document.body.style.userSelect = 'none';
-        document.body.style.webkitUserSelect = 'none';
 
         this.onDragStart(taskId, fromStatus);
         if (event.dataTransfer) {
@@ -96,8 +91,6 @@ class KanbanDragDrop {
     handleDragEnd() {
         // Remove drag lifecycle state
         document.body.classList.remove('kanban-dragging-active');
-        document.body.style.userSelect = '';
-        document.body.style.webkitUserSelect = '';
 
         // Clean up visual indicators
         this._removeDropIndicator();

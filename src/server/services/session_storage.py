@@ -7,20 +7,13 @@ This module preserves the import path for the FastAPI layer.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from src.runtime.stores.session_storage import (
     SessionStorage,
     SESSION_TTL,
     STREAMING_CONTENT_TTL,
 )
-
-
-_storage: Optional[SessionStorage] = None
+from .app_container import get_app_container
 
 
 def get_session_storage() -> SessionStorage:
-    global _storage
-    if _storage is None:
-        _storage = SessionStorage()
-    return _storage
+    return get_app_container().session_storage()

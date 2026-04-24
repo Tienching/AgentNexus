@@ -33,6 +33,7 @@ def up(conn: sqlite3.Connection) -> None:
             exec_dir_override TEXT,
             status            TEXT DEFAULT 'active',
             message_count     INTEGER DEFAULT 0,
+            archived_at       REAL,
             provider          TEXT,
             model             TEXT,
             cli_session_id    TEXT,

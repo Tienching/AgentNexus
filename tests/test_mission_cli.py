@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Integration tests for mission CLI script.
 
-Tests the argparse structure and command dispatch (not actual nanobot calls).
+Tests the argparse structure and command dispatch (not actual nexus calls).
 """
 
 import subprocess

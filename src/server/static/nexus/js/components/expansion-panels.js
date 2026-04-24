@@ -1,10 +1,10 @@
 /**
  * ExpansionPanels component
  *
- * Bottom monitoring panels for runtime sessions:
+ * Bottom monitoring panels for runtime runs:
  * - Claude Code
  * - CodeBuddy
- * - Hermes
+ * - Nexus
  */
 class ExpansionPanels {
     static escapeHtml(str) {
@@ -18,7 +18,7 @@ class ExpansionPanels {
         const buckets = {
             claude: [],
             codebuddy: [],
-            hermes: [],
+            nexus: [],
         };
 
         (sessions || []).forEach((session) => {
@@ -35,8 +35,8 @@ class ExpansionPanels {
                 buckets.codebuddy.push(session);
                 return;
             }
-            if (text.includes('hermes') || text.includes('nanobot')) {
-                buckets.hermes.push(session);
+            if (text.includes('hermes') || text.includes('nexus')) {
+                buckets.nexus.push(session);
             }
         });
 
@@ -49,31 +49,31 @@ class ExpansionPanels {
             const sessionTitle = String(session?.title || sid || '(untitled)');
             const status = String(session?.status || 'idle');
             const messageCount = Number(session?.message_count || 0);
-            const statusColor = status === 'running' ? 'var(--success)' : (status === 'error' ? 'var(--error)' : 'var(--text-muted)');
+            const statusTone = status === 'running' ? 'running' : (status === 'error' ? 'error' : 'idle');
 
             return `
-                <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);">
-                    <div style="min-width:0;display:flex;flex-direction:column;gap:2px;">
-                        <span style="font-size:12px;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${this.escapeHtml(sessionTitle)}</span>
-                        <span style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);">${this.escapeHtml(sid)}</span>
+                <div class="expansion-panel-row">
+                    <div class="expansion-panel-session">
+                        <span class="expansion-panel-session-title">${this.escapeHtml(sessionTitle)}</span>
+                        <span class="expansion-panel-session-id">${this.escapeHtml(sid)}</span>
                     </div>
-                    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0;">
-                        <span style="font-size:10px;color:${statusColor};">${this.escapeHtml(status)}</span>
-                        <span style="font-size:10px;color:var(--text-muted);">msgs ${messageCount}</span>
+                    <div class="expansion-panel-session-meta">
+                        <span class="expansion-panel-session-status expansion-panel-session-status--${statusTone}">${this.escapeHtml(status)}</span>
+                        <span class="expansion-panel-session-count">msgs ${messageCount}</span>
                     </div>
                 </div>
             `;
         }).join('');
 
-        const empty = '<div style="font-size:11px;color:var(--text-muted);padding:4px 2px;">No sessions</div>';
+        const empty = '<div class="expansion-panel-empty">No runs</div>';
 
         return `
-            <details class="expansion-panel" data-expansion-key="${this.escapeHtml(key)}" style="border:1px solid var(--border);border-radius:8px;background:var(--bg-primary);">
-                <summary style="cursor:pointer;list-style:none;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--text-primary);">
+            <details class="expansion-panel" data-expansion-key="${this.escapeHtml(key)}">
+                <summary class="expansion-panel-summary">
                     <span>${this.escapeHtml(title)}</span>
-                    <span style="font-size:11px;color:var(--text-muted);">${sessions.length}</span>
+                    <span class="expansion-panel-summary-count">${sessions.length}</span>
                 </summary>
-                <div style="display:flex;flex-direction:column;gap:6px;padding:0 10px 10px;">
+                <div class="expansion-panel-body">
                     ${rows || empty}
                 </div>
             </details>
@@ -85,14 +85,14 @@ class ExpansionPanels {
         const buckets = this.classifySessions(sessions);
 
         container.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                <div style="font-size:12px;color:var(--text-secondary);font-weight:600;">Expansion Panels</div>
-                <div style="font-size:11px;color:var(--text-muted);">Session Monitor</div>
+            <div class="expansion-panels-header">
+                <div class="expansion-panels-title">Expansion Panels</div>
+                <div class="expansion-panels-subtitle">Run Monitor</div>
             </div>
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;">
+            <div class="expansion-panels-grid">
                 ${this.renderPanel('Claude Code', 'claude', buckets.claude)}
                 ${this.renderPanel('CodeBuddy', 'codebuddy', buckets.codebuddy)}
-                ${this.renderPanel('Hermes', 'hermes', buckets.hermes)}
+                ${this.renderPanel('Nexus', 'nexus', buckets.nexus)}
             </div>
         `;
     }

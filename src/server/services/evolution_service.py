@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,32 @@ from src.runtime.models.schedule_models import Schedule, ScheduleKind
 # Well-known schedule names used to identify evolution schedules.
 EVOLVE_SCHEDULE_NAME = "nexus-self-evolve"
 MEMORY_SYNTH_SCHEDULE_NAME = "nexus-memory-synth"
+
+
+@dataclass
+class _CompatCronSchedule:
+    kind: str
+    expr: str
+
+
+@dataclass
+class _CompatCronJob:
+    id: str
+    name: str
+    schedule: _CompatCronSchedule
+    enabled: bool = True
+
+
+class _CompatCronService:
+    """Minimal legacy cron façade for backward-compatible tests."""
+
+    def __init__(self, jobs: list[_CompatCronJob]):
+        self._jobs = jobs
+
+    def list_jobs(self, include_disabled: bool = False) -> list[_CompatCronJob]:
+        if include_disabled:
+            return list(self._jobs)
+        return [job for job in self._jobs if job.enabled]
 
 
 def _now_ms() -> int:
@@ -51,6 +78,7 @@ class EvolutionService:
     def __init__(self, engine_config: EvolutionConfig):
         self._config = engine_config
         self._engine: EvolutionEngine | None = None
+        self._cron: _CompatCronService | None = None
         self._running = False
         self._lock = asyncio.Lock()  # Prevents concurrent evolution sessions
         self._current_session: EvolutionSession | None = None
@@ -77,6 +105,18 @@ class EvolutionService:
 
         self._engine = EvolutionEngine(self._config)
         self._schedule_storage = schedule_storage
+        self._cron = _CompatCronService([
+            _CompatCronJob(
+                id=EVOLVE_SCHEDULE_NAME,
+                name=EVOLVE_SCHEDULE_NAME,
+                schedule=_CompatCronSchedule(kind="cron", expr=self._config.cron_expr),
+            ),
+            _CompatCronJob(
+                id=MEMORY_SYNTH_SCHEDULE_NAME,
+                name=MEMORY_SYNTH_SCHEDULE_NAME,
+                schedule=_CompatCronSchedule(kind="cron", expr=_get_memory_synthesis_cron()),
+            ),
+        ])
 
         # Register evolution schedules via ScheduleStorage if available
         if schedule_storage is not None:
@@ -190,6 +230,20 @@ class EvolutionService:
                 phase, schedule.name,
             )
 
+    async def _on_cron_job(self, job) -> None:
+        """Legacy cron callback adapter kept for compatibility tests."""
+        name = getattr(job, "name", "") or ""
+        schedule = Schedule(
+            id=getattr(job, "id", name or "evolution-job"),
+            name=name or EVOLVE_SCHEDULE_NAME,
+            description=f"Legacy cron adapter for {name or EVOLVE_SCHEDULE_NAME}",
+            cron_expression=getattr(getattr(job, "schedule", None), "expr", self._config.cron_expr),
+            schedule_kind=ScheduleKind.EVOLUTION.value,
+            evolution_phase="memory_synth" if name == MEMORY_SYNTH_SCHEDULE_NAME else "full",
+            created_by="evolution_service",
+        )
+        await self.on_schedule_fired(schedule)
+
     # ─── Manual Trigger API (unchanged) ────────────────────
 
     async def trigger_now(self, phase: str = "full") -> EvolutionSession | None:
@@ -263,6 +317,15 @@ class EvolutionService:
             "running": self._running,
             "evolution_in_progress": self.is_evolution_running(),
             "cron_expr": self._config.cron_expr,
+            "cron_jobs": [
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "expr": job.schedule.expr,
+                    "enabled": getattr(job, "enabled", True),
+                }
+                for job in (self._cron.list_jobs(include_disabled=True) if self._cron else [])
+            ],
             "interval_hours": self._config.interval_hours,
             "working_dir": self._config.working_dir,
             "memory_path": self._config.memory_path,

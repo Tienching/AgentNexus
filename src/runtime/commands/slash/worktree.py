@@ -14,9 +14,12 @@ New classes (WorktreeManager, WorktreeGarbageCollector) build on top.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -61,6 +64,14 @@ class WorktreeResult:
     branch: str
     worktree_dir: Path
     reused: bool
+
+
+@dataclass(frozen=True)
+class CachedRepoProvisionResult:
+    cache_dir: Path
+    worktree: WorktreeResult
+    repo_key: str
+    reused_cache: bool
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +218,199 @@ def compute_worktree_dir(repo_root: Path, task_id: str, tmp_base: Path = Path("/
 
 def compute_branch_name(task_id: str) -> str:
     return f"feature_{task_id}"
+
+
+def compute_repo_cache_key(repo_url: Optional[str] = None, repo_root: Optional[Path] = None) -> str:
+    raw = str(repo_url or repo_root or "").strip()
+    if not raw:
+        raise ValueError("repo_url or repo_root is required")
+    return uuid.uuid5(uuid.NAMESPACE_URL, raw).hex[:16]
+
+
+def compute_bare_cache_dir(
+    repo_url: Optional[str] = None,
+    repo_root: Optional[Path] = None,
+    *,
+    cache_base: Path = Path("/tmp/.nexus-repo-cache"),
+) -> Path:
+    repo_key = compute_repo_cache_key(repo_url=repo_url, repo_root=repo_root)
+    cache_base = Path(cache_base)
+    source = Path(str(repo_root)).name if repo_root else Path(str(repo_url or "").rstrip("/")).name
+    source_name = source[:-4] if source.endswith(".git") else source
+    source_name = source_name or "repo"
+    return cache_base / f"{source_name}-{repo_key}.git"
+
+
+def _repo_display_name(repo_url: Optional[str] = None, repo_root: Optional[Path] = None) -> str:
+    source = Path(str(repo_root)).name if repo_root else Path(str(repo_url or "").rstrip("/")).name
+    source_name = source[:-4] if source.endswith(".git") else source
+    return source_name or "repo"
+
+
+def _run_git_dir(git_dir: Path, args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", f"--git-dir={git_dir}", *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+@contextmanager
+def repo_level_lock(
+    repo_key: str,
+    *,
+    lock_root: Path = Path("/tmp/.nexus-repo-locks"),
+    timeout_seconds: float = 30.0,
+):
+    lock_root = Path(lock_root)
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_root / f"{repo_key}.lock"
+    fh = open(lock_path, "a+", encoding="utf-8")
+    deadline = time.time() + max(timeout_seconds, 0.1)
+    acquired = False
+    try:
+        while time.time() < deadline:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                time.sleep(0.05)
+        if not acquired:
+            raise WorktreeCommandError(f"Timed out acquiring repo-level lock for {repo_key}")
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+        yield lock_path
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+
+def ensure_bare_repo_cache(
+    repo_url: Optional[str] = None,
+    repo_root: Optional[Path] = None,
+    *,
+    cache_base: Path = Path("/tmp/.nexus-repo-cache"),
+    fetch: bool = True,
+) -> tuple[Path, bool]:
+    source = str(repo_url or repo_root or "").strip()
+    if not source:
+        raise ValueError("repo_url or repo_root is required")
+
+    repo_key = compute_repo_cache_key(repo_url=repo_url, repo_root=repo_root)
+    cache_dir = compute_bare_cache_dir(repo_url=repo_url, repo_root=repo_root, cache_base=cache_base)
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    with repo_level_lock(repo_key):
+        reused = cache_dir.exists()
+        if reused:
+            if fetch:
+                res = _run_git_dir(cache_dir, ["fetch", "--all", "--prune"])
+                if res.returncode != 0:
+                    raise WorktreeCommandError(f"git fetch 失败：{(res.stderr or '').strip()}")
+        else:
+            res = subprocess.run(
+                ["git", "clone", "--bare", source, str(cache_dir)],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode != 0:
+                raise WorktreeCommandError(f"git clone --bare 失败：{(res.stderr or '').strip()}")
+
+        try:
+            from src.server.services.worktree_registry import get_repo_worktree_registry
+
+            get_repo_worktree_registry().register_cache(
+                repo_url=repo_url,
+                repo_root=str(repo_root) if repo_root else None,
+                cache_path=str(cache_dir),
+                metadata={"source": source},
+                last_fetched_at=time.time(),
+            )
+        except Exception:
+            pass
+
+    return cache_dir, reused
+
+
+def provision_cached_worktree(
+    *,
+    task_id: str,
+    repo_url: Optional[str] = None,
+    repo_root: Optional[Path] = None,
+    tmp_base: Path = Path("/tmp"),
+    cache_base: Path = Path("/tmp/.nexus-repo-cache"),
+) -> CachedRepoProvisionResult:
+    repo_key = compute_repo_cache_key(repo_url=repo_url, repo_root=repo_root)
+    cache_dir, reused_cache = ensure_bare_repo_cache(repo_url=repo_url, repo_root=repo_root, cache_base=cache_base)
+    repo_name = _repo_display_name(repo_url=repo_url, repo_root=repo_root)
+    branch = compute_branch_name(task_id)
+    target = Path(tmp_base) / f"{repo_name}_feature_{task_id}"
+
+    with repo_level_lock(repo_key):
+        if target.exists():
+            registered = _parse_worktree_list_porcelain(_run_git_dir(cache_dir, ["worktree", "list", "--porcelain"]).stdout)
+            if str(target) in registered:
+                try:
+                    from src.server.services.worktree_registry import get_repo_worktree_registry
+
+                    get_repo_worktree_registry().register_task_handoff(
+                        task_id=task_id,
+                        repo_url=repo_url,
+                        repo_root=str(repo_root) if repo_root else None,
+                        worktree_path=str(target),
+                        branch_name=branch,
+                        metadata={"cache_dir": str(cache_dir), "provisioning": "cached"},
+                    )
+                except Exception:
+                    pass
+                worktree = WorktreeResult(
+                    repo_root=cache_dir,
+                    repo_name=repo_name,
+                    task_id=task_id,
+                    branch=branch,
+                    worktree_dir=target,
+                    reused=True,
+                )
+                return CachedRepoProvisionResult(cache_dir=cache_dir, worktree=worktree, repo_key=repo_key, reused_cache=reused_cache)
+            raise WorktreeDirConflictError(f"worktree 目标目录已存在但未在 bare cache 中注册：{target}")
+
+        res = _run_git_dir(cache_dir, ["worktree", "add", "-b", branch, str(target), "HEAD"])
+        if res.returncode != 0:
+            stderr = (res.stderr or "").strip()
+            if "already exists" in stderr.lower() and "branch" in stderr.lower():
+                res = _run_git_dir(cache_dir, ["worktree", "add", str(target), branch])
+            if res.returncode != 0:
+                raise WorktreeCommandError(f"cached git worktree add 失败：{(res.stderr or '').strip()}")
+
+        try:
+            from src.server.services.worktree_registry import get_repo_worktree_registry
+
+            get_repo_worktree_registry().register_task_handoff(
+                task_id=task_id,
+                repo_url=repo_url,
+                repo_root=str(repo_root) if repo_root else None,
+                worktree_path=str(target),
+                branch_name=branch,
+                metadata={"cache_dir": str(cache_dir), "provisioning": "cached"},
+            )
+        except Exception:
+            pass
+
+    worktree = WorktreeResult(
+        repo_root=cache_dir,
+        repo_name=repo_name,
+        task_id=task_id,
+        branch=branch,
+        worktree_dir=target,
+        reused=False,
+    )
+    return CachedRepoProvisionResult(cache_dir=cache_dir, worktree=worktree, repo_key=repo_key, reused_cache=reused_cache)
 
 
 def ensure_task_worktree(

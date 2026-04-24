@@ -1,7 +1,7 @@
 /**
  * TaskBoardPanel - Full-featured task management panel.
  *
- * Serves as the single entry point for the Tasks page, replacing the old TaskView.
+ * Serves as the single entry point for the Tasks page.
  * Features: Kanban board, task create modal, task detail (5-tab), editing,
  * status transitions via drag-drop, filtering/search, schedules, batch operations,
  * SSE streaming for live task conversations.
@@ -18,6 +18,11 @@ class TaskBoardPanel {
         this.container = null;
         this._destroyed = false;
         this._tasks = [];
+        this._enrichedTasks = []; // TV-001: enriched tasks with read-model fields
+        this._summaryMetrics = null; // TV-007: summary metrics for strip
+        this._summaryStrip = null; // TV-007: TaskSummaryStrip instance
+        this._taskTotalCount = 0;
+        this._scheduleSummaryCount = 0;
         this._filter = '';
         this._projectFilter = '';
         this._projectsList = [];
@@ -33,37 +38,145 @@ class TaskBoardPanel {
         this._dataStore = (typeof AppDataStore !== 'undefined') ? AppDataStore.getInstance() : null;
         this._dataStoreSubscriptions = [];
         this._schedulePanelOpen = false;
+        this._secondarySurfaceStorageKey = 'nexus-task-secondarySurface';
+        this._secondarySurface = 'board';
         this._paneId = 'global'; // fixed pane id for fullscreen mode
         this._sortField = localStorage.getItem('nexus-kanban-sortField') || 'position';
         this._sortDirection = localStorage.getItem('nexus-kanban-sortDir') || 'asc';
+        this._urlTaskTab = 'details';
+        this._popstateHandler = null;
 
-        // K-008: Done column infinite scroll state
-        this._donePageSize = 20;
-        this._doneLoadedCount = 20;
-        this._doneAllTasks = [];
-        this._doneLoading = false;
-        this._doneObserver = null;
+        // TV-002: Initialize TaskViewStore for unified state management
+        this._viewStore = (typeof TaskViewStore !== 'undefined')
+            ? new TaskViewStore({ workspace: this._getExecUser?.() || 'default' })
+            : null;
+        if (this._viewStore) {
+            this._viewStore.subscribe(() => this._onViewStoreChange(this._viewStore.getState()));
+            const storeState = this._viewStore.getState();
+            this._sortField = storeState.sortField;
+            this._sortDirection = storeState.sortDirection;
+            this._filter = storeState.searchQuery;
+            this._projectFilter = storeState.projectFilter;
+        }
+
+        // K-008: Completed column infinite scroll state
+        this._completedPageSize = 20;
+        this._completedLoadedCount = 20;
+        this._completedAllTasks = [];
+        this._completedLoading = false;
+        this._completedObserver = null;
 
         // K-002: Drag state freeze
         this._isDragging = false;
         this._dragSnapshot = null; // frozen task list during drag
         this._pendingUpdates = []; // queued backend updates during drag
 
-        // K-005: View mode
-        this._viewMode = localStorage.getItem('nexus-kanban-viewMode') || 'board';
+        // K-005: View mode (synced with TaskViewStore if available)
+        this._viewMode = this._viewStore?.getState().viewMode || localStorage.getItem('nexus-kanban-viewMode') || 'board';
         this._listView = null;
         this._filterBar = null;
+        this._secondarySurface = this._readInitialSecondarySurface();
+        this._schedulePanelOpen = this._secondarySurface === 'schedules';
 
+        // Netharness-aligned: visible board lanes + archived (toggleable)
         this.statusColumns = [
-            { key: 'inbox', title: 'Inbox', color: 'var(--status-inbox)' },
-            { key: 'in_progress', title: 'In Progress', color: 'var(--status-in-progress)' },
+            { key: 'pending',   title: 'To Do',     color: 'var(--status-pending)' },
+            { key: 'running',   title: 'Doing',     color: 'var(--status-running)' },
             { key: 'in_review', title: 'In Review', color: 'var(--status-in-review)' },
-            { key: 'done', title: 'Done', color: 'var(--status-done)' },
+            { key: 'completed', title: 'Done',      color: 'var(--status-completed)' },
+            { key: 'failed',    title: 'Failed',    color: 'var(--status-failed)' },
+            { key: 'cancelled', title: 'Cancelled', color: 'var(--status-cancelled)' },
         ];
         this.terminalColumns = [
-            { key: 'failed', title: 'Failed', color: 'var(--status-failed)' },
-            { key: 'archived', title: 'Archived', color: 'var(--status-archived)' },
+            { key: 'archived',  title: 'Archived',  color: 'var(--status-archived)' },
         ];
+        this._showArchived = true; // Default visible
+        this._autoCollapseEmptyColumns = new Set(['archived']);
+    }
+
+    _normalizeProviderName(provider) {
+        const app = this._getApp?.();
+        if (app && typeof app.normalizeProviderName === 'function') {
+            return app.normalizeProviderName(provider);
+        }
+        const normalized = String(provider || '').trim().toLowerCase();
+        return normalized === 'nanobot' ? 'nexus' : normalized;
+    }
+
+    _normalizeSecondarySurface(surface) {
+        const normalized = String(surface || '').trim().toLowerCase();
+        return ['board', 'schedules'].includes(normalized) ? normalized : 'board';
+    }
+
+    _readInitialSecondarySurface() {
+        const urlState = this._readUrlTaskState?.() || {};
+        if (urlState.taskSurface) return this._normalizeSecondarySurface(urlState.taskSurface);
+
+        try {
+            const rawStoredSurface = localStorage.getItem(this._secondarySurfaceStorageKey);
+            if (rawStoredSurface) return this._normalizeSecondarySurface(rawStoredSurface);
+        } catch {}
+
+        if (this._viewStore?.getState?.().scheduleOpen) {
+            return 'schedules';
+        }
+        return 'board';
+    }
+
+    _getSecondarySurfaceHint(surface = this._secondarySurface) {
+        if (surface === 'schedules') return 'Manage recurring and one-time schedules without leaving Tasks.';
+        return 'Use board/list to manage tasks; switch surfaces for schedules when needed.';
+    }
+
+    _persistSecondarySurface(surface) {
+        try {
+            localStorage.setItem(this._secondarySurfaceStorageKey, this._normalizeSecondarySurface(surface));
+        } catch {}
+    }
+
+    _applySecondarySurface(surface = this._secondarySurface) {
+        const pid = this._paneId;
+        const normalized = this._normalizeSecondarySurface(surface);
+        this._secondarySurface = normalized;
+        this._schedulePanelOpen = normalized === 'schedules';
+        this._persistSecondarySurface(normalized);
+
+        const boardSurface = document.getElementById(`taskSurfaceBoard-${pid}`);
+        const schedulesSurface = document.getElementById(`taskSurfaceSchedules-${pid}`);
+        if (boardSurface) boardSurface.hidden = normalized !== 'board';
+        if (schedulesSurface) schedulesSurface.hidden = normalized !== 'schedules';
+
+        const listContainer = document.getElementById(`listViewContainer-${pid}`);
+        if (listContainer) listContainer.hidden = normalized !== 'board' || this._viewMode !== 'list';
+        const expansionPanels = document.getElementById(`expansionPanels-${pid}`);
+        if (expansionPanels) expansionPanels.hidden = normalized !== 'board';
+
+        const hint = document.getElementById(`taskSurfaceHint-${pid}`);
+        if (hint) {
+            hint.textContent = this._getSecondarySurfaceHint(normalized);
+            hint.hidden = !hint.textContent;
+        }
+
+        this.container?.querySelectorAll('[data-action="set-surface"]').forEach((btn) => {
+            const active = btn.dataset.surface === normalized;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+
+        this._syncBoardVisibility(this._getFilteredTasks().length > 0, this._viewMode);
+    }
+
+    async _setSecondarySurface(surface, { syncUrl = true, replace = true } = {}) {
+        const normalized = this._normalizeSecondarySurface(surface);
+        const previous = this._secondarySurface;
+        this._applySecondarySurface(normalized);
+
+        if (normalized === 'schedules' && (previous !== 'schedules' || !this._scheduleSummaryCount)) {
+            await this._loadSchedules();
+        }
+        if (syncUrl) {
+            this._syncUrlState({ taskSurface: normalized }, { replace });
+        }
     }
 
     // ------------------------------------------------------------------
@@ -85,102 +198,125 @@ class TaskBoardPanel {
     render(container) {
         this.container = container;
         const pid = this._paneId;
+        const isBoardSurface = this._secondarySurface === 'board';
+        const isSchedulesSurface = this._secondarySurface === 'schedules';
 
         container.innerHTML = `
-            <div class="task-container" style="height: 100%;">
-                <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+            <div class="task-container task-shell">
+                <div class="task-shell-fill">
                     <div class="task-toolbar">
                         <div class="task-toolbar-left">
-                            <button class="action-btn primary" data-action="create-task">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                </svg>
-                                <span>New Task</span>
-                            </button>
-                            <button class="action-btn" data-action="toggle-selection" title="Toggle selection mode">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                </svg>
-                                <span>Select</span>
-                            </button>
-                            <button class="action-btn" data-action="toggle-schedules" title="Show/hide scheduled tasks">
-                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                                </svg>
-                                <span>Schedules</span>
-                            </button>
-                            <div class="selection-actions" id="selectionActions-${pid}" style="display: none;">
-                                <button class="action-btn" data-action="select-all"><span>Select All</span></button>
-                                <button class="action-btn" data-action="deselect-all"><span>Clear</span></button>
-                                <button class="action-btn danger" data-action="delete-selected" id="deleteSelectedBtn-${pid}">
+                            <div class="task-toggle-group" id="taskSurfaceSwitcher-${pid}" aria-label="Task surface">
+                                <button class="view-toggle-btn task-toggle-btn ${isBoardSurface ? 'is-active' : ''}" data-action="set-surface" data-surface="board" title="Board surface" aria-pressed="${isBoardSurface ? 'true' : 'false'}">Board</button>
+                                <button class="view-toggle-btn task-toggle-btn ${isSchedulesSurface ? 'is-active' : ''}" data-action="set-surface" data-surface="schedules" title="Schedules surface" aria-pressed="${isSchedulesSurface ? 'true' : 'false'}">Schedules</button>
+                            </div>
+                            <span class="task-muted-note" id="taskSurfaceHint-${pid}"></span>
+                        </div>
+                    </div>
+                    <div id="summaryStrip-${pid}" class="task-summary-strip-container" hidden></div>
+                    <div class="task-shell-fill task-surface-shell" id="taskSurfaceBoard-${pid}" ${isBoardSurface ? '' : 'hidden'}>
+                        <div class="task-toolbar" id="taskBoardToolbar-${pid}">
+                            <div class="task-toolbar-left">
+                                <button class="action-btn primary" data-action="create-task">
                                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                                     </svg>
-                                    <span>Delete (0)</span>
+                                    <span>New Task</span>
                                 </button>
-                            </div>
-                        </div>
-                        <div class="task-toolbar-right">
-                            <div class="view-toggle-group" style="display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-right:8px;">
-                                <button class="view-toggle-btn ${this._viewMode === 'board' ? 'active' : ''}" data-action="set-view" data-view="board" title="Board view" style="padding:4px 10px;font-size:12px;border:none;background:${this._viewMode === 'board' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'board' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">Board</button>
-                                <button class="view-toggle-btn ${this._viewMode === 'list' ? 'active' : ''}" data-action="set-view" data-view="list" title="List view" style="padding:4px 10px;font-size:12px;border:none;border-left:1px solid var(--border);background:${this._viewMode === 'list' ? 'var(--primary-500)' : 'transparent'};color:${this._viewMode === 'list' ? '#fff' : 'var(--text-secondary)'};cursor:pointer;">List</button>
-                            </div>
-                            <div id="filterBar-${pid}" style="display:inline-flex;align-items:center;margin-right:8px;"></div>
-                            <div id="toolbarDropdowns-${pid}" style="display:inline-flex;align-items:center;gap:8px;position:relative;"></div>
-                            <input type="text" class="form-input" placeholder="Search tasks..." style="width: 200px;" id="taskSearch-${pid}">
-                        </div>
-                    </div>
-                    <!-- Schedules Panel (collapsible) -->
-                    <div class="schedule-panel" id="schedulePanel-${pid}" style="display: none;">
-                        <div class="schedule-panel-header">
-                            <span class="schedule-panel-title">Scheduled Tasks</span>
-                            <div class="schedule-panel-actions">
-                                <select class="form-input form-select schedule-status-filter" id="scheduleStatusFilter-${pid}" style="width:120px; height:30px; font-size:12px;">
-                                    <option value="">All Status</option>
-                                    <option value="active">Active</option>
-                                    <option value="paused">Paused</option>
-                                    <option value="cancelled">Cancelled</option>
-                                </select>
-                                <button class="action-btn schedule-refresh-btn" data-action="refresh-schedules" title="Refresh schedules">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                <button class="action-btn" data-action="toggle-selection" title="Toggle selection mode">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
                                     </svg>
+                                    <span>Select</span>
                                 </button>
+                                <button class="action-btn ${this._showArchived ? '' : 'is-outlined'}" data-action="toggle-archived" title="Show/hide archived tasks" id="toggleArchivedBtn-${pid}">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/>
+                                    </svg>
+                                    <span>${this._showArchived ? 'Hide Archived' : 'Show Archived'}</span>
+                                </button>
+                                <div class="selection-actions" id="selectionActions-${pid}" hidden>
+                                    <button class="action-btn" data-action="select-all"><span>Select All</span></button>
+                                    <button class="action-btn" data-action="deselect-all"><span>Clear</span></button>
+                                    <button class="action-btn danger" data-action="delete-selected" id="deleteSelectedBtn-${pid}">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                        </svg>
+                                        <span>Delete (0)</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="task-toolbar-right">
+                                <div class="task-toggle-group" aria-label="Task view mode">
+                                    <button class="view-toggle-btn task-toggle-btn ${this._viewMode === 'board' ? 'is-active' : ''}" data-action="set-view" data-view="board" title="Board view" aria-pressed="${this._viewMode === 'board' ? 'true' : 'false'}">Board</button>
+                                    <button class="view-toggle-btn task-toggle-btn ${this._viewMode === 'list' ? 'is-active' : ''}" data-action="set-view" data-view="list" title="List view" aria-pressed="${this._viewMode === 'list' ? 'true' : 'false'}">List</button>
+                                </div>
+                                <div id="filterBar-${pid}" class="task-toolbar-inline-group"></div>
+                                <div id="toolbarDropdowns-${pid}" class="task-inline-panel spread"></div>
+                                <input type="text" class="form-input task-search-input" placeholder="Search..." id="taskSearch-${pid}">
                             </div>
                         </div>
-                        <div class="schedule-list" id="scheduleList-${pid}">
-                            <div class="empty-state" style="padding: 16px;">
-                                <div class="loading-spinner" style="width: 18px; height: 18px;"></div>
-                            </div>
-                        </div>
-                    </div>
-                    <div style="display:flex;flex:1;overflow:hidden;">
-                        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
-                            <div class="kanban-board" id="kanbanBoard-${pid}" style="${this._viewMode === 'board' ? '' : 'display:none;'}">
-                                <div class="kanban-primary-columns">
-                                ${this.statusColumns.map(col => `
-                                    <div class="kanban-column" data-status="${col.key}">
-                                        <div class="kanban-column-header">
-                                            <span class="kanban-column-title">
-                                                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
-                                                ${col.title}
-                                            </span>
-                                            <span class="kanban-column-count" id="count-${pid}-${col.key}">0</span>
-                                        </div>
-                                        <div class="kanban-column-items" id="items-${pid}-${col.key}">
-                                            <div class="empty-state" style="padding: 24px 16px;">
-                                                <div class="loading-spinner" style="width: 20px; height: 20px;"></div>
+                        <div class="task-shell-fill task-board-content">
+                            <div class="task-shell-fill">
+                                <div class="task-board-empty-state" id="taskBoardEmptyState-${pid}" ${this._viewMode === 'board' ? '' : 'hidden'}>
+                                    <div class="empty-state inline">
+                                        <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-7 8h6m-6 4h6"/>
+                                        </svg>
+                                        <div class="empty-state-title">No tasks in board view</div>
+                                        <div class="empty-state-text" id="taskBoardEmptyStateText-${pid}">Create a task or change filters to populate the board.</div>
+                                    </div>
+                                </div>
+                                <div class="kanban-board" id="kanbanBoard-${pid}" ${this._viewMode === 'board' ? '' : 'hidden'}>
+                                    <div class="kanban-primary-columns">
+                                    ${[...this.statusColumns, ...this.terminalColumns].map(col => `
+                                        <div class="kanban-column ${col.key === 'archived' && !this._showArchived ? 'kanban-column-hidden' : ''}" data-status="${col.key}" ${col.key === 'archived' && !this._showArchived ? 'hidden' : ''}>
+                                            <div class="kanban-column-header">
+                                                <span class="kanban-column-title">
+                                                    <span class="task-status-dot status-${col.key}"></span>
+                                                    ${col.title}
+                                                </span>
+                                                <span class="kanban-column-count" id="count-${pid}-${col.key}">0</span>
+                                            </div>
+                                            <div class="kanban-column-items" id="items-${pid}-${col.key}">
+                                                <div class="empty-state compact">
+                                                    <div class="loading-spinner lg"></div>
+                                                </div>
                                             </div>
                                         </div>
+                                    `).join('')}
                                     </div>
-                                `).join('')}
                                 </div>
-                                <div class="kanban-terminal-columns" id="terminalColumns-${pid}" style="display: none;"></div>
+                                <div class="list-view-container task-list-shell" id="listViewContainer-${pid}" ${this._viewMode === 'list' ? '' : 'hidden'}></div>
+                                <div id="expansionPanels-${pid}" class="task-expansion-panels">
+                                    <div class="empty-state tight">
+                                        <div class="loading-spinner sm"></div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="list-view-container" id="listViewContainer-${pid}" style="${this._viewMode === 'list' ? '' : 'display:none;'}flex:1;overflow-y:auto;"></div>
-                            <div id="expansionPanels-${pid}" style="margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; max-height: 260px; overflow-y: auto;">
-                                <div class="empty-state" style="padding: 8px;">
-                                    <div class="loading-spinner" style="width: 16px; height: 16px;"></div>
+                        </div>
+                    </div>
+                    <div class="task-shell-fill task-surface-shell" id="taskSurfaceSchedules-${pid}" ${isSchedulesSurface ? '' : 'hidden'}>
+                        <div class="schedule-panel" id="schedulePanel-${pid}">
+                            <div class="schedule-panel-header">
+                                <span class="schedule-panel-title">Scheduled Tasks</span>
+                                <div class="schedule-panel-actions">
+                                    <select class="form-input form-select schedule-status-filter" id="scheduleStatusFilter-${pid}">
+                                        <option value="">All Status</option>
+                                        <option value="active">Active</option>
+                                        <option value="paused">Paused</option>
+                                        <option value="cancelled">Cancelled</option>
+                                    </select>
+                                    <button class="action-btn schedule-refresh-btn" data-action="refresh-schedules" title="Refresh schedules">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="icon-14">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="schedule-list" id="scheduleList-${pid}">
+                                <div class="empty-state compact">
+                                    <div class="loading-spinner md"></div>
                                 </div>
                             </div>
                         </div>
@@ -192,15 +328,60 @@ class TaskBoardPanel {
         `;
 
         this._bindToolbarEvents();
+        this._bindUrlState();
         this._initFilterBar();
         this._initListView();
+        this._applySecondarySurface(this._secondarySurface);
         this._loadTasks();
+        if (this._secondarySurface === 'schedules') this._loadSchedules();
         this._startAutoPolling();
     }
 
     async refresh() {
         if (!this.container || this._destroyed) return;
         await this._loadTasks();
+        if (this._secondarySurface === 'schedules') {
+            await this._loadSchedules();
+        }
+    }
+
+    async refreshTasks(opts = {}) {
+        if (opts.force && this._dataStore) {
+            this._dataStore.invalidate('tasks');
+        }
+        await this.refresh();
+    }
+
+    async refreshSchedules(opts = {}) {
+        if (opts.force && this._dataStore) {
+            this._dataStore.invalidate('schedules');
+        }
+        if (opts.onlyIfVisible && !this.isSchedulePanelOpen()) {
+            return;
+        }
+        if (!this.container || this._destroyed) {
+            return;
+        }
+        await this._loadSchedules();
+    }
+
+    startAutoPolling() {
+        this._startAutoPolling();
+    }
+
+    stopAutoPolling() {
+        this._stopAutoPolling();
+    }
+
+    closeAllTaskStreams() {
+        for (const [taskId] of this._activeStreams) {
+            this._closeTaskStream(taskId);
+        }
+    }
+
+    isSchedulePanelOpen() {
+        const surface = document.getElementById(`taskSurfaceSchedules-${this._paneId}`);
+        return !!surface && !surface.hidden && this._schedulePanelOpen;
     }
 
     async destroy() {
@@ -208,15 +389,17 @@ class TaskBoardPanel {
         this._stopAutoPolling();
         this._unsubscribeFromDataStore();
         if (this._poll) { this._poll.destroy(); this._poll = null; }
-        if (this._doneObserver) {
-            this._doneObserver.disconnect();
-            this._doneObserver = null;
+        if (this._completedObserver) {
+            this._completedObserver.disconnect();
+            this._completedObserver = null;
         }
-        for (const [taskId] of this._activeStreams) {
-            this._closeTaskStream(taskId);
-        }
+        this.closeAllTaskStreams();
         this._mentionInputs.forEach(m => { try { m.destroy(); } catch {} });
         this._mentionInputs = [];
+        if (this._popstateHandler && typeof window !== 'undefined') {
+            window.removeEventListener('popstate', this._popstateHandler);
+            this._popstateHandler = null;
+        }
         this.container = null;
     }
 
@@ -229,17 +412,68 @@ class TaskBoardPanel {
     // ------------------------------------------------------------------
 
     _normalizeTaskStatus(status) {
+        // TV-001: Delegate to TaskViewModel if available
+        if (typeof TaskViewModel !== 'undefined') {
+            return TaskViewModel.normalizeLaneStatus(status);
+        }
         const s = String(status || '').trim().toLowerCase();
-        if (s === 'pending' || s === 'todo') return 'inbox';
-        if (s === 'assigned' || s === 'awaiting_owner' || s === 'doing') return 'in_progress';
-        if (s === 'in_progress' || s === 'running') return 'in_progress';
-        if (s === 'review' || s === 'quality_review') return 'in_review';
-        if (s === 'in_review') return 'in_review';
-        if (s === 'completed') return 'done';
-        if (s === 'cancelled') return 'archived';
-        if (s === 'orphaned') return 'inbox';
-        if (['inbox', 'in_progress', 'in_review', 'done', 'failed', 'archived'].includes(s)) return s;
-        return 'inbox';
+        const statusMap = {
+            // Old 10-status model → new 7-status model
+            inbox:          'pending',
+            assigned:       'pending',
+            awaiting_owner: 'pending',
+            todo:           'pending',
+            in_progress:    'running',
+            doing:          'running',
+            review:         'in_review',
+            quality_review: 'in_review',
+            in_review:      'in_review',
+            done:           'completed',
+            completed:      'completed',
+            orphaned:       'pending',
+        };
+        const normalized = statusMap[s] || s;
+        const knownStatuses = new Set([
+            ...this.statusColumns.map(col => col.key),
+            ...this.terminalColumns.map(col => col.key),
+        ]);
+        if (knownStatuses.has(normalized)) return normalized;
+        return 'pending';
+    }
+
+    _normalizePriority(priority) {
+        const value = String(priority || '').trim().toLowerCase();
+        return ['project', 'serious', 'thought', 'generated'].includes(value) ? value : 'thought';
+    }
+
+    _getPriorityLabel(priority) {
+        const key = this._normalizePriority(priority);
+        return {
+            project: 'Project',
+            serious: 'Serious',
+            thought: 'Thought',
+            generated: 'Generated',
+        }[key] || 'Thought';
+    }
+
+    _getDueDateMs(rawDueDate) {
+        if (!rawDueDate) return null;
+        if (typeof rawDueDate === 'number') {
+            return rawDueDate < 1e12 ? rawDueDate * 1000 : rawDueDate;
+        }
+        const value = String(rawDueDate).trim();
+        if (!value) return null;
+        if (/^-?\d+(\.\d+)?$/.test(value)) {
+            const numeric = Number(value);
+            return numeric < 1e12 ? numeric * 1000 : numeric;
+        }
+        const millis = Date.parse(value);
+        return Number.isNaN(millis) ? null : millis;
+    }
+
+    _getDueDateUpdateValue(rawDate) {
+        const value = String(rawDate || '').trim();
+        return value ? `${value}T00:00:00` : null;
     }
 
     // ------------------------------------------------------------------
@@ -276,33 +510,54 @@ class TaskBoardPanel {
             if (!this._projectsList || this._projectsList.length === 0) {
                 await this._loadProjects();
             }
-            let data;
             const taskOpts = {
                 execUser: this._getExecUser(),
-                pageSize: 100,
                 search: searchInput?.value || '',
                 projectId: this._projectFilter || '',
             };
-            if (this._dataStore) {
-                data = await this._dataStore.fetch('tasks', taskOpts);
-            } else {
-                data = await NexusAPI.getTasks(taskOpts);
-            }
+            const data = await this._fetchAllTasks(taskOpts);
+            this._taskTotalCount = Number(data?.total) || 0;
             this._tasks = (data.tasks || []).map(t => ({
                 ...t,
                 status: this._normalizeTaskStatus(t.status),
             }));
             this._ensurePositions();
             this._renderKanban();
+            this._renderSummaryStrip(); // TV-007: Update summary metrics
+            this._updateActiveFilterSummary(); // TV-011: Update filter summary
             this._loadExpansionPanels();
             this._syncSelectedTaskDetail();
+            await this._restoreTaskFromUrl();
         } catch (e) {
             console.error('Failed to load tasks:', e);
             this.statusColumns.forEach(col => {
                 const el = document.getElementById(`items-${pid}-${col.key}`);
-                if (el) el.innerHTML = `<div class="empty-state" style="padding: 16px;"><p style="font-size: 12px; color: var(--error);">Failed to load</p></div>`;
+                if (el) el.innerHTML = `<div class="empty-state compact"><p class="task-muted-note error">Failed to load</p></div>`;
             });
         }
+    }
+
+    async _fetchAllTasks(taskOpts = {}) {
+        const pageSize = 200;
+        let page = 1;
+        let total = 0;
+        const tasks = [];
+
+        while (page <= 25) {
+            const pageData = await NexusAPI.getTasks({ ...taskOpts, page, pageSize });
+            const pageTasks = Array.isArray(pageData?.tasks) ? pageData.tasks : [];
+            total = Number(pageData?.total) || total || pageTasks.length;
+            tasks.push(...pageTasks);
+            if (pageTasks.length === 0 || tasks.length >= total) break;
+            page += 1;
+        }
+
+        return {
+            total: total || tasks.length,
+            page: 1,
+            page_size: pageSize,
+            tasks,
+        };
     }
 
     async _loadExpansionPanels() {
@@ -317,10 +572,10 @@ class TaskBoardPanel {
             if (window.ExpansionPanels?.render) {
                 window.ExpansionPanels.render(root, sessions);
             } else {
-                root.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">Session monitor unavailable.</div>';
+                root.innerHTML = '<div class="task-muted-note">Run monitor unavailable.</div>';
             }
         } catch (e) {
-            root.innerHTML = '<div style="font-size:12px;color:var(--error);">Failed to load session monitor</div>';
+            root.innerHTML = '<div class="task-muted-note error">Failed to load run monitor</div>';
         }
     }
 
@@ -331,74 +586,69 @@ class TaskBoardPanel {
     _renderKanban() {
         const pid = this._paneId;
         const tasks = this._getFilteredTasks();
+        const board = document.getElementById(`kanbanBoard-${pid}`);
+        const emptyState = document.getElementById(`taskBoardEmptyState-${pid}`);
+        const emptyStateText = document.getElementById(`taskBoardEmptyStateText-${pid}`);
+        const hasVisibleTasks = tasks.length > 0;
+        const hasAnyTasks = this._tasks.length > 0;
+        const boardEmptyMessage = hasAnyTasks
+            ? 'No tasks match the current filters. Reset filters or search to see more work.'
+            : 'Create a task or change filters to populate the board.';
+        const allColumns = [...this.statusColumns, ...this.terminalColumns];
         const grouped = {};
-        this.statusColumns.forEach(col => { grouped[col.key] = []; });
+        allColumns.forEach(col => { grouped[col.key] = []; });
         tasks.forEach(t => {
-            const s = this._normalizeTaskStatus(t.status || 'inbox');
-            (grouped[s] || grouped['inbox']).push(t);
+            const s = this._normalizeTaskStatus(t.status || 'pending');
+            (grouped[s] || grouped['pending']).push(t);
         });
 
-        this.statusColumns.forEach(col => {
+        if (emptyStateText) emptyStateText.textContent = boardEmptyMessage;
+        this._syncBoardVisibility(hasVisibleTasks);
+
+        allColumns.forEach(col => {
             const allItems = this._sortTasks(grouped[col.key] || []);
             const el = document.getElementById(`items-${pid}-${col.key}`);
             const countEl = document.getElementById(`count-${pid}-${col.key}`);
+            const columnEl = board?.querySelector(`.kanban-column[data-status="${col.key}"]`);
             if (countEl) countEl.textContent = allItems.length;
 
-            // K-008: Done column infinite scroll — only render first N items
+            const hiddenByArchivedToggle = col.key === 'archived' && !this._showArchived;
+            const hiddenBecauseEmpty = this._autoCollapseEmptyColumns.has(col.key) && allItems.length === 0 && !hiddenByArchivedToggle && !this._isDragging;
+            if (columnEl) {
+                columnEl.hidden = hiddenByArchivedToggle || hiddenBecauseEmpty;
+                columnEl.classList.toggle('kanban-column-hidden', hiddenByArchivedToggle || hiddenBecauseEmpty);
+            }
+
+            // K-008: Completed column infinite scroll — only render first N items
             let items = allItems;
-            if (col.key === 'done') {
-                this._doneAllTasks = allItems;
-                items = allItems.slice(0, this._doneLoadedCount);
+            if (col.key === 'completed') {
+                this._completedAllTasks = allItems;
+                items = allItems.slice(0, this._completedLoadedCount);
             }
 
             if (el) {
                 if (allItems.length === 0) {
-                    el.innerHTML = '<div class="empty-state" style="padding: 24px 16px;"><p style="font-size: 12px; color: var(--text-muted);">No tasks</p></div>';
+                    const emptyMessage = col.key === 'cancelled'
+                        ? 'Only To Do or Doing tasks enter Cancelled. Delete is separate from cancel.'
+                        : 'No tasks';
+                    el.innerHTML = `<div class="empty-state compact"><p class="task-muted-note">${this._esc(emptyMessage)}</p></div>`;
                 } else {
                     let html = items.map(t => this._renderTaskCard(t)).join('');
                     // Add sentinel for infinite scroll on Done column
-                    if (col.key === 'done' && items.length < allItems.length) {
-                        html += '<div class="done-scroll-sentinel" id="doneScrollSentinel-' + pid + '" style="padding:12px;text-align:center;"><div class="loading-spinner" style="width:16px;height:16px;margin:0 auto;"></div><p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Loading more...</p></div>';
+                    if (col.key === 'completed' && items.length < allItems.length) {
+                        html += '<div class="completed-scroll-sentinel task-scroll-sentinel" id="completedScrollSentinel-' + pid + '"><div class="loading-spinner sm task-scroll-spinner"></div><p class="task-muted-note">Loading more...</p></div>';
                     }
                     el.innerHTML = html;
                     this._bindCardEvents(el);
                     // Set up Intersection Observer for Done column
-                    if (col.key === 'done') this._setupDoneInfiniteScroll(pid);
+                    if (col.key === 'completed') this._setupCompletedInfiniteScroll(pid);
                 }
             }
         });
 
-        // Terminal columns
-        const terminalContainer = document.getElementById(`terminalColumns-${pid}`);
-        if (terminalContainer) {
-            const terminalTasks = [];
-            this.terminalColumns.forEach(col => {
-                const items = tasks.filter(t => this._normalizeTaskStatus(t.status) === col.key);
-                if (items.length > 0) terminalTasks.push({ col, items });
-            });
-            if (terminalTasks.length > 0) {
-                terminalContainer.style.display = 'flex';
-                terminalContainer.innerHTML = terminalTasks.map(({ col, items }) => `
-                    <div class="kanban-column kanban-column-terminal" data-status="${col.key}">
-                        <div class="kanban-column-header">
-                            <span class="kanban-column-title">
-                                <span style="width: 8px; height: 8px; border-radius: 50%; background: ${col.color};"></span>
-                                ${col.title}
-                            </span>
-                            <span class="kanban-column-count">${items.length}</span>
-                        </div>
-                        <div class="kanban-column-items">
-                            ${items.map(t => this._renderTaskCard(t)).join('')}
-                        </div>
-                    </div>
-                `).join('');
-                this._bindCardEvents(terminalContainer);
-            } else {
-                terminalContainer.style.display = 'none';
-            }
+        if (hasVisibleTasks && board && !board.hidden && emptyState && emptyState.hidden) {
+            this._bindKanbanDragDrop();
         }
-
-        this._bindKanbanDragDrop();
 
         // Update filter bar counts
         if (this._filterBar) {
@@ -412,60 +662,68 @@ class TaskBoardPanel {
     }
 
     _renderTaskCard(task) {
-        const priorityClass = task.priority === 'critical' ? 'critical' : task.priority === 'serious' ? 'serious' : 'normal';
+        const priorityClass = this._normalizePriority(task.priority);
+        const priorityLabel = this._getPriorityLabel(task.priority);
         const timeStr = this._formatTime(task.updated_at || task.created_at);
         const isSelected = this._selectedTask === task.id;
         const isChecked = this._selectedTaskIds.has(task.id);
         const alias = String(task?.alias || '').trim();
         const provider = String(task?.provider || '').trim();
-        const targetPrimary = alias || provider;
-        const targetSecondary = alias && provider && alias.toLowerCase() !== provider.toLowerCase() ? provider : '';
-        const targetTooltip = targetSecondary ? `Alias: ${alias} · Provider: ${provider}` : (alias || provider);
-        const priorityColors = { critical: 'var(--error)', serious: 'var(--warning)', normal: 'var(--primary-500)' };
-        const agentName = task.assigned_to || alias || provider || '';
-        const agentAvatar = agentName && typeof AgentAvatar !== 'undefined' ? AgentAvatar.render(agentName, { size: 'xs', status: this._normalizeTaskStatus(task.status) === 'in_progress' ? 'online' : 'none' }) : '';
+        const displayAlias = this._normalizeProviderName(alias);
+        const displayProvider = this._normalizeProviderName(provider);
+        const targetPrimary = displayAlias || displayProvider;
+        const targetSecondary = displayAlias && displayProvider && displayAlias.toLowerCase() !== displayProvider.toLowerCase() ? displayProvider : '';
+        const targetTooltip = targetSecondary ? `Alias: ${displayAlias} · Provider: ${displayProvider}` : (displayAlias || displayProvider);
+        const agentName = task.assigned_to || displayAlias || displayProvider || '';
+        const agentAvatar = agentName && typeof AgentAvatar !== 'undefined' ? AgentAvatar.render(agentName, { size: 'xs', status: this._normalizeTaskStatus(task.status) === 'running' ? 'online' : 'none' }) : '';
         const tags = Array.isArray(task.tags) ? task.tags : [];
         const visibleTags = tags.slice(0, 3);
         const extraTagCount = tags.length > 3 ? tags.length - 3 : 0;
         const tagsHtml = tags.length > 0 ? `<div class="task-card-tags">${visibleTags.map(t => `<span class="task-card-tag">${this._esc(t)}</span>`).join('')}${extraTagCount > 0 ? `<span class="task-card-tag task-card-tag-more">+${extraTagCount}</span>` : ''}</div>` : '';
-        const isOverdue = task.due_date && (task.due_date * 1000 < Date.now()) && this._normalizeTaskStatus(task.status) !== 'done';
+        const dueDateMs = this._getDueDateMs(task.due_date);
+        const isOverdue = dueDateMs !== null && dueDateMs < Date.now() && this._normalizeTaskStatus(task.status) !== 'completed';
         const overdueHtml = isOverdue ? '<span class="task-card-overdue">! Overdue</span>' : '';
         const isAwaitingOwner = this._detectAwaitingOwner(task);
         const awaitingBadge = isAwaitingOwner ? '<span class="task-card-awaiting-badge">Needs Attention</span>' : '';
         const ghLabel = this._resolveGitHubIssueLabel(task);
         const ghUrl = this._resolveGitHubIssueUrl(task);
         const ghState = String(task.github_state || '').trim().toLowerCase();
-        const ghColor = ghState === 'closed' ? 'var(--success)' : 'var(--primary-500)';
-        const ghBadge = ghLabel ? (ghUrl ? `<a href="${this._esc(ghUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid ${ghColor};color:${ghColor};text-decoration:none;">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</a>` : `<span style="font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid ${ghColor};color:${ghColor};">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</span>`) : '';
-        const isOrphaned = String(task.status || '').trim().toLowerCase() === 'orphaned';
-        const requeueBtn = isOrphaned ? `<button class="task-card-requeue-btn" data-action="requeue-orphan" data-task-id="${task.id}" style="font-size:10px;padding:1px 6px;border-radius:4px;background:var(--warning);color:#fff;border:none;cursor:pointer;margin-left:4px;" title="Requeue this orphaned task">Requeue</button>` : '';
-        const aegisBadge = task.aegis_approved ? '<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(16,185,129,0.16);color:var(--success);font-weight:600;">Aegis ✓</span>' : '';
+        const ghBadgeClass = ghState === 'closed' ? 'is-closed' : 'is-open';
+        const ghBadge = ghLabel
+            ? (ghUrl
+                ? `<a href="${this._esc(ghUrl)}" target="_blank" rel="noopener noreferrer" class="task-card-gh-badge ${ghBadgeClass}">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</a>`
+                : `<span class="task-card-gh-badge ${ghBadgeClass}">GH ${this._esc(ghLabel)}${ghState ? ` · ${this._esc(ghState)}` : ''}</span>`)
+            : '';
+        const isOrphaned = Boolean(task.runtime_orphaned) || String(task.runtime_status || '').trim().toLowerCase() === 'orphaned';
+        const requeueBtn = isOrphaned ? `<button class="task-card-requeue-btn" data-action="requeue-orphan" data-task-id="${task.id}" title="Requeue this orphaned task">Requeue</button>` : '';
+        const aegisBadge = task.aegis_approved ? '<span class="task-card-aegis-badge">Aegis ✓</span>' : '';
+        const loopBadge = task.loop_enabled ? `<span class="task-card-loop-badge ${task.loop_keyword_found ? 'is-found' : 'is-running'}">Loop ${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : '';
 
         return `
-            <div class="task-card ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''} ${isOverdue ? 'task-card-overdue-state' : ''} ${isAwaitingOwner ? 'task-card-needs-attention' : ''}" data-task-id="${task.id}" draggable="${!this._selectionMode}" style="border-left: 3px solid ${priorityColors[priorityClass] || 'transparent'};">
+            <div class="task-card task-card-priority-${priorityClass} ${isSelected ? 'selected' : ''} ${isChecked ? 'checked' : ''} ${isOverdue ? 'task-card-overdue-state' : ''} ${isAwaitingOwner ? 'task-card-needs-attention' : ''}" data-task-id="${task.id}" draggable="${!this._selectionMode}">
                 ${this._selectionMode ? `<div class="task-card-checkbox" data-task-id="${task.id}"><input type="checkbox" ${isChecked ? 'checked' : ''}></div>` : ''}
                 <div class="task-card-content">
                     <div class="task-card-header">
                         <span class="task-card-id">#${task.id.slice(0, 8)}</span>
                         ${task.ticket_ref ? `<span class="task-card-ticket-ref" title="Project ticket">${this._esc(task.ticket_ref)}</span>` : ''}
                         ${ghBadge}${aegisBadge}
-                        ${task.priority ? `<span class="task-card-priority ${priorityClass}" data-inline-edit="priority" data-current-value="${this._esc(task.priority || 'normal')}" style="cursor:pointer;" title="Click to change priority">${task.priority}</span>` : ''}
-                        ${task.loop_enabled ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;">Loop ${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓' : ''}</span>` : ''}
+                        ${task.priority ? `<span class="task-card-priority ${priorityClass}" data-inline-edit="priority" data-current-value="${this._esc(priorityClass)}" title="Click to change priority">${this._esc(priorityLabel)}</span>` : ''}
+                        ${loopBadge}
                         ${overdueHtml}${awaitingBadge}${requeueBtn}
                     </div>
                     <p class="task-card-title">${this._esc(task.description || 'No description')}</p>
                     ${tagsHtml}
                     <div class="task-card-meta">
-                        ${agentAvatar ? `<span class="task-card-meta-item" data-inline-edit="assignee" data-current-value="${this._esc(agentName)}" style="cursor:pointer;" title="Click to change assignee">${agentAvatar}</span>` : ''}
-                        ${task.due_date ? (() => { const dd = new Date(task.due_date * 1000); const fmt = dd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); return `<span class="task-card-meta-item" data-inline-edit="due_date" data-current-value="${task.due_date}" style="cursor:pointer;" title="Click to change due date"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:12px;height:12px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>${fmt}</span>`; })() : ''}
-                        ${tags.length > 0 ? `<span class="task-card-meta-item" data-inline-edit="labels" data-current-labels="${this._esc(tags.join(','))}" style="cursor:pointer;" title="Click to edit labels"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:12px;height:12px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>${tags.length} label${tags.length > 1 ? 's' : ''}</span>` : ''}
+                        ${agentAvatar ? `<span class="task-card-meta-item" data-inline-edit="assignee" data-current-value="${this._esc(agentName)}" title="Click to change assignee">${agentAvatar}</span>` : ''}
+                        ${dueDateMs ? (() => { const dd = new Date(dueDateMs); const fmt = dd.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); return `<span class="task-card-meta-item" data-inline-edit="due_date" data-current-value="${this._esc(String(task.due_date))}" title="Click to change due date"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="task-meta-icon task-meta-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>${fmt}</span>`; })() : ''}
+                        ${tags.length > 0 ? `<span class="task-card-meta-item" data-inline-edit="labels" data-current-labels="${this._esc(tags.join(','))}" title="Click to edit labels"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="task-meta-icon task-meta-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z"/></svg>${tags.length} label${tags.length > 1 ? 's' : ''}</span>` : ''}
                         <span class="task-card-meta-item">
                             <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                             ${timeStr}
                         </span>
                         ${targetPrimary ? `<span class="task-card-meta-item" title="${this._esc(targetTooltip)}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/></svg><span>${this._esc(targetPrimary)}</span>${targetSecondary ? `<span class="task-provider-base">${this._esc(targetSecondary)}</span>` : ''}</span>` : ''}
                     </div>
-                    ${task.depends_on?.length ? `<div class="task-card-deps"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:12px;height:12px;color:var(--text-muted);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>${task.depends_on.map(d => `<span class="task-card-dep">${d.slice(0, 8)}</span>`).join('')}</div>` : ''}
+                    ${task.depends_on?.length ? `<div class="task-card-deps"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="task-meta-icon task-meta-icon-xs task-card-deps-icon"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>${task.depends_on.map(d => `<span class="task-card-dep">${d.slice(0, 8)}</span>`).join('')}</div>` : ''}
                 </div>
             </div>
         `;
@@ -518,12 +776,11 @@ class TaskBoardPanel {
                             await NexusAPI.updateTaskStatus(taskId, value, { execUser: this._getExecUser() });
                         } else {
                             if (field === 'priority') update.priority = value;
-                            if (field === 'assignee') update.assigned_to = value;
+                            if (field === 'assignee') update.assignee = value;
                             if (field === 'due_date') {
-                                // Convert ISO date string to unix timestamp for API
-                                update.due_date = value ? Math.floor(new Date(value).getTime() / 1000) : null;
+                                update.due_date = this._getDueDateUpdateValue(value);
                             }
-                            if (field === 'labels') update.tags = value;
+                            if (field === 'labels') update.labels = value;
                             await NexusAPI.updateTask(taskId, update, { execUser: this._getExecUser() });
                         }
                         // Invalidate data store cache so next fetch gets fresh data
@@ -534,7 +791,7 @@ class TaskBoardPanel {
                             if (field === 'status') local.status = this._normalizeTaskStatus(value);
                             if (field === 'priority') local.priority = value;
                             if (field === 'assignee') local.assigned_to = value;
-                            if (field === 'due_date') local.due_date = value ? Math.floor(new Date(value).getTime() / 1000) : null;
+                            if (field === 'due_date') local.due_date = this._getDueDateUpdateValue(value);
                             if (field === 'labels') local.tags = value;
                         }
                         this._renderKanban();
@@ -552,11 +809,35 @@ class TaskBoardPanel {
     // Task detail
     // ------------------------------------------------------------------
 
+    _closeTaskDetail({ syncUrl = true } = {}) {
+        const pid = this._paneId;
+        const taskId = this._selectedTask;
+        this._closeTaskStream(taskId);
+        const detailPanel = document.getElementById(`taskDetail-${pid}`);
+        const backdrop = document.getElementById(`taskDetailBackdrop-${pid}`);
+        if (detailPanel) {
+            detailPanel.classList.add('hidden');
+            detailPanel.classList.remove('open');
+            delete detailPanel.dataset.taskId;
+            delete detailPanel.dataset.taskStatus;
+        }
+        if (backdrop) {
+            backdrop.classList.add('hidden');
+        }
+        this._selectedTask = null;
+        this._urlTaskTab = 'details';
+        document.querySelectorAll(`.task-card.selected[data-task-id="${taskId || ''}"]`).forEach((card) => card.classList.remove('selected'));
+        if (syncUrl) {
+            this._syncUrlState({ taskId: null, taskTab: null });
+        }
+    }
+
     async _selectTask(taskId) {
         this._selectedTask = taskId;
         const board = document.getElementById(`kanbanBoard-${this._paneId}`);
         board?.querySelectorAll('.task-card').forEach(c => c.classList.toggle('selected', c.dataset.taskId === taskId));
         await this._showTaskDetail(taskId);
+        this._syncUrlState({ taskId, taskTab: this._urlTaskTab || 'details' });
     }
 
     async _showTaskDetail(taskId) {
@@ -572,7 +853,7 @@ class TaskBoardPanel {
             const task = await NexusAPI.getTask(taskId, { execUser: this._getExecUser() });
             this._renderTaskDetail(task);
         } catch (e) {
-            detailPanel.innerHTML = '<div class="empty-state"><p style="color: var(--error);">Failed to load task details</p></div>';
+            detailPanel.innerHTML = '<div class="empty-state"><p class="task-muted-note error">Failed to load task details</p></div>';
         }
     }
 
@@ -582,13 +863,18 @@ class TaskBoardPanel {
         if (!detailPanel) return;
         this._closeTaskStream(this._selectedTask);
         const statusClass = this._normalizeTaskStatus(task.status);
-        const isRunning = statusClass === 'in_progress';
-        const hasConversation = isRunning || statusClass === 'done' || statusClass === 'failed';
+        const isRunning = statusClass === 'running';
+        const hasConversation = isRunning || statusClass === 'completed' || statusClass === 'failed';
+        const canCancelTask = this._canCancelTask(task);
         const alias = String(task?.alias || '').trim();
         const provider = String(task?.provider || '').trim();
-        const targetPrimary = alias || provider;
-        const targetSecondary = alias && provider && alias.toLowerCase() !== provider.toLowerCase() ? provider : '';
-        const targetTooltip = targetSecondary ? `Alias: ${alias} · Provider: ${provider}` : (alias || provider);
+        const displayAlias = this._normalizeProviderName(alias);
+        const displayProvider = this._normalizeProviderName(provider);
+        const targetPrimary = displayAlias || displayProvider;
+        const targetSecondary = displayAlias && displayProvider && displayAlias.toLowerCase() !== displayProvider.toLowerCase() ? displayProvider : '';
+        const targetTooltip = targetSecondary ? `Alias: ${displayAlias} · Provider: ${displayProvider}` : (displayAlias || displayProvider);
+        const githubLabel = this._resolveGitHubIssueLabel(task);
+        const githubUrl = this._resolveGitHubIssueUrl(task);
 
         detailPanel.dataset.taskId = task.id;
         detailPanel.dataset.taskStatus = statusClass;
@@ -600,51 +886,52 @@ class TaskBoardPanel {
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
             </div>
-            <div class="task-detail-content" style="display:flex;flex-direction:column;overflow:hidden;flex:1;">
-                <div class="task-detail-section" style="flex-shrink:0;">
-                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <div class="task-detail-content task-detail-content-shell">
+                <div class="task-detail-section task-detail-section-static">
+                    <div class="task-detail-badge-row">
                         <span class="status-badge ${statusClass}"><span class="status-dot"></span>${task.status || 'TODO'}</span>
                         ${targetPrimary ? `<span class="task-target-badge" title="${this._esc(targetTooltip)}">${this._esc(targetPrimary)}</span>` : ''}
                         ${targetSecondary ? `<span class="task-target-badge task-target-badge-base" title="Base provider">${this._esc(targetSecondary)}</span>` : ''}
-                        ${task.workspace ? `<span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);" title="${this._esc(task.workspace)}">${this._esc(task.workspace.split('/').pop() || task.workspace)}</span>` : ''}
+                        ${task.workspace ? `<span class="task-detail-workspace" title="${this._esc(task.workspace)}">${this._esc(task.workspace.split('/').pop() || task.workspace)}</span>` : ''}
                     </div>
-                    <p style="margin:6px 0 0;font-size:13px;color:var(--text-secondary);">${this._esc(task.description || 'No description')}</p>
-                    ${task.error_message ? `<p style="margin:4px 0 0;font-size:12px;color:var(--error);">${this._esc(task.error_message)}</p>` : ''}
-                    ${this._resolveGitHubIssueLabel(task) ? `<p style="margin:6px 0 0;font-size:12px;color:var(--text-secondary);">GitHub: ${this._resolveGitHubIssueUrl(task) ? `<a href="${this._esc(this._resolveGitHubIssueUrl(task))}" target="_blank" rel="noopener noreferrer" style="color:var(--primary-500);">${this._esc(this._resolveGitHubIssueLabel(task))}</a>` : this._esc(this._resolveGitHubIssueLabel(task))}${task.github_state ? `<span style="margin-left:6px;color:var(--text-muted);">(${this._esc(String(task.github_state))})</span>` : ''}</p>` : ''}
-                    ${(task.aegis_status || task.aegis_approved) ? `<p style="margin:4px 0 0;font-size:12px;color:${task.aegis_approved ? 'var(--success)' : 'var(--warning)'};">Aegis: ${task.aegis_approved ? 'Approved' : this._esc(String(task.aegis_status || 'pending'))}${task.aegis_reason ? `<span style="color:var(--text-muted);"> · ${this._esc(task.aegis_reason)}</span>` : ''}</p>` : ''}
-                    ${task.loop_enabled ? `<div style="margin-top:8px;padding:8px 10px;background:var(--bg-secondary);border-radius:6px;font-size:12px;"><div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span style="font-weight:600;color:var(--text-primary);">Ralph Loop</span><span style="padding:1px 6px;border-radius:4px;background:${task.loop_keyword_found ? 'var(--success,#22c55e)' : 'var(--accent,#6366f1)'};color:#fff;font-weight:600;font-size:10px;">${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓ Found' : ''}</span></div><div style="color:var(--text-secondary);"><span>Keywords: </span>${(task.loop_keywords || []).map(kw => `<code style="background:var(--bg-tertiary,#374151);padding:1px 4px;border-radius:3px;font-size:11px;">${this._esc(kw)}</code>`).join(' ')}</div></div>` : ''}
+                    <p class="task-detail-summary">${this._esc(task.description || 'No description')}</p>
+                    ${task.error_message ? `<p class="task-detail-error">${this._esc(task.error_message)}</p>` : ''}
+                    ${githubLabel ? `<p class="task-detail-meta-line">GitHub: ${githubUrl ? `<a href="${this._esc(githubUrl)}" target="_blank" rel="noopener noreferrer" class="task-detail-link">${this._esc(githubLabel)}</a>` : this._esc(githubLabel)}${task.github_state ? `<span class="task-detail-meta-inline">(${this._esc(String(task.github_state))})</span>` : ''}</p>` : ''}
+                    ${(task.aegis_status || task.aegis_approved) ? `<p class="task-detail-meta-line ${task.aegis_approved ? 'is-success' : 'is-warning'}">Aegis: ${task.aegis_approved ? 'Approved' : this._esc(String(task.aegis_status || 'pending'))}${task.aegis_reason ? `<span class="task-detail-meta-inline"> · ${this._esc(task.aegis_reason)}</span>` : ''}</p>` : ''}
+                    ${task.loop_enabled ? `<div class="task-loop-summary"><div class="task-loop-summary-header"><span class="task-loop-summary-title">Ralph Loop</span><span class="task-card-loop-badge ${task.loop_keyword_found ? 'is-found' : 'is-running'}">${task.loop_iteration||0}/${task.loop_max_iterations||1}${task.loop_keyword_found ? ' ✓ Found' : ''}</span></div><div class="task-loop-summary-keywords"><span>Keywords: </span>${(task.loop_keywords || []).map(kw => `<code class="task-loop-keyword">${this._esc(kw)}</code>`).join(' ')}</div></div>` : ''}
                 </div>
-                <div class="task-conversation" style="flex:1;overflow:hidden;border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;flex-direction:column;gap:8px;">
-                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                        <button class="action-btn task-detail-tab active" data-task-tab="details" style="padding:4px 10px;">Details</button>
-                        <button class="action-btn task-detail-tab" data-task-tab="comments" style="padding:4px 10px;">Comments</button>
-                        <button class="action-btn task-detail-tab" data-task-tab="quality" style="padding:4px 10px;">Quality</button>
-                        <button class="action-btn task-detail-tab" data-task-tab="timeline" style="padding:4px 10px;">Timeline</button>
-                        <button class="action-btn task-detail-tab" data-task-tab="session" style="padding:4px 10px;">Session</button>
+                <div class="task-conversation task-conversation-shell">
+                    <div class="task-detail-tab-row">
+                        <button class="action-btn task-detail-tab active task-detail-tab-btn" data-task-tab="details">Details</button>
+                        <button class="action-btn task-detail-tab task-detail-tab-btn" data-task-tab="comments">Comments</button>
+                        <button class="action-btn task-detail-tab task-detail-tab-btn" data-task-tab="quality">Quality</button>
+                        <button class="action-btn task-detail-tab task-detail-tab-btn" data-task-tab="timeline">Timeline</button>
+                        <button class="action-btn task-detail-tab task-detail-tab-btn" data-task-tab="session">Run</button>
                     </div>
-                    <div id="taskTabDetails-${pid}" data-task-tab-pane="details" style="flex:1;overflow-y:auto;">
-                        <div id="taskDetailsPanel-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"></div>
+                    <div id="taskTabDetails-${pid}" data-task-tab-pane="details" class="task-detail-pane task-detail-pane-fill">
+                        <div id="taskDetailsPanel-${pid}" class="task-detail-pane-body"></div>
                     </div>
-                    <div id="taskTabComments-${pid}" data-task-tab-pane="comments" style="display:none;overflow-y:auto;">
-                        <div id="taskComments-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
+                    <div id="taskTabComments-${pid}" data-task-tab-pane="comments" class="task-detail-pane" hidden>
+                        <div id="taskComments-${pid}" class="task-detail-pane-body"><div class="loading-spinner task-pane-spinner"></div></div>
                     </div>
-                    <div id="taskTabQuality-${pid}" data-task-tab-pane="quality" style="display:none;overflow-y:auto;">
-                        <div id="taskQuality-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
+                    <div id="taskTabQuality-${pid}" data-task-tab-pane="quality" class="task-detail-pane" hidden>
+                        <div id="taskQuality-${pid}" class="task-detail-pane-body"><div class="loading-spinner task-pane-spinner"></div></div>
                     </div>
-                    <div id="taskTabTimeline-${pid}" data-task-tab-pane="timeline" style="display:none;overflow-y:auto;">
-                        <div id="taskTimeline-${pid}" style="padding:8px 4px;font-size:12px;color:var(--text-secondary);"><div class="loading-spinner" style="width:18px;height:18px;"></div></div>
+                    <div id="taskTabTimeline-${pid}" data-task-tab-pane="timeline" class="task-detail-pane" hidden>
+                        <div id="taskTimeline-${pid}" class="task-detail-pane-body"><div class="loading-spinner task-pane-spinner"></div></div>
                     </div>
-                    <div id="taskTabSession-${pid}" data-task-tab-pane="session" style="display:none;flex:1;overflow-y:auto;">
-                        ${hasConversation ? `<div class="chat-messages" id="taskConversation-${pid}" style="padding:0;"><div class="empty-state" style="padding:24px;"><div class="loading-spinner"></div><p style="font-size:12px;color:var(--text-muted);margin-top:8px;">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p></div></div>` : `<div class="empty-state" style="padding:24px;"><p style="font-size:12px;color:var(--text-muted);">Session view is available after task execution starts.</p></div>`}
+                    <div id="taskTabSession-${pid}" data-task-tab-pane="session" class="task-detail-pane task-detail-pane-fill" hidden>
+                        ${hasConversation ? `<div class="chat-messages task-conversation-messages" id="taskConversation-${pid}"><div class="empty-state task-conversation-empty"><div class="loading-spinner"></div><p class="task-muted-note">${isRunning ? 'Connecting to live stream...' : 'Loading conversation...'}</p></div></div>` : `<div class="empty-state task-conversation-empty"><p class="task-muted-note">Run view is available after task execution starts.</p></div>`}
                     </div>
                 </div>
-                <div class="task-detail-section" style="flex-shrink:0;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        ${hasConversation ? `<button class="action-btn" data-action="view-session" data-task-id="${task.id}" title="Open in Chat view"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>Open Session</button>` : ''}
+                <div class="task-detail-section task-detail-actions-section">
+                    <div class="task-detail-action-row">
+                        ${hasConversation ? `<button class="action-btn" data-action="view-session" data-task-id="${task.id}" title="Open in Chat view"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>Open Run</button>` : ''}
                         <button class="action-btn" data-action="broadcast-task" data-task-id="${task.id}" title="Broadcast"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405C18.21 15.21 18 14.702 18 14.172V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.172c0 .53-.21 1.039-.595 1.423L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>Broadcast</button>
-                        ${statusClass === 'done' || statusClass === 'failed' ? `<button class="action-btn primary" data-action="continue-task" data-task-id="${task.id}" title="Continue task conversation"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>Continue</button>` : ''}
-                        ${statusClass === 'done' ? `<button class="action-btn" data-action="set-outcome" data-task-id="${task.id}" title="Set task outcome">Outcome</button>` : ''}
-                        <button class="action-btn" data-action="delete-task" data-task-id="${task.id}" style="color:var(--error);"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button>
+                        ${canCancelTask ? `<button class="action-btn danger" data-action="cancel-task" data-task-id="${task.id}" title="Cancel task execution"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>Cancel</button>` : ''}
+                        ${statusClass === 'completed' || statusClass === 'failed' ? `<button class="action-btn primary" data-action="continue-task" data-task-id="${task.id}" title="Continue task conversation"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>Continue</button>` : ''}
+                        ${statusClass === 'completed' || statusClass === 'failed' ? `<button class="action-btn" data-action="set-outcome" data-task-id="${task.id}" title="Set task outcome">Outcome</button>` : ''}
+                        <button class="action-btn task-detail-delete-btn" data-action="delete-task" data-task-id="${task.id}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button>
                     </div>
                 </div>
             </div>
@@ -656,6 +943,7 @@ class TaskBoardPanel {
         this._loadCommentsTab(task.id);
         this._loadQualityTab(task.id);
         this._loadTimelineTab(task.id);
+        this._applyTaskTab(this._urlTaskTab || 'details', detailPanel);
         if (hasConversation) {
             if (isRunning) this._streamTaskConversation(task.id);
             else this._streamTaskConversation(task.id, true);
@@ -663,18 +951,14 @@ class TaskBoardPanel {
     }
 
     _bindDetailEvents(panel, task) {
-        const pid = this._paneId;
         panel.querySelector('[data-action="close-detail"]')?.addEventListener('click', () => {
-            this._closeTaskStream(task.id);
-            panel.classList.add('hidden');
-            panel.classList.remove('open');
-            const backdrop = document.getElementById(`taskDetailBackdrop-${pid}`);
-            if (backdrop) { backdrop.classList.add('hidden'); }
-            this._selectedTask = null;
-            document.getElementById(`kanbanBoard-${pid}`)?.querySelectorAll('.task-card').forEach(c => c.classList.remove('selected'));
+            this._closeTaskDetail();
         });
         panel.querySelector('[data-action="delete-task"]')?.addEventListener('click', () => {
             this._getApp()?.showDeleteModal?.('task', task.id, () => this._deleteTask(task.id));
+        });
+        panel.querySelector('[data-action="cancel-task"]')?.addEventListener('click', async () => {
+            await this._cancelTask(task);
         });
         panel.querySelector('[data-action="broadcast-task"]')?.addEventListener('click', async () => {
             const message = window.prompt('Broadcast message to task subscribers:');
@@ -693,8 +977,10 @@ class TaskBoardPanel {
             setTimeout(() => app?.chatView?.selectSession(0, sessionId), 300);
         });
         panel.querySelector('[data-action="continue-task"]')?.addEventListener('click', async () => {
+            const message = window.prompt('Enter follow-up message for the task:');
+            if (!message?.trim()) return;
             try {
-                await NexusAPI.continueTask(task.id, { execUser: this._getExecUser() });
+                await NexusAPI.continueTask(task.id, message.trim(), { execUser: this._getExecUser() });
                 this._getApp()?.showToast?.('Task continued', 'success');
                 if (this._dataStore) this._dataStore.invalidate('tasks');
                 await this._loadTasks();
@@ -703,15 +989,57 @@ class TaskBoardPanel {
             }
         });
         panel.querySelector('[data-action="set-outcome"]')?.addEventListener('click', async () => {
-            const outcome = window.prompt('Set task outcome (e.g., success, partial, failure):');
+            const outcomes = ['success', 'failed', 'partial', 'abandoned'];
+            const outcome = window.prompt(`Set task outcome (${outcomes.join('/')}):`);
             if (!outcome?.trim()) return;
+            if (!outcomes.includes(outcome.trim().toLowerCase())) {
+                this._getApp()?.showToast?.(`Invalid outcome. Must be one of: ${outcomes.join(', ')}`, 'error');
+                return;
+            }
+            const resolution = window.prompt('Resolution notes (optional):') || '';
+            const ratingStr = window.prompt('Rating 1-5 (optional, leave empty to skip):') || '';
+            const rating = ratingStr.trim() ? parseInt(ratingStr.trim(), 10) : null;
+            if (rating !== null && (rating < 1 || rating > 5 || isNaN(rating))) {
+                this._getApp()?.showToast?.('Rating must be between 1 and 5', 'error');
+                return;
+            }
             try {
-                await NexusAPI.updateTaskOutcome(task.id, outcome.trim(), { execUser: this._getExecUser() });
+                const data = { outcome: outcome.trim().toLowerCase(), resolution: resolution.trim() || undefined, feedback_rating: rating || undefined };
+                await NexusAPI.updateTaskOutcome(task.id, data, { execUser: this._getExecUser() });
                 this._getApp()?.showToast?.('Outcome set', 'success');
             } catch (e) {
                 this._getApp()?.showToast?.(e.message, 'error');
             }
         });
+    }
+
+    _canCancelTaskStatus(status) {
+        const normalized = this._normalizeTaskStatus(status);
+        return normalized === 'pending' || normalized === 'running';
+    }
+
+    _canCancelTask(task) {
+        return this._canCancelTaskStatus(task?.lane_status || task?.status);
+    }
+
+    async _cancelTask(task) {
+        if (!task?.id) return;
+        if (!this._canCancelTask(task)) {
+            this._getApp()?.showToast?.('Only To Do or Doing tasks can enter Cancelled.', 'warning');
+            return;
+        }
+        if (!confirm('Cancel this task?')) return;
+        try {
+            await NexusAPI.updateTaskStatus(task.id, 'cancelled', { execUser: this._getExecUser() });
+            this._getApp()?.showToast?.('Task cancelled', 'success');
+            if (this._dataStore) this._dataStore.invalidate('tasks');
+            await this._loadTasks();
+            if (this._selectedTask === task.id) {
+                await this._showTaskDetail(task.id);
+            }
+        } catch (e) {
+            this._getApp()?.showToast?.(e.message || 'Failed to cancel task', 'error');
+        }
     }
 
     _bindDetailTabs(panel) {
@@ -727,10 +1055,134 @@ class TaskBoardPanel {
         buttons.forEach(btn => {
             btn.addEventListener('click', () => {
                 const target = btn.getAttribute('data-task-tab') || 'details';
-                buttons.forEach(b => b.classList.toggle('active', b === btn));
-                Object.entries(panes).forEach(([key, pane]) => { if (pane) pane.style.display = key === target ? '' : 'none'; });
+                this._applyTaskTab(target, panel, panes);
+                this._syncUrlState({ taskId: this._selectedTask, taskTab: target });
             });
         });
+    }
+
+    _applyTaskTab(target, panel = null, providedPanes = null) {
+        const pid = this._paneId;
+        const root = panel || document.getElementById(`taskDetail-${pid}`);
+        if (!root) return;
+        const buttons = root.querySelectorAll('.task-detail-tab');
+        const panes = providedPanes || {
+            details: root.querySelector(`#taskTabDetails-${pid}`),
+            comments: root.querySelector(`#taskTabComments-${pid}`),
+            quality: root.querySelector(`#taskTabQuality-${pid}`),
+            timeline: root.querySelector(`#taskTabTimeline-${pid}`),
+            session: root.querySelector(`#taskTabSession-${pid}`),
+        };
+        this._urlTaskTab = target || 'details';
+        buttons.forEach(btn => {
+            btn.classList.toggle('active', (btn.getAttribute('data-task-tab') || 'details') === this._urlTaskTab);
+        });
+        Object.entries(panes).forEach(([key, pane]) => {
+            if (pane) pane.hidden = key !== this._urlTaskTab;
+        });
+    }
+
+    _bindUrlState() {
+        if (this._popstateHandler || typeof window === 'undefined') return;
+        this._popstateHandler = () => {
+            this._restoreTaskFromUrl().catch((error) => console.warn('Failed to restore task URL state:', error));
+        };
+        window.addEventListener('popstate', this._popstateHandler);
+    }
+
+    _readUrlTaskState() {
+        if (typeof window === 'undefined') {
+            return { page: 'chat', taskId: null, taskTab: 'details', taskSurface: 'board', taskSurfaceInvalid: false };
+        }
+        const params = new URLSearchParams(window.location.search);
+        const explicitSurface = params.get('taskSurface');
+        const legacyScheduleSurface = params.get('schedule') === '1' ? 'schedules' : null;
+        const rawTaskSurface = explicitSurface || legacyScheduleSurface;
+        const normalizedTaskSurface = rawTaskSurface ? this._normalizeSecondarySurface(rawTaskSurface) : null;
+        return {
+            page: (params.get('page') || 'chat').trim().toLowerCase(),
+            taskId: (params.get('task') || '').trim() || null,
+            taskTab: (params.get('taskTab') || params.get('tab') || 'details').trim().toLowerCase(),
+            taskSurface: normalizedTaskSurface,
+            taskSurfaceInvalid: Boolean(rawTaskSurface && normalizedTaskSurface === 'board' && rawTaskSurface !== 'board'),
+        };
+    }
+
+    _syncUrlState({ taskId, taskTab, taskSurface } = {}, { replace = true } = {}) {
+        if (typeof window === 'undefined') return;
+        try {
+            const url = new URL(window.location.href);
+            const resolvedTaskId = taskId === undefined ? this._selectedTask : taskId;
+            const resolvedTaskTab = taskTab === undefined ? this._urlTaskTab : taskTab;
+            const resolvedTaskSurface = this._normalizeSecondarySurface(taskSurface === undefined ? this._secondarySurface : taskSurface);
+            url.searchParams.set('page', 'task');
+            if (resolvedTaskId) {
+                url.searchParams.set('task', resolvedTaskId);
+            } else {
+                url.searchParams.delete('task');
+            }
+            if (resolvedTaskTab && resolvedTaskId) {
+                url.searchParams.set('taskTab', resolvedTaskTab);
+                url.searchParams.set('tab', resolvedTaskTab);
+            } else {
+                url.searchParams.delete('taskTab');
+                url.searchParams.delete('tab');
+            }
+            if (resolvedTaskSurface && resolvedTaskSurface !== 'board') {
+                url.searchParams.set('taskSurface', resolvedTaskSurface);
+            } else {
+                url.searchParams.delete('taskSurface');
+            }
+            if (resolvedTaskSurface === 'schedules') {
+                url.searchParams.set('schedule', '1');
+            } else {
+                url.searchParams.delete('schedule');
+            }
+            const method = replace ? 'replaceState' : 'pushState';
+            window.history[method]({}, '', url);
+        } catch {
+            // Best-effort URL sync only.
+        }
+    }
+
+    async _restoreTaskFromUrl() {
+        const { page, taskId, taskTab, taskSurface, taskSurfaceInvalid } = this._readUrlTaskState();
+        if (page !== 'task') {
+            return;
+        }
+
+        if (taskSurface && taskSurface !== this._secondarySurface) {
+            await this._setSecondarySurface(taskSurface, { syncUrl: false });
+        } else {
+            this._applySecondarySurface(this._secondarySurface);
+        }
+        if (taskSurfaceInvalid) {
+            this._syncUrlState({ taskSurface: this._secondarySurface }, { replace: true });
+        }
+
+        if (taskTab) {
+            this._urlTaskTab = taskTab;
+        }
+
+        if (!taskId) {
+            const detailPanel = document.getElementById(`taskDetail-${this._paneId}`);
+            if (detailPanel && !detailPanel.classList.contains('hidden')) {
+                this._closeTaskDetail({ syncUrl: false });
+            }
+            this._selectedTask = null;
+            return;
+        }
+
+        if (!this._tasks.some(task => task.id === taskId)) {
+            return;
+        }
+
+        if (this._selectedTask !== taskId) {
+            await this._selectTask(taskId);
+            return;
+        }
+
+        this._applyTaskTab(this._urlTaskTab || 'details');
     }
 
     _loadDetailsTab(task) {
@@ -740,18 +1192,18 @@ class TaskBoardPanel {
         const app = this._getApp();
         const descHtml = app?.chatView?.formatMessageContent ? app.chatView.formatMessageContent(task.description || '') : this._esc(task.description || '');
         root.innerHTML = `
-            <div style="display:grid;grid-template-columns:120px 1fr;gap:6px 10px;font-size:12px;">
-                <span style="color:var(--text-muted);">Task ID</span><span>${this._esc(task.id||'')}</span>
-                <span style="color:var(--text-muted);">Status</span><span>${this._esc(task.status||'')}</span>
-                <span style="color:var(--text-muted);">Priority</span><span>${this._esc(task.priority||'')}</span>
-                <span style="color:var(--text-muted);">Assignee</span><span>${this._esc(task.assigned_to||'-')}</span>
-                <span style="color:var(--text-muted);">Source Session</span><span>${this._esc(task.source_session_id||'-')}</span>
-                <span style="color:var(--text-muted);">Created</span><span>${this._esc(task.created_at ? new Date(task.created_at).toLocaleString() : '-')}</span>
-                <span style="color:var(--text-muted);">Updated</span><span>${this._esc(task.updated_at ? new Date(task.updated_at).toLocaleString() : '-')}</span>
-                <span style="color:var(--text-muted);">Depends On</span><span>${Array.isArray(task.depends_on) && task.depends_on.length ? this._esc(task.depends_on.join(', ')) : '-'}</span>
+            <div class="task-detail-grid">
+                <span class="task-detail-label">Task ID</span><span>${this._esc(task.id||'')}</span>
+                <span class="task-detail-label">Status</span><span>${this._esc(task.status||'')}</span>
+                <span class="task-detail-label">Priority</span><span>${this._esc(task.priority||'')}</span>
+                <span class="task-detail-label">Assignee</span><span>${this._esc(task.assigned_to||'-')}</span>
+                <span class="task-detail-label">Source Run</span><span>${this._esc(task.source_session_id||'-')}</span>
+                <span class="task-detail-label">Created</span><span>${this._esc(task.created_at ? new Date(task.created_at).toLocaleString() : '-')}</span>
+                <span class="task-detail-label">Updated</span><span>${this._esc(task.updated_at ? new Date(task.updated_at).toLocaleString() : '-')}</span>
+                <span class="task-detail-label">Depends On</span><span>${Array.isArray(task.depends_on) && task.depends_on.length ? this._esc(task.depends_on.join(', ')) : '-'}</span>
             </div>
-            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-                <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">Description (Markdown)</div>
+            <div class="task-detail-divider">
+                <div class="task-detail-description-label">Description (Markdown)</div>
                 <div class="message-text">${descHtml}</div>
             </div>
         `;
@@ -822,7 +1274,7 @@ class TaskBoardPanel {
             if (!currentTextEl) {
                 const bubble = ensureBubble();
                 if (bubble) {
-                    const textId = `task-stream-text-${taskId}-seg${textSegmentIndex}`;
+                    const textId = `task-stream-text-${taskId}-seg${streamingController.currentTextSegmentIndex}`;
                     bubble.insertAdjacentHTML('beforeend', `<div class="message-text streaming" id="${textId}"></div>`);
                     currentTextEl = document.getElementById(textId);
                 }
@@ -830,77 +1282,101 @@ class TaskBoardPanel {
             return currentTextEl;
         };
 
+        const finishStream = (data) => {
+            runFinished = true;
+            if (currentTextEl) currentTextEl.classList.remove('streaming');
+            const isError = data?.type === 'RUN_ERROR';
+            container.insertAdjacentHTML(
+                'beforeend',
+                `<div class="task-stream-banner ${isError ? 'error' : 'success'}">${isError ? `Task failed${data?.message ? ': ' + this._esc(data.message) : ''}` : '✓ Task completed'}</div>`,
+            );
+            container.scrollTop = container.scrollHeight;
+            this._closeTaskStream(taskId);
+            if (!isReplay) {
+                if (this._dataStore) this._dataStore.invalidate('tasks');
+                this._loadTasks();
+                app?.chatView?.loadSessions?.(0);
+            }
+        };
+
+        const streamingController = NexusStreamingController.create({
+            onTextStart: () => ensureBubble(),
+            onTextContent: (text) => {
+                const textEl = ensureTextElement();
+                currentTextContent = text;
+                if (textEl && chatView) {
+                    textEl.innerHTML = chatView.formatMessageContent(currentTextContent);
+                    container.scrollTop = container.scrollHeight;
+                }
+            },
+            onTextEnd: () => {
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+            },
+            onToolCallStart: (toolCall) => {
+                const toolCallId = toolCall.id;
+                const toolName = toolCall.name;
+                const toolTitle = chatView?.formatToolCallTitle?.(toolName, {}, '') || toolName;
+                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+                if (currentTextEl) currentTextEl.classList.remove('streaming');
+                currentTextEl = null;
+                currentTextContent = '';
+                const bubble = ensureBubble();
+                if (bubble && chatView) {
+                    bubble.insertAdjacentHTML('beforeend', chatView.renderStreamingToolCall(toolCallId, toolTitle, 'executing'));
+                    container.scrollTop = container.scrollHeight;
+                }
+            },
+            onToolCallArgs: (toolCall) => {
+                const tc = streamingToolCalls.get(toolCall.id);
+                if (tc) {
+                    tc.args = toolCall.args || '';
+                    const argsEl = document.getElementById(`streaming-tool-args-${toolCall.id}`);
+                    if (argsEl) argsEl.textContent = tc.args;
+                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
+                    if (titleEl && chatView) titleEl.textContent = chatView.formatToolCallTitle(tc.name, {}, tc.args);
+                }
+            },
+            onToolCallEnd: (toolCall, data) => {
+                const tc = streamingToolCalls.get(toolCall.id);
+                if (tc) {
+                    tc.status = toolCall.status;
+                    tc.result = toolCall.result || '';
+                    const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-status-icon`);
+                    if (statusEl) {
+                        NexusStreamingController.setToolCallStatus(statusEl, !!data.error);
+                    }
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCall.id}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${toolCall.id}`);
+                    if (resultSection && resultEl && tc.result) {
+                        NexusStreamingController.setElementVisibility(resultSection, true);
+                        resultEl.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2);
+                    }
+                    container.scrollTop = container.scrollHeight;
+                }
+            },
+            onToolCallResult: (toolCall) => {
+                const tc = streamingToolCalls.get(toolCall.id);
+                if (tc) {
+                    tc.result = toolCall.result || '';
+                    const s = document.getElementById(`streaming-tool-result-section-${toolCall.id}`);
+                    const el = document.getElementById(`streaming-tool-result-${toolCall.id}`);
+                    if (s && el && tc.result) {
+                        NexusStreamingController.setElementVisibility(s, true);
+                        el.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2);
+                    }
+                }
+            },
+            onRunFinished: () => finishStream({ type: 'RUN_FINISHED' }),
+            onRunError: (data) => finishStream(data || { type: 'RUN_ERROR' }),
+        });
+
         es.onmessage = (event) => {
             if (runFinished) return;
             let data;
             try { data = JSON.parse(event.data); } catch { return; }
-
-            if (data.type === 'TEXT_MESSAGE_START') {
-                ensureBubble();
-            } else if (data.type === 'TEXT_MESSAGE_CONTENT') {
-                const delta = data.delta ?? data.content ?? data.text ?? data.response;
-                if (delta != null && delta !== '') {
-                    const textEl = ensureTextElement();
-                    currentTextContent += (typeof delta === 'string' ? delta : JSON.stringify(delta, null, 2));
-                    if (textEl && chatView) { textEl.innerHTML = chatView.formatMessageContent(currentTextContent); container.scrollTop = container.scrollHeight; }
-                }
-            } else if (data.type === 'result') {
-                const resultText = data.content ?? data.result;
-                if (resultText != null && resultText !== '') {
-                    const textEl = ensureTextElement();
-                    currentTextContent += (typeof resultText === 'string' ? resultText : JSON.stringify(resultText, null, 2));
-                    if (textEl && chatView) { textEl.innerHTML = chatView.formatMessageContent(currentTextContent); container.scrollTop = container.scrollHeight; }
-                }
-            } else if (data.type === 'TEXT_MESSAGE_END') {
-                if (currentTextEl) currentTextEl.classList.remove('streaming');
-                currentTextEl = null; currentTextContent = ''; textSegmentIndex++;
-            } else if (data.type === 'TOOL_CALL_START') {
-                const toolCallId = data.toolCallId || `tool-${Date.now()}`;
-                const toolName = data.toolCallName || 'Tool';
-                const toolTitle = chatView?.formatToolCallTitle?.(toolName, {}, '') || toolName;
-                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
-                if (currentTextEl) currentTextEl.classList.remove('streaming');
-                currentTextEl = null; currentTextContent = ''; textSegmentIndex++;
-                const bubble = ensureBubble();
-                if (bubble && chatView) { bubble.insertAdjacentHTML('beforeend', chatView.renderStreamingToolCall(toolCallId, toolTitle, 'executing')); container.scrollTop = container.scrollHeight; }
-            } else if (data.type === 'TOOL_CALL_ARGS') {
-                const tc = streamingToolCalls.get(data.toolCallId);
-                if (tc) {
-                    tc.args += (data.delta || '');
-                    const argsEl = document.getElementById(`streaming-tool-args-${data.toolCallId}`);
-                    if (argsEl) argsEl.textContent = tc.args;
-                    const titleEl = document.querySelector(`[data-streaming-tool-id="${data.toolCallId}"] .tool-call-name`);
-                    if (titleEl && chatView) titleEl.textContent = chatView.formatToolCallTitle(tc.name, {}, tc.args);
-                }
-            } else if (data.type === 'TOOL_CALL_END') {
-                const tc = streamingToolCalls.get(data.toolCallId);
-                if (tc) {
-                    tc.status = data.error ? 'failed' : 'completed';
-                    tc.result = data.result || '';
-                    const statusEl = document.querySelector(`[data-streaming-tool-id="${data.toolCallId}"] .tool-call-status-icon`);
-                    if (statusEl) { statusEl.textContent = data.error ? '✗' : '✓'; statusEl.parentElement.style.color = data.error ? 'var(--error)' : 'var(--success)'; }
-                    const resultSection = document.getElementById(`streaming-tool-result-section-${data.toolCallId}`);
-                    const resultEl = document.getElementById(`streaming-tool-result-${data.toolCallId}`);
-                    if (resultSection && resultEl && tc.result) { resultSection.style.display = 'block'; resultEl.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2); }
-                    container.scrollTop = container.scrollHeight;
-                }
-            } else if (data.type === 'TOOL_CALL_RESULT') {
-                const tc = streamingToolCalls.get(data.toolCallId);
-                if (tc) {
-                    tc.result = data.result || data.content || '';
-                    const s = document.getElementById(`streaming-tool-result-section-${data.toolCallId}`);
-                    const el = document.getElementById(`streaming-tool-result-${data.toolCallId}`);
-                    if (s && el && tc.result) { s.style.display = 'block'; el.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2); }
-                }
-            } else if (data.type === 'RUN_FINISHED' || data.type === 'RUN_ERROR') {
-                runFinished = true;
-                if (currentTextEl) currentTextEl.classList.remove('streaming');
-                const isError = data.type === 'RUN_ERROR';
-                container.insertAdjacentHTML('beforeend', `<div style="padding:8px 12px;margin-top:8px;background:rgba(${isError ? '239,68,68' : '16,185,129'},0.1);border-radius:6px;font-size:12px;color:var(--${isError ? 'error' : 'success'});">${isError ? `Task failed${data.message ? ': ' + this._esc(data.message) : ''}` : '✓ Task completed'}</div>`);
-                container.scrollTop = container.scrollHeight;
-                this._closeTaskStream(taskId);
-                if (!isReplay) { if (this._dataStore) this._dataStore.invalidate('tasks'); this._loadTasks(); app?.chatView?.loadSessions?.(0); }
-            }
+            streamingController.processEvent(data);
         };
         es.onerror = () => { if (!runFinished && es.readyState !== EventSource.CLOSED) console.warn(`Task ${taskId} SSE error`); };
     }
@@ -926,23 +1402,22 @@ class TaskBoardPanel {
             backdrop.addEventListener('click', () => {
                 const detailPanel = document.getElementById(`taskDetail-${pid}`);
                 if (detailPanel && !detailPanel.classList.contains('hidden')) {
-                    this._closeTaskStream(this._selectedTask);
-                    detailPanel.classList.add('hidden');
-                    detailPanel.classList.remove('open');
-                    backdrop.classList.add('hidden');
-                    this._selectedTask = null;
-                    document.getElementById(`kanbanBoard-${pid}`)?.querySelectorAll('.task-card').forEach(c => c.classList.remove('selected'));
+                    this._closeTaskDetail();
                 }
             });
         }
 
-        c.querySelector('[data-action="create-task"]')?.addEventListener('click', () => this._getApp()?.showCreateTaskModal?.('single'));
+        c.querySelector('[data-action="create-task"]')?.addEventListener('click', () => this._getApp()?.taskFormController?.showCreateTaskModal?.('single'));
         c.querySelector('[data-action="toggle-selection"]')?.addEventListener('click', () => this._toggleSelectionMode());
         c.querySelector('[data-action="select-all"]')?.addEventListener('click', () => this._selectAllTasks());
         c.querySelector('[data-action="deselect-all"]')?.addEventListener('click', () => this._deselectAllTasks());
         c.querySelector('[data-action="delete-selected"]')?.addEventListener('click', () => this._deleteSelectedTasks());
-        c.querySelector('[data-action="toggle-schedules"]')?.addEventListener('click', () => this._toggleSchedulePanel());
+        c.querySelector('[data-action="toggle-archived"]')?.addEventListener('click', () => this._toggleArchived());
         c.querySelector('[data-action="refresh-schedules"]')?.addEventListener('click', () => this._loadSchedules());
+
+        c.querySelectorAll('[data-action="set-surface"]').forEach((btn) => {
+            btn.addEventListener('click', () => this._setSecondarySurface(btn.dataset.surface, { replace: false }));
+        });
 
         // K-005: View toggle
         c.querySelectorAll('[data-action="set-view"]').forEach(btn => {
@@ -968,7 +1443,7 @@ class TaskBoardPanel {
         if (!this._selectionMode) this._selectedTaskIds = new Set();
         const pid = this._paneId;
         const el = document.getElementById(`selectionActions-${pid}`);
-        if (el) el.style.display = this._selectionMode ? 'flex' : 'none';
+        if (el) el.hidden = !this._selectionMode;
         this._renderKanban();
         this._updateDeleteBtnCount();
     }
@@ -1036,8 +1511,7 @@ class TaskBoardPanel {
         try {
             await NexusAPI.deleteTask(taskId, { execUser: this._getExecUser() });
             this._getApp()?.showToast?.('Task deleted', 'success');
-            this._selectedTask = null;
-            document.getElementById(`taskDetail-${this._paneId}`)?.classList.add('hidden');
+            this._closeTaskDetail();
             if (this._dataStore) this._dataStore.invalidate('tasks');
             await this._loadTasks();
         } catch (e) {
@@ -1086,7 +1560,13 @@ class TaskBoardPanel {
             },
             onMove: async (taskId, toStatus, fromStatus, newPosition) => {
                 try {
+                    if (toStatus === 'cancelled' && !this._canCancelTaskStatus(fromStatus)) {
+                        this._getApp()?.showToast?.('Only To Do or Doing tasks can enter Cancelled.', 'warning');
+                        this._renderKanban();
+                        return;
+                    }
                     await NexusAPI.updateTaskStatus(taskId, toStatus, { execUser: this._getExecUser() });
+                    await NexusAPI.updateTask(taskId, { position: newPosition }, { execUser: this._getExecUser() });
                     const local = this._tasks.find(t => t.id === taskId);
                     if (local) {
                         local.status = toStatus;
@@ -1128,21 +1608,30 @@ class TaskBoardPanel {
         this._viewMode = mode;
         localStorage.setItem('nexus-kanban-viewMode', mode);
         const pid = this._paneId;
-        const board = document.getElementById(`kanbanBoard-${pid}`);
         const listContainer = document.getElementById(`listViewContainer-${pid}`);
-        if (board) board.style.display = mode === 'board' ? '' : 'none';
-        if (listContainer) listContainer.style.display = mode === 'list' ? '' : 'none';
+        this._syncBoardVisibility(this._getFilteredTasks().length > 0, mode);
+        if (listContainer) listContainer.hidden = this._secondarySurface !== 'board' || mode !== 'list';
 
         // Update toggle button styles
         this.container?.querySelectorAll('[data-action="set-view"]').forEach(btn => {
             const active = btn.dataset.view === mode;
-            btn.style.background = active ? 'var(--primary-500)' : 'transparent';
-            btn.style.color = active ? '#fff' : 'var(--text-secondary)';
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
 
         if (mode === 'list' && this._listView) {
             this._listView.updateTasks(this._getFilteredTasks());
         }
+    }
+
+    _syncBoardVisibility(hasVisibleTasks = this._getFilteredTasks().length > 0, mode = this._viewMode) {
+        const pid = this._paneId;
+        const board = document.getElementById(`kanbanBoard-${pid}`);
+        const emptyState = document.getElementById(`taskBoardEmptyState-${pid}`);
+        const showBoard = this._secondarySurface === 'board' && mode === 'board' && hasVisibleTasks;
+        const showEmptyState = this._secondarySurface === 'board' && mode === 'board' && !hasVisibleTasks;
+        if (board) board.hidden = !showBoard;
+        if (emptyState) emptyState.hidden = !showEmptyState;
     }
 
     _initFilterBar() {
@@ -1203,7 +1692,7 @@ class TaskBoardPanel {
             onBatchAssign: async (ids, assignee) => {
                 try {
                     for (const id of ids) {
-                        await NexusAPI.updateTask(id, { assigned_to: assignee }, { execUser: this._getExecUser() });
+                        await NexusAPI.updateTask(id, { assignee }, { execUser: this._getExecUser() });
                     }
                     this._getApp()?.showToast?.(`Assigned ${ids.length} tasks to ${assignee}`, 'success');
                     if (this._dataStore) this._dataStore.invalidate('tasks');
@@ -1242,12 +1731,25 @@ class TaskBoardPanel {
     // ------------------------------------------------------------------
 
     _toggleSchedulePanel() {
+        const nextSurface = this._secondarySurface === 'schedules' ? 'board' : 'schedules';
+        this._setSecondarySurface(nextSurface, { replace: false });
+    }
+
+    _toggleArchived() {
         const pid = this._paneId;
-        const panel = document.getElementById(`schedulePanel-${pid}`);
-        if (!panel) return;
-        this._schedulePanelOpen = !this._schedulePanelOpen;
-        panel.style.display = this._schedulePanelOpen ? 'block' : 'none';
-        if (this._schedulePanelOpen) this._loadSchedules();
+        this._showArchived = !this._showArchived;
+        // Toggle archived column visibility
+        const archivedCol = this.container?.querySelector(`.kanban-column[data-status="archived"]`);
+        if (archivedCol) {
+            archivedCol.hidden = !this._showArchived;
+        }
+        // Update button label
+        const btn = document.getElementById(`toggleArchivedBtn-${pid}`);
+        if (btn) {
+            const span = btn.querySelector('span');
+            if (span) span.textContent = this._showArchived ? 'Hide Archived' : 'Show Archived';
+            btn.classList.toggle('is-outlined', !this._showArchived);
+        }
     }
 
     async _loadSchedules() {
@@ -1261,8 +1763,10 @@ class TaskBoardPanel {
                 ? this._dataStore.fetch('schedules', schedOpts)
                 : NexusAPI.getSchedules(schedOpts));
             const schedules = data.schedules || [];
+            this._scheduleSummaryCount = schedules.filter(s => String(s?.status || '').trim().toLowerCase() === 'active').length;
+            this._renderSummaryStrip();
             if (schedules.length === 0) {
-                listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--text-muted);font-size:13px;">No schedules found</p></div>';
+                listEl.innerHTML = '<div class="empty-state schedule-empty-state"><p class="u-text-muted u-text-sm">No schedules found</p></div>';
                 return;
             }
             listEl.innerHTML = schedules.map(s => this._renderScheduleCard(s)).join('');
@@ -1277,13 +1781,13 @@ class TaskBoardPanel {
                 card.querySelector('[data-action="toggle-history"]')?.addEventListener('click', e => { e.stopPropagation(); this._toggleScheduleHistory(sid); });
             });
         } catch (e) {
-            listEl.innerHTML = '<div class="empty-state" style="padding:16px;"><p style="color:var(--error);font-size:13px;">Failed to load schedules</p></div>';
+            this._scheduleSummaryCount = 0;
+            this._renderSummaryStrip();
+            listEl.innerHTML = '<div class="empty-state schedule-empty-state"><p class="u-text-error u-text-sm">Failed to load schedules</p></div>';
         }
     }
 
     _renderScheduleCard(schedule) {
-        const statusColors = { active: 'var(--status-doing)', paused: 'var(--status-todo)', cancelled: 'var(--status-cancelled)' };
-        const statusColor = statusColors[schedule.status] || 'var(--text-muted)';
         const isActive = schedule.status === 'active';
         const isPaused = schedule.status === 'paused';
         const isCancelled = schedule.status === 'cancelled';
@@ -1300,17 +1804,17 @@ class TaskBoardPanel {
             <div class="schedule-card" data-schedule-id="${schedule.id}">
                 <div class="schedule-card-header">
                     <div class="schedule-card-info">
-                        <span class="schedule-status-dot" style="background:${statusColor};"></span>
+                        <span class="schedule-status-dot ${this._esc(schedule.status || "default")}"></span>
                         <span class="schedule-card-name">${this._esc(schedule.name)}</span>
                         ${kindBadge}${triggerBadge}
                     </div>
                     <div class="schedule-card-actions">
-                        ${isActive ? `<button class="schedule-action-btn" data-action="trigger-schedule" title="Trigger now"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button><button class="schedule-action-btn" data-action="pause-schedule" title="Pause"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
-                        ${isPaused ? `<button class="schedule-action-btn" data-action="resume-schedule" title="Resume"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
-                        ${!isCancelled ? `<button class="schedule-action-btn" data-action="cancel-schedule" title="Cancel"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
-                        <button class="schedule-action-btn" data-action="edit-schedule" title="Edit" style="${isSystem ? 'display:none' : ''}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
-                        <button class="schedule-action-btn" data-action="toggle-history" title="Execution History"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>
-                        <button class="schedule-action-btn danger" data-action="delete-schedule" title="Delete" style="${isSystem ? 'display:none' : ''}"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px;height:14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
+                        ${isActive ? `<button class="schedule-action-btn" data-action="trigger-schedule" title="Trigger now"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button><button class="schedule-action-btn" data-action="pause-schedule" title="Pause"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
+                        ${isPaused ? `<button class="schedule-action-btn" data-action="resume-schedule" title="Resume"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
+                        ${!isCancelled ? `<button class="schedule-action-btn" data-action="cancel-schedule" title="Cancel"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>` : ''}
+                        <button class="schedule-action-btn${isSystem ? ' is-hidden' : ''}" data-action="edit-schedule" title="Edit"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
+                        <button class="schedule-action-btn" data-action="toggle-history" title="Execution History"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></button>
+                        <button class="schedule-action-btn danger${isSystem ? ' is-hidden' : ''}" data-action="delete-schedule" title="Delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-xs"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                     </div>
                 </div>
                 <div class="schedule-card-meta">
@@ -1320,8 +1824,8 @@ class TaskBoardPanel {
                     <span title="Last run">Last: ${lastRun}</span>
                 </div>
                 <div class="schedule-card-desc">${this._esc(schedule.description || '').substring(0, 120)}${(schedule.description || '').length > 120 ? '...' : ''}</div>
-                <div class="schedule-history" id="scheduleHistory-${schedule.id}" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
-                    <div style="color:var(--text-muted);font-size:12px;">Loading history...</div>
+                <div class="schedule-history schedule-history-panel" id="scheduleHistory-${schedule.id}" hidden>
+                    <div class="schedule-history-loading">Loading history...</div>
                 </div>
             </div>
         `;
@@ -1330,32 +1834,40 @@ class TaskBoardPanel {
     async _toggleScheduleHistory(scheduleId) {
         const histEl = document.getElementById(`scheduleHistory-${scheduleId}`);
         if (!histEl) return;
-        if (histEl.style.display !== 'none') {
-            histEl.style.display = 'none';
+        if (!histEl.hidden) {
+            histEl.hidden = true;
             return;
         }
-        histEl.style.display = 'block';
-        histEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Loading history...</div>';
+        histEl.hidden = false;
+        histEl.innerHTML = '<div class="schedule-history-loading">Loading history...</div>';
         try {
             const data = await NexusAPI.getScheduleHistory(scheduleId);
             const taskIds = data.task_ids || data.history || [];
             if (taskIds.length === 0) {
-                histEl.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">No execution history</div>';
+                histEl.innerHTML = '<div class="schedule-history-empty">No execution history</div>';
                 return;
             }
-            histEl.innerHTML = `<div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:4px;">Execution History (${taskIds.length})</div>` +
+            histEl.innerHTML = `<div class="schedule-history-header">Execution History (${taskIds.length})</div>` +
                 taskIds.slice(0, 20).map(id => {
                     const tid = typeof id === 'string' ? id : (id.task_id || id.id || '');
                     const ts = id.created_at ? new Date(id.created_at).toLocaleString() : '';
                     const status = id.status || '';
-                    return `<div style="display:flex;justify-content:space-between;padding:2px 0;font-size:11px;">
-                        <span style="color:var(--primary-500);cursor:pointer;" data-task-id="${this._esc(tid)}" onclick="document.querySelector('.task-board-panel')?.dispatchEvent?.(new CustomEvent('open-task',{detail:'${this._esc(tid)}'}))">#${this._esc(tid.slice(0, 8))}</span>
-                        ${ts ? `<span style="color:var(--text-muted);">${ts}</span>` : ''}
-                        ${status ? `<span style="color:var(--text-muted);">${this._esc(status)}</span>` : ''}
+                    return `<div class="schedule-history-row">
+                        <button type="button" class="schedule-history-task-link" data-action="open-task-history" data-task-id="${this._esc(tid)}">#${this._esc(tid.slice(0, 8))}</button>
+                        ${ts ? `<span class="schedule-history-meta">${ts}</span>` : ''}
+                        ${status ? `<span class="schedule-history-meta">${this._esc(status)}</span>` : ''}
                     </div>`;
                 }).join('');
+            histEl.querySelectorAll('[data-action="open-task-history"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const tid = btn.dataset.taskId;
+                    if (tid) {
+                        this._selectTask(tid);
+                    }
+                });
+            });
         } catch (e) {
-            histEl.innerHTML = `<div style="color:var(--error);font-size:12px;">Failed to load history: ${this._esc(e.message)}</div>`;
+            histEl.innerHTML = `<div class="schedule-history-error">Failed to load history: ${this._esc(e.message)}</div>`;
         }
     }
 
@@ -1406,7 +1918,7 @@ class TaskBoardPanel {
                 this._dataStore.invalidate('tasks');
             }
             await this._loadTasks();
-            const hasRunning = this._tasks.some(t => this._normalizeTaskStatus(t.status) === 'in_progress');
+            const hasRunning = this._tasks.some(t => this._normalizeTaskStatus(t.status) === 'running');
             if (hasRunning) app?.chatView?.loadSessions?.(0);
         }, { intervalMs: this._pollInterval });
         this._smartPoll.start();
@@ -1426,15 +1938,13 @@ class TaskBoardPanel {
         const latest = this._tasks.find(t => t.id === this._selectedTask);
         const detailPanel = document.getElementById(`taskDetail-${pid}`);
         if (!latest) {
-            this._closeTaskStream(this._selectedTask);
-            this._selectedTask = null;
-            if (detailPanel) detailPanel.classList.add('hidden');
+            this._closeTaskDetail();
         } else if (detailPanel) {
             const latestStatus = this._normalizeTaskStatus(latest.status);
             const renderedStatus = detailPanel.dataset.taskStatus || '';
             const renderedId = detailPanel.dataset.taskId || '';
             const hasConvDom = !!detailPanel.querySelector(`#taskConversation-${pid}`);
-            const shouldHaveConv = ['in_progress', 'done', 'completed', 'failed'].includes(latestStatus);
+            const shouldHaveConv = ['running', 'completed', 'failed'].includes(latestStatus);
             const isStreaming = this._activeStreams.has(this._selectedTask);
             if ((renderedId !== this._selectedTask || renderedStatus !== latestStatus || (shouldHaveConv && !hasConvDom)) && !isStreaming) {
                 this._renderTaskDetail(latest);
@@ -1443,45 +1953,45 @@ class TaskBoardPanel {
     }
 
     // ------------------------------------------------------------------
-    // Done column infinite scroll (K-008)
+    // Completed column infinite scroll (K-008)
     // ------------------------------------------------------------------
 
-    _setupDoneInfiniteScroll(pid) {
+    _setupCompletedInfiniteScroll(pid) {
         // Disconnect previous observer
-        if (this._doneObserver) {
-            this._doneObserver.disconnect();
-            this._doneObserver = null;
+        if (this._completedObserver) {
+            this._completedObserver.disconnect();
+            this._completedObserver = null;
         }
-        const sentinel = document.getElementById(`doneScrollSentinel-${pid}`);
+        const sentinel = document.getElementById(`completedScrollSentinel-${pid}`);
         if (!sentinel) return;
 
-        this._doneObserver = new IntersectionObserver((entries) => {
+        this._completedObserver = new IntersectionObserver((entries) => {
             entries.forEach(entry => {
-                if (entry.isIntersecting && !this._doneLoading) {
-                    this._loadMoreDoneTasks(pid);
+                if (entry.isIntersecting && !this._completedLoading) {
+                    this._loadMoreCompletedTasks(pid);
                 }
             });
         }, { root: sentinel.closest('.kanban-column-items'), threshold: 0.1 });
 
-        this._doneObserver.observe(sentinel);
+        this._completedObserver.observe(sentinel);
     }
 
-    _loadMoreDoneTasks(pid) {
-        if (this._doneLoading) return;
-        if (this._doneLoadedCount >= this._doneAllTasks.length) return;
+    _loadMoreCompletedTasks(pid) {
+        if (this._completedLoading) return;
+        if (this._completedLoadedCount >= this._completedAllTasks.length) return;
 
-        this._doneLoading = true;
-        const nextBatch = this._doneAllTasks.slice(
-            this._doneLoadedCount,
-            this._doneLoadedCount + this._donePageSize
+        this._completedLoading = true;
+        const nextBatch = this._completedAllTasks.slice(
+            this._completedLoadedCount,
+            this._completedLoadedCount + this._completedPageSize
         );
-        this._doneLoadedCount += nextBatch.length;
+        this._completedLoadedCount += nextBatch.length;
 
-        const el = document.getElementById(`items-${pid}-done`);
-        if (!el) { this._doneLoading = false; return; }
+        const el = document.getElementById(`items-${pid}-completed`);
+        if (!el) { this._completedLoading = false; return; }
 
         // Remove old sentinel
-        const oldSentinel = document.getElementById(`doneScrollSentinel-${pid}`);
+        const oldSentinel = document.getElementById(`completedScrollSentinel-${pid}`);
         if (oldSentinel) oldSentinel.remove();
 
         // Append new cards
@@ -1491,22 +2001,21 @@ class TaskBoardPanel {
         while (temp.firstChild) fragment.appendChild(temp.firstChild);
 
         // Add new sentinel if more remain
-        if (this._doneLoadedCount < this._doneAllTasks.length) {
+        if (this._completedLoadedCount < this._completedAllTasks.length) {
             const sentinel = document.createElement('div');
-            sentinel.className = 'done-scroll-sentinel';
-            sentinel.id = `doneScrollSentinel-${pid}`;
-            sentinel.style.cssText = 'padding:12px;text-align:center;';
-            sentinel.innerHTML = '<div class="loading-spinner" style="width:16px;height:16px;margin:0 auto;"></div><p style="font-size:11px;color:var(--text-muted);margin-top:4px;">Loading more...</p>';
+            sentinel.className = 'completed-scroll-sentinel';
+            sentinel.id = `completedScrollSentinel-${pid}`;
+            sentinel.innerHTML = '<div class="loading-spinner sm loading-spinner-centered"></div><p class="task-muted-note">Loading more...</p>';
             fragment.appendChild(sentinel);
         }
 
         el.appendChild(fragment);
         this._bindCardEvents(el);
-        this._doneLoading = false;
+        this._completedLoading = false;
 
         // Re-observe new sentinel
-        if (this._doneLoadedCount < this._doneAllTasks.length) {
-            this._setupDoneInfiniteScroll(pid);
+        if (this._completedLoadedCount < this._completedAllTasks.length) {
+            this._setupCompletedInfiniteScroll(pid);
         }
     }
 
@@ -1519,14 +2028,14 @@ class TaskBoardPanel {
         return [...tasks].sort((a, b) => {
             switch (this._sortField) {
                 case 'priority': {
-                    const order = { critical: 0, serious: 1, normal: 2 };
-                    const pa = order[a.priority] ?? 2;
-                    const pb = order[b.priority] ?? 2;
+                    const order = { project: 0, serious: 1, thought: 2, generated: 3 };
+                    const pa = order[this._normalizePriority(a.priority)] ?? 2;
+                    const pb = order[this._normalizePriority(b.priority)] ?? 2;
                     return (pa - pb) * dir;
                 }
                 case 'due_date': {
-                    const da = a.due_date || Infinity;
-                    const db = b.due_date || Infinity;
+                    const da = this._getDueDateMs(a.due_date) ?? Infinity;
+                    const db = this._getDueDateMs(b.due_date) ?? Infinity;
                     return (da - db) * dir;
                 }
                 case 'created_at': {
@@ -1597,7 +2106,7 @@ class TaskBoardPanel {
         if (task.metadata?.awaiting_human) return true;
         const s = String(task.status || '').toLowerCase();
         if (s.includes('awaiting') || s.includes('blocked')) return true;
-        if (this._normalizeTaskStatus(task.status) === 'in_progress' && task.updated_at) {
+        if (this._normalizeTaskStatus(task.status) === 'running' && task.updated_at) {
             if (Date.now() - new Date(task.updated_at).getTime() > 30 * 60 * 1000) return true;
         }
         return false;
@@ -1612,10 +2121,19 @@ class TaskBoardPanel {
 
     _resolveGitHubIssueUrl(task) {
         const direct = String(task?.github_url || '').trim();
-        if (direct) return direct;
+        if (direct && this._isSafeHttpUrl(direct)) return direct;
         const ref = String(task?.ticket_ref || '').trim();
         const m = ref.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/);
         return m ? `https://github.com/${m[1]}/issues/${m[2]}` : '';
+    }
+
+    _isSafeHttpUrl(url) {
+        try {
+            const parsed = new URL(url);
+            return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+        } catch {
+            return false;
+        }
     }
 
     _formatTime(timestamp) {
@@ -1662,7 +2180,142 @@ class TaskBoardPanel {
         }
         this._dataStoreSubscriptions = [];
     }
+
+    // ------------------------------------------------------------------
+    // TV-002/TV-003: ViewStore change handler & URL sync
+    // ------------------------------------------------------------------
+
+    _onViewStoreChange(state) {
+        if (!state) return;
+        if (state.viewMode !== this._viewMode) {
+            this._viewMode = state.viewMode;
+            this._setViewMode(state.viewMode);
+        }
+        if (state.searchQuery !== this._filter) {
+            this._filter = state.searchQuery;
+            this._renderKanban();
+        }
+        if (state.sortField !== this._sortField || state.sortDirection !== this._sortDirection) {
+            this._sortField = state.sortField;
+            this._sortDirection = state.sortDirection;
+            this._renderKanban();
+        }
+        if (state.projectFilter !== this._projectFilter) {
+            this._projectFilter = state.projectFilter;
+            this._renderKanban();
+        }
+        if (state.scheduleOpen !== this._schedulePanelOpen) {
+            this._applySecondarySurface(state.scheduleOpen ? 'schedules' : (this._secondarySurface === 'schedules' ? 'board' : this._secondarySurface));
+        }
+        if (state.detailTaskId && state.detailTaskId !== this._selectedTask) {
+            this._selectTask(state.detailTaskId);
+        } else if (!state.detailTaskId && this._selectedTask) {
+            this._closeTaskDetail({ syncUrl: false });
+        }
+        if (state.detailTab && state.detailTab !== this._urlTaskTab) {
+            this._urlTaskTab = state.detailTab;
+            this._applyTaskTab(state.detailTab);
+        }
+        if (this._viewStore) this._viewStore.syncToUrl();
+    }
+
+    // ------------------------------------------------------------------
+    // TV-007: Summary strip rendering
+    // ------------------------------------------------------------------
+
+    _renderSummaryStrip() {
+        const pid = this._paneId;
+        const container = document.getElementById(`summaryStrip-${pid}`);
+        if (!container) return;
+        if (typeof TaskViewModel !== 'undefined') {
+            const { summary } = TaskViewModel.enrichTasks(this._tasks);
+            this._summaryMetrics = {
+                ...summary,
+                total: this._taskTotalCount || summary.total || this._tasks.length,
+                scheduled: this._scheduleSummaryCount,
+            };
+        } else {
+            this._summaryMetrics = {
+                total: this._taskTotalCount || this._tasks.length,
+                active: this._tasks.filter(t => ['pending', 'running', 'in_review'].includes(this._normalizeTaskStatus(t.status))).length,
+                running: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'running').length,
+                reviewing: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'in_review').length,
+                failed: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'failed').length,
+                cancelled: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'cancelled').length,
+                scheduled: this._scheduleSummaryCount,
+            };
+        }
+        const shouldShow = Object.values(this._summaryMetrics || {}).some(value => Number(value) > 0);
+        container.hidden = !shouldShow;
+        if (!shouldShow) {
+            container.innerHTML = '';
+            return;
+        }
+        if (typeof TaskSummaryStrip !== 'undefined') {
+            if (!this._summaryStrip) {
+                this._summaryStrip = new TaskSummaryStrip({ onMetricClick: (key) => this._onSummaryMetricClick(key) });
+            }
+            this._summaryStrip.render(container, this._summaryMetrics);
+        }
+    }
+
+    _onSummaryMetricClick(key) {
+        if (key === 'scheduled') {
+            this._setSecondarySurface('schedules', { replace: false });
+            return;
+        }
+        const filterMap = {
+            active: ['pending', 'running', 'in_review'],
+            running: ['running'],
+            reviewing: ['in_review'],
+            failed: ['failed'],
+            cancelled: ['cancelled'],
+        };
+        const statuses = filterMap[key];
+        this._setSecondarySurface('board', { replace: false });
+        if (statuses && this._filterBar) {
+            // Set status filter via the FilterBar's internal state
+            this._filterBar.filters.status.values = new Set(statuses);
+            this._filterBar._renderButtons();
+            this._loadTasks();
+        } else if (!statuses && this._filterBar) {
+            this._filterBar.resetAll();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // TV-011: Active filter summary
+    // ------------------------------------------------------------------
+
+    _updateActiveFilterSummary() {
+        const el = document.getElementById(`activeFilterSummary-${this._paneId}`);
+        if (!el) return;
+        const parts = [];
+        if (this._filter) parts.push(`Search: "${this._filter}"`);
+        if (this._projectFilter) parts.push(`Project: ${this._projectFilter}`);
+        if (this._sortField !== 'position') parts.push(`Sort: ${this._sortField}`);
+        if (parts.length > 0) { el.textContent = parts.join(' · '); el.hidden = false; }
+        else { el.hidden = true; }
+    }
 }
 
 // Register globally
 window.TaskBoardPanel = TaskBoardPanel;
+
+if (typeof window !== 'undefined' && typeof document !== 'undefined' && !window.__nexusTaskSurfaceSettingsMigrationInstalled) {
+    window.__nexusTaskSurfaceSettingsMigrationInstalled = true;
+    const hideMigratedSettingsTabs = () => {
+        document.querySelectorAll('.settings-tab[data-settings-tab="scheduling"]').forEach((tab) => {
+            tab.hidden = true;
+            tab.setAttribute('aria-hidden', 'true');
+            tab.style.display = 'none';
+        });
+    };
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', hideMigratedSettingsTabs, { once: true });
+    } else {
+        hideMigratedSettingsTabs();
+    }
+    const observer = new MutationObserver(() => hideMigratedSettingsTabs());
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+}

@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.task_storage import TaskQueue
+from ..services.task_storage import get_task_queue
 from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
@@ -79,7 +79,7 @@ async def global_search(
     Results ranked by relevance (title match > content match) then recency.
     """
     exec_user = getattr(settings, "exec_user", None) or "default"
-    queue = TaskQueue(db_path=None, exec_user=exec_user)
+    queue = get_task_queue(exec_user)
     results: List[SearchResult] = []
     query_lower = q.lower()
 
@@ -263,7 +263,7 @@ def _preview_cleanup(exec_user: str) -> CleanupPreview:
     now = time.time()
     preview: List[RetentionTarget] = []
 
-    queue = TaskQueue(db_path=None, exec_user=exec_user)
+    queue = get_task_queue(exec_user)
 
     # ── Stale done tasks ──
     days = retention["tasks_done"]
@@ -348,7 +348,7 @@ async def execute_cleanup(
     now = time.time()
     deleted: Dict[str, int] = {}
 
-    queue = TaskQueue(db_path=None, exec_user=exec_user)
+    queue = get_task_queue(exec_user)
 
     # ── Clean done tasks ──
     days = retention["tasks_done"]

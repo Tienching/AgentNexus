@@ -1,0 +1,27 @@
+name: docs-freshness
+
+on:
+  pull_request:
+    paths:
+      - "src/server/static/nexus/**"
+      - "README*"
+      - "docs/**"
+      - "docs/screenshots/**"
+      - "CHANGELOG.md"
+      - "RELEASE.md"
+      - ".github/workflows/docs-freshness.yml"
+      - "scripts/check_docs_freshness.py"
+
+jobs:
+  docs-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check docs freshness against PR diff
+        run: |
+          python3 scripts/check_docs_freshness.py \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"

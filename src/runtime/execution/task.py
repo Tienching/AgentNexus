@@ -1,42 +1,62 @@
 # -*- coding: utf-8 -*-
+"""Backward-compatible task compatibility layer.
+
+Historically ``src.runtime.execution.task`` defined a separate in-memory task
+model that drifted away from the canonical runtime task domain. Keep the old
+import path alive, but back it with the canonical runtime storage/model layer.
 """
-任务管理
-"""
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, List
-from enum import Enum
-import time
-import uuid
+from __future__ import annotations
 
+import warnings
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-class TaskStatus(Enum):
-    """任务状态"""
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+from pydantic import Field
+
+from ..models.task_models import Task as RuntimeTask
+from ..models.task_models import TaskPriority, TaskStatus
+from ..stores.task_storage import TaskQueue
 
 
-@dataclass
-class Task:
-    """任务"""
-    task_id: str
-    description: str
-    provider: str = "claude"
-    session_id: Optional[str] = None
-    exec_user: Optional[str] = None
-    workspace: Optional[str] = None
-    model: Optional[str] = None
-    status: TaskStatus = TaskStatus.PENDING
-    created_at: float = field(default_factory=time.time)
-    started_at: Optional[float] = None
-    completed_at: Optional[float] = None
-    result: Optional[Any] = None
-    error: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    
+def _utcnow_ts() -> float:
+    return datetime.now(timezone.utc).timestamp()
+
+
+class Task(RuntimeTask):
+    """Compatibility task model backed by the canonical runtime Task."""
+
+    result: Optional[Any] = Field(default=None, exclude=True)
+
+    @property
+    def task_id(self) -> str:
+        return self.id
+
+    @task_id.setter
+    def task_id(self, value: str) -> None:
+        self.id = value
+
+    @property
+    def error(self) -> Optional[str]:
+        return self.error_message
+
+    @error.setter
+    def error(self, value: Optional[str]) -> None:
+        self.error_message = value
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return self.context or {}
+
+    @metadata.setter
+    def metadata(self, value: Optional[Dict[str, Any]]) -> None:
+        self.context = value or {}
+
+    @property
+    def created_at_ts(self) -> float:
+        return self.created_at.timestamp()
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "task_id": self.task_id,
@@ -46,10 +66,10 @@ class Task:
             "session_id": self.session_id,
             "exec_user": self.exec_user,
             "workspace": self.workspace,
-            "status": self.status.value,
-            "created_at": self.created_at,
-            "started_at": self.started_at,
-            "completed_at": self.completed_at,
+            "status": self.status.value if hasattr(self.status, "value") else str(self.status),
+            "created_at": self.created_at_ts,
+            "started_at": self.started_at.timestamp() if self.started_at else None,
+            "completed_at": self.completed_at.timestamp() if self.completed_at else None,
             "result": self.result,
             "error": self.error,
             "metadata": self.metadata,
@@ -57,11 +77,17 @@ class Task:
 
 
 class TaskManager:
-    """任务管理器（内存实现，可扩展为持久化）"""
-    
-    def __init__(self):
-        self._tasks: Dict[str, Task] = {}
-    
+    """Deprecated compatibility facade backed by :class:`TaskQueue`."""
+
+    def __init__(self, *, exec_user: str = "default", queue: Optional[TaskQueue] = None):
+        warnings.warn(
+            "src.runtime.execution.task.TaskManager is deprecated; use "
+            "src.runtime.stores.task_storage.TaskQueue instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self._queue = queue or TaskQueue(exec_user=exec_user)
+
     def create(
         self,
         description: str,
@@ -72,68 +98,52 @@ class TaskManager:
         model: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Task:
-        """创建任务"""
-        task_id = str(uuid.uuid4())
-        task = Task(
-            task_id=task_id,
+        created = self._queue.add_task(
+            task_id=str(uuid4()),
             description=description,
             provider=provider,
+            model=model,
             session_id=session_id,
             exec_user=exec_user,
             workspace=workspace,
-            model=model,
-            metadata=metadata or {},
+            context=metadata or {},
+            priority=TaskPriority.THOUGHT,
         )
-        self._tasks[task_id] = task
-        return task
-    
+        return Task.model_validate(created.model_dump())
+
     def get(self, task_id: str) -> Optional[Task]:
-        """获取任务"""
-        return self._tasks.get(task_id)
-    
+        task = self._queue.get_task(task_id)
+        return Task.model_validate(task.model_dump()) if task else None
+
     def start(self, task_id: str) -> Optional[Task]:
-        """开始任务"""
-        task = self.get(task_id)
-        if task and task.status == TaskStatus.PENDING:
-            task.status = TaskStatus.RUNNING
-            task.started_at = time.time()
-        return task
-    
+        task = self._queue.start_task(task_id)
+        return Task.model_validate(task.model_dump()) if task else None
+
     def complete(self, task_id: str, result: Any = None) -> Optional[Task]:
-        """完成任务"""
-        task = self.get(task_id)
-        if task and task.status == TaskStatus.RUNNING:
-            task.status = TaskStatus.COMPLETED
-            task.completed_at = time.time()
-            task.result = result
-        return task
-    
+        task = self._queue.complete_task(task_id)
+        if task is None:
+            return None
+        compat = Task.model_validate(task.model_dump())
+        compat.result = result
+        return compat
+
     def fail(self, task_id: str, error: str) -> Optional[Task]:
-        """任务失败"""
-        task = self.get(task_id)
-        if task and task.status == TaskStatus.RUNNING:
-            task.status = TaskStatus.FAILED
-            task.completed_at = time.time()
-            task.error = error
-        return task
-    
+        task = self._queue.fail_task(task_id, error_message=error)
+        return Task.model_validate(task.model_dump()) if task else None
+
     def cancel(self, task_id: str) -> Optional[Task]:
-        """取消任务"""
-        task = self.get(task_id)
-        if task and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
-            task.status = TaskStatus.ARCHIVED
-            task.completed_at = time.time()
-        return task
-    
+        task = self._queue.cancel_task(task_id)
+        return Task.model_validate(task.model_dump()) if task else None
+
     def list_tasks(
         self,
         status: Optional[TaskStatus] = None,
         provider: Optional[str] = None,
     ) -> List[Task]:
-        """列出任务"""
-        tasks = list(self._tasks.values())
-        if status:
-            tasks = [t for t in tasks if t.status == status]
+        tasks, _ = self._queue.list_tasks(page=1, page_size=100000, status=status.value if status else None)
         if provider:
-            tasks = [t for t in tasks if t.provider == provider]
-        return tasks
+            tasks = [task for task in tasks if task.provider == provider]
+        return [Task.model_validate(task.model_dump()) for task in tasks]
+
+
+__all__ = ["Task", "TaskManager", "TaskStatus"]

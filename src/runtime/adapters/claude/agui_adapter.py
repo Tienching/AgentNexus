@@ -1053,7 +1053,7 @@ class AGUIAdapter(BaseAdapter):
     def create_error_event(self, error_msg: str) -> str:
         """创建错误事件"""
         if not self.state:
-            from src.server.utils.ids import gen_session_id, gen_run_id
+            from src.runtime.utils.ids import gen_session_id, gen_run_id
             thread_id = gen_session_id()
             run_id = gen_run_id()
         else:

@@ -28,9 +28,13 @@ dependencies = [
 ]
 
 [project.scripts]
+nexus = "runtime.plugins.cli:main"  # canonical CLI entrypoint
 anexus = "runtime.plugins.cli:main"  # 新的模块化 CLI
 
 [project.optional-dependencies]
+# Keep this `dev` extra aligned with `[dependency-groups].dev`.
+# Local bootstrap scripts sync both surfaces so dev/test/runtime entrypoints
+# land on the same environment regardless of whether callers use extras or uv groups.
 dev = [
     "pytest>=7.4.3",
     "pytest-asyncio>=0.21.1",
@@ -38,6 +42,7 @@ dev = [
     "black>=23.11.0",
     "ruff>=0.1.6",
     "mypy>=1.7.0",
+    "playwright>=1.58.0",
 ]
 mission = [
     "redis>=5.0.0",
@@ -59,12 +64,14 @@ all-channels = [
 ]
 
 [dependency-groups]
+# Keep this group aligned with `[project.optional-dependencies].dev`.
 dev = [
     "pytest>=7.4.3",
     "pytest-asyncio>=0.21.1",
     "pytest-cov>=4.1.0",
     "black>=23.11.0",
     "ruff>=0.1.6",
+    "mypy>=1.7.0",
     "playwright>=1.58.0",
 ]
 
@@ -81,10 +88,25 @@ line-length = 100
 target-version = ["py311"]
 
 [tool.coverage.run]
-source = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server", "src/core", "src/protocols"]
+source = ["src/channels", "src/nanobot", "src/nexus", "src/providers", "src/runtime", "src/server", "src/core", "src/protocols"]
 omit = ["*/tests/*"]
 
+[tool.coverage.report]
+fail_under = 35
+show_missing = true
+skip_covered = false
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/channels", "src/nanobot", "src/providers", "src/runtime", "src/server", "src/core", "src/protocols"]
+packages = ["src/channels", "src/nanobot", "src/nexus", "src/providers", "src/runtime", "src/server", "src/core", "src/protocols"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.omb",
+    "/.omc",
+    "/.omx",
+    "/task.json",
+    "/*.zip",
+    "/agent-nexus.service",
+]
 
 [tool.uv.sources]

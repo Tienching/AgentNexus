@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Nanobot AG-UI adapter package."""
+"""Legacy nanobot AG-UI adapter package."""
 
-from src.runtime.adapters.nanobot.agui_adapter import NanobotAGUIAdapter
+from src.runtime.adapters.nexus import NexusAGUIAdapter, NanobotAGUIAdapter
 
-__all__ = ["NanobotAGUIAdapter"]
+__all__ = ["NexusAGUIAdapter", "NanobotAGUIAdapter"]

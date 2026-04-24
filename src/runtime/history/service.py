@@ -5,8 +5,10 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
+from weakref import WeakSet
 
 from ..models.session import SessionListResponse, SessionMeta, SessionMessagesResponse
 from .base_parser import BaseHistoryParser, HistorySessionDetail
@@ -36,17 +38,207 @@ class HistoryService:
     All file I/O is wrapped in asyncio.to_thread to avoid blocking the event loop.
     """
 
+    _instances = WeakSet()
+
     def __init__(self):
         self._parsers: Dict[str, BaseHistoryParser] = {}
         self._cache: Dict[str, _CacheEntry] = {}
+        self.__class__._instances.add(self)
 
     def register_parser(self, parser: BaseHistoryParser) -> None:
         """Register a history parser by its provider name."""
         self._parsers[parser.provider_name] = parser
 
+    def register_parsers(self, parsers: List[BaseHistoryParser]) -> None:
+        """Register multiple parsers in order."""
+        for parser in parsers:
+            self.register_parser(parser)
+
+    @classmethod
+    def default_parsers(cls) -> List[BaseHistoryParser]:
+        """Build the standard parser set for all supported providers."""
+        from .claude_parser import ClaudeHistoryParser
+        from .codex_parser import CodexHistoryParser
+        from .codebuddy_parser import CodeBuddyHistoryParser
+        from .gemini_parser import GeminiHistoryParser
+
+        return [
+            ClaudeHistoryParser(),
+            CodexHistoryParser(),
+            CodeBuddyHistoryParser(),
+            GeminiHistoryParser(),
+        ]
+
+    @classmethod
+    def create_default(cls) -> "HistoryService":
+        """Construct a HistoryService with the standard parser registry."""
+        service = cls()
+        service.register_parsers(cls.default_parsers())
+        return service
+
+    def registered_providers(self) -> List[str]:
+        """Return provider keys currently registered on this service."""
+        return sorted(self._parsers.keys())
+
     def get_parser(self, provider: str) -> Optional[BaseHistoryParser]:
         """Get a parser by provider name."""
         return self._parsers.get(provider)
+
+    @staticmethod
+    def _normalize_history_name(value: Optional[str], fallback: str = "unknown") -> str:
+        normalized = (value or "").strip().lower()
+        return normalized or fallback
+
+    def history_session_sort_key(self, session: SessionMeta) -> tuple:
+        """Sort by provider → alias → recency, with title/id tiebreakers."""
+        provider = self._normalize_history_name(getattr(session, "provider", None))
+        alias = self._normalize_history_name(getattr(session, "alias", None), provider)
+        updated_at = int(getattr(session, "updated_at", None) or getattr(session, "created_at", None) or 0)
+        title = (getattr(session, "title", "") or "").strip().lower()
+        return (
+            provider,
+            alias,
+            -updated_at,
+            title,
+            str(getattr(session, "id", "")),
+        )
+
+    def sort_history_sessions(self, sessions: List[SessionMeta]) -> List[SessionMeta]:
+        """Return sessions ordered for History UI display."""
+        return sorted(list(sessions or []), key=self.history_session_sort_key)
+
+    def summarize_history_session(
+        self,
+        session: SessionMeta,
+        *,
+        resumable: bool = True,
+    ) -> Dict[str, Any]:
+        """Convert a SessionMeta into a stable History summary dictionary."""
+        provider = self._normalize_history_name(getattr(session, "provider", None))
+        alias = self._normalize_history_name(getattr(session, "alias", None), provider)
+        exec_dir = getattr(session, "exec_dir", None) or None
+        updated_at = int(getattr(session, "updated_at", None) or getattr(session, "created_at", None) or 0)
+        return {
+            "id": str(getattr(session, "id", "")),
+            "thread_id": getattr(session, "thread_id", None) or str(getattr(session, "id", "")),
+            "run_id": getattr(session, "run_id", None),
+            "title": getattr(session, "title", None) or "New Session",
+            "username": getattr(session, "username", None) or "",
+            "exec_user": getattr(session, "exec_user", None) or None,
+            "provider": provider,
+            "alias": alias,
+            "created_at": int(getattr(session, "created_at", None) or updated_at or 0),
+            "updated_at": updated_at,
+            "message_count": int(getattr(session, "message_count", 0) or 0),
+            "status": getattr(session, "status", None) or "idle",
+            "source": getattr(session, "source", None) or None,
+            "exec_dir": exec_dir,
+            "work_dir": exec_dir,
+            "task_id": getattr(session, "task_id", None) or None,
+            "source_session_id": getattr(session, "source_session_id", None) or None,
+            "session_kind": getattr(session, "session_kind", None) or None,
+            "resumable": bool(resumable),
+            "group_key": f"{provider}:{alias}",
+        }
+
+    def group_history_session_summaries(
+        self,
+        sessions: List[SessionMeta],
+        *,
+        resumable: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Group history sessions by provider → alias for API consumers."""
+        summaries = [
+            self.summarize_history_session(session, resumable=resumable)
+            for session in self.sort_history_sessions(sessions)
+        ]
+
+        provider_map: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        for summary in summaries:
+            provider = self._normalize_history_name(summary.get("provider"))
+            alias = self._normalize_history_name(summary.get("alias"), provider)
+            provider_entry = provider_map.setdefault(
+                provider,
+                {
+                    "provider": provider,
+                    "total_sessions": 0,
+                    "latest_updated_at": 0,
+                    "aliases": OrderedDict(),
+                },
+            )
+            provider_entry["total_sessions"] += 1
+            provider_entry["latest_updated_at"] = max(
+                int(provider_entry["latest_updated_at"]),
+                int(summary.get("updated_at") or 0),
+            )
+
+            alias_entry = provider_entry["aliases"].setdefault(
+                alias,
+                {
+                    "provider": provider,
+                    "alias": alias,
+                    "total_sessions": 0,
+                    "latest_updated_at": 0,
+                    "sessions": [],
+                },
+            )
+            alias_entry["total_sessions"] += 1
+            alias_entry["latest_updated_at"] = max(
+                int(alias_entry["latest_updated_at"]),
+                int(summary.get("updated_at") or 0),
+            )
+            alias_entry["sessions"].append(summary)
+
+        groups: List[Dict[str, Any]] = []
+        provider_rank = 0
+        for provider_entry in sorted(
+            provider_map.values(),
+            key=lambda item: (
+                -int(item["latest_updated_at"] or 0),
+                str(item["provider"]),
+            ),
+        ):
+            alias_groups: List[Dict[str, Any]] = []
+            alias_rank = 0
+            for alias_entry in sorted(
+                provider_entry["aliases"].values(),
+                key=lambda item: (
+                    -int(item["latest_updated_at"] or 0),
+                    str(item["alias"]),
+                ),
+            ):
+                alias_sessions = sorted(
+                    alias_entry["sessions"],
+                    key=lambda item: (
+                        -(int(item.get("updated_at") or 0)),
+                        str(item.get("title") or "").lower(),
+                        str(item.get("id") or ""),
+                    ),
+                )
+                for session_summary in alias_sessions:
+                    session_summary["provider_rank"] = provider_rank
+                    session_summary["alias_rank"] = alias_rank
+                alias_groups.append(
+                    {
+                        "provider": alias_entry["provider"],
+                        "alias": alias_entry["alias"],
+                        "total_sessions": int(alias_entry["total_sessions"]),
+                        "latest_updated_at": int(alias_entry["latest_updated_at"]),
+                        "sessions": alias_sessions,
+                    }
+                )
+                alias_rank += 1
+            groups.append(
+                {
+                    "provider": provider_entry["provider"],
+                    "total_sessions": int(provider_entry["total_sessions"]),
+                    "latest_updated_at": int(provider_entry["latest_updated_at"]),
+                    "aliases": alias_groups,
+                }
+            )
+            provider_rank += 1
+
+        return groups
 
     def _get_cached(self, key: str) -> Optional[Any]:
         entry = self._cache.get(key)
@@ -74,6 +266,17 @@ class HistoryService:
         for k in keys_to_remove:
             self._cache.pop(k, None)
         return len(keys_to_remove)
+
+    @classmethod
+    def invalidate_project_caches_across_instances(cls) -> int:
+        """Invalidate project/session caches across all live HistoryService instances."""
+        removed = 0
+        for service in list(cls._instances):
+            try:
+                removed += service.invalidate_project_caches()
+            except Exception:
+                logger.debug("Failed to invalidate history caches on a live service instance", exc_info=True)
+        return removed
 
     def _resolve_parser_for_alias(self, alias: str) -> Optional[BaseHistoryParser]:
         """Resolve the parser for an alias by checking known base provider prefixes."""
@@ -109,35 +312,39 @@ class HistoryService:
         """
         all_sessions: List[SessionMeta] = []
 
+        async def _load_alias_sessions(alias: str, config_path: Path, parser: BaseHistoryParser) -> List[SessionMeta]:
+            cache_key = f"sessions:{config_path}:{project_path}:{parser.provider_name}"
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+            try:
+                sessions = await asyncio.to_thread(
+                    parser.list_sessions, config_path, project_path
+                )
+                for session in sessions:
+                    if not session.alias:
+                        session.alias = alias
+                self._set_cached(cache_key, sessions, ttl=_PROJECTS_CACHE_TTL_SECONDS)
+                return sessions
+            except Exception as e:
+                logger.warning(
+                    "Failed to list sessions for alias=%s config_path=%s: %s",
+                    alias, config_path, e,
+                )
+                return []
+
+        tasks: List[asyncio.Future] = []
         for alias, config_path in alias_config_map.items():
             parser = self._resolve_parser_for_alias(alias)
             if parser is None:
                 continue
             if provider_filter and parser.provider_name != provider_filter and alias != provider_filter:
                 continue
+            tasks.append(_load_alias_sessions(alias, config_path, parser))
 
-            cache_key = f"sessions:{config_path}:{project_path}:{parser.provider_name}"
-            cached = self._get_cached(cache_key)
-            if cached is not None:
-                sessions = cached
-            else:
-                try:
-                    sessions = await asyncio.to_thread(
-                        parser.list_sessions, config_path, project_path
-                    )
-                    # Tag alias on each session
-                    for s in sessions:
-                        if not s.alias:
-                            s.alias = alias
-                    self._set_cached(cache_key, sessions, ttl=_PROJECTS_CACHE_TTL_SECONDS)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to list sessions for alias=%s config_path=%s: %s",
-                        alias, config_path, e,
-                    )
-                    sessions = []
-
-            all_sessions.extend(sessions)
+        if tasks:
+            for result in await asyncio.gather(*tasks):
+                all_sessions.extend(result or [])
 
         # Search filter
         if search:
@@ -184,37 +391,41 @@ class HistoryService:
         """
         all_sessions: List[SessionMeta] = []
 
+        async def _load_alias_sessions(alias: str, config_path: Path, parser: BaseHistoryParser) -> List[SessionMeta]:
+            cache_key = f"global_sessions:{config_path}:{parser.provider_name}:{linux_user or ''}"
+            cached = self._get_cached(cache_key)
+            if cached is not None:
+                return cached
+            try:
+                sessions = await asyncio.to_thread(
+                    parser.list_all_sessions, config_path, linux_user
+                )
+                for session in sessions:
+                    if not session.alias:
+                        session.alias = alias
+                    if linux_user and not session.exec_user:
+                        session.exec_user = linux_user
+                self._set_cached(cache_key, sessions, ttl=_PROJECTS_CACHE_TTL_SECONDS)
+                return sessions
+            except Exception as e:
+                logger.warning(
+                    "Failed to list global sessions for alias=%s config_path=%s: %s",
+                    alias, config_path, e,
+                )
+                return []
+
+        tasks: List[asyncio.Future] = []
         for alias, config_path in alias_config_map.items():
             parser = self._resolve_parser_for_alias(alias)
             if parser is None:
                 continue
             if provider_filter and parser.provider_name != provider_filter and alias != provider_filter:
                 continue
+            tasks.append(_load_alias_sessions(alias, config_path, parser))
 
-            cache_key = f"global_sessions:{config_path}:{parser.provider_name}:{linux_user or ''}"
-            cached = self._get_cached(cache_key)
-            if cached is not None:
-                sessions = cached
-            else:
-                try:
-                    sessions = await asyncio.to_thread(
-                        parser.list_all_sessions, config_path, linux_user
-                    )
-                    # Tag alias and linux user on each session
-                    for s in sessions:
-                        if not s.alias:
-                            s.alias = alias
-                        if linux_user and not s.exec_user:
-                            s.exec_user = linux_user
-                    self._set_cached(cache_key, sessions, ttl=_PROJECTS_CACHE_TTL_SECONDS)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to list global sessions for alias=%s config_path=%s: %s",
-                        alias, config_path, e,
-                    )
-                    sessions = []
-
-            all_sessions.extend(sessions)
+        if tasks:
+            for result in await asyncio.gather(*tasks):
+                all_sessions.extend(result or [])
 
         # Deduplicate by exec_user:provider:session_id (keep the one with latest updated_at)
         merged: Dict[str, SessionMeta] = {}

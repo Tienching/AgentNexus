@@ -69,7 +69,7 @@ class AegisQualityGate:
                 conn.execute(
                     """
                     UPDATE tasks
-                    SET status = 'done', completed_at = COALESCE(completed_at, ?)
+                    SET status = 'completed', completed_at = COALESCE(completed_at, ?)
                     WHERE id = ?
                     """,
                     (now, str(task_id)),
@@ -78,7 +78,7 @@ class AegisQualityGate:
                 conn.execute(
                     """
                     UPDATE tasks
-                    SET status = 'in_progress', error_message = ?
+                    SET status = 'running', error_message = ?
                     WHERE id = ?
                     """,
                     (f"Quality review {status.value} by {reviewer}: {notes}".strip(), str(task_id)),

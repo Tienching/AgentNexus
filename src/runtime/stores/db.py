@@ -38,14 +38,53 @@ class Database:
     """
 
     _instance: Optional["Database"] = None
+    _instances: dict[str, "Database"] = {}
     _lock = threading.Lock()
 
-    def __new__(cls, **kwargs) -> "Database":
+    @classmethod
+    def _resolve_db_path(cls, db_path: Optional[str] = None) -> str:
+        if db_path:
+            return db_path
+        env_path = os.environ.get("NEXUS_DB_PATH")
+        if env_path:
+            return env_path
+        os.makedirs(_DEFAULT_DB_DIR, exist_ok=True)
+        return os.path.join(_DEFAULT_DB_DIR, _DEFAULT_DB_NAME)
+
+    def __new__(cls, db_path: Optional[str] = None, **kwargs) -> "Database":
+        resolved_path = cls._resolve_db_path(db_path)
         with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-                cls._instance._initialized = False
-        return cls._instance
+            # Backward-compat: some tests still reset Database._instance directly.
+            if cls._instance is None and cls._instances:
+                stale_instances = list(cls._instances.values())
+                cls._instances.clear()
+            else:
+                stale_instances = []
+            instance = cls._instances.get(resolved_path)
+            if instance is None:
+                instance = super().__new__(cls)
+                instance._initialized = False
+                cls._instances[resolved_path] = instance
+            cls._instance = instance
+        for stale in stale_instances:
+            try:
+                stale.close()
+            except Exception:
+                pass
+        return instance
+
+    @classmethod
+    def reset_instances(cls) -> None:
+        """Drop cached DB instances so the next access gets a fresh DB."""
+        with cls._lock:
+            instances = list(cls._instances.values())
+            cls._instances.clear()
+            cls._instance = None
+        for instance in instances:
+            try:
+                instance.close()
+            except Exception:
+                pass
 
     def __init__(
         self,
@@ -55,17 +94,12 @@ class Database:
             return
 
         # Resolve database path
-        if db_path:
-            self._db_path = db_path
-        else:
-            env_path = os.environ.get("NEXUS_DB_PATH")
-            if env_path:
-                self._db_path = env_path
-            else:
-                os.makedirs(_DEFAULT_DB_DIR, exist_ok=True)
-                self._db_path = os.path.join(_DEFAULT_DB_DIR, _DEFAULT_DB_NAME)
+        self._db_path = self._resolve_db_path(db_path)
 
         self._local = threading.local()
+        self._migration_lock = threading.Lock()
+        self._migrations_verified = False
+        self._migration_error: Optional[Exception] = None
         self._initialized = True
 
         logger.info(f"SQLite database initialized: {self._db_path}")
@@ -88,6 +122,9 @@ class Database:
                 except Exception:
                     pass
 
+        db_dir = os.path.dirname(self._db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -214,6 +251,41 @@ class Database:
                         f"Migration {m['version']} ({m['name']}) failed: {e}"
                     ) from e
 
+    def ensure_migrated(self):
+        """Verify schema migrations completed successfully for this process.
+
+        Migration failures are cached and re-raised so callers never continue
+        against a partially-upgraded schema after startup.
+        """
+        if self._migrations_verified:
+            return
+
+        if self._migration_error is not None:
+            raise self._migration_error
+
+        with self._migration_lock:
+            if self._migrations_verified:
+                return
+
+            if self._migration_error is not None:
+                raise self._migration_error
+
+            try:
+                self.run_migrations()
+            except Exception as e:
+                failure = RuntimeError(
+                    f"Database migration check failed for {self._db_path}: {e}"
+                )
+                self._migration_error = failure
+                logger.error(
+                    "Database migration check failed for %s; refusing to continue startup",
+                    self._db_path,
+                    exc_info=True,
+                )
+                raise failure from e
+
+            self._migrations_verified = True
+
     def close(self):
         """Close the thread-local connection."""
         conn = getattr(self._local, "conn", None)
@@ -223,6 +295,10 @@ class Database:
             except Exception:
                 pass
             self._local.conn = None
+        with self.__class__._lock:
+            if self.__class__._instance is self:
+                self.__class__._instance = None
+            self.__class__._instances.pop(getattr(self, "_db_path", None), None)
 
     def __del__(self):
         self.close()
@@ -231,12 +307,9 @@ class Database:
 def get_db(db_path: Optional[str] = None) -> Database:
     """Get the global Database singleton.
 
-    On first call, initializes the database and runs pending migrations.
+    On first call, initializes the database and verifies pending migrations.
+    Migration failures are surfaced to the caller so startup can fail fast.
     """
     db = Database(db_path=db_path)
-    # Run migrations on first access (idempotent — skips already-applied)
-    try:
-        db.run_migrations()
-    except Exception as e:
-        logger.warning(f"Database migration check skipped: {e}")
+    db.ensure_migrated()
     return db

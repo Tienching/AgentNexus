@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from src.runtime.models.task_models import TaskStatus
 from src.runtime.stores.db import get_db
 
 
@@ -161,13 +162,14 @@ class StandupReportGenerator:
             # If no activity table, generate empty report
             pass
 
-        # Get current in-progress tasks
+        # Get current running tasks
         try:
             in_progress_rows = self._db.execute_fetchall(
                 """SELECT assigned_to, COUNT(*) as count
                    FROM tasks
-                   WHERE status = 'in_progress'
+                   WHERE status = ?
                    GROUP BY assigned_to""",
+                (TaskStatus.RUNNING.value,),
             )
             for row in in_progress_rows:
                 agent = row["assigned_to"] or "unassigned"

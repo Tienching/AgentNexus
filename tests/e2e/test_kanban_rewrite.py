@@ -1,517 +1,276 @@
-"""
-E2E / integration tests for the Kanban rewrite (K-001 ~ K-009).
+"""Real browser/API regression tests for the task board.
 
-These tests validate the JavaScript components via their Python-side API
-endpoints (where applicable) and verify performance benchmarks through
-simulated load scenarios.
-
-Run with:
-    python3 -m pytest tests/e2e/test_kanban_rewrite.py -v
+These replace the old pseudo-E2E mirror checks with actual HTTP + browser
+coverage against a live FastAPI server.
 """
 
-import json
-import math
+from __future__ import annotations
+
+import socket
+import threading
 import time
+import uuid
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 import pytest
-import os
-import sys
-
-# ---------------------------------------------------------------------------
-# Test helpers
-# ---------------------------------------------------------------------------
-
-def read_js_file(relative_path: str) -> str:
-    """Read a JS file from the worktree root."""
-    base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    full_path = os.path.join(base, relative_path)
-    with open(full_path, 'r') as f:
-        return f.read()
-
-
-# ===========================================================================
-# K-001: Float position calculation
-# ===========================================================================
-
-class TestFloatPositionCalculation:
-    """Verify the float-based position interpolation logic."""
-
-    POSITION_GAP = 65536
-
-    @staticmethod
-    def compute_position(card_positions: list, drop_index: int) -> float:
-        """
-        Pure-Python mirror of KanbanDragDrop._computePosition.
-        card_positions: list of floats (positions of existing cards, excluding dragged)
-        drop_index: insertion index
-        """
-        GAP = 65536
-        if len(card_positions) == 0:
-            return GAP
-
-        if drop_index <= 0:
-            return card_positions[0] / 2
-
-        if drop_index >= len(card_positions):
-            return card_positions[-1] + GAP
-
-        return (card_positions[drop_index - 1] + card_positions[drop_index]) / 2
-
-    def test_initial_gap(self):
-        """Empty column → position = GAP."""
-        assert self.compute_position([], 0) == self.POSITION_GAP
-
-    def test_insert_before_first(self):
-        """Insert before first card → half of first card's position."""
-        pos = self.compute_position([65536], 0)
-        assert pos == 32768.0
-
-    def test_insert_after_last(self):
-        """Insert after last card → lastPos + GAP."""
-        pos = self.compute_position([65536, 131072], 2)
-        assert pos == 131072 + 65536
-
-    def test_insert_between(self):
-        """Insert between two cards → midpoint."""
-        pos = self.compute_position([65536, 131072, 196608], 1)
-        assert pos == (65536 + 131072) / 2
-
-    def test_repeated_midpoint_precision(self):
-        """After many midpoint insertions, precision is still reasonable."""
-        a, b = 65536.0, 131072.0
-        for _ in range(50):
-            mid = (a + b) / 2
-            assert a < mid < b, f"Midpoint {mid} not between {a} and {b}"
-            b = mid
-        # Even after 50 halvings, we should have distinct values
-        assert a != b
-
-    def test_insert_at_head_repeatedly(self):
-        """Repeatedly inserting at position 0 halves each time."""
-        pos = 65536.0
-        for _ in range(20):
-            pos = pos / 2
-            assert pos > 0, "Position should never reach zero in 20 halvings"
-        # After 20 halvings: 65536 / 2^20 ≈ 0.0625
-        assert pos > 0.01
-
-
-# ===========================================================================
-# K-002: Drag state freeze
-# ===========================================================================
-
-class TestDragStateFreeze:
-    """Verify the drag-freeze queue/merge logic."""
-
-    def test_queue_and_merge(self):
-        """Simulate queuing updates during drag and merging on end."""
-        # Simulate initial tasks
-        tasks = [
-            {'id': 'a', 'status': 'inbox', 'position': 65536},
-            {'id': 'b', 'status': 'inbox', 'position': 131072},
-        ]
-        pending_updates = []
-        is_dragging = True
-
-        # Backend pushes arrive during drag
-        update1 = [
-            {'id': 'a', 'status': 'inbox', 'position': 65536},
-            {'id': 'b', 'status': 'in_progress', 'position': 131072},  # changed
-            {'id': 'c', 'status': 'inbox', 'position': 196608},  # new task
-        ]
-        if is_dragging:
-            pending_updates.append(update1)
-
-        # Drag ends — user moved 'a' to new position
-        tasks[0]['position'] = 98304  # user's local drag override
-        is_dragging = False
-
-        # Merge: take latest server state, preserve local position overrides
-        if pending_updates:
-            latest = pending_updates[-1]
-            pos_map = {t['id']: t['position'] for t in tasks}
-            merged = []
-            for t in latest:
-                t_copy = dict(t)
-                if t['id'] in pos_map:
-                    t_copy['position'] = pos_map[t['id']]
-                merged.append(t_copy)
-            tasks = merged
-
-        assert len(tasks) == 3  # new task 'c' appeared
-        assert tasks[0]['position'] == 98304  # local override preserved
-        assert tasks[1]['status'] == 'in_progress'  # server status applied
-
-
-# ===========================================================================
-# K-003: Advanced filter system
-# ===========================================================================
-
-class TestFilterSystem:
-    """Verify filter logic."""
-
-    TASKS = [
-        {'id': '1', 'status': 'inbox', 'priority': 'critical', 'assigned_to': 'alice'},
-        {'id': '2', 'status': 'inbox', 'priority': 'normal', 'assigned_to': 'bob'},
-        {'id': '3', 'status': 'in_progress', 'priority': 'serious', 'assigned_to': 'alice'},
-        {'id': '4', 'status': 'done', 'priority': 'normal', 'assigned_to': ''},
-        {'id': '5', 'status': 'in_progress', 'priority': 'critical', 'assigned_to': 'charlie'},
-    ]
-
-    @staticmethod
-    def apply_filters(tasks, status_filter=None, priority_filter=None, assignee_filter=None):
-        """Python mirror of FilterPanel.apply()."""
-        result = tasks
-        if status_filter:
-            result = [t for t in result if t['status'] in status_filter]
-        if priority_filter:
-            result = [t for t in result if (t.get('priority') or 'normal') in priority_filter]
-        if assignee_filter:
-            result = [t for t in result if (t.get('assigned_to') or '') in assignee_filter]
-        return result
-
-    def test_no_filters(self):
-        assert len(self.apply_filters(self.TASKS)) == 5
-
-    def test_status_filter(self):
-        result = self.apply_filters(self.TASKS, status_filter={'inbox'})
-        assert len(result) == 2
-        assert all(t['status'] == 'inbox' for t in result)
-
-    def test_priority_filter(self):
-        result = self.apply_filters(self.TASKS, priority_filter={'critical'})
-        assert len(result) == 2
-
-    def test_assignee_filter(self):
-        result = self.apply_filters(self.TASKS, assignee_filter={'alice'})
-        assert len(result) == 2
-
-    def test_combined_filters(self):
-        result = self.apply_filters(
-            self.TASKS,
-            status_filter={'in_progress'},
-            priority_filter={'critical'},
-        )
-        assert len(result) == 1
-        assert result[0]['id'] == '5'
-
-    def test_filter_count(self):
-        """Verify count calculation for filter options."""
-        counts = {}
-        for t in self.TASKS:
-            s = t['status']
-            counts[s] = counts.get(s, 0) + 1
-        assert counts == {'inbox': 2, 'in_progress': 2, 'done': 1}
-
-
-# ===========================================================================
-# K-004: List view
-# ===========================================================================
-
-class TestListView:
-    """Verify list view grouping logic."""
-
-    STATUS_ORDER = ['inbox', 'assigned', 'in_progress', 'review', 'done']
-
-    def test_group_by_status(self):
-        tasks = [
-            {'id': '1', 'status': 'inbox'},
-            {'id': '2', 'status': 'in_progress'},
-            {'id': '3', 'status': 'inbox'},
-            {'id': '4', 'status': 'done'},
-        ]
-        grouped = {}
-        for s in self.STATUS_ORDER:
-            grouped[s] = [t for t in tasks if t['status'] == s]
-        assert len(grouped['inbox']) == 2
-        assert len(grouped['in_progress']) == 1
-        assert len(grouped['done']) == 1
-        assert len(grouped['assigned']) == 0
-
-    def test_bulk_select(self):
-        """Verify bulk selection logic."""
-        tasks = [{'id': str(i), 'status': 'inbox'} for i in range(10)]
-        selected = set()
-        # Select all inbox
-        inbox_tasks = [t for t in tasks if t['status'] == 'inbox']
-        for t in inbox_tasks:
-            selected.add(t['id'])
-        assert len(selected) == 10
-        # Deselect all
-        selected.clear()
-        assert len(selected) == 0
-
-
-# ===========================================================================
-# K-005: Board/List view toggle
-# ===========================================================================
-
-class TestViewToggle:
-    """Verify view toggle state persistence."""
-
-    def test_default_is_board(self):
-        mode = 'board'  # default
-        assert mode == 'board'
-
-    def test_toggle_preserves_state(self):
-        state = {
-            'viewMode': 'board',
-            'filters': {'status': {'inbox'}},
-            'sortField': 'priority',
-        }
-        # Toggle to list
-        state['viewMode'] = 'list'
-        assert state['viewMode'] == 'list'
-        assert state['filters'] == {'status': {'inbox'}}  # preserved
-        assert state['sortField'] == 'priority'  # preserved
-
-
-# ===========================================================================
-# K-006: Multi-sort
-# ===========================================================================
-
-class TestMultiSort:
-    """Verify sorting logic for different fields and directions."""
-
-    TASKS = [
-        {'id': '1', 'position': 131072, 'priority': 'normal', 'due_date': 1700000000, 'created_at': '2024-01-01'},
-        {'id': '2', 'position': 65536, 'priority': 'critical', 'due_date': 1690000000, 'created_at': '2024-02-01'},
-        {'id': '3', 'position': 196608, 'priority': 'serious', 'due_date': None, 'created_at': '2024-01-15'},
-    ]
-
-    PRIORITY_ORDER = {'critical': 0, 'serious': 1, 'normal': 2}
-
-    def sort_tasks(self, tasks, field='position', direction='asc'):
-        """Python mirror of _sortTasks."""
-        d = -1 if direction == 'desc' else 1
-        def key_fn(t):
-            if field == 'priority':
-                return self.PRIORITY_ORDER.get(t.get('priority', 'normal'), 2) * d
-            elif field == 'due_date':
-                return (t.get('due_date') or float('inf')) * d
-            elif field == 'created_at':
-                return t.get('created_at', '') if d == 1 else ''
-            else:  # position
-                return (t.get('position') or 0) * d
-        return sorted(tasks, key=key_fn)
-
-    def test_sort_by_position_asc(self):
-        result = self.sort_tasks(self.TASKS, 'position', 'asc')
-        assert [t['id'] for t in result] == ['2', '1', '3']
-
-    def test_sort_by_position_desc(self):
-        result = self.sort_tasks(self.TASKS, 'position', 'desc')
-        assert [t['id'] for t in result] == ['3', '1', '2']
-
-    def test_sort_by_priority_asc(self):
-        result = self.sort_tasks(self.TASKS, 'priority', 'asc')
-        assert result[0]['priority'] == 'critical'
-        assert result[-1]['priority'] == 'normal'
-
-    def test_sort_by_due_date_asc(self):
-        result = self.sort_tasks(self.TASKS, 'due_date', 'asc')
-        # None due_date should sort last
-        assert result[0]['id'] == '2'  # earliest
-        assert result[-1]['id'] == '3'  # None → inf
-
-
-# ===========================================================================
-# K-008: Done column infinite scroll
-# ===========================================================================
-
-class TestInfiniteScroll:
-    """Verify pagination logic for Done column."""
-
-    def test_initial_page(self):
-        all_done = [{'id': str(i)} for i in range(100)]
-        page_size = 20
-        loaded = all_done[:page_size]
-        assert len(loaded) == 20
-
-    def test_load_more(self):
-        all_done = [{'id': str(i)} for i in range(50)]
-        page_size = 20
-        loaded_count = 20
-        next_batch = all_done[loaded_count:loaded_count + page_size]
-        loaded_count += len(next_batch)
-        assert loaded_count == 40
-        assert len(next_batch) == 20
-
-    def test_load_last_partial_page(self):
-        all_done = [{'id': str(i)} for i in range(35)]
-        page_size = 20
-        loaded_count = 20
-        next_batch = all_done[loaded_count:loaded_count + page_size]
-        loaded_count += len(next_batch)
-        assert loaded_count == 35
-        assert len(next_batch) == 15
-
-    def test_no_more_to_load(self):
-        all_done = [{'id': str(i)} for i in range(20)]
-        loaded_count = 20
-        has_more = loaded_count < len(all_done)
-        assert not has_more
-
-
-# ===========================================================================
-# K-007: Inline picker
-# ===========================================================================
-
-class TestInlinePicker:
-    """Verify inline picker logic (stopPropagation check is JS-side)."""
-
-    def test_option_generation(self):
-        """Status columns should produce valid option list."""
-        status_columns = [
-            {'key': 'inbox', 'title': 'Inbox', 'color': '#ccc'},
-            {'key': 'in_progress', 'title': 'In Progress', 'color': '#00f'},
-        ]
-        options = [{'key': c['key'], 'label': c['title'], 'color': c['color']} for c in status_columns]
-        assert len(options) == 2
-        assert options[0]['key'] == 'inbox'
-
-    def test_assignee_dedup(self):
-        """Assignee options should be deduped."""
-        tasks = [
-            {'assigned_to': 'alice'},
-            {'assigned_to': 'bob'},
-            {'assigned_to': 'alice'},
-            {'assigned_to': ''},
-        ]
-        names = set()
-        for t in tasks:
-            if t['assigned_to']:
-                names.add(t['assigned_to'])
-        assert names == {'alice', 'bob'}
-
-
-# ===========================================================================
-# K-009: Performance benchmarks
-# ===========================================================================
-
-class TestPerformanceBenchmarks:
-    """Performance benchmarks for kanban operations."""
-
-    def test_sort_1000_tasks_under_100ms(self):
-        """Sorting 1000 tasks by position should complete in < 100ms."""
-        import random
-        tasks = [{'id': str(i), 'position': random.random() * 1000000} for i in range(1000)]
-        start = time.perf_counter()
-        sorted_tasks = sorted(tasks, key=lambda t: t['position'])
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 100, f"Sort took {elapsed_ms:.1f}ms, expected < 100ms"
-        assert len(sorted_tasks) == 1000
-
-    def test_filter_1000_tasks_under_100ms(self):
-        """Filtering 1000 tasks should complete in < 100ms."""
-        tasks = [
-            {'id': str(i), 'status': ['inbox', 'in_progress', 'done'][i % 3],
-             'priority': ['critical', 'serious', 'normal'][i % 3],
-             'assigned_to': f'user{i % 10}'}
-            for i in range(1000)
-        ]
-        start = time.perf_counter()
-        filtered = [t for t in tasks
-                    if t['status'] in {'inbox', 'in_progress'}
-                    and t['priority'] in {'critical'}
-                    and t['assigned_to'] in {'user0', 'user3'}]
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 100, f"Filter took {elapsed_ms:.1f}ms, expected < 100ms"
-
-    def test_position_computation_1000_ops(self):
-        """1000 position calculations should complete in < 50ms."""
-        positions = [i * 65536 for i in range(100)]
-        start = time.perf_counter()
-        for _ in range(1000):
-            idx = 50
-            mid = (positions[idx - 1] + positions[idx]) / 2
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 50, f"Position calc took {elapsed_ms:.1f}ms, expected < 50ms"
-
-    def test_grouping_1000_tasks_under_50ms(self):
-        """Grouping 1000 tasks by status should complete in < 50ms."""
-        statuses = ['inbox', 'assigned', 'in_progress', 'review', 'done', 'failed', 'cancelled']
-        tasks = [{'id': str(i), 'status': statuses[i % len(statuses)]} for i in range(1000)]
-        start = time.perf_counter()
-        grouped = {}
-        for t in tasks:
-            grouped.setdefault(t['status'], []).append(t)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 50, f"Grouping took {elapsed_ms:.1f}ms, expected < 50ms"
-        assert sum(len(v) for v in grouped.values()) == 1000
-
-    def test_bulk_selection_1000_tasks(self):
-        """Selecting/deselecting 1000 tasks should be fast."""
-        tasks = [{'id': str(i)} for i in range(1000)]
-        start = time.perf_counter()
-        selected = set(t['id'] for t in tasks)
-        assert len(selected) == 1000
-        selected.clear()
-        assert len(selected) == 0
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 50, f"Bulk selection took {elapsed_ms:.1f}ms, expected < 50ms"
-
-
-# ===========================================================================
-# JS file integrity checks
-# ===========================================================================
-
-class TestFileIntegrity:
-    """Verify all K-series files exist and have expected content."""
-
-    def test_kanban_js_has_position_gap(self):
-        content = read_js_file('src/server/static/nexus/js/components/kanban.js')
-        assert 'POSITION_GAP = 65536' in content
-        assert 'onDragStart' in content
-        assert 'onDragEnd' in content
-        assert '_computePosition' in content
-        assert '_getDropIndex' in content
-
-    def test_filters_js_exists(self):
-        content = read_js_file('src/server/static/nexus/js/components/filters.js')
-        assert 'class FilterPanel' in content
-        assert 'apply(tasks)' in content
-        assert 'updateCounts' in content
-        assert 'reset()' in content
-
-    def test_list_view_js_exists(self):
-        content = read_js_file('src/server/static/nexus/js/components/list-view.js')
-        assert 'class ListView' in content
-        assert '_renderRow' in content
-        assert 'onBatchStatusChange' in content
-
-    def test_inline_picker_js_exists(self):
-        content = read_js_file('src/server/static/nexus/js/components/inline-picker.js')
-        assert 'class InlinePicker' in content
-        assert 'stopPropagation' in content
-        assert 'attachAll' in content
-
-    def test_task_board_panel_has_all_features(self):
-        content = read_js_file('src/server/static/nexus/panels/task/task-board-panel.js')
-        # K-001: Float positions
-        assert '_sortTasks' in content
-        assert '_ensurePositions' in content
-        # K-002: Drag freeze
-        assert '_isDragging' in content
-        assert '_pendingUpdates' in content
-        assert '_dragSnapshot' in content
-        # K-003: Filter panel
-        assert 'FilterPanel' in content
-        assert '_filterPanel' in content
-        # K-004: List view
-        assert 'ListView' in content
-        assert '_listView' in content
-        # K-005: View toggle
-        assert '_viewMode' in content
-        assert 'set-view' in content
-        assert 'nexus-kanban-viewMode' in content
-        # K-006: Sort
-        assert 'sortFieldSelect' in content
-        assert 'nexus-kanban-sortField' in content
-        assert 'toggle-sort-dir' in content
-        # K-007: Inline picker
-        assert 'InlinePicker' in content
-        assert 'data-inline-edit' in content
-        # K-008: Done infinite scroll
-        assert '_doneObserver' in content
-        assert 'IntersectionObserver' in content
-        assert 'doneScrollSentinel' in content
+import requests
+import uvicorn
+from playwright.sync_api import sync_playwright
+
+
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
+
+@pytest.fixture(scope="module")
+def live_server():
+    from src.server import app as server_app
+
+    app = server_app.create_app_with_overrides(
+        use_env=False,
+        startup_policy_overrides={
+            "start_task_executor": False,
+            "start_task_scheduler": False,
+            "start_channel_service": False,
+            "start_terminal_manager": False,
+            "start_evolution_service": False,
+        },
+    )
+
+    with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
+        sock.bind(("127.0.0.1", 0))
+        host, port = sock.getsockname()
+
+    config = uvicorn.Config(app, host=host, port=port, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    base_url = f"http://{host}:{port}"
+    deadline = time.time() + 20
+    last_error = None
+    while time.time() < deadline:
+        try:
+            response = requests.get(f"{base_url}/", timeout=1)
+            if response.status_code < 500:
+                yield base_url
+                break
+        except Exception as exc:  # pragma: no cover - startup polling only
+            last_error = exc
+            time.sleep(0.2)
+    else:  # pragma: no cover - hard failure path
+        raise RuntimeError(f"Timed out waiting for live server: {last_error}")
+
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+@pytest.fixture(scope="module")
+def browser():
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
+        yield browser
+        browser.close()
+
+
+@pytest.fixture()
+def page(browser):
+    page = browser.new_page(viewport={"width": 1440, "height": 960})
+    yield page
+    page.close()
+
+
+def _create_task(
+    base_url: str,
+    description: str,
+    *,
+    exec_user: str = "ubuntu",
+    session_id: str | None = None,
+) -> dict:
+    workspace = Path("/tmp/kanban-e2e")
+    workspace.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "description": description,
+        "provider": "claude",
+        "workspace": str(workspace),
+        "agent": "ubuntu",
+    }
+    if session_id:
+        payload["session_id"] = session_id
+
+    response = requests.post(
+        f"{base_url}/api/nexus/tasks",
+        params={"exec_user": exec_user},
+        json=payload,
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _set_task_status(base_url: str, task_id: str, status: str, *, exec_user: str = "ubuntu") -> dict:
+    response = requests.patch(
+        f"{base_url}/api/nexus/tasks/{task_id}/status",
+        params={"exec_user": exec_user},
+        json={"status": status},
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _create_schedule(base_url: str, name: str) -> dict:
+    workspace = Path("/tmp/kanban-e2e")
+    workspace.mkdir(parents=True, exist_ok=True)
+    response = requests.post(
+        f"{base_url}/api/nexus/schedules",
+        json={
+            "name": name,
+            "run_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+            "description": f"{name} description",
+            "provider": "claude",
+            "workspace": str(workspace),
+            "exec_user": "ubuntu",
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _wait_for_task_page(page, *, require_board: bool = True) -> None:
+    page.wait_for_selector("#taskPageContainer", timeout=10_000)
+    page.wait_for_selector("#taskSurfaceSwitcher-global", timeout=10_000)
+    if require_board:
+        page.wait_for_selector("#taskSearch-global", timeout=10_000)
+    page.wait_for_timeout(1000)
+
+
+def test_task_board_shows_empty_state_when_filters_match_no_tasks(live_server, page):
+    missing_search = f"no-such-task-{uuid.uuid4().hex[:10]}"
+
+    page.goto(f"{live_server}/?page=task", wait_until="commit", timeout=20_000)
+    _wait_for_task_page(page)
+
+    page.fill("#taskSearch-global", missing_search)
+    page.wait_for_timeout(2500)
+
+    assert page.locator("#taskBoardEmptyState-global").is_visible()
+    assert page.locator("#kanbanBoard-global").evaluate("el => el.hidden") is True
+    assert page.locator("#summaryStrip-global").evaluate("el => el.hidden") is True
+
+
+def test_task_board_renders_real_api_task_and_detail(live_server, page):
+    task_description = f"kanban e2e {uuid.uuid4().hex[:8]}"
+    target_session_id = f"target-session-{uuid.uuid4().hex[:8]}"
+    task = _create_task(live_server, task_description, session_id=target_session_id)
+
+    assert task["session_id"] == target_session_id
+
+    page.goto(f"{live_server}/?page=task", wait_until="commit", timeout=20_000)
+    _wait_for_task_page(page)
+
+    assert page.locator("#taskPageContainer").is_visible()
+    assert page.locator("#kanbanBoard-global").is_visible()
+    card = page.locator(f'#kanbanBoard-global .task-card[data-task-id="{task["id"]}"]')
+    assert card.count() == 1
+    assert task_description in card.text_content()
+
+    card.click()
+    page.wait_for_timeout(1000)
+
+    assert page.locator("#taskDetail-global").evaluate("el => !el.classList.contains('hidden')")
+    assert page.locator("#taskDetail-global").evaluate("el => el.dataset.taskId") == task["id"]
+
+
+
+def test_task_board_navigation_survives_refresh_and_api_updates(live_server, page):
+    description = f"kanban refresh {uuid.uuid4().hex[:8]}"
+    task = _create_task(live_server, description)
+    refreshed_session_id = f"target-session-{uuid.uuid4().hex[:8]}"
+
+    page.goto(f"{live_server}/?page=task", wait_until="commit", timeout=20_000)
+    _wait_for_task_page(page)
+
+    card = page.locator(f'#kanbanBoard-global .task-card[data-task-id="{task["id"]}"]')
+    assert card.count() == 1
+
+    # Mutate the task through the API and confirm the browser picks up the new data
+    requests.patch(
+        f"{live_server}/api/nexus/tasks/{task['id']}",
+        params={"exec_user": "ubuntu"},
+        json={"description": f"{description} updated", "session_id": refreshed_session_id},
+        timeout=10,
+    ).raise_for_status()
+
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(2500)
+
+    refreshed_card = page.locator(f'#kanbanBoard-global .task-card[data-task-id="{task["id"]}"]')
+    assert refreshed_card.count() >= 1
+    assert refreshed_card.filter(has_text="updated").count() >= 1
+
+
+def test_task_summary_strip_reports_total_active_running_reviewing_failed_cancelled_and_scheduled(live_server, page):
+    exec_user = f"summary-{uuid.uuid4().hex[:8]}"
+    pending = _create_task(live_server, f"summary pending {uuid.uuid4().hex[:8]}", exec_user=exec_user)
+    running = _create_task(live_server, f"summary running {uuid.uuid4().hex[:8]}", exec_user=exec_user)
+    reviewing = _create_task(live_server, f"summary reviewing {uuid.uuid4().hex[:8]}", exec_user=exec_user)
+    failed = _create_task(live_server, f"summary failed {uuid.uuid4().hex[:8]}", exec_user=exec_user)
+
+    _set_task_status(live_server, running["id"], "running", exec_user=exec_user)
+    _set_task_status(live_server, reviewing["id"], "running", exec_user=exec_user)
+    _set_task_status(live_server, reviewing["id"], "in_review", exec_user=exec_user)
+    _set_task_status(live_server, failed["id"], "running", exec_user=exec_user)
+    _set_task_status(live_server, failed["id"], "failed", exec_user=exec_user)
+
+    page.goto(f"{live_server}/?page=task", wait_until="commit", timeout=20_000)
+    _wait_for_task_page(page)
+
+    page.evaluate(
+        """(user) => {
+            const select = document.getElementById('globalUserFilter');
+            if (!select) return;
+            if (![...select.options].some((opt) => opt.value === user)) {
+                const option = document.createElement('option');
+                option.value = user;
+                option.textContent = user;
+                select.appendChild(option);
+            }
+            select.value = user;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }""",
+        exec_user,
+    )
+    page.wait_for_timeout(2500)
+
+    assert page.locator('.summary-card[data-metric="total"] .summary-value').text_content() == "4"
+    assert page.locator('.summary-card[data-metric="active"] .summary-value').text_content() == "3"
+    assert page.locator('.summary-card[data-metric="running"] .summary-value').text_content() == "1"
+    assert page.locator('.summary-card[data-metric="reviewing"] .summary-value').text_content() == "1"
+    assert page.locator('.summary-card[data-metric="failed"] .summary-value').text_content() == "1"
+    assert page.locator('.summary-card[data-metric="cancelled"] .summary-value').text_content() == "0"
+    assert page.locator('.summary-card[data-metric="scheduled"] .summary-value').text_content() == "0"
+    assert page.locator('.summary-card[data-metric="scheduled"] .summary-label').text_content() == "Scheduled"
+
+
+def test_task_page_secondary_surfaces_cover_board_and_schedules_only(live_server, page):
+    schedule_name = f"kanban schedule {uuid.uuid4().hex[:8]}"
+    _create_schedule(live_server, schedule_name)
+
+    page.goto(f"{live_server}/?page=task&taskSurface=schedules", wait_until="commit", timeout=20_000)
+    _wait_for_task_page(page, require_board=False)
+
+    assert page.locator('#taskSurfaceSwitcher-global [data-surface="board"]').is_visible()
+    assert page.locator('#taskSurfaceSwitcher-global [data-surface="schedules"]').is_visible()
+    assert page.locator('#taskSurfaceSwitcher-global [data-surface="workflows"]').count() == 0
+    assert page.locator("#taskSurfaceSchedules-global").is_visible()
+    assert schedule_name in page.locator("#scheduleList-global").text_content()
+    assert page.locator('#kanbanBoard-global .kanban-column[data-status="cancelled"]').count() == 1
+
+    page.goto(f"{live_server}/?page=task&taskSurface=workflows", wait_until="commit", timeout=20_000)
+    _wait_for_task_page(page)
+    assert "taskSurface=workflows" not in page.url
+    assert page.locator("#taskSurfaceBoard-global").is_visible()
+    assert page.locator('#taskSurfaceSwitcher-global [data-surface="workflows"]').count() == 0

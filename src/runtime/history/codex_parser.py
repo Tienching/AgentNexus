@@ -20,6 +20,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail
+from .cache_store import CacheStore, FileStamp, stat_paths
 
 logger = logging.getLogger(__name__)
 
@@ -142,12 +143,10 @@ class CodexHistoryParser(BaseHistoryParser):
             return []
 
         sessions: List[SessionMeta] = []
-        for jsonl_file in jsonl_files:
-            meta = self._parse_session_meta_unfiltered(jsonl_file)
-            if meta:
-                if linux_user and not meta.exec_user:
-                    meta.exec_user = linux_user
-                sessions.append(meta)
+        for meta in self._collect_unfiltered_metas(jsonl_files):
+            if linux_user and not meta.exec_user:
+                meta.exec_user = linux_user
+            sessions.append(meta)
 
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
@@ -168,14 +167,55 @@ class CodexHistoryParser(BaseHistoryParser):
 
         normalized_project = self.normalize_path(project_path)
         sessions: List[SessionMeta] = []
-
-        for jsonl_file in jsonl_files:
-            meta = self._parse_session_meta(jsonl_file, normalized_project)
-            if meta:
-                sessions.append(meta)
+        for meta in self._collect_unfiltered_metas(jsonl_files):
+            exec_dir = meta.exec_dir or ""
+            if not exec_dir:
+                # No cwd info in the session — can't attribute to a project
+                continue
+            if self.normalize_path(exec_dir) != normalized_project:
+                continue
+            # Strip the exec_dir so legacy callers that did not expect it
+            # on this code-path still get identical objects.
+            meta.exec_dir = None
+            sessions.append(meta)
 
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
+
+    def _collect_unfiltered_metas(self, jsonl_files: List[Path]) -> List[SessionMeta]:
+        """Cache-aware batch extraction of SessionMeta (one per file).
+
+        Uses CacheStore keyed on (provider, file_path) with mtime_ns/size
+        invalidation. Cache shards here are single-element lists because
+        one Codex JSONL file == one session.
+        """
+        stamps = stat_paths(jsonl_files)
+        cache = CacheStore.get_default()
+        try:
+            cached = cache.lookup_many(self.provider_name, stamps)
+        except Exception:
+            logger.debug("codex cache lookup failed; falling through", exc_info=True)
+            cached = {}
+
+        metas: List[SessionMeta] = []
+        to_persist: List = []
+        for jsonl_file, stamp in stamps.items():
+            if jsonl_file in cached:
+                metas.extend(cached[jsonl_file])
+                continue
+            parsed = self._parse_session_meta_unfiltered(jsonl_file)
+            shard = [parsed] if parsed else []
+            if shard:
+                metas.append(parsed)
+            to_persist.append((jsonl_file, stamp, shard))
+
+        if to_persist:
+            try:
+                cache.store_many(self.provider_name, to_persist)
+            except Exception:
+                logger.debug("codex cache store failed; continuing", exc_info=True)
+
+        return metas
 
     def get_session_detail(self, config_path: Path, session_id: str) -> Optional[HistorySessionDetail]:
         """Get full message detail for a Codex session.

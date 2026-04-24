@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
+import time
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from src.providers.dispatcher import normalize_provider, create_executor, create_adapter
 from src.server.logger import get_logger
+from src.server.services.observability import record_sampled_event, telemetry
 from src.server.utils.ids import gen_run_id
 
 if TYPE_CHECKING:
@@ -197,6 +199,170 @@ def select_provider_for_task(task_text: str, available_providers: list[str]) -> 
     return scored[0][0]
 
 
+def _resolve_task_binding(task: "Task", storage) -> dict:
+    """Resolve canonical execution binding fields for a task run.
+
+    The returned mapping intentionally prefers the execution binding model
+    over legacy task/session pseudo-session assumptions, while still falling
+    back to historic fields for compatibility.
+    """
+    compat_hits: list[str] = []
+    binding = getattr(task, "execution_binding", None)
+    storage_binding = None
+
+    base_session_id = (getattr(task, "session_id", None) or "").strip() or f"task_{task.id}"
+
+    if binding is None and storage is not None:
+        try:
+            storage_binding = storage.get_execution_binding(base_session_id)
+            if storage_binding:
+                binding = storage_binding
+                compat_hits.append("storage_binding_lookup")
+        except Exception as e:
+            logger.warning(
+                "Task binding lookup failed",
+                extra={"task_id": task.id, "session_id": base_session_id, "error": str(e)},
+            )
+
+    if binding is None and hasattr(task, "to_execution_binding"):
+        try:
+            binding = task.to_execution_binding()
+            compat_hits.append("derived_from_task_fields")
+        except Exception as e:
+            logger.warning(
+                "Task binding derivation failed",
+                extra={"task_id": task.id, "error": str(e)},
+            )
+            binding = None
+
+    provider = normalize_provider(
+        getattr(binding, "provider", None)
+        or getattr(task, "provider", None)
+        or "nexus"
+    )
+    alias = (getattr(binding, "alias", None) or getattr(task, "alias", None) or provider)
+    exec_user = (getattr(binding, "exec_user", None) or getattr(task, "exec_user", None) or "ubuntu")
+    work_dir = getattr(binding, "work_dir", None) or getattr(task, "workspace", None)
+    source_session_id = getattr(binding, "source_session_id", None) or getattr(task, "source_session_id", None)
+    session_kind = getattr(binding, "session_kind", None) or getattr(task, "session_kind", None) or "task"
+
+    session_id = (getattr(binding, "session_id", None) or "").strip() or base_session_id
+
+    cli_session_id = (
+        getattr(binding, "cli_session_id", None)
+        or getattr(task, "cli_session_id", None)
+        or getattr(task, "claude_session_id", None)
+    )
+
+    if not cli_session_id and storage is not None:
+        lookup_candidates = [session_id, source_session_id, base_session_id]
+        for candidate in lookup_candidates:
+            if not candidate:
+                continue
+            try:
+                stored_cli = storage.get_cli_session_id(candidate)
+            except Exception as e:
+                logger.debug(
+                    "Task CLI resume lookup failed",
+                    extra={"task_id": task.id, "session_id": candidate, "error": str(e)},
+                )
+                continue
+            if stored_cli:
+                cli_session_id = stored_cli
+                compat_hits.append("resume_storage_lookup")
+                break
+
+    if not cli_session_id:
+        compat_hits.append("resume_fallback_to_provider_default")
+
+    # Keep the task object aligned with the canonical binding so any later
+    # persistence or notification logic sees the same identifiers.
+    try:
+        task.session_id = session_id
+        task.provider = provider
+        task.alias = alias
+        task.exec_user = exec_user
+        if work_dir:
+            task.workspace = work_dir
+        if source_session_id:
+            task.source_session_id = source_session_id
+        task.session_kind = session_kind
+        if cli_session_id:
+            task.cli_session_id = cli_session_id
+            task.claude_session_id = cli_session_id
+        if binding is None and hasattr(task, "to_execution_binding"):
+            binding = task.to_execution_binding()
+        elif binding is not None:
+            binding.session_id = session_id
+            binding.provider = provider
+            binding.alias = alias
+            binding.exec_user = exec_user
+            binding.work_dir = work_dir
+            binding.source_session_id = source_session_id
+            binding.session_kind = session_kind
+            binding.cli_session_id = cli_session_id
+            binding.task_id = task.id
+            binding.source_type = "task"
+            if getattr(binding, "metadata", None) is None:
+                binding.metadata = {}
+            binding.metadata.update({
+                "compat_hits": compat_hits,
+            })
+    except Exception as e:
+        logger.debug(
+            "Task binding normalization failed",
+            extra={"task_id": task.id, "error": str(e)},
+        )
+
+    return {
+        "binding": binding,
+        "compat_hits": compat_hits,
+        "session_id": session_id,
+        "provider": provider,
+        "alias": alias,
+        "exec_user": exec_user,
+        "work_dir": work_dir,
+        "cli_session_id": cli_session_id,
+        "source_session_id": source_session_id,
+        "session_kind": session_kind,
+        "used_storage_binding": storage_binding is not None,
+    }
+
+
+def _provision_task_workspace(task: "Task") -> Optional[str]:
+    """Provision a task worktree from repo metadata when available."""
+    explicit_worktree = (getattr(task, "worktree_path", None) or "").strip()
+    if explicit_worktree and Path(explicit_worktree).exists():
+        task.workspace = explicit_worktree
+        return explicit_worktree
+
+    repo_url = (getattr(task, "repo_url", None) or "").strip() or None
+    repo_root_value = (getattr(task, "repo_root", None) or "").strip() or None
+    if not repo_url and not repo_root_value:
+        if explicit_worktree:
+            raise FileNotFoundError(f"Configured task worktree does not exist: {explicit_worktree}")
+        return (getattr(task, "workspace", None) or "").strip() or None
+
+    from src.runtime.commands.slash.worktree import provision_cached_worktree
+
+    tmp_base = None
+    if explicit_worktree:
+        tmp_base = Path(explicit_worktree).parent
+    elif (getattr(task, "workspace", None) or "").strip():
+        tmp_base = Path(str(task.workspace)).parent
+
+    provisioned = provision_cached_worktree(
+        task_id=str(task.id),
+        repo_url=repo_url,
+        repo_root=Path(repo_root_value) if repo_root_value else None,
+        tmp_base=tmp_base or Path("/tmp"),
+    )
+    resolved_worktree = str(provisioned.worktree.worktree_dir)
+    task.worktree_path = resolved_worktree
+    task.workspace = resolved_worktree
+    return resolved_worktree
+
+
 async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
     """Execute a queued task end-to-end.
 
@@ -209,16 +375,76 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
     from src.server.services import get_session_storage
     from src.server.services.stream_archiver import create_archiver
 
-    exec_user = task.exec_user or "ubuntu"
-    logger.info(f"task_handler: task.session_id={task.session_id!r}, task.id={task.id}")
-    session_id = task.session_id or f"task_{task.id}"
-    logger.info(f"task_handler: using session_id={session_id}")
+    started_at = time.perf_counter()
     run_id = gen_run_id()
 
-    logger.info(f"Executing task {task.id} for exec_user {exec_user}: {task.description[:50]}...")
+    try:
+        _provision_task_workspace(task)
+    except Exception as e:
+        has_workspace_contract = any(
+            str(getattr(task, field, None) or "").strip()
+            for field in ("repo_url", "repo_root", "worktree_path")
+        )
+        log_method = logger.error if has_workspace_contract else logger.warning
+        log_method(
+            "Task workspace provisioning failed",
+            extra={
+                "task_id": getattr(task, "id", None),
+                "repo_url": getattr(task, "repo_url", None),
+                "repo_root": getattr(task, "repo_root", None),
+                "worktree_path": getattr(task, "worktree_path", None),
+                "error": str(e),
+            },
+        )
+        if has_workspace_contract:
+            return f"Task workspace provisioning failed: {e}"
+
+    storage = get_session_storage()
+    binding_info = _resolve_task_binding(task, storage)
+    binding = binding_info["binding"]
+    session_id = binding_info["session_id"]
+    provider = binding_info["provider"]
+    alias_value = binding_info["alias"]
+    exec_user = binding_info["exec_user"]
+    work_dir = binding_info["work_dir"]
+    cli_session_id = binding_info["cli_session_id"]
+    source_session_id = binding_info["source_session_id"]
+
+    telemetry.increment("task_execution.started")
+    for hit in binding_info["compat_hits"]:
+        telemetry.increment(f"task_execution.compat.{hit}")
+    record_sampled_event(
+        "task_execution.binding_resolved",
+        {
+            "task_id": task.id,
+            "session_id": session_id,
+            "provider": provider,
+            "alias": alias_value,
+            "exec_user": exec_user,
+            "work_dir": work_dir,
+            "cli_session_id_present": bool(cli_session_id),
+            "source_session_id": source_session_id,
+            "compat_hits": binding_info["compat_hits"],
+            "used_storage_binding": binding_info["used_storage_binding"],
+        },
+    )
+
+    logger.info(
+        "Executing task with resolved binding",
+        extra={
+            "task_id": task.id,
+            "session_id": session_id,
+            "provider": provider,
+            "alias": alias_value,
+            "exec_user": exec_user,
+            "work_dir": work_dir,
+            "cli_session_id_present": bool(cli_session_id),
+            "source_session_id": source_session_id,
+            "compat_hits": binding_info["compat_hits"],
+        },
+    )
 
     # ── Provider dispatch ─────────────────────────────────────────
-    provider = normalize_provider(getattr(task, "provider", None))
     executor = create_executor(provider)
 
     # ── User prompt & context ─────────────────────────────────────
@@ -233,16 +459,9 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
 
     user_prompt = (ctx.get("next_user_message") or task.description or "").strip()
 
-    alias_value = (getattr(task, "alias", None) or provider)
     # Apply smart model classification: if the task has no explicit model,
     # infer the best tier from task description + priority keywords.
     model_value = classify_task_model(task)
-
-    cli_session_id = (
-        getattr(task, "cli_session_id", None)
-        or getattr(task, "claude_session_id", None)
-        or None
-    )
 
     # ── Build RequestModel ────────────────────────────────────────
     request = RequestModel(
@@ -250,7 +469,7 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
         user=task.project_id or "task_executor",
         session_id=session_id,
         msg_id=run_id,
-        cwd=task.workspace or "",
+        cwd=work_dir or "",
         cwd_mode=ctx.get("cwd_mode", ""),
         run_kind=ctx.get("next_run_kind", ""),
         provider=provider,
@@ -267,16 +486,37 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
         exec_user=exec_user,
         provider=provider,
         alias=alias_value,
+        execution_binding=binding,
+        source_session_id=source_session_id,
     )
 
-    storage = get_session_storage()
-
-    # Store task_id in session meta
+    # Store control-plane binding for this task session.
     try:
-        key = f"session:{session_id}:meta"
-        storage._redis.hset(key, "task_id", task.id)
+        storage.upsert_execution_binding(
+            session_id=session_id,
+            cli_session_id=cli_session_id,
+            provider=provider,
+            alias=alias_value,
+            exec_user=exec_user,
+            work_dir=work_dir or None,
+            source_type="task",
+            source_session_id=source_session_id,
+            task_id=task.id,
+            session_kind=binding_info["session_kind"],
+        )
     except Exception as e:
-        logger.warning(f"Failed to set task_id in session meta: {e}")
+        logger.warning(
+            "Failed to set execution binding for task",
+            extra={"task_id": task.id, "session_id": session_id, "error": str(e)},
+        )
+
+    try:
+        storage.set_task_id(session_id, task.id)
+    except Exception as e:
+        logger.debug(
+            "Failed to persist task_id on session meta",
+            extra={"task_id": task.id, "session_id": session_id, "error": str(e)},
+        )
 
     # ── Adapter ───────────────────────────────────────────────────
     adapter = create_adapter(provider)
@@ -322,9 +562,11 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
     # ── Execute ───────────────────────────────────────────────────
     _captured_cli_session_id = None
     _task_error = None
+    _retry_requested = False
 
     try:
         await archiver.on_run_started(initial_messages)
+        telemetry.increment("task_execution.run_started")
 
         start_event = adapter.create_start_event()
         if start_event:
@@ -338,6 +580,7 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
                 data = json.loads(output)
                 if isinstance(data, dict) and data.get("type") == "error":
                     err_msg = data.get("message", "Unknown error")
+                    telemetry.increment("task_execution.output_error")
                     try:
                         err_event = adapter.create_error_event(err_msg)
                         if err_event:
@@ -351,7 +594,20 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
                     _sid = data.get("session_id") or data.get("thread_id")
                     if _sid and isinstance(_sid, str):
                         _captured_cli_session_id = _sid
-                        logger.info(f"Captured CLI session ID for task {task.id}: {_sid}")
+                        logger.info(
+                            "Captured CLI session ID for task",
+                            extra={"task_id": task.id, "session_id": session_id, "cli_session_id": _sid},
+                        )
+                        telemetry.increment("task_execution.cli_session_captured")
+                        record_sampled_event(
+                            "task_execution.cli_session_captured",
+                            {
+                                "task_id": task.id,
+                                "session_id": session_id,
+                                "cli_session_id": _sid,
+                                "provider": provider,
+                            },
+                        )
 
                 converted = adapter.convert(data) if isinstance(data, dict) else None
                 if converted:
@@ -369,17 +625,51 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
         # ── Ralph Loop post-execution ─────────────────────────────
         result = _handle_ralph_loop(task, session_id, storage, task_queue)
         if result is not None:
+            _retry_requested = True
             return result
 
-        logger.info(f"Task {task.id} completed successfully")
+        logger.info(
+            "Task completed successfully",
+            extra={"task_id": task.id, "session_id": session_id, "provider": provider, "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2)},
+        )
+        telemetry.increment("task_execution.completed")
+        record_sampled_event(
+            "task_execution.completed",
+            {
+                "task_id": task.id,
+                "session_id": session_id,
+                "provider": provider,
+                "alias": alias_value,
+                "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            },
+        )
         _task_error = None
         return None
 
     except asyncio.CancelledError:
-        logger.warning(f"Task {task.id} was cancelled")
+        logger.warning(
+            "Task execution cancelled",
+            extra={"task_id": task.id, "session_id": session_id, "provider": provider},
+        )
+        telemetry.increment("task_execution.cancelled")
         raise
     except Exception as e:
-        logger.error(f"Task {task.id} failed: {e}", exc_info=True)
+        logger.error(
+            "Task execution failed",
+            extra={"task_id": task.id, "session_id": session_id, "provider": provider, "error": str(e)},
+            exc_info=True,
+        )
+        telemetry.increment("task_execution.failed")
+        record_sampled_event(
+            "task_execution.failed",
+            {
+                "task_id": task.id,
+                "session_id": session_id,
+                "provider": provider,
+                "alias": alias_value,
+                "error": str(e),
+            },
+        )
         _task_error = str(e)
         try:
             await archiver.on_run_error(str(e))
@@ -405,33 +695,69 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
             try:
                 task.cli_session_id = _captured_cli_session_id
                 task.claude_session_id = _captured_cli_session_id
+                task.execution_binding = task.to_execution_binding()
+                storage.upsert_execution_binding(
+                    session_id=session_id,
+                    cli_session_id=_captured_cli_session_id,
+                    provider=provider,
+                    alias=alias_value,
+                    exec_user=exec_user,
+                    work_dir=work_dir or None,
+                    source_type="task",
+                    source_session_id=source_session_id,
+                    task_id=task.id,
+                    session_kind=binding_info["session_kind"],
+                )
                 if task_queue:
                     task_queue.update_task(task)
-                    logger.info(f"Saved cli_session_id={_captured_cli_session_id} for task {task.id}")
+                    logger.info(
+                        "Saved CLI session ID for task",
+                        extra={
+                            "task_id": task.id,
+                            "session_id": session_id,
+                            "cli_session_id": _captured_cli_session_id,
+                            "provider": provider,
+                        },
+                    )
             except Exception as e:
-                logger.warning(f"Failed to save cli_session_id for task {task.id}: {e}")
-
-        # Send task completion notification
-        _has_notification = getattr(task, "response_url", None) or getattr(task, "notification_sink_type", None)
-        if _has_notification:
-            try:
-                from src.server.services.task_notifier import TaskNotifier
-                notifier = TaskNotifier()
-                task_succeeded = _task_error is None
-                notification_target = task.get_notification_target() if hasattr(task, "get_notification_target") else None
-                await notifier.notify_task_completion(
-                    task_id=task.id,
-                    session_id=session_id,
-                    response_url=task.response_url,
-                    callback_msg_id=getattr(task, "callback_msg_id", None),
-                    callback_user=getattr(task, "callback_user", None),
-                    success=task_succeeded,
-                    error_message=_task_error if not task_succeeded else None,
-                    source_session_id=getattr(task, "source_session_id", None),
-                    notification_target=notification_target,
+                logger.warning(
+                    "Failed to save CLI session ID for task",
+                    extra={"task_id": task.id, "session_id": session_id, "error": str(e)},
                 )
-            except Exception as notify_err:
-                logger.warning(f"Failed to send task completion notification: {notify_err}")
+
+        # Send task completion notification only for terminal outcomes.
+        if not _retry_requested:
+            _has_notification = getattr(task, "response_url", None) or getattr(task, "notification_sink_type", None)
+            if _has_notification:
+                try:
+                    from src.server.services.task_notifier import TaskNotifier
+                    notifier = TaskNotifier()
+                    task_succeeded = _task_error is None
+                    notification_target = task.get_notification_target() if hasattr(task, "get_notification_target") else None
+                    await notifier.notify_task_completion(
+                        task_id=task.id,
+                        session_id=session_id,
+                        response_url=task.response_url,
+                        callback_msg_id=getattr(task, "callback_msg_id", None),
+                        callback_user=getattr(task, "callback_user", None),
+                        success=task_succeeded,
+                        error_message=_task_error if not task_succeeded else None,
+                        source_session_id=getattr(task, "source_session_id", None),
+                        notification_target=notification_target,
+                    )
+                except Exception as notify_err:
+                    logger.warning(
+                        "Failed to send task completion notification",
+                        extra={"task_id": task.id, "session_id": session_id, "error": str(notify_err)},
+                    )
+
+        duration_ms = round((time.perf_counter() - started_at) * 1000, 2)
+        telemetry.set_gauge("task_execution.last_duration_ms", duration_ms)
+        telemetry.set_gauge(
+            "task_execution.last_status_code",
+            float(202 if _retry_requested else (200 if _task_error is None else 500)),
+        )
+        telemetry.set_gauge("task_execution.last_retry_requested", 1.0 if _retry_requested else 0.0)
 
 
 def _handle_ralph_loop(task, session_id: str, storage, task_queue) -> Optional[str]:
@@ -469,12 +795,56 @@ def _handle_ralph_loop(task, session_id: str, storage, task_queue) -> Optional[s
         task_queue.update_task(task)
 
     if keyword_found:
-        logger.info(f"Ralph Loop: keyword found for task {task.id} at iteration {task.loop_iteration}")
+        telemetry.increment("task_execution.loop.keyword_found")
+        record_sampled_event(
+            "task_execution.loop.keyword_found",
+            {
+                "task_id": task.id,
+                "session_id": session_id,
+                "iteration": task.loop_iteration,
+                "max_iterations": task.loop_max_iterations,
+            },
+        )
+        logger.info(
+            "Ralph Loop keyword found",
+            extra={"task_id": task.id, "session_id": session_id, "iteration": task.loop_iteration},
+        )
         return None  # keyword matched → success, stop iterating
 
     if task.loop_iteration >= task.loop_max_iterations:
-        logger.info(f"Ralph Loop: max iterations ({task.loop_max_iterations}) reached for task {task.id}")
+        telemetry.increment("task_execution.loop.max_iterations")
+        record_sampled_event(
+            "task_execution.loop.max_iterations",
+            {
+                "task_id": task.id,
+                "session_id": session_id,
+                "iteration": task.loop_iteration,
+                "max_iterations": task.loop_max_iterations,
+            },
+        )
+        logger.info(
+            "Ralph Loop max iterations reached",
+            extra={"task_id": task.id, "session_id": session_id, "iteration": task.loop_iteration},
+        )
         return None  # exhausted → treat as success
 
-    logger.info(f"Ralph Loop: keyword NOT found for task {task.id}, iteration {task.loop_iteration}/{task.loop_max_iterations}, re-queuing")
+    telemetry.increment("task_execution.loop.retry_queued")
+    record_sampled_event(
+        "task_execution.loop.retry_queued",
+        {
+            "task_id": task.id,
+            "session_id": session_id,
+            "iteration": task.loop_iteration,
+            "max_iterations": task.loop_max_iterations,
+        },
+    )
+    logger.info(
+        "Ralph Loop retry queued",
+        extra={
+            "task_id": task.id,
+            "session_id": session_id,
+            "iteration": task.loop_iteration,
+            "max_iterations": task.loop_max_iterations,
+        },
+    )
     return RALPH_LOOP_RETRY_SIGNAL

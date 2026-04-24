@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.task_storage import TaskQueue
+from ..services.task_storage import get_task_queue
 from .nexus_auth import verify_nexus_auth
 
 logger = get_logger(__name__)
@@ -280,7 +280,7 @@ async def export_data(
     rows: List[Dict[str, Any]] = []
 
     if type == "tasks":
-        queue = TaskQueue(db_path=None, exec_user=exec_user)
+        queue = get_task_queue(exec_user)
         try:
             tasks, _ = queue.list_tasks(page=1, page_size=min(limit, 500))
             for t in tasks:

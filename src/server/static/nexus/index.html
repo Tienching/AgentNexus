@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Nexus - Session & Task Manager</title>
+    <title>Nexus - Chat, Task, Agents & Settings</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.2.5/400.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.2.5/500.min.css">
@@ -18,14 +18,14 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
     <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-    <link rel="stylesheet" href="css/theme.css?v=30">
-    <link rel="stylesheet" href="css/layout.css?v=30">
-    <link rel="stylesheet" href="css/styles.css?v=30">
-    <link rel="stylesheet" href="css/streaming.css?v=31">
+    <link rel="stylesheet" href="css/theme.css?v=33">
+    <link rel="stylesheet" href="css/layout.css?v=32">
+    <link rel="stylesheet" href="css/styles.css?v=38">
+    <link rel="stylesheet" href="css/streaming.css?v=33">
 </head>
 <body>
     <!-- Login Modal (shown when auth is required) -->
-    <div id="loginOverlay" class="login-overlay" style="display: none;">
+    <div id="loginOverlay" class="login-overlay is-hidden">
         <div class="login-container">
             <div class="login-header">
                 <div class="login-logo">
@@ -34,14 +34,14 @@
                     </svg>
                 </div>
                 <h1 class="login-title">Nexus</h1>
-                <p class="login-subtitle">Session & Task Manager</p>
+                <p class="login-subtitle">Chat, Task, Agents & Settings</p>
             </div>
             <form id="loginForm" class="login-form">
                 <div class="form-group">
                     <label class="form-label">Password</label>
                     <input type="password" id="loginPassword" class="form-input" placeholder="Enter password" autocomplete="current-password" required>
                 </div>
-                <div id="loginError" class="login-error" style="display: none;"></div>
+                <div id="loginError" class="login-error is-hidden"></div>
                 <button type="submit" id="loginBtn" class="action-btn primary login-btn">
                     <span>Login</span>
                 </button>
@@ -49,7 +49,7 @@
         </div>
     </div>
 
-    <div id="app" class="layout-container" style="display: none;">
+    <div id="app" class="layout-container is-hidden">
         <!-- Header -->
         <header class="header">
             <div class="header-left">
@@ -75,12 +75,18 @@
                         </svg>
                         <span>Task</span>
                     </button>
-                    <button class="page-nav-btn" data-page="settings" title="Settings">
+                    <button class="page-nav-btn" data-page="agents" title="Agent">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        <span>Agent</span>
+                    </button>
+                    <button class="page-nav-btn" data-page="settings" title="Setting">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                         </svg>
-                        <span>Settings</span>
+                        <span>Setting</span>
                     </button>
                 </div>
             </div>
@@ -118,7 +124,7 @@
 
             <div class="header-right" id="projectHeaderRight">
                 <!-- Plan Mode Indicator -->
-                <div id="planModeIndicator" class="plan-mode-indicator" style="display:none;">
+                <div id="planModeIndicator" class="plan-mode-indicator" hidden>
                     <span class="plan-mode-badge">PLAN MODE</span>
                     <span id="planModeStatus" class="plan-mode-status"></span>
                     <button id="planModeViewBtn" class="plan-mode-view-btn" title="View plan details">View</button>
@@ -126,16 +132,16 @@
                 </div>
 
                 <!-- Plan Mode Panel (hidden by default) -->
-                <div id="planModePanel" class="plan-mode-panel" style="display:none;">
+                <div id="planModePanel" class="plan-mode-panel" hidden>
                     <div class="plan-mode-panel-header">
                         <h3>Plan Mode</h3>
                         <button id="planPanelCloseBtn" class="plan-panel-close-btn">&times;</button>
                     </div>
-                    <div id="planEditorContainer" class="plan-editor-container" style="display:none;">
+                    <div id="planEditorContainer" class="plan-editor-container" hidden>
                         <textarea id="planEditor" class="plan-editor" placeholder="Enter your plan..."></textarea>
                         <button id="planSubmitBtn" class="plan-action-btn plan-submit-btn">Submit Plan</button>
                     </div>
-                    <div id="planApprovalContainer" class="plan-approval-container" style="display:none;">
+                    <div id="planApprovalContainer" class="plan-approval-container" hidden>
                         <div id="planContentDisplay" class="plan-content-display"></div>
                         <div class="plan-approval-actions">
                             <button id="planApproveBtn" class="plan-action-btn plan-approve-btn">Approve & Execute</button>
@@ -168,7 +174,7 @@
                 </button>
 
                 <!-- Logout (shown when auth is enabled) -->
-                <button id="logoutBtn" class="action-btn" title="Logout" style="display: none;">
+                <button id="logoutBtn" class="action-btn is-hidden" title="Logout">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
                     </svg>
@@ -201,7 +207,7 @@
                     </div>
 
                     <!-- Pane 1 (for horizontal/vertical/quad) -->
-                    <div class="pane" id="pane-1" data-pane-id="1" style="display:none;">
+                    <div class="pane" id="pane-1" data-pane-id="1" hidden>
                         <div class="pane-header">
                             <div class="pane-tabs" id="pane-1-tabs"></div>
                             <div class="pane-actions">
@@ -216,7 +222,7 @@
                     </div>
 
                     <!-- Pane 2 (for quad) -->
-                    <div class="pane" id="pane-2" data-pane-id="2" style="display:none;">
+                    <div class="pane" id="pane-2" data-pane-id="2" hidden>
                         <div class="pane-header">
                             <div class="pane-tabs" id="pane-2-tabs"></div>
                             <div class="pane-actions">
@@ -231,7 +237,7 @@
                     </div>
 
                     <!-- Pane 3 (for quad) -->
-                    <div class="pane" id="pane-3" data-pane-id="3" style="display:none;">
+                    <div class="pane" id="pane-3" data-pane-id="3" hidden>
                         <div class="pane-header">
                             <div class="pane-tabs" id="pane-3-tabs"></div>
                             <div class="pane-actions">
@@ -254,179 +260,175 @@
                 </div>
             </div><!-- End of taskView -->
 
+            <!-- Agents View -->
+            <div id="agentsView" class="page-view">
+                <!-- Agents shell is rendered by js/components/agents-view-shell.js -->
+            </div><!-- End of agentsView -->
+
             <!-- Settings View -->
             <div id="settingsView" class="page-view">
-                <div class="config-container settings-container">
-                    <div class="settings-tabs">
-                        <button class="settings-tab" data-settings-tab="overview">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zm10 0a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2"/></svg>
-                            Overview
-                        </button>
-                        <button class="settings-tab" data-settings-tab="general">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
-                            General
-                        </button>
-                        <button class="settings-tab" data-settings-tab="mcp">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/></svg>
-                            MCP
-                        </button>
-                        <button class="settings-tab" data-settings-tab="skills">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-                            Skills
-                        </button>
-                        <button class="settings-tab" data-settings-tab="security">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
-                            Security
-                        </button>
-                        <button class="settings-tab" data-settings-tab="runtimes">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                            Runtimes
-                        </button>
-                        <button class="settings-tab" data-settings-tab="audit">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
-                            Audit Log
-                        </button>
-                        <button class="settings-tab" data-settings-tab="cleanup">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                            Cleanup
-                        </button>
-                        <button class="settings-tab" data-settings-tab="tools">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                            Tools
-                        </button>
-                        <button class="settings-tab" data-settings-tab="agents">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                            Agents
-                        </button>
-                        <button class="settings-tab" data-settings-tab="activity">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-                            Activity
-                        </button>
-                        <button class="settings-tab" data-settings-tab="memory">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/></svg>
-                            Memory
-                        </button>
-                        <button class="settings-tab" data-settings-tab="integrations">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>
-                            Integrations
-                        </button>
-                        <button class="settings-tab" data-settings-tab="admin">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm0 0h12"/></svg>
-                            Admin
-                        </button>
-                        <button class="settings-tab" data-settings-tab="scheduling">
-                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                            Scheduling
-                        </button>
+                <div class="settings-container" id="settingsPageRoot">
+                    <div id="settingsPageTopAnchor" aria-hidden="true"></div>
+                    <div class="admin-section">
+                        <h2 class="admin-section-title">Settings</h2>
+                        <p class="config-section-desc">A single-page settings surface organized around Basic, Extensions, and Safety.</p>
+                    </div>
+                    <div class="settings-short-nav u-mb-lg" role="navigation" aria-label="Settings sections">
+                        <button type="button" class="settings-short-nav-btn is-active" data-settings-nav="overview" aria-current="true">Overview</button>
+                        <button type="button" class="settings-short-nav-btn" data-settings-nav="basic" aria-current="false">Basic</button>
+                        <button type="button" class="settings-short-nav-btn" data-settings-nav="extensions" aria-current="false">Extensions</button>
+                        <button type="button" class="settings-short-nav-btn" data-settings-nav="safety" aria-current="false">Safety</button>
                     </div>
 
-                    <div id="settingsConfigSection" class="settings-section" style="display:none;">
+                    <section id="settingsSectionBasic" class="settings-section" data-settings-section="basic">
+                        <div id="settingsBasicSummary" class="u-mb-lg"></div>
                         <div class="config-content">
-                            <div class="config-tab-content" data-config-content="parameters">
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Default Provider</h3>
-                                    <p class="config-section-desc">Select the default agent provider for new chats and tasks</p>
-                                    <div class="form-group">
-                                        <select id="configDefaultProvider" class="form-input form-select">
-                                            <option value="claude">claude</option>
-                                            <option value="gemini">gemini</option>
-                                            <option value="codex">codex</option>
-                                            <option value="codebuddy" selected>codebuddy</option>
-                                        </select>
-                                    </div>
-                                </div>
-
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Provider Default Models</h3>
-                                    <p class="config-section-desc">Set a default LLM model per provider/alias (e.g., claude-opus-4.6, gemini-2.5-pro). Leave empty to use provider default.</p>
-                                    <div id="providerModelsContainer"></div>
-                                </div>
-
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Provider Aliases</h3>
-                                    <p class="config-section-desc">Create custom aliases for providers</p>
-                                    <div class="alias-form">
-                                        <input id="newAliasName" type="text" class="form-input" placeholder="Alias name">
-                                        <select id="newAliasBase" class="form-input form-select">
-                                            <option value="claude">claude</option>
-                                            <option value="gemini">gemini</option>
-                                            <option value="codex">codex</option>
-                                            <option value="codebuddy">codebuddy</option>
-                                        </select>
-                                        <input id="newAliasConfigPath" type="text" class="form-input" placeholder="Config path (e.g. ~/.codex-internal, optional)">
-                                        <button id="addAliasBtn" class="action-btn primary">
-                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                            </svg>
-                                            Add
-                                        </button>
-                                    </div>
-                                    <div id="aliasListContainer" class="alias-list"></div>
-                                </div>
-
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Concurrency Limits</h3>
-                                    <p class="config-section-desc">Control max parallel tasks globally or per provider/alias</p>
-                                    <div style="margin-bottom:16px;">
-                                        <label class="form-label">Global Max Concurrency</label>
-                                        <div style="display:flex; gap:8px; align-items:center;">
-                                            <input id="globalConcurrencyInput" type="number" class="form-input" placeholder="0 = unlimited" min="0" style="width:140px;">
-                                            <button id="setGlobalConcurrencyBtn" class="action-btn primary">Save</button>
-                                            <span id="globalConcurrencyDisplay" style="color:var(--text-secondary); font-size:13px;"></span>
-                                        </div>
-                                    </div>
-
-                                    <label class="form-label">Per Provider / Alias Concurrency</label>
-                                    <div style="display:flex; gap:8px; align-items:center; margin-bottom:16px;">
-                                        <select id="providerConcurrencySelect" class="form-input form-select" style="flex:1;"></select>
-                                        <input id="providerConcurrencyLimit" type="number" class="form-input" placeholder="Limit" min="0" style="width:100px;">
-                                        <button id="setProviderConcurrencyBtn" class="action-btn primary">Set</button>
-                                    </div>
-
-                                    <div id="providerConcurrencyList" class="concurrency-list"></div>
+                            <div class="config-section">
+                                <h3 class="config-section-title">Default Provider</h3>
+                                <p class="config-section-desc">Select the default agent provider for new chats and tasks</p>
+                                <div class="form-group">
+                                    <select id="configDefaultProvider" class="form-input form-select">
+                                        <option value="nexus" selected>nexus</option>
+                                        <option value="claude">claude</option>
+                                        <option value="gemini">gemini</option>
+                                        <option value="codex">codex</option>
+                                        <option value="codebuddy">codebuddy</option>
+                                    </select>
                                 </div>
                             </div>
 
-                            <div class="config-tab-content" data-config-content="mcp">
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Global MCP Servers</h3>
-                                    <p class="config-section-desc">MCP servers available to all providers</p>
-                                    <div class="mcp-form">
-                                        <input id="globalMcpName" type="text" class="form-input" placeholder="Server name">
-                                        <input id="globalMcpCommand" type="text" class="form-input" placeholder="Command (e.g., npx)">
-                                        <input id="globalMcpArgs" type="text" class="form-input" placeholder="Args (comma-separated)">
-                                        <button id="addGlobalMcpBtn" class="action-btn primary">
-                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:16px;height:16px;">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                            </svg>
-                                            Add
-                                        </button>
-                                    </div>
-                                    <div id="globalMcpList" class="mcp-list"></div>
-                                </div>
-
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Provider-specific MCP Servers</h3>
-                                    <p class="config-section-desc">Configure MCP servers for individual providers</p>
-                                    <div id="providerMcpPanels" class="provider-panels"></div>
-                                </div>
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider Default Models</h3>
+                                <p class="config-section-desc">Set a default LLM model per provider/alias (e.g., claude-opus-4.6, gemini-2.5-pro). Leave empty to use provider default.</p>
+                                <div id="providerModelsContainer"></div>
                             </div>
 
-                            <div class="config-tab-content" data-config-content="skills">
-                                <div class="config-section">
-                                    <h3 class="config-section-title">Provider Skills</h3>
-                                    <p class="config-section-desc">Skills discovered from provider config directories (e.g. ~/.claude/skills/). Create new skills or manage existing ones.</p>
-                                    <div id="providerSkillsPanels" class="provider-panels">
-                                        <div class="skills-loading">Loading skills...</div>
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider Aliases</h3>
+                                <p class="config-section-desc">Create custom aliases for providers</p>
+                                <div class="alias-form">
+                                    <input id="newAliasName" type="text" class="form-input" placeholder="Alias name">
+                                    <select id="newAliasBase" class="form-input form-select">
+                                        <option value="nexus">nexus</option>
+                                        <option value="claude">claude</option>
+                                        <option value="gemini">gemini</option>
+                                        <option value="codex">codex</option>
+                                        <option value="codebuddy">codebuddy</option>
+                                    </select>
+                                    <input id="newAliasConfigPath" type="text" class="form-input" placeholder="Config path (e.g. ~/.codex-internal, optional)">
+                                    <button id="addAliasBtn" class="action-btn primary">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-sm">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Add
+                                    </button>
+                                </div>
+                                <div id="aliasListContainer" class="alias-list"></div>
+                            </div>
+
+                            <div class="config-section">
+                                <h3 class="config-section-title">Concurrency Limits</h3>
+                                <p class="config-section-desc">Control max parallel tasks globally or per provider/alias</p>
+                                <div class="u-mb-md">
+                                    <label class="form-label">Global Max Concurrency</label>
+                                    <div class="u-row">
+                                        <input id="globalConcurrencyInput" type="number" class="form-input u-w-140" placeholder="0 = unlimited" min="0">
+                                        <button id="setGlobalConcurrencyBtn" class="action-btn primary">Save</button>
+                                        <span id="globalConcurrencyDisplay" class="u-text-secondary u-text-sm"></span>
                                     </div>
+                                </div>
+
+                                <label class="form-label">Per Provider / Alias Concurrency</label>
+                                <div class="u-row u-mb-md">
+                                    <select id="providerConcurrencySelect" class="form-input form-select u-flex-1"></select>
+                                    <input id="providerConcurrencyLimit" type="number" class="form-input u-w-100" placeholder="Limit" min="0">
+                                    <button id="setProviderConcurrencyBtn" class="action-btn primary">Set</button>
+                                </div>
+
+                                <div id="providerConcurrencyList" class="concurrency-list"></div>
+                            </div>
+                        </div>
+
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">System Overview</h3>
+                        </div>
+                        <div id="settingsBasicOverviewPanel" class="admin-content"></div>
+
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">Onboarding</h3>
+                        </div>
+                        <div id="settingsBasicOnboardingPanel" class="admin-content"></div>
+
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">Runtimes</h3>
+                        </div>
+                        <div id="settingsBasicRuntimesPanel" class="admin-content"></div>
+                    </section>
+
+                    <section id="settingsSectionExtensions" class="settings-section u-mt-lg" data-settings-section="extensions">
+                        <div id="settingsExtensionsSummary" class="u-mb-lg"></div>
+                        <div class="config-content">
+                            <div class="config-section">
+                                <h3 class="config-section-title">Global MCP Servers</h3>
+                                <p class="config-section-desc">MCP servers available to all providers</p>
+                                <div class="mcp-form">
+                                    <input id="globalMcpName" type="text" class="form-input" placeholder="Server name">
+                                    <input id="globalMcpCommand" type="text" class="form-input" placeholder="Command (e.g., npx)">
+                                    <input id="globalMcpArgs" type="text" class="form-input" placeholder="Args (comma-separated)">
+                                    <button id="addGlobalMcpBtn" class="action-btn primary">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-sm">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                        </svg>
+                                        Add
+                                    </button>
+                                </div>
+                                <div id="globalMcpList" class="mcp-list"></div>
+                            </div>
+
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider-specific MCP Servers</h3>
+                                <p class="config-section-desc">Configure MCP servers for individual providers</p>
+                                <div id="providerMcpPanels" class="provider-panels"></div>
+                            </div>
+
+                            <div class="config-section">
+                                <h3 class="config-section-title">Provider Skills</h3>
+                                <p class="config-section-desc">Skills discovered from provider config directories (e.g. ~/.claude/skills/). Create new skills or manage existing ones.</p>
+                                <div id="providerSkillsPanels" class="provider-panels">
+                                    <div class="skills-loading">Loading skills...</div>
                                 </div>
                             </div>
                         </div>
-                    </div>
 
-                    <div id="settingsAdminSection" class="settings-section">
-                        <div class="admin-content" id="adminContent"></div>
-                    </div>
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">Integrations</h3>
+                        </div>
+                        <div id="settingsExtensionsIntegrationsPanel" class="admin-content"></div>
+                    </section>
+
+                    <section id="settingsSectionSafety" class="settings-section u-mt-lg" data-settings-section="safety">
+                        <div id="settingsSafetySummary" class="u-mb-lg"></div>
+
+                        <div class="admin-inline-heading">
+                            <h3 class="admin-section-title u-mb-0">Security</h3>
+                        </div>
+                        <div id="settingsSafetySecurityPanel" class="admin-content"></div>
+
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">Audit</h3>
+                        </div>
+                        <div id="settingsSafetyAuditPanel" class="admin-content"></div>
+
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">Cleanup</h3>
+                        </div>
+                        <div id="settingsSafetyCleanupPanel" class="admin-content"></div>
+
+                        <div class="admin-inline-heading u-mt-lg">
+                            <h3 class="admin-section-title u-mb-0">Governance</h3>
+                        </div>
+                        <div id="settingsSafetyAdminPanel" class="admin-content"></div>
+                    </section>
                 </div>
             </div><!-- End of settingsView -->
         </main>
@@ -474,13 +476,14 @@
                 <div class="form-group">
                     <label class="form-label">Workspace</label>
                     <input id="taskWorkspace" type="text" class="form-input" placeholder="/path/to/workspace">
+                    <p class="form-hint">留空使用当前服务工作目录；相对路径会按当前服务工作目录解析</p>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Target Session</label>
                     <select id="taskSourceSession" class="form-input form-select">
-                        <option value="">None (new task session)</option>
+                        <option value="">None (new task run)</option>
                     </select>
-                    <p class="form-hint">Optional: run task against an existing session context</p>
+                    <p class="form-hint">Optional: attach the task to an existing session instead of creating a new one</p>
                 </div>
                 <div class="form-group">
                     <label class="form-label">Depends On</label>
@@ -491,16 +494,16 @@
                 <!-- Loop -->
                 <div class="form-group">
                     <label class="form-label">Loop</label>
-                    <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                    <div class="u-row-lg">
+                        <label class="u-inline-label">
                             <input type="radio" name="loopMode" value="normal" checked> Disable
                         </label>
-                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                        <label class="u-inline-label">
                             <input type="radio" name="loopMode" value="loop"> Ralph Loop
                         </label>
                     </div>
                 </div>
-                <div id="loopFields" style="display:none;">
+                <div id="loopFields" hidden>
                     <div class="form-group">
                         <label class="form-label">Stop Keywords <span class="required">*</span></label>
                         <input id="loopKeywords" type="text" class="form-input" placeholder="SUCCESS, PASSED, all tests passed">
@@ -508,42 +511,42 @@
                     </div>
                     <div class="form-group">
                         <label class="form-label">Max Iterations</label>
-                        <input id="loopMaxIterations" type="number" class="form-input" value="5" min="1" max="100" style="width:160px;">
+                        <input id="loopMaxIterations" type="number" class="form-input u-w-160" value="5" min="1" max="100">
                     </div>
                 </div>
 
                 <!-- Trigger: Immediate / Cron / One-Time -->
                 <div class="form-group">
                     <label class="form-label">Trigger</label>
-                    <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
-                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                    <div class="u-row-lg">
+                        <label class="u-inline-label">
                             <input type="radio" name="triggerMode" value="immediate" checked> Immediate
                         </label>
-                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                        <label class="u-inline-label">
                             <input type="radio" name="triggerMode" value="cron"> Cron
                         </label>
-                        <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+                        <label class="u-inline-label">
                             <input type="radio" name="triggerMode" value="onetime"> One-Time
                         </label>
                     </div>
                 </div>
-                <div id="cronFields" style="display:none;">
+                <div id="cronFields" hidden>
                     <div class="form-group">
                         <label class="form-label">Cron Expression <span class="required">*</span></label>
                         <input id="scheduleCron" type="text" class="form-input" placeholder="e.g., 0 9 * * * (every day at 9am)">
                         <p class="form-hint">minute hour day month weekday</p>
                     </div>
                 </div>
-                <div id="onetimeFields" style="display:none;">
+                <div id="onetimeFields" hidden>
                     <div class="form-group">
                         <label class="form-label">Run At <span class="required">*</span></label>
-                        <input id="scheduleRunAt" type="datetime-local" class="form-input" style="width:280px;">
+                        <input id="scheduleRunAt" type="datetime-local" class="form-input u-w-280">
                     </div>
                 </div>
-                <div id="scheduleExtraFields" style="display:none;">
+                <div id="scheduleExtraFields" hidden>
                     <div class="form-group">
                         <label class="form-label">Natural Language</label>
-                        <div style="display:flex; gap:8px; align-items:center;">
+                        <div class="u-row">
                             <input id="scheduleNaturalInput" type="text" class="form-input" placeholder="e.g., every weekday at 9am">
                             <button id="scheduleNaturalParseBtn" type="button" class="action-btn">Parse</button>
                         </div>
@@ -554,10 +557,10 @@
                         <input id="scheduleTimezone" type="text" class="form-input" placeholder="UTC" value="UTC">
                     </div>
                 </div>
-                <div id="cronExtraFields" style="display:none;">
+                <div id="cronExtraFields" hidden>
                     <div class="form-group">
                         <label class="form-label">Max Runs</label>
-                        <input id="scheduleMaxRuns" type="number" class="form-input" placeholder="Unlimited" min="1" style="width:160px;">
+                        <input id="scheduleMaxRuns" type="number" class="form-input u-w-160" placeholder="Unlimited" min="1">
                         <p class="form-hint">Auto-cancel after N runs (empty = unlimited)</p>
                     </div>
                 </div>
@@ -571,7 +574,7 @@
 
     <!-- Delete Confirmation Modal -->
     <div id="deleteModal" class="modal-backdrop">
-        <div class="modal" style="max-width: 400px;">
+        <div class="modal modal-md">
             <div class="modal-header">
                 <h3 class="modal-title">Confirm Delete</h3>
                 <button class="modal-close" data-close-modal>
@@ -581,18 +584,18 @@
                 </button>
             </div>
             <div class="modal-body">
-                <p id="deleteModalMessage" style="color: var(--text-secondary);">Are you sure you want to delete this item? This action cannot be undone.</p>
+                <p id="deleteModalMessage" class="u-text-secondary">Are you sure you want to delete this item? This action cannot be undone.</p>
             </div>
             <div class="modal-footer">
                 <button class="action-btn" data-close-modal>Cancel</button>
-                <button id="confirmDeleteBtn" class="action-btn" style="background: var(--error); border-color: var(--error); color: white;">Delete</button>
+                <button id="confirmDeleteBtn" class="action-btn btn-danger-solid">Delete</button>
             </div>
         </div>
     </div>
 
     <!-- Edit Schedule Modal -->
     <div id="editScheduleModal" class="modal-backdrop">
-        <div class="modal" style="max-width: 560px;">
+        <div class="modal modal-lg">
             <div class="modal-header">
                 <h3 class="modal-title">Edit Schedule</h3>
                 <button class="modal-close" data-close-modal>
@@ -626,7 +629,7 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label">Max Runs</label>
-                    <input id="editScheduleMaxRuns" type="number" class="form-input" min="1" style="width:160px;">
+                    <input id="editScheduleMaxRuns" type="number" class="form-input u-w-160" min="1">
                     <p class="form-hint">Leave empty for unlimited</p>
                 </div>
             </div>
@@ -639,7 +642,7 @@
 
     <!-- Tab Rename Modal -->
     <div id="renameTabModal" class="modal-backdrop">
-        <div class="modal" style="max-width: 360px;">
+        <div class="modal modal-sm">
             <div class="modal-header">
                 <h3 class="modal-title">Rename Tab</h3>
                 <button class="modal-close" data-close-modal>
@@ -649,7 +652,7 @@
                 </button>
             </div>
             <div class="modal-body">
-                <div class="form-group" style="margin-bottom: 0;">
+                <div class="form-group u-mb-0">
                     <label class="form-label">Tab Name</label>
                     <input id="renameTabInput" type="text" class="form-input" placeholder="Enter tab name">
                 </div>
@@ -663,7 +666,7 @@
 
     <!-- Global Search Modal -->
     <div id="globalSearchModal" class="modal-backdrop">
-        <div class="modal" style="max-width: 760px;">
+        <div class="modal modal-xl">
             <div class="modal-header">
                 <h3 class="modal-title">Global Search</h3>
                 <button class="modal-close" data-close-modal>
@@ -673,17 +676,17 @@
                 </button>
             </div>
             <div class="modal-body">
-                <div class="admin-search-box" style="margin-bottom: 0;">
-                    <input type="text" class="form-input" id="globalSearchInput" placeholder="Search tasks, sessions..." autofocus>
-                    <select class="form-input form-select" id="globalSearchType" style="width:140px;">
+                <div class="admin-search-box u-mb-0">
+                    <input type="text" class="form-input" id="globalSearchInput" placeholder="Search tasks, runs..." autofocus>
+                    <select class="form-input form-select u-w-140" id="globalSearchType">
                         <option value="all">All</option>
                         <option value="task">Tasks</option>
-                        <option value="session">Sessions</option>
+                        <option value="session">Runs</option>
                     </select>
                     <button class="action-btn primary" id="globalSearchSubmitBtn">Search</button>
                 </div>
-                <div id="globalSearchResults" class="search-results" style="margin-top: var(--spacing-lg);">
-                    <div style="color:var(--text-tertiary);text-align:center;padding:var(--spacing-xl);">Enter a search query above</div>
+                <div id="globalSearchResults" class="search-results u-mt-lg">
+                    <div class="u-empty-state-xl">Enter a search query above</div>
                 </div>
             </div>
         </div>
@@ -692,26 +695,39 @@
     <!-- Toast Container -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <!-- Scripts (timestamp cache-buster ensures browser always loads latest version) -->
-    <script>var _cb=Date.now();</script>
-    <script>document.write('<scr'+'ipt src="js/utils/smart-poll.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/utils/websocket-manager.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/utils/sse-handler.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/agent-avatar.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/kanban.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/markdown-renderer.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/mention-textarea.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/expansion-panels.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/streaming-renderer.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/filters.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/list-view.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/inline-picker.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/permission-sync.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/slash-completer.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/api.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/app-data-store.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/task-board-panel.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/components/task-components.js?v='+_cb+'"></scr'+'ipt>');</script>
-    <script>document.write('<scr'+'ipt src="js/app.js?v='+_cb+'"></scr'+'ipt>');</script>
+    <!-- Scripts -->
+    <script src="js/utils/smart-poll.js?v=32" defer></script>
+    <script src="js/utils/websocket-manager.js?v=32" defer></script>
+    <script src="js/utils/sse-handler.js?v=32" defer></script>
+    <script src="js/components/agent-avatar.js?v=32" defer></script>
+    <script src="js/components/kanban.js?v=32" defer></script>
+    <script src="js/components/markdown-renderer.js?v=32" defer></script>
+    <script src="js/components/mention-textarea.js?v=32" defer></script>
+    <script src="js/components/expansion-panels.js?v=32" defer></script>
+    <script src="js/components/streaming-renderer.js?v=32" defer></script>
+    <script src="js/components/filters.js?v=33" defer></script>
+    <script src="js/components/list-view.js?v=32" defer></script>
+    <script src="js/components/inline-picker.js?v=32" defer></script>
+    <script src="js/components/permission-sync.js?v=32" defer></script>
+    <script src="js/components/slash-completer.js?v=32" defer></script>
+    <script src="js/components/streaming-controller.js?v=32" defer></script>
+    <script src="js/components/task-form-controller.js?v=32" defer></script>
+    <script src="js/api.js?v=33" defer></script>
+    <script src="js/app-data-store.js?v=32" defer></script>
+    <!-- TV-001/TV-002/TV-007: Read model, view store, summary strip -->
+    <script src="js/components/task-view-model.js?v=33" defer></script>
+    <script src="js/components/task-view-store.js?v=33" defer></script>
+    <script src="js/components/task-summary-strip.js?v=34" defer></script>
+    <script src="js/components/task-board-panel.js?v=35" defer></script>
+    <script src="js/components/task-components.js?v=32" defer></script>
+    <script src="js/shell-managers.js?v=33" defer></script>
+    <script src="js/shell-views.js?v=33" defer></script>
+    <script src="js/components/settings-basic-section.js?v=1" defer></script>
+    <script src="js/components/settings-extensions-section.js?v=1" defer></script>
+    <script src="js/components/settings-safety-section.js?v=1" defer></script>
+    <script src="js/components/settings-page.js?v=2" defer></script>
+    <script src="js/components/agents-store.js?v=2" defer></script>
+    <script src="js/components/agents-view-shell.js?v=2" defer></script>
+    <script src="js/app.js?v=33" defer></script>
 </body>
 </html>
