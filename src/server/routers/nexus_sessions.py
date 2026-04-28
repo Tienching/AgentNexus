@@ -50,6 +50,33 @@ router = APIRouter(
 )
 
 
+def _default_session_exec_dir(exec_user: Optional[str], session_id: str) -> str:
+    """Compute the default per-session isolated workspace path.
+
+    Mirrors ``BaseExecutor.resolve_exec_dir`` so that the API surface reports
+    the same path the executor will actually write into when no explicit
+    workspace is bound. Used purely for display/enrichment — we do NOT persist
+    this value back into ``SessionMeta.exec_dir`` because an empty ``exec_dir``
+    is the storage-level signal that the session is running in isolated mode
+    (vs. explicitly pinned to a user-chosen workspace via /workspace or the
+    workspace selector).
+    """
+    user = (exec_user or settings.exec_user or "").strip() or "ubuntu"
+    return str(Path(settings.user_home_base) / user / ".nexus" / "sessions" / session_id)
+
+
+def _fill_default_exec_dir(meta: SessionMeta) -> SessionMeta:
+    """Populate ``meta.exec_dir`` with the per-session default if still empty.
+
+    Call site is responsible for choosing when to apply this — typically right
+    before returning a ``SessionMeta`` to the HTTP client. The mutation stays
+    on the in-memory Pydantic instance and is NOT written back to storage.
+    """
+    if not (meta.exec_dir and meta.exec_dir.strip()):
+        meta.exec_dir = _default_session_exec_dir(meta.exec_user or meta.username, meta.id)
+    return meta
+
+
 # ============ Usernames API ============
 
 @router.get("/usernames", response_model=UsernamesResponse)
@@ -161,7 +188,9 @@ async def create_session(request: CreateSessionRequest):
             pass
     logger.info(f"Created session {session_id} for user={username}")
 
-    return meta
+    # Enrich with the default per-session isolated workspace path so the UI
+    # immediately has something meaningful to render in the 📂 badge.
+    return _fill_default_exec_dir(meta)
 
 
 @router.get("/sessions", response_model=SessionListResponse)
@@ -215,6 +244,11 @@ async def list_sessions(
             ed = storage.get_exec_dir_override(s.id)
             if ed:
                 s.exec_dir = ed
+        # Still empty? Fall back to the default per-session isolated workspace
+        # path so the UI can render a stable 📂 badge for runtime sessions
+        # that were created without an explicit workspace binding.
+        if not (s.exec_dir and s.exec_dir.strip()):
+            _fill_default_exec_dir(s)
 
     # Self-heal: fix sessions stuck in "running"
     for s in sessions:
@@ -262,6 +296,15 @@ async def get_session(session_id: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Session not found: {session_id}"
         )
+
+    # Mirror the enrichment applied in list_sessions so single-session fetches
+    # return a consistent exec_dir (explicit override > default isolated path).
+    if not (session.exec_dir and session.exec_dir.strip()):
+        ed = storage.get_exec_dir_override(session_id)
+        if ed:
+            session.exec_dir = ed
+        else:
+            _fill_default_exec_dir(session)
 
     return session
 

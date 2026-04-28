@@ -291,6 +291,14 @@ class NexusStreamSessionView {
         this.bubbleEl = null;
         this.initialized = false;
         this.hasRenderedContent = false;
+        // Once finalize() is called we refuse to create new bubbles. This
+        // prevents a race where a late stream event (fired after the
+        // post-stream snapshot sync rewrote chatDetail.innerHTML) would
+        // otherwise `_ensureBubble()` → fail the document.body.contains()
+        // check → append a fresh duplicate bubble to the messages container.
+        // That race is exactly what caused "reply duplicated N times after
+        // refresh" in the chat pane.
+        this.finalized = false;
     }
 
     _defaultMessageHtmlFactory(messageId, bubbleId) {
@@ -316,6 +324,14 @@ class NexusStreamSessionView {
     }
 
     _ensureBubble() {
+        // Hard guard: after finalize() we never materialise a new bubble,
+        // even if a late onDelta / onTextContent / onToolCall* arrives.
+        // Without this the caller can accidentally append duplicate
+        // assistant bubbles to the messages container whenever some other
+        // code path (e.g. post-stream snapshot sync) has already replaced
+        // the chat detail DOM out from under us.
+        if (this.finalized) return null;
+
         if (this.bubbleEl && document.body.contains(this.bubbleEl)) {
             return this.bubbleEl;
         }
@@ -450,6 +466,9 @@ class NexusStreamSessionView {
         if (this.bubbleEl) {
             this.bubbleEl.querySelectorAll('.message-text:empty').forEach((element) => element.remove());
         }
+        // Latch finalized so subsequent _ensureBubble() calls return null
+        // instead of spawning duplicate bubbles (see class docstring).
+        this.finalized = true;
     }
 
     hasVisibleContent() {

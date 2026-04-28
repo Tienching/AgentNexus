@@ -32,15 +32,58 @@ class ProviderExecutorMap(dict):
 
 
 def normalize_provider(name: Optional[str]) -> str:
-    """Normalize a provider name to its canonical key.
+    """Normalize a provider name (or alias) to its canonical key.
+
+    Accepts:
+    - canonical provider names (``claude``/``codex``/``gemini``/``codebuddy``/``nexus``)
+    - legacy ``nanobot`` (mapped to ``nexus``)
+    - aliases registered via :class:`AliasRegistry` (e.g. ``claude-internal``
+      -> ``claude``, ``codex-internal`` -> ``codex``)
 
     Unknown / empty values fall back to the default provider.
     """
     n = (name or "").strip().lower()
-    if n in ("gemini", "codex", "codebuddy", "claude", "nexus", "nanobot"):
-        if n == "nanobot":
-            return "nexus"
+    if not n:
+        return _default_provider()
+
+    # Canonical provider names (and the legacy nanobot alias)
+    if n in ("gemini", "codex", "codebuddy", "claude", "nexus"):
         return n
+    if n == "nanobot":
+        return "nexus"
+
+    # Alias lookup — consult the global alias registry so that UI selections
+    # like ``claude-internal`` correctly resolve to ``claude`` instead of
+    # silently falling through to the default provider (which would route the
+    # request to the Nexus/nanobot orchestrator and make the agent self-
+    # identify as "Nanobot").
+    try:
+        from src.runtime.stores.alias_registry import AliasRegistry
+
+        builtin = AliasRegistry.BUILTIN.get(n)
+        if builtin:
+            return builtin
+        # Fall back to the DB-backed registry for user-registered aliases.
+        # Wrapped in try/except because the DB may not be initialised in
+        # some CLI/test contexts where this function is still called.
+        try:
+            registry = AliasRegistry()
+            resolved = registry.resolve(n)
+            if resolved:
+                return resolved
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Heuristic fallback: ``<provider>-<suffix>`` where <provider> is a known
+    # canonical name (e.g. a user-defined ``claude-work`` without an explicit
+    # registry entry). This mirrors the behaviour in
+    # ``cli_executor._PROVIDER_COMMAND_MAP`` / ``AliasRegistry.BUILTIN``.
+    for canonical in ("claude", "codex", "gemini", "codebuddy"):
+        if n == canonical or n.startswith(canonical + "-"):
+            return canonical
+
     return _default_provider()
 
 

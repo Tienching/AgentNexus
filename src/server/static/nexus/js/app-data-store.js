@@ -225,6 +225,147 @@ class AppDataStore {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Optimistic list mutations (for instant UI feedback before a request
+    // round-trips). These operate on any cached payload whose shape is
+    // either `{ sessions: [...] }` / `{ tasks: [...] }` / etc. or a bare
+    // array. They mutate *every* cache entry that matches the key prefix
+    // so that subsequent reads with the same opts see the optimistic item.
+    // ------------------------------------------------------------------
+
+    /**
+     * Locate the array field inside a cached payload.
+     * Returns [payload, arrayFieldName] or null if no array is found.
+     * @private
+     */
+    _locateListField(payload) {
+        if (Array.isArray(payload)) return { payload, field: null };
+        if (payload && typeof payload === 'object') {
+            // Common shapes: { sessions: [...] }, { tasks: [...] }, { items: [...] }
+            for (const field of ['sessions', 'tasks', 'items', 'agents', 'schedules']) {
+                if (Array.isArray(payload[field])) {
+                    return { payload, field };
+                }
+            }
+        }
+        return null;
+    }
+
+    /** @private read/write the list on a payload via located field */
+    _getList(locator) {
+        return locator.field == null ? locator.payload : locator.payload[locator.field];
+    }
+    /** @private */
+    _setList(locator, newList) {
+        if (locator.field == null) return newList; // caller must replace
+        locator.payload[locator.field] = newList;
+        return locator.payload;
+    }
+
+    /**
+     * Prepend an optimistic item to every cached entry matching `key`.
+     * Notifies subscribers so the UI rerenders immediately.
+     * Does NOT refresh the cache timestamp — next fetch() will still hit network.
+     *
+     * @param {string} key   Data source key (e.g. 'sessions')
+     * @param {Object} item  Item to prepend (should carry a stable id field)
+     * @param {string} [idField='id']  Field used for deduplication
+     * @returns {number}     Number of cache entries updated
+     */
+    prependOptimistic(key, item, idField = 'id') {
+        if (!item) return 0;
+        let touched = 0;
+        for (const cacheKey of this._matchingCacheKeys(key)) {
+            const cached = this._cache.get(cacheKey);
+            const locator = this._locateListField(cached);
+            if (!locator) continue;
+            const list = this._getList(locator);
+            const itemId = item[idField];
+            // Skip if already present (dedup)
+            if (itemId != null && list.some(x => x && x[idField] === itemId)) continue;
+            const newList = [item, ...list];
+            this._setList(locator, newList);
+            touched += 1;
+        }
+        if (touched > 0) {
+            // Notify subscribers with one representative payload
+            const representative = this._cache.get(this._cacheKey(key, {}))
+                ?? this._cache.get([...this._matchingCacheKeys(key)][0]);
+            if (representative !== undefined) this._notify(key, representative);
+        }
+        return touched;
+    }
+
+    /**
+     * Reconcile an optimistic item with its real backend identity.
+     * Finds items matching `oldId` in `idField` and applies `patch` to them
+     * (e.g. { id: realId, _optimistic: false, ...serverFields }).
+     *
+     * @param {string} key
+     * @param {string} oldId       Temporary id used at insertion time
+     * @param {Object} patch       Fields to merge into the item
+     * @param {string} [idField='id']
+     * @returns {number}           Number of cache entries updated
+     */
+    reconcileOptimistic(key, oldId, patch, idField = 'id') {
+        if (oldId == null || !patch) return 0;
+        let touched = 0;
+        for (const cacheKey of this._matchingCacheKeys(key)) {
+            const cached = this._cache.get(cacheKey);
+            const locator = this._locateListField(cached);
+            if (!locator) continue;
+            const list = this._getList(locator);
+            let changed = false;
+            const newList = list.map(x => {
+                if (x && x[idField] === oldId) {
+                    changed = true;
+                    return { ...x, ...patch };
+                }
+                return x;
+            });
+            if (changed) {
+                this._setList(locator, newList);
+                touched += 1;
+            }
+        }
+        if (touched > 0) {
+            const representative = this._cache.get(this._cacheKey(key, {}))
+                ?? this._cache.get([...this._matchingCacheKeys(key)][0]);
+            if (representative !== undefined) this._notify(key, representative);
+        }
+        return touched;
+    }
+
+    /**
+     * Remove an optimistic item (e.g. on request failure, to roll back).
+     *
+     * @param {string} key
+     * @param {string} id
+     * @param {string} [idField='id']
+     * @returns {number}
+     */
+    removeOptimistic(key, id, idField = 'id') {
+        if (id == null) return 0;
+        let touched = 0;
+        for (const cacheKey of this._matchingCacheKeys(key)) {
+            const cached = this._cache.get(cacheKey);
+            const locator = this._locateListField(cached);
+            if (!locator) continue;
+            const list = this._getList(locator);
+            const newList = list.filter(x => !(x && x[idField] === id));
+            if (newList.length !== list.length) {
+                this._setList(locator, newList);
+                touched += 1;
+            }
+        }
+        if (touched > 0) {
+            const representative = this._cache.get(this._cacheKey(key, {}))
+                ?? this._cache.get([...this._matchingCacheKeys(key)][0]);
+            if (representative !== undefined) this._notify(key, representative);
+        }
+        return touched;
+    }
+
     /**
      * Invalidate and immediately re-fetch a key, notifying subscribers.
      * @param {string} key

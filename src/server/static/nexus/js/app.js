@@ -31,6 +31,15 @@ class ChatView {
         this.historyExpandedProviders = {}; // paneId -> Set<providerKey>
         this.historyExpandedAliases = {}; // paneId -> Set<provider::alias>
         this.taskSessionStreams = {}; // paneId -> EventSource (for task_* sessions)
+        // paneId -> NexusStreamSessionView currently bound to a live session
+        // stream (task / channel). We keep a strong reference so that when we
+        // close the EventSource (or when some other code path rewrites
+        // chatDetail.innerHTML out from under us) we can force-finalize the
+        // view, preventing it from appending orphan streaming bubbles into
+        // #chatMessages-${paneId} via late SSE events. Without this hook we
+        // saw "one reply → N duplicated assistant bubbles" after a stream
+        // finished or errored.
+        this.taskSessionStreamViews = {};
         this.promotedRuntimeMeta = {}; // runtimeSessionId -> synthetic meta (fallback when backend promote API unavailable)
         this.pendingBootstrapBySessionId = {}; // runtimeSessionId -> one-time bootstrap context text
         this._chatStreaming = {}; // paneId -> boolean, true when fetch streaming is active (prevents auto-refresh from overwriting DOM)
@@ -44,6 +53,11 @@ class ChatView {
         this._autoRefreshInterval = 5000; // 5s for session list
         this._lastSessionsHash = {}; // paneId -> hash of session list (for change detection)
         this._lastMessageCountBySession = {}; // sessionId -> last known message count
+        // paneId|sessionId -> signature string of last rendered snapshot.
+        // Used to skip redundant innerHTML rewrites that cause the double-flicker
+        // right after a chat stream finishes (post-stream sync + auto-refresh poll
+        // both call renderMessages with the same data).
+        this._lastRenderedSignature = {};
 
         // Markdown renderer component (MC-035)
         this.markdownRenderer = typeof window.MarkdownRenderer === 'function'
@@ -775,13 +789,27 @@ class ChatView {
     }
 
     resolvePreferredWorkspace(paneId) {
-        const candidates = this._collectHistoryProjectCandidates(paneId);
-        if (candidates.length > 0) {
-            return candidates[0];
+        // Only inherit workspace from the *currently active* session's own meta
+        // (i.e. continuing a conversation inside a session that already has a
+        // bound workspace). Do NOT scan the whole sidebar list — doing so would
+        // pick up unrelated neighbour sessions (including legacy ones that were
+        // accidentally bound to the server launch cwd), and pollute every brand
+        // new session with whatever workspace happens to exist somewhere in the
+        // pane. For a truly new session (active meta has no exec_dir/work_dir),
+        // return empty so the backend falls back to the per-session isolated
+        // directory ~/.nexus/sessions/{session_id}/.
+        const activeTabId = this.getActiveTabId(paneId);
+        const activeSessionId = activeTabId ? this.currentSessionByTab[activeTabId] : null;
+        if (!activeSessionId) {
+            return '';
         }
-        const currentWorkdir = String(this.app?.serverDefaults?.current_workdir || '').trim();
-        if (currentWorkdir) {
-            return currentWorkdir;
+        const meta = this.getSessionMeta(paneId, activeSessionId);
+        const fields = [meta?.exec_dir, meta?.work_dir, meta?.project_path, meta?.cwd];
+        for (const value of fields) {
+            const normalized = String(value || '').trim();
+            if (normalized) {
+                return normalized;
+            }
         }
         return '';
     }
@@ -1060,6 +1088,35 @@ class ChatView {
         this._markPendingNewSession(paneId, sessionId);
         const sessionTitle = message.substring(0, 50) + (message.length > 50 ? '...' : '');
 
+        // Optimistic: immediately surface this session in the left-hand Chats
+        // list BEFORE the first SSE event arrives. The placeholder is later
+        // reconciled with the backend's real record in onRunStarted, and
+        // removed if the request fails.
+        const nowIso = new Date().toISOString();
+        const optimisticSession = {
+            id: sessionId,
+            title: sessionTitle,
+            status: 'running',
+            username: execUser,
+            provider: agentType,
+            alias: (alias || '').trim() || agentType,
+            last_message: message,
+            created_at: nowIso,
+            updated_at: nowIso,
+            _optimistic: true,
+        };
+        try {
+            this.sessions[paneId] = this.sessions[paneId] || [];
+            // Deduplicate in case of a retry with the same placeholder id
+            this.sessions[paneId] = this.sessions[paneId].filter(s => s && s.id !== sessionId);
+            this.sessions[paneId].unshift(optimisticSession);
+            this._setCurrentSessionForPane(paneId, sessionId, 'runtime');
+            this.renderSessionList(paneId);
+            this._dataStore?.prependOptimistic('sessions', optimisticSession, 'id');
+        } catch (e) {
+            console.warn('[createNewSession] optimistic insert failed (non-fatal):', e);
+        }
+
         // Immediately show the chat view with user message and thinking indicator
         detail.innerHTML = `
             <div class="chat-header">
@@ -1136,7 +1193,9 @@ class ChatView {
             };
 
             // Call streaming API
-            const hadContent = await this.streamChatResponse(paneId, execUser, payload, `thinking-${paneId}`);
+            const hadContent = await this.streamChatResponse(paneId, execUser, payload, `thinking-${paneId}`, {
+                optimisticSessionId: sessionId,
+            });
             
             // After successful response, set current session and reload everything
             this._setCurrentSessionForPane(paneId, sessionId, 'runtime');
@@ -1151,6 +1210,15 @@ class ChatView {
             
         } catch (error) {
             this._clearPendingNewSession(paneId, sessionId);
+            // Roll back the optimistic placeholder so the left list doesn't
+            // keep a ghost entry for a session that never actually started.
+            try {
+                if (Array.isArray(this.sessions[paneId])) {
+                    this.sessions[paneId] = this.sessions[paneId].filter(s => !(s && s.id === sessionId && s._optimistic));
+                }
+                this._dataStore?.removeOptimistic('sessions', sessionId, 'id');
+                this.renderSessionList(paneId);
+            } catch (_) { /* non-fatal */ }
             console.error('Failed to create session:', error);
             this.app.showToast(error.message || 'Failed to create session', 'error');
             
@@ -1177,7 +1245,7 @@ class ChatView {
         }
     }
 
-    async streamChatResponse(paneId, execUser, payload, thinkingId) {
+    async streamChatResponse(paneId, execUser, payload, thinkingId, options = {}) {
         this._chatStreaming[paneId] = true;
         this._transitionChatSessionState(paneId, payload?.session_id || payload?.sessionId || '', 'streaming', {
             paneId,
@@ -1202,11 +1270,63 @@ class ChatView {
             `,
         });
 
+        const optimisticSessionId = options?.optimisticSessionId || null;
         const streamingController = streamingView.createController({
-            onRunStarted: () => {
+            onRunStarted: (data) => {
+                // Reconcile the optimistic placeholder with the backend's
+                // authoritative thread_id so subsequent list refreshes and
+                // selectSession() clicks work against the real session.
+                try {
+                    const realThreadId = data?.thread_id || data?.threadId || null;
+                    if (optimisticSessionId && realThreadId && realThreadId !== optimisticSessionId) {
+                        const patch = { id: realThreadId, _optimistic: false };
+                        this._dataStore?.reconcileOptimistic('sessions', optimisticSessionId, patch, 'id');
+                        if (Array.isArray(this.sessions[paneId])) {
+                            this.sessions[paneId] = this.sessions[paneId].map(s =>
+                                (s && s.id === optimisticSessionId) ? { ...s, ...patch } : s
+                            );
+                        }
+                        // Follow the session in the pane's active selection
+                        this._setCurrentSessionForPane(paneId, realThreadId, 'runtime');
+                        this._markPendingNewSession(paneId, realThreadId);
+                    } else if (optimisticSessionId) {
+                        // Just drop the _optimistic flag
+                        const patch = { _optimistic: false };
+                        this._dataStore?.reconcileOptimistic('sessions', optimisticSessionId, patch, 'id');
+                        if (Array.isArray(this.sessions[paneId])) {
+                            this.sessions[paneId] = this.sessions[paneId].map(s =>
+                                (s && s.id === optimisticSessionId) ? { ...s, ...patch } : s
+                            );
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[streamChatResponse] optimistic reconcile failed (non-fatal):', e);
+                }
                 this.loadSessions(paneId);
             },
             onRunFinished: () => {
+                this.loadSessions(paneId);
+            },
+            onRunError: (data) => {
+                // Upstream 502 / stream-side failures arrive as RUN_ERROR events
+                // rather than fetch-layer throws, so createNewSession's catch
+                // block never runs. We still need to clear the optimistic
+                // pulse marker here, otherwise the sidebar entry keeps blinking
+                // forever even though the turn has ended with an error.
+                try {
+                    if (optimisticSessionId) {
+                        this._dataStore?.reconcileOptimistic(
+                            'sessions', optimisticSessionId, { _optimistic: false }, 'id',
+                        );
+                        if (Array.isArray(this.sessions[paneId])) {
+                            this.sessions[paneId] = this.sessions[paneId].map(s =>
+                                (s && s.id === optimisticSessionId) ? { ...s, _optimistic: false } : s
+                            );
+                        }
+                    }
+                } catch (e) {
+                    console.warn('[streamChatResponse] onRunError cleanup failed (non-fatal):', e);
+                }
                 this.loadSessions(paneId);
             },
         });
@@ -1219,6 +1339,7 @@ class ChatView {
         } finally {
             this._chatStreaming[paneId] = false;
             streamingView.finalize();
+            this._upgradeStreamBubbleToFinalMessage(streamingView);
         }
 
         const hasContent = streamingView.hasVisibleContent();
@@ -1262,6 +1383,31 @@ class ChatView {
             escapeHtml: (value) => this.escapeHtml(value),
             ...options,
         });
+    }
+
+    _upgradeStreamBubbleToFinalMessage(streamingView) {
+        try {
+            const bubble = streamingView?.bubbleEl;
+            if (!bubble || !document.body.contains(bubble)) return;
+
+            bubble.classList.remove('streaming-bubble');
+            bubble.querySelectorAll('.message-text.streaming').forEach((el) => {
+                el.classList.remove('streaming');
+            });
+
+            const content = bubble.parentElement;
+            const hasTime = content
+                ? Array.from(content.children).some((el) => el.classList?.contains('message-time'))
+                : false;
+            if (content && !hasTime) {
+                const timeEl = document.createElement('span');
+                timeEl.className = 'message-time';
+                timeEl.textContent = this.formatTime(Date.now()) || 'Just now';
+                bubble.insertAdjacentElement('afterend', timeEl);
+            }
+        } catch (err) {
+            console.warn('[_upgradeStreamBubbleToFinalMessage] non-fatal:', err);
+        }
     }
 
     buildTodoToolDisplayName(todosValue) {
@@ -1840,7 +1986,7 @@ class ChatView {
             : '';
 
         return `
-            <div class="session-item ${isActive ? 'active' : ''} ${isChecked ? 'checked' : ''}"
+            <div class="session-item ${isActive ? 'active' : ''} ${isChecked ? 'checked' : ''} ${session._optimistic ? 'optimistic' : ''}"
                  data-session-id="${session.id}"
                  data-provider="${this.escapeHtml(session.provider || '')}"
                  data-alias="${this.escapeHtml(session.alias || '')}"
@@ -1853,7 +1999,7 @@ class ChatView {
                 ` : ''}
                 <div class="session-item-content">
                     <div class="session-item-header">
-                        <span class="session-item-title">${providerBadge}${this.escapeHtml(session.title || session.id)}</span>
+                        <span class="session-item-title">${providerBadge}${this.escapeHtml(session.title || session.id)}${session._optimistic ? ' <span class="session-item-sending-dot" title="Sending..."></span>' : ''}</span>
                         <span class="session-item-time">${timeStr}</span>
                     </div>
                     ${session.last_message ? `<p class="session-item-preview">${this.escapeHtml(session.last_message)}</p>` : ''}
@@ -1888,6 +2034,15 @@ class ChatView {
     }
 
     async selectSession(paneId, sessionId, options = {}) {
+        // Dropping any cached render signature for this pane ensures the next
+        // renderMessages() call rewrites the DOM (we're about to replace
+        // chatDetail.innerHTML with a loading spinner below).
+        if (this._lastRenderedSignature) {
+            for (const key of Object.keys(this._lastRenderedSignature)) {
+                if (key.startsWith(`${paneId}|`)) delete this._lastRenderedSignature[key];
+            }
+        }
+
         // Update active state in list
         const container = document.getElementById(`sessionItems-${paneId}`);
         const sessionItem = container?.querySelector(`.session-item[data-session-id="${sessionId}"]`);
@@ -2038,6 +2193,23 @@ class ChatView {
             try { es.close(); } catch {}
             delete this.taskSessionStreams[paneId];
         }
+        // Hard-finalize the paired streaming view so any SSE event that
+        // races past `es.close()` (browsers flush queued 'message' events
+        // asynchronously) cannot spawn a fresh bubble via _ensureBubble().
+        // Also drop our container/replaceElement references to break the
+        // detached-DOM cycle after renderMessages() rewrites chatDetail.
+        const view = this.taskSessionStreamViews[paneId];
+        if (view) {
+            try {
+                if (typeof view.finalize === 'function') view.finalize();
+                view.container = null;
+                view.replaceElement = null;
+                view.scrollContainer = null;
+                view.bubbleEl = null;
+                view.currentTextEl = null;
+            } catch (_) { /* non-fatal */ }
+            delete this.taskSessionStreamViews[paneId];
+        }
     }
 
     async _reloadLiveSessionSnapshot(paneId, sessionId, errorPhase, warningMessage) {
@@ -2099,6 +2271,11 @@ class ChatView {
             bubbleIdPrefix: options.bubbleIdPrefix || `live-stream-bubble-${paneId}`,
             textIdPrefix: options.textIdPrefix || `live-stream-text-${paneId}`,
         });
+        // Keep a reference so _closeTaskSessionStream() and the pre-render
+        // hook in renderMessages() can force-finalize this view when the
+        // pane's DOM is about to be reused or rewritten. See comment on
+        // this.taskSessionStreamViews in the constructor.
+        this.taskSessionStreamViews[paneId] = streamingView;
 
         let done = false;
         let sawStreamEvent = false;
@@ -2244,6 +2421,71 @@ class ChatView {
             : '';
         const aliasText = options.alias && options.alias !== options.provider ? options.alias : '';
         const historyIdentityText = providerText || aliasText;
+
+        // Skip redundant re-renders of identical snapshots. Without this guard
+        // the post-stream snapshot sync + subsequent auto-refresh poll both
+        // rewrite chatDetail.innerHTML with the same data, producing the
+        // "double flicker" users see right after a chat reply finishes.
+        // Signature covers everything that affects the rendered DOM.
+        const sigKey = `${paneId}|${sessionId}`;
+        const signatureParts = [
+            messages.length,
+            data.session?.title || '',
+            isHistory ? 'h' : 'r',
+            historyIdentityText,
+        ];
+        for (const m of messages) {
+            // updated_at (if any) + content length + id is enough to detect
+            // real changes without serialising full payloads.
+            signatureParts.push(m.id || '', m.updated_at || m.created_at || '', (m.content || '').length);
+        }
+        const signature = signatureParts.join('|');
+        if (this._lastRenderedSignature[sigKey] === signature) {
+            // Still make sure the tracked state stays in sync so other callers
+            // don't mis-detect "new content arrived".
+            this._lastMessageCountBySession[sessionId] = messages.length;
+            // Even though we're skipping the full re-render, clean up any
+            // orphaned streaming bubbles that a live-session stream view
+            // may have appended to #chatMessages-${paneId} after the
+            // previous render. Those bubbles use the default
+            // `streaming-bubble` class and are not part of the server
+            // snapshot we already rendered — leaving them in place shows
+            // the user duplicate assistant replies.
+            const container = detail.querySelector(`#chatMessages-${paneId}`);
+            if (container) {
+                container.querySelectorAll('.streaming-bubble').forEach((bubble) => {
+                    const messageEl = bubble.closest('.message');
+                    if (messageEl) messageEl.remove();
+                    else bubble.remove();
+                });
+            }
+            return;
+        }
+        this._lastRenderedSignature[sigKey] = signature;
+
+        // About to blow away #chatMessages-${paneId} via innerHTML below.
+        // If a live-session stream view (task_*/channel_*) is still bound to
+        // the old container element, latch its `finalized` flag NOW so any
+        // SSE event that arrives between here and the next snapshot cannot
+        // re-materialise a ghost bubble into the new container via
+        // document.getElementById()/insertAdjacentHTML. We keep the
+        // EventSource itself open — the view owner decides when to close
+        // it — but we make sure *this* view instance will never spawn
+        // another bubble. A fresh view will be created on the next
+        // _openLiveSessionStream() if the pane re-subscribes.
+        const liveView = this.taskSessionStreamViews[paneId];
+        if (liveView && typeof liveView.finalize === 'function') {
+            try {
+                liveView.finalize();
+                liveView.container = null;
+                liveView.replaceElement = null;
+                liveView.scrollContainer = null;
+                liveView.bubbleEl = null;
+                liveView.currentTextEl = null;
+            } catch (_) { /* non-fatal */ }
+            // Drop the reference; _openLiveSessionStream re-seats it next time.
+            delete this.taskSessionStreamViews[paneId];
+        }
 
         // Track message count for auto-refresh change detection
         this._lastMessageCountBySession[sessionId] = messages.length;
@@ -2589,6 +2831,18 @@ class ChatView {
         if (!document.getElementById(`chatMessages-${paneId}`)) {
             console.error('[sendMessage] chatMessages container not found for pane', paneId);
             return;
+        }
+
+        // If a live-session stream (task_* / channel_*) is still bound to
+        // this pane from a previous selection, tear it down *before* we
+        // start a new chat-stream. Two streams writing into the same
+        // #chatMessages-${paneId} container is the root cause of the
+        // "reply duplicated N times after refresh" artifact: the legacy
+        // view keeps appending default (monitor-avatar) bubbles while the
+        // new chat-stream renders proper 'A' bubbles on top, and the
+        // post-stream snapshot sync cannot distinguish them.
+        if (this.taskSessionStreams[paneId] || this.taskSessionStreamViews[paneId]) {
+            this._closeTaskSessionStream(paneId);
         }
 
         const effectiveSessionId = sessionId;
@@ -3318,6 +3572,13 @@ class ChatView {
             // Clear detail view
             const detail = document.getElementById(`chatDetail-${paneId}`);
             if (detail) {
+                // Drop the cached render signature so future renders of this
+                // (or any freshly-reused) pane rewrite the DOM cleanly.
+                if (this._lastRenderedSignature) {
+                    for (const key of Object.keys(this._lastRenderedSignature)) {
+                        if (key.startsWith(`${paneId}|`)) delete this._lastRenderedSignature[key];
+                    }
+                }
                 detail.innerHTML = `
                     <div class="empty-state">
                         <svg class="empty-state-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -4467,6 +4728,7 @@ class NexusApp {
         // Clear auto-refresh cache so next poll forces a full re-render
         this.chatView._lastSessionsHash = {};
         this.chatView._lastMessageCountBySession = {};
+        this.chatView._lastRenderedSignature = {};
 
         if (currentPage === 'chat') {
             // Refresh chat sessions in all visible panes
@@ -4661,10 +4923,19 @@ class NexusApp {
         try {
             // Try to create a new session via API
             const globalUserFilter = document.getElementById('globalUserFilter');
+            // Intentionally do NOT pass exec_dir here. Leaving it undefined lets the
+            // backend executor fall through to its per-session isolation default:
+            //   ~/{exec_user}/.nexus/sessions/{session_id}/
+            // (see src/runtime/executors/base.py::resolve_exec_dir). Previously we
+            // forwarded serverDefaults.current_workdir (= os.getcwd() at server
+            // launch), which caused every session on a given server process to
+            // share the same workspace directory and display the same 📂 badge
+            // in the sidebar (e.g. "tmp/kanban-e2e"). Users who want to bind a
+            // session to a specific project should pick it explicitly via the
+            // workspace selector / /workspace slash command.
             const result = await NexusAPI.createSession({
                 title: title || `New Session ${new Date().toLocaleTimeString()}`,
                 username: globalUserFilter?.value || NexusAPI.getDefaultExecUser(),
-                exec_dir: this.serverDefaults?.current_workdir || undefined,
                 provider: this.getDefaultProvider ? this.getDefaultProvider() : undefined,
                 alias: this.getDefaultProvider ? this.getDefaultProvider() : undefined,
             });

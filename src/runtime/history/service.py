@@ -251,17 +251,24 @@ class HistoryService:
         self._cache[key] = _CacheEntry(value, ttl=ttl)
 
     def invalidate_project_caches(self) -> int:
-        """Invalidate all project-list, session-list, and global session caches.
+        """Invalidate all project-list, session-list, global session, and
+        session-detail caches.
 
         Called after a CLI execution completes so that the History UI
-        immediately reflects updated file timestamps.
+        immediately reflects updated file timestamps. The ``detail:`` prefix
+        is included because detail snapshots otherwise live for 5 minutes and
+        can serve stale messages when the underlying JSONL has changed (e.g.
+        a ``/resume`` run appended new turns).
 
         Returns:
             Number of cache entries removed.
         """
         keys_to_remove = [
             k for k in self._cache
-            if k.startswith("projects:") or k.startswith("sessions:") or k.startswith("global_sessions:")
+            if k.startswith("projects:")
+            or k.startswith("sessions:")
+            or k.startswith("global_sessions:")
+            or k.startswith("detail:")
         ]
         for k in keys_to_remove:
             self._cache.pop(k, None)

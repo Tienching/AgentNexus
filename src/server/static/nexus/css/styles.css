@@ -6943,3 +6943,30 @@ body.kanban-dragging-active {
     min-height: 220px;
     font-family: var(--font-mono);
 }
+
+/* Optimistic (pre-confirmed) session placeholder */
+.session-item.optimistic {
+    opacity: 0.85;
+    animation: session-item-optimistic-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes session-item-optimistic-pulse {
+    0%, 100% { opacity: 0.85; }
+    50%      { opacity: 1.0; }
+}
+
+.session-item-sending-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    border-radius: 50%;
+    background: var(--primary-500, #3b82f6);
+    vertical-align: middle;
+    animation: session-item-sending-dot-blink 1s ease-in-out infinite;
+}
+
+@keyframes session-item-sending-dot-blink {
+    0%, 100% { transform: scale(1);   opacity: 1; }
+    50%      { transform: scale(1.4); opacity: 0.55; }
+}
