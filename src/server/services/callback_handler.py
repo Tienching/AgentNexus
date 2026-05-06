@@ -105,7 +105,7 @@ class CallbackHandler:
                 logger.warning(f"Callback timeout on attempt {attempt + 1}", extra={"error": str(e)})
             except httpx.RequestError as e:
                 logger.warning(f"Callback request error on attempt {attempt + 1}", extra={"error": str(e)})
-            except Exception as e:
+            except Exception:
                 logger.error(f"Unexpected error during callback on attempt {attempt + 1}", exc_info=True)
 
             if attempt < CALLBACK_MAX_RETRIES - 1:
@@ -290,7 +290,14 @@ class CallbackHandler:
                         
                         # 工具调用开始
                         elif event_type == "TOOL_CALL_START":
-                            tool_name = event_data.get("toolCallName", "未知工具")
+                            tool_name = (
+                                event_data.get("toolCallDisplayName")
+                                or event_data.get("toolCallName")
+                                or "未知工具"
+                            )
+                            description = event_data.get("toolCallDescription")
+                            if description and description not in tool_name:
+                                tool_name = f"{tool_name}: {description}"
                             markdown_parts.append(f"\n🛠️ **[调用工具: {tool_name}]**\n")
                         
                         # 工具调用结果

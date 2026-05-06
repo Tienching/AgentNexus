@@ -1,7 +1,10 @@
 """Channels 模块测试"""
 
+import asyncio
+import json
 import pytest
-from datetime import datetime
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.channels import (
     ChannelManager,
@@ -15,9 +18,9 @@ from src.channels import (
     SignalConfig,
 )
 from src.channels.base import BaseChannel, ChannelState
-from src.channels.events import InboundMessage, OutboundMessage
 from src.server.services.channel_service import ChannelService
 from src.server.config import settings
+from src.server.services.notification.models import NotificationTarget
 
 
 class MockChannel(BaseChannel):
@@ -987,13 +990,6 @@ class TestWeComStreamFinalization:
 
 # ============== _process_with_ai Tool Call Tests ==============
 
-import asyncio
-import json
-from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
-
-from src.server.services.notification.models import NotificationTarget
-
 
 def _patch_asyncio_timeout(monkeypatch) -> None:
     @asynccontextmanager
@@ -1185,6 +1181,55 @@ class TestProcessWithAiToolCalls:
         assert "`Read: /app.py`" in result
         assert "Let me check." in result
         assert "Done." in result
+
+    @pytest.mark.asyncio
+    async def test_agui_tool_call_start_preserves_display_metadata(
+        self, service, inbound, target, handler, monkeypatch
+    ):
+        """AGUI service events should keep display metadata when relayed to Nexus SSE."""
+        events = [
+            _make_stream_event({
+                "type": "TOOL_CALL_START",
+                "toolCallId": "tc1",
+                "toolCallName": "Bash",
+                "toolCallDescription": "Check existing diag tar files",
+                "toolCallDisplayName": "Bash: Check existing diag tar files",
+            }),
+            _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+
+        class _Storage(_BuildRequestStorage):
+            def __init__(self):
+                self.agui_events = []
+
+            def append_agui_event(self, session_id, event):
+                self.agui_events.append(event)
+                return True
+
+            def update_session_status(self, session_id, status):
+                return True
+
+            def add_session_message(self, session_id, message):
+                return True
+
+            def save_tool_call(self, session_id, tool_call):
+                return True
+
+        storage = _Storage()
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: storage)
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._process_with_ai(inbound, "sess-display", target, handler)
+
+        starts = [event for event in storage.agui_events if event.get("type") == "TOOL_CALL_START"]
+        ends = [event for event in storage.agui_events if event.get("type") == "TOOL_CALL_END"]
+        assert starts[0]["toolCallDescription"] == "Check existing diag tar files"
+        assert starts[0]["toolCallDisplayName"] == "Bash: Check existing diag tar files"
+        assert ends[0]["toolCallDisplayName"] == "Bash: Check existing diag tar files"
+        assert "Bash: Check existing diag tar files" in result
 
     @pytest.mark.asyncio
     async def test_agui_tool_call_params_brief(

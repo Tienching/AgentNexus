@@ -466,6 +466,29 @@ class TestCallbackHandler:
         assert markdown_parts[1] == "World!"
         assert "Bash" in markdown_parts[2]
         assert "result" in markdown_parts[3]
+
+    def test_agui_events_to_markdown_prefers_tool_display_name(self):
+        """AG-UI callbacks should show the same descriptive tool title as Nexus UI."""
+        from src.server.services.callback_handler import CallbackHandler
+
+        handler = CallbackHandler()
+
+        events = [
+            (
+                'data: {"type":"TOOL_CALL_START","toolCallId":"tool-1",'
+                '"toolCallName":"Bash","toolCallDescription":"Check diag tar files"}\n\n'
+            ),
+            (
+                'data: {"type":"TOOL_CALL_START","toolCallId":"tool-2",'
+                '"toolCallName":"Bash","toolCallDisplayName":"Bash: Run tests",'
+                '"toolCallDescription":"Run tests"}\n\n'
+            ),
+        ]
+
+        markdown_parts = handler.agui_events_to_markdown(events)
+
+        assert "Bash: Check diag tar files" in markdown_parts[0]
+        assert "Bash: Run tests" in markdown_parts[1]
     
     def test_agui_events_to_markdown_empty(self):
         """测试空事件列表"""

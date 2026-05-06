@@ -1314,11 +1314,25 @@ class TaskBoardPanel {
                 currentTextEl = null;
                 currentTextContent = '';
             },
-            onToolCallStart: (toolCall) => {
+            onToolCallStart: (toolCall, data = {}) => {
                 const toolCallId = toolCall.id;
                 const toolName = toolCall.name;
-                const toolTitle = chatView?.formatToolCallTitle?.(toolName, {}, '') || toolName;
-                streamingToolCalls.set(toolCallId, { name: toolName, args: '', status: 'executing', result: '' });
+                const toolTitle = data.toolCallDisplayName
+                    || toolCall.displayName
+                    || chatView?.formatToolCallTitle?.(
+                        toolName,
+                        toolCall.description ? { description: toolCall.description } : {},
+                        '',
+                    )
+                    || toolName;
+                streamingToolCalls.set(toolCallId, {
+                    name: toolName,
+                    displayName: data.toolCallDisplayName || toolCall.displayName || '',
+                    description: data.toolCallDescription || toolCall.description || '',
+                    args: '',
+                    status: 'executing',
+                    result: '',
+                });
                 if (currentTextEl) currentTextEl.classList.remove('streaming');
                 currentTextEl = null;
                 currentTextContent = '';
@@ -1335,7 +1349,10 @@ class TaskBoardPanel {
                     const argsEl = document.getElementById(`streaming-tool-args-${toolCall.id}`);
                     if (argsEl) argsEl.textContent = tc.args;
                     const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
-                    if (titleEl && chatView) titleEl.textContent = chatView.formatToolCallTitle(tc.name, {}, tc.args);
+                    if (titleEl && chatView) {
+                        titleEl.textContent = tc.displayName
+                            || chatView.formatToolCallTitle(tc.name, tc.description ? { description: tc.description } : {}, tc.args);
+                    }
                 }
             },
             onToolCallEnd: (toolCall, data) => {

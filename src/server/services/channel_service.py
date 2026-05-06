@@ -708,6 +708,9 @@ class ChannelService:
             tool_name: str,
             args_string: str,
             tc_result: Any = None,
+            *,
+            tool_description: Optional[str] = None,
+            tool_display_name: Optional[str] = None,
         ) -> None:
             """Shared logic when a tool call completes (AG-UI or legacy).
 
@@ -721,7 +724,10 @@ class ChannelService:
             raw_name = tool_name
             if ": " in tool_name:
                 raw_name = self._resolve_raw_tool_key(tool_name)
-            display = self._get_tool_display_name(raw_name, params_obj)
+            display_params = params_obj
+            if not display_params and tool_description:
+                display_params = {"description": tool_description}
+            display = tool_display_name or self._get_tool_display_name(raw_name, display_params)
             summary = self._format_tool_summary(message.channel, display)
             result.tool_summaries.append(summary)
             if on_tool_summary:
@@ -796,7 +802,12 @@ class ChannelService:
                         tool_name = event.get("toolCallName", "unknown")
                         tool_id = event.get("toolCallId", "")
                         if tool_id:
-                            agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
+                            agui_tool_buffer[tool_id] = {
+                                "name": tool_name,
+                                "args": "",
+                                "description": event.get("toolCallDescription"),
+                                "display": event.get("toolCallDisplayName"),
+                            }
                             await _handle_tool_start(
                                 tool_id,
                                 tool_name,
@@ -821,7 +832,14 @@ class ChannelService:
                         if tool_id and tool_id in agui_tool_buffer:
                             entry = agui_tool_buffer.pop(tool_id)
                             tc_result = event.get("result") if evt_type == "TOOL_CALL_END" else event.get("content")
-                            await _handle_tool_end(tool_id, entry["name"], entry["args"], tc_result)
+                            await _handle_tool_end(
+                                tool_id,
+                                entry["name"],
+                                entry["args"],
+                                tc_result,
+                                tool_description=entry.get("description"),
+                                tool_display_name=entry.get("display"),
+                            )
 
                     # Legacy tool blocks
                     elif evt_type == "content_block_start":
