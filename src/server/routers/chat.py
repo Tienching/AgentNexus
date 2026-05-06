@@ -217,6 +217,18 @@ async def chat_stream(request: Request, exec_user: str):
     return await stream_handler.handle_agui_request(request, body_dict, exec_user)
 
 
+@router.post("/{port_prefix}/chat/stream/{exec_user}", response_class=StreamingResponse, include_in_schema=False)
+async def chat_stream_with_port_prefix(request: Request, port_prefix: str, exec_user: str):
+    """兼容误把端口 `:8081` 拼到 path 里的旧前端请求。"""
+    if not port_prefix.startswith(":") or not port_prefix[1:].isdigit():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    logger.warning(
+        "Received chat stream request with port-like path prefix; normalizing",
+        extra={"port_prefix": port_prefix, "exec_user": exec_user},
+    )
+    return await chat_stream(request, exec_user=exec_user)
+
+
 async def _handle_test_request() -> StreamingResponse:
     """处理测试连接请求 - 返回 AG-UI 格式响应"""
     test_run_id = f"test-{uuid.uuid4()}"

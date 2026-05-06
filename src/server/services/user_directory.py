@@ -5,6 +5,7 @@ import asyncio
 import shlex
 import os
 import pwd
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -35,6 +36,53 @@ class UserDirectoryManager:
     def resolve_session_directory(self, exec_user: str, session_id: str = "default") -> Path:
         """Resolve a session directory using the same rule as directory creation."""
         return self.resolve_sessions_root(exec_user) / session_id
+
+    def _prepare_session_directory(self, user_dir: Path, exec_user: str) -> None:
+        """Make the session cwd usable by CLI tools.
+
+        Some skills document commands as `python3 scripts/<tool>.py`.  The CLI
+        runs from the per-session directory, not the skill directory, so provide
+        a stable `scripts` symlink to the runtime script aggregate when present.
+        """
+        if os.geteuid() == 0:
+            try:
+                user_info = pwd.getpwnam(exec_user)
+                os.chown(user_dir, user_info.pw_uid, user_info.pw_gid)
+            except Exception as e:
+                logger.warning(
+                    "Failed to chown session directory",
+                    extra={"exec_user": exec_user, "user_dir": str(user_dir), "error": str(e)},
+                )
+
+        scripts_target = Path(os.environ.get("SKILL_SCRIPTS_DIR", "/app/skill-scripts"))
+        if not scripts_target.exists():
+            return
+
+        scripts_link = user_dir / "scripts"
+        try:
+            if scripts_link.is_symlink():
+                if scripts_link.resolve() != scripts_target.resolve():
+                    scripts_link.unlink()
+                    scripts_link.symlink_to(scripts_target, target_is_directory=True)
+            elif not scripts_link.exists():
+                scripts_link.symlink_to(scripts_target, target_is_directory=True)
+            elif scripts_link.is_dir():
+                # Leave a real scripts directory alone to avoid deleting user data.
+                return
+            else:
+                backup = user_dir / "scripts.bak"
+                shutil.move(str(scripts_link), str(backup))
+                scripts_link.symlink_to(scripts_target, target_is_directory=True)
+        except Exception as e:
+            logger.warning(
+                "Failed to prepare session scripts symlink",
+                extra={
+                    "exec_user": exec_user,
+                    "user_dir": str(user_dir),
+                    "scripts_target": str(scripts_target),
+                    "error": str(e),
+                },
+            )
 
     def resolve_task_session_directory(
         self,
@@ -217,6 +265,7 @@ class UserDirectoryManager:
                 }
             )
 
+        self._prepare_session_directory(user_dir, exec_user)
         return user_dir
 
     async def clear_directory(self, exec_user: str, api_user: str, user_dir: Path, session_id: str = "default") -> None:

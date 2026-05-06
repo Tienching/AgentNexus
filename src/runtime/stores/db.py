@@ -28,6 +28,15 @@ logger = logging.getLogger(__name__)
 # Default database path — can be overridden via NEXUS_DB_PATH env var
 _DEFAULT_DB_DIR = os.path.join(str(Path.home()), ".nexus")
 _DEFAULT_DB_NAME = "nexus.db"
+_ALLOWED_JOURNAL_MODES = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}
+
+
+def _journal_mode() -> str:
+    mode = os.environ.get("NEXUS_SQLITE_JOURNAL_MODE", "WAL").strip().upper()
+    if mode in _ALLOWED_JOURNAL_MODES:
+        return mode
+    logger.warning("Invalid NEXUS_SQLITE_JOURNAL_MODE=%r, using WAL", mode)
+    return "WAL"
 
 
 class Database:
@@ -127,7 +136,7 @@ class Database:
             os.makedirs(db_dir, exist_ok=True)
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA journal_mode={_journal_mode()}")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")

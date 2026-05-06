@@ -22,9 +22,11 @@ For providers where a single sessionId can span multiple files
 across files at the aggregation step; each shard still contains only
 the contribution from its own file.
 
-SQLite is used with WAL journalling so that multiple readers and a
-single writer can coexist without blocking. The database is safe to
-delete at any time — worst case is one full cold re-scan.
+SQLite uses WAL journalling by default so that multiple readers and a
+single writer can coexist without blocking. The journal mode can be
+overridden via ``NEXUS_SQLITE_JOURNAL_MODE`` for filesystems that do not
+support WAL well. The database is safe to delete at any time — worst
+case is one full cold re-scan.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from ..models.session import SessionMeta
 
 logger = logging.getLogger(__name__)
+_ALLOWED_JOURNAL_MODES = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL", "OFF"}
 
 
 # -------- schema --------
@@ -79,6 +82,14 @@ def _default_cache_path() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".nexus" / "history_cache.sqlite"
+
+
+def _journal_mode() -> str:
+    mode = os.environ.get("NEXUS_SQLITE_JOURNAL_MODE", "WAL").strip().upper()
+    if mode in _ALLOWED_JOURNAL_MODES:
+        return mode
+    logger.warning("Invalid NEXUS_SQLITE_JOURNAL_MODE=%r, using WAL", mode)
+    return "WAL"
 
 
 # -------- shard (de)serialisation --------
@@ -160,7 +171,7 @@ class CacheStore:
     """Thread-safe persistent cache keyed by (provider, file_path).
 
     Safety notes:
-      * WAL journalling → readers never block a single writer
+      * configurable SQLite journalling; WAL is the default
       * Every read/write goes through a private lock so a single
         ``CacheStore`` instance is safe across asyncio workers that
         use ``asyncio.to_thread``
@@ -231,7 +242,7 @@ class CacheStore:
 
     @contextmanager
     def _connect(self):
-        """Yield a short-lived sqlite3 connection with WAL enabled."""
+        """Yield a short-lived sqlite3 connection."""
         conn = sqlite3.connect(
             str(self._db_path),
             timeout=5.0,
@@ -239,7 +250,7 @@ class CacheStore:
             check_same_thread=False,
         )
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA journal_mode={_journal_mode()}")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout=5000")
             yield conn
