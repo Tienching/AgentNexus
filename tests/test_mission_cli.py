@@ -7,7 +7,6 @@ Tests the argparse structure and command dispatch (not actual nexus calls).
 import subprocess
 import sys
 import os
-import pytest
 
 SCRIPT = os.path.join(
     os.path.dirname(__file__), "..",

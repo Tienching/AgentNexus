@@ -9,11 +9,18 @@ Ported from mission-control:
 
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+TEST_SAFE_STARTUP_POLICY = {
+    "start_task_executor": False,
+    "start_task_scheduler": False,
+    "start_channel_service": False,
+    "start_terminal_manager": False,
+    "start_evolution_service": False,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -21,11 +28,11 @@ from fastapi.testclient import TestClient
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, app_factory):
     """Return a TestClient with auth bypassed."""
     monkeypatch.setenv("NEXUS_AUTH_TOKEN", "test-token")
 
-    from src.server.app import app
+    app = app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)
 
     with TestClient(app) as c:
         yield c
@@ -211,7 +218,6 @@ class TestStandup:
         resp = client.get("/api/nexus/standup", headers=_auth_headers())
         generated_at = resp.json()["standup"]["generated_at"]
         # Should be a valid ISO datetime string
-        from datetime import datetime
         # Accept any parseable ISO format
         assert "T" in generated_at or "-" in generated_at
 

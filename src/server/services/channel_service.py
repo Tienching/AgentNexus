@@ -360,7 +360,6 @@ class ChannelService:
 
         Handles: image/file download, model/provider overrides, model_changed detection.
         """
-        from ..services import CLIExecutor  # noqa: F811
         from ..models import RequestModel
 
         exec_user = self._resolve_effective_exec_user(message.channel, session_id)
@@ -620,7 +619,13 @@ class ChannelService:
             except Exception:
                 pass
 
-        async def _handle_tool_start(tool_id: str, tool_name: str) -> None:
+        async def _handle_tool_start(
+            tool_id: str,
+            tool_name: str,
+            *,
+            tool_description: Optional[str] = None,
+            tool_display_name: Optional[str] = None,
+        ) -> None:
             """Shared logic when a tool call begins (AG-UI or legacy).
 
             Closes any open text segment, emits TOOL_CALL_START, flushes
@@ -637,7 +642,16 @@ class ChannelService:
                 _emit_agui({"type": "TEXT_MESSAGE_END", "messageId": _agui_msg_id})
                 _agui_text_started = False
 
-            _emit_agui({"type": "TOOL_CALL_START", "toolCallId": tool_id, "toolCallName": tool_name})
+            start_event = {
+                "type": "TOOL_CALL_START",
+                "toolCallId": tool_id,
+                "toolCallName": tool_name,
+            }
+            if tool_display_name:
+                start_event["toolCallDisplayName"] = tool_display_name
+            if tool_description:
+                start_event["toolCallDescription"] = tool_description
+            _emit_agui(start_event)
 
             # Notify channel that a tool call is starting (real-time progress)
             if on_tool_start:
@@ -783,7 +797,12 @@ class ChannelService:
                         tool_id = event.get("toolCallId", "")
                         if tool_id:
                             agui_tool_buffer[tool_id] = {"name": tool_name, "args": ""}
-                            await _handle_tool_start(tool_id, tool_name)
+                            await _handle_tool_start(
+                                tool_id,
+                                tool_name,
+                                tool_description=event.get("toolCallDescription"),
+                                tool_display_name=event.get("toolCallDisplayName"),
+                            )
 
                     elif evt_type == "TOOL_CALL_ARGS":
                         tool_id = event.get("toolCallId", "")

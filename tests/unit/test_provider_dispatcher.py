@@ -8,7 +8,6 @@ Tests cover:
   - create_all_executors() pre-creates all known providers
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
 
 
@@ -80,6 +79,7 @@ class TestCreateExecutor:
             from src.providers.dispatcher import create_executor
             result = create_executor("claude", config=mock_config)
             MockCLI.assert_called_once_with(config=mock_config)
+            assert result is MockCLI.return_value
 
     def test_gemini_creates_gemini_executor(self):
         mock_config = MagicMock()
@@ -88,6 +88,7 @@ class TestCreateExecutor:
             from src.providers.dispatcher import create_executor
             result = create_executor("gemini", config=mock_config)
             MockGemini.assert_called_once_with(config=mock_config)
+            assert result is MockGemini.return_value
 
     def test_codex_creates_codex_executor(self):
         mock_config = MagicMock()
@@ -96,6 +97,7 @@ class TestCreateExecutor:
             from src.providers.dispatcher import create_executor
             result = create_executor("codex", config=mock_config)
             MockCodex.assert_called_once_with(config=mock_config)
+            assert result is MockCodex.return_value
 
     def test_codebuddy_creates_codebuddy_executor(self):
         mock_config = MagicMock()
@@ -104,6 +106,7 @@ class TestCreateExecutor:
             from src.providers.dispatcher import create_executor
             result = create_executor("codebuddy", config=mock_config)
             MockCB.assert_called_once_with(config=mock_config)
+            assert result is MockCB.return_value
 
     def test_nexus_creates_nexus_executor(self):
         mock_config = MagicMock()
@@ -146,6 +149,7 @@ class TestCreateAdapter:
             from src.providers.dispatcher import create_adapter
             result = create_adapter("gemini")
             MockAdapter.assert_called_once()
+            assert result is MockAdapter.return_value
 
     def test_codex_creates_codex_adapter(self):
         with patch("src.runtime.adapters.codex.CodexCLIAGUIAdapter") as MockAdapter:
@@ -153,6 +157,7 @@ class TestCreateAdapter:
             from src.providers.dispatcher import create_adapter
             result = create_adapter("codex")
             MockAdapter.assert_called_once()
+            assert result is MockAdapter.return_value
 
     def test_codebuddy_creates_codebuddy_adapter(self):
         with patch("src.runtime.adapters.codebuddy.CodebuddyAGUIAdapter") as MockAdapter:
@@ -160,6 +165,7 @@ class TestCreateAdapter:
             from src.providers.dispatcher import create_adapter
             result = create_adapter("codebuddy")
             MockAdapter.assert_called_once()
+            assert result is MockAdapter.return_value
 
     def test_claude_creates_agui_adapter(self):
         with patch("src.runtime.adapters.claude.AGUIAdapter") as MockAdapter:
@@ -167,6 +173,7 @@ class TestCreateAdapter:
             from src.providers.dispatcher import create_adapter
             result = create_adapter("claude")
             MockAdapter.assert_called_once()
+            assert result is MockAdapter.return_value
 
     def test_nexus_creates_nexus_adapter(self):
         from src.providers.dispatcher import create_adapter

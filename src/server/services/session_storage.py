@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from src.runtime.stores.session_storage import (
     SessionStorage,
-    SESSION_TTL,
-    STREAMING_CONTENT_TTL,
 )
 from .app_container import get_app_container
 

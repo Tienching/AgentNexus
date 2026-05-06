@@ -10,11 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ..base import BaseAdapter, ProtocolType, AdapterState
 from src.runtime.events.agui import (
-    AGUIEventType,
     MessageRole,
     RunStartedEvent,
     RunFinishedEvent,
@@ -23,6 +22,7 @@ from src.runtime.events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
+    build_tool_call_start_metadata,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
@@ -332,10 +332,16 @@ class CodexAGUIAdapter(BaseAdapter):
         results = []
         
         # Emit tool call start
+        shell_display_name = f"Shell: {cmd_str[:50]}"
         results.append(ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName=f"Shell: {cmd_str[:50]}",
+            toolCallName=shell_display_name,
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata(
+                "Shell",
+                {"command": cmd_str},
+                display_name=shell_display_name,
+            ),
         ).to_sse())
         
         # Emit args
@@ -414,10 +420,16 @@ class CodexAGUIAdapter(BaseAdapter):
         
         results = []
         
+        edit_display_name = f"Edit: {len(files)} file(s)"
         results.append(ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName=f"Edit: {len(files)} file(s)",
+            toolCallName=edit_display_name,
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata(
+                "Edit",
+                {"description": ", ".join(files) if files else ""},
+                display_name=edit_display_name,
+            ),
         ).to_sse())
         
         args = json.dumps({"files": files}, ensure_ascii=False)
@@ -472,10 +484,16 @@ class CodexAGUIAdapter(BaseAdapter):
         
         results = []
         
+        mcp_display_name = f"MCP: {server}/{tool}"
         results.append(ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName=f"MCP: {server}/{tool}",
+            toolCallName=mcp_display_name,
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata(
+                "MCP",
+                arguments,
+                display_name=mcp_display_name,
+            ),
         ).to_sse())
         
         if arguments:
@@ -531,6 +549,7 @@ class CodexAGUIAdapter(BaseAdapter):
     def _handle_web_search_begin(self, msg: Dict[str, Any]) -> Optional[str]:
         """Handle web_search_begin event."""
         call_id = msg.get("call_id", self._generate_tool_call_id())
+        query = msg.get("query", "")
         
         self._state.pending_tool_calls[call_id] = {"name": "WebSearch"}
         
@@ -538,6 +557,7 @@ class CodexAGUIAdapter(BaseAdapter):
             toolCallId=call_id,
             toolCallName="Web Search",
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata("Web Search", {"query": query}),
         ).to_sse()
     
     def _handle_web_search_end(self, msg: Dict[str, Any]) -> Optional[str]:

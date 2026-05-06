@@ -19,7 +19,6 @@ from typing import Any, Dict
 
 from .parser import (
     CommandSpec,
-    OptionDef,
     register_slash_command_specs,
 )
 from .handler import (
@@ -174,7 +173,7 @@ def _handle_plan_status(handler, parsed, ctx: Dict[str, Any]) -> str:
     ]
     if status["plan_mode"]:
         if content:
-            lines.append(f"- **Plan Submitted:** yes")
+            lines.append("- **Plan Submitted:** yes")
             lines.append(f"- **Plan Approved:** {'yes' if approved else 'no'}")
             lines.append(f"\n---\n\n{content}\n\n---")
         else:

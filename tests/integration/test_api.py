@@ -8,7 +8,7 @@ from httpx import AsyncClient
 from pydantic import ValidationError
 from starlette.requests import Request
 
-from src.server.app import app, validation_exception_handler
+from src.server.app import validation_exception_handler
 from src.server.models import RequestModel
 
 
@@ -51,11 +51,13 @@ class TestAPIEndpoints:
         assert "requests_active" in data
 
     @pytest.mark.asyncio
-    async def test_required_startup_failure_blocks_app_lifespan(self, monkeypatch):
+    async def test_required_startup_failure_blocks_app_lifespan(self, app_factory):
         """测试必需启动子系统失败时拒绝启动 API"""
-        monkeypatch.setattr("src.server.app.settings.executor_enabled", False)
-        monkeypatch.setattr("src.server.app.settings.scheduler_enabled", False)
-        monkeypatch.setattr("src.server.app.settings.evolution_enabled", False)
+        app = app_factory(settings_overrides={
+            "executor_enabled": False,
+            "scheduler_enabled": False,
+            "evolution_enabled": False,
+        })
 
         with patch("src.server.services.channel_service.create_channel_service", return_value=None), \
              patch("src.server.services.terminal_manager.TerminalManager", side_effect=RuntimeError("tmux missing")):

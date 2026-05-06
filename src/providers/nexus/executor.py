@@ -16,11 +16,10 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator
 
 from src.providers.base import BaseExecutor, RequestContext
 from src.providers.nexus.event_schema import (
-    DoneEvent,
     ErrorEvent,
     NexusEvent,
     TextDeltaEvent,

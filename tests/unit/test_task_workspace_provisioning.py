@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.runtime.commands.slash.worktree import CachedRepoProvisionResult, WorktreeResult
 from src.server.services.task_execution_service import _provision_task_workspace
 
@@ -72,10 +74,6 @@ def test_provision_task_workspace_uses_cached_provisioner(monkeypatch, tmp_path:
 
 async def _never_called_execute(*args, **kwargs):
     raise AssertionError("executor should not be called when workspace provisioning fails")
-
-
-import pytest
-
 
 @pytest.mark.asyncio
 async def test_execute_task_returns_error_when_explicit_worktree_contract_fails(monkeypatch, tmp_path: Path):

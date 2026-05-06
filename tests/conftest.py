@@ -38,7 +38,7 @@ def event_loop():
 
 
 @pytest.fixture
-def app_factory():
+def app_factory(tmp_path):
     """创建隔离于宿主环境的测试应用"""
 
     def _create_app(
@@ -48,9 +48,13 @@ def app_factory():
     ):
         from src.server import app as server_app
 
+        isolated_settings = {"log_dir": str(tmp_path / "logs")}
+        if settings_overrides:
+            isolated_settings.update(settings_overrides)
+
         return server_app.create_app_with_overrides(
             use_env=False,
-            settings_overrides=settings_overrides,
+            settings_overrides=isolated_settings,
             startup_policy_overrides=startup_policy_overrides,
         )
 

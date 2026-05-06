@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
 """Session Models Unit Tests"""
 
-import pytest
 import json
-import time
 
 from src.server.models import (
     SessionStatus,

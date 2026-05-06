@@ -26,7 +26,6 @@ from pydantic import BaseModel, Field
 
 from ..config import settings
 from ..logger import get_logger
-from ..services.observability import track_api_latency
 from .nexus_auth import verify_nexus_auth
 from .nexus_models import (
     AgentInfo,

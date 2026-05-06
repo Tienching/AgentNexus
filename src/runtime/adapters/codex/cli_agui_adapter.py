@@ -38,9 +38,9 @@ from src.runtime.events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
+    build_tool_call_start_metadata,
     ToolCallArgsEvent,
     ToolCallEndEvent,
-    ToolCallResultEvent,
     CustomEvent,
     MessageRole,
 )
@@ -310,6 +310,7 @@ class CodexCLIAGUIAdapter(BaseAdapter):
             toolCallId=tool_call_id,
             toolCallName="bash",
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata("bash", {"command": command}),
         ).to_sse())
         
         if command:
@@ -368,16 +369,17 @@ class CodexCLIAGUIAdapter(BaseAdapter):
         item_id = item.get("id")
         tool_name = item.get("tool_name", "mcp_tool")
         tool_call_id = self._generate_tool_call_id(item_id)
+        arguments = item.get("arguments")
         
         results = []
         results.append(ToolCallStartEvent(
             toolCallId=tool_call_id,
             toolCallName=tool_name,
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata(tool_name, arguments),
         ).to_sse())
         
         # Add arguments if available
-        arguments = item.get("arguments")
         if arguments:
             results.append(ToolCallArgsEvent(
                 toolCallId=tool_call_id,
@@ -408,6 +410,7 @@ class CodexCLIAGUIAdapter(BaseAdapter):
             toolCallId=tool_call_id,
             toolCallName="web_search",
             parentMessageId=self._state.current_message_id,
+            **build_tool_call_start_metadata("web_search", {"query": query}),
         ).to_sse())
         
         if query:

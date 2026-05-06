@@ -155,7 +155,7 @@ def requeue_stale_tasks(
         )
 
     message = (
-        f"No stale tasks found"
+        "No stale tasks found"
         if total == 0
         else f"Requeued {requeued}, failed {failed} of {total} stale task(s)"
     )

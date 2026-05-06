@@ -51,7 +51,6 @@ def up(conn: sqlite3.Connection) -> None:
     ).fetchall()
     for exec_user, session_id, ids_csv in duplicate_rows:
         ids = [part for part in str(ids_csv or '').split(',') if part]
-        keep_id = ids[-1]
         for task_id in ids[:-1]:
             conn.execute(
                 "UPDATE tasks SET session_id = session_id || ':dedup:' || id WHERE exec_user = ? AND id = ?",

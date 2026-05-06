@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import time
 import uuid
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -20,18 +19,15 @@ from ..logger import get_logger
 from ..models import (
     SessionMessagesResponse,
     SessionMeta,
-    SessionStatus,
     StoredMessage,
     MessageStatus,
 )
 from ..services.session_storage import get_session_storage
 from .nexus_auth import verify_nexus_auth
 from .nexus_history_helpers import (
-    PROVIDER_CONFIG_DIRS as _PROVIDER_CONFIG_DIRS,
     build_alias_config_map as _build_alias_config_map,
     build_bootstrap_context as _build_bootstrap_context,
     build_runtime_session_meta,
-    get_history_observability_snapshot,
     get_history_service as _get_history_service,
     import_history_detail,
     infer_history_project_path,
@@ -49,7 +45,6 @@ from .nexus_history_queries import (
     collect_history_sessions,
 )
 from .nexus_models import (
-    HistoryProjectProviderSummary,
     HistoryProjectSummary,
     HistorySessionListResponse,
     HistorySessionSummary,

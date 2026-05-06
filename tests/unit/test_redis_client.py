@@ -8,7 +8,7 @@ redis = pytest.importorskip("redis", reason="redis extra is optional for the def
 
 pytestmark = pytest.mark.optional_backend
 
-from src.runtime.stores.redis_client import RedisClient, get_redis_client
+from src.runtime.stores.redis_client import RedisClient, get_redis_client  # noqa: E402
 
 
 class TestRedisClientConnectionHandling:

@@ -3,7 +3,6 @@
 import pytest
 from pathlib import Path
 import tempfile
-import os
 
 from src.nanobot.evolve.models import EvolutionConfig
 from src.nanobot.evolve.identity import IdentityManager

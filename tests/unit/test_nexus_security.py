@@ -6,18 +6,25 @@ Ported from mission-control security-scan tests, adapted for Nexus.
 
 from __future__ import annotations
 
-import json
 import os
-from unittest.mock import patch, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 
+TEST_SAFE_STARTUP_POLICY = {
+    "start_task_executor": False,
+    "start_task_scheduler": False,
+    "start_channel_service": False,
+    "start_terminal_manager": False,
+    "start_evolution_service": False,
+}
+
+
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, app_factory):
     monkeypatch.setenv("NEXUS_AUTH_TOKEN", "test-token")
-    from src.server.app import app
+    app = app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)
     with TestClient(app) as c:
         yield c
 

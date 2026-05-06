@@ -14,10 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
-import stat
 import subprocess
 import time
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -360,7 +358,6 @@ def _scan_os() -> SecurityCategory:
     ))
 
     # 2. System uptime (if very long, may miss security patches)
-    uptime_s = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else None
     try:
         with open("/proc/uptime") as f:
             uptime = float(f.read().split()[0])

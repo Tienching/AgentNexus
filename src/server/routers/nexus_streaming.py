@@ -84,7 +84,6 @@ def self_heal_running_session(storage, session_id: str, updated_at) -> Optional[
         return None
 
     # Scan last events for terminal markers
-    healed = False
     total_events = storage.get_agui_event_count(session_id)
     if total_events > 0:
         scan_count = min(total_events, 20)

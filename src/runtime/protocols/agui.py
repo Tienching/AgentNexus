@@ -27,12 +27,12 @@ from ..events import (
     ToolCallEndEvent,
     ToolResultEvent,
     MessageStartEvent,
-    MessageEndEvent,
     ErrorEvent,
 )
+from ..events.agui import build_tool_call_start_metadata
 
 if TYPE_CHECKING:
-    from ...core.streaming.orchestrator import TombstoneRecord, StreamChunk
+    from ...core.streaming.orchestrator import TombstoneRecord
 
 
 @dataclass
@@ -124,9 +124,30 @@ class AGUIProtocol:
         elif event.type == EventType.TOOL_CALL_START:
             tool_name = event.tool_name if isinstance(event, ToolCallStartEvent) else (event.data.get("tool_name") or "")
             tool_id = event.tool_id if isinstance(event, ToolCallStartEvent) else (event.data.get("tool_id") or "")
-            results.append(self._format_sse({"type": "TOOL_CALL_START", "toolCallId": tool_id, "toolCallName": tool_name}))
-
             arguments = event.arguments if isinstance(event, ToolCallStartEvent) else (event.data.get("arguments") or {})
+            description = (
+                event.description
+                if isinstance(event, ToolCallStartEvent)
+                else event.data.get("description")
+            )
+            display_name = (
+                event.display_name
+                if isinstance(event, ToolCallStartEvent)
+                else event.data.get("display_name")
+            )
+            start_payload = {
+                "type": "TOOL_CALL_START",
+                "toolCallId": tool_id,
+                "toolCallName": display_name or tool_name,
+                **build_tool_call_start_metadata(
+                    tool_name,
+                    arguments,
+                    description=description,
+                    display_name=display_name,
+                ),
+            }
+            results.append(self._format_sse(start_payload))
+
             if arguments:
                 results.append(
                     self._format_sse(

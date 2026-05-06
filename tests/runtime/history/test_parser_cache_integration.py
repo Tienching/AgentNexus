@@ -8,8 +8,6 @@ These tests build tiny fake history trees on disk, then assert that:
   4. Output is identical to a fresh (cache-less) run
 """
 import json
-import os
-import time
 from pathlib import Path
 
 import pytest

@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
 
-from src.server.app import app
 from src.server.routers.nexus_history import _build_alias_config_map
 from src.server.models import (
     SessionMeta,
@@ -24,6 +23,15 @@ from src.server.models import (
     TaskPriority,
     TaskStatus,
 )
+
+
+TEST_SAFE_STARTUP_POLICY = {
+    "start_task_executor": False,
+    "start_task_scheduler": False,
+    "start_channel_service": False,
+    "start_terminal_manager": False,
+    "start_evolution_service": False,
+}
 
 
 class MockSessionStorage:
@@ -255,12 +263,13 @@ def mock_storage():
 
 
 @pytest.fixture
-async def client(mock_storage):
+async def client(mock_storage, app_factory):
     """Create test client with mocked storage"""
     with patch('src.server.routers.nexus_sessions.get_session_storage', return_value=mock_storage), \
          patch('src.server.routers.nexus_tasks.get_session_storage', return_value=mock_storage), \
          patch('src.server.routers.nexus_streaming.get_session_storage', return_value=mock_storage), \
          patch('src.server.routers.nexus_files.get_session_storage', return_value=mock_storage):
+        app = app_factory(startup_policy_overrides=TEST_SAFE_STARTUP_POLICY)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac

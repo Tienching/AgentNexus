@@ -12,23 +12,12 @@ import json
 import shlex
 import time
 import re
-import uuid
 import os
 import pwd
-import tempfile
 from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Any, Optional
 
 from ..models import RequestModel
-from src.runtime.events.agui import (
-    TextMessageStartEvent,
-    TextMessageContentEvent,
-    TextMessageEndEvent,
-    RunStartedEvent,
-    RunFinishedEvent,
-    RunErrorEvent,
-    MessageRole,
-)
 from ..config import settings
 from ..logger import get_logger
 from .user_directory import UserDirectoryManager
@@ -162,7 +151,7 @@ class CLIExecutor:
 
         # 验证用户参数
         if not request.user:
-            logger.error(f"Missing required user parameter", extra={"exec_user": exec_user})
+            logger.error("Missing required user parameter", extra={"exec_user": exec_user})
             raise ValueError("用户名参数是必需的，请在请求中提供 'user' 字段")
 
         # 清理输入内容
@@ -327,7 +316,7 @@ class CLIExecutor:
                 raise
 
         logger.info(
-            f"Using user directory",
+            "Using user directory",
             extra={
                 "api_user": request.user,
                 "exec_user": exec_user,
@@ -520,7 +509,7 @@ class CLIExecutor:
         
         if current_user == exec_user:
             cmd = ["bash", "-c", full_cmd]
-            logger.info(f"Running command directly as current user", extra={
+            logger.info("Running command directly as current user", extra={
                 "exec_user": exec_user,
                 "api_user": request.user,
                 "user_dir": str(user_dir),
@@ -533,7 +522,7 @@ class CLIExecutor:
                 "user_dir": str(user_dir),
             })
 
-        logger.info(f"Starting CLI processing", extra={
+        logger.info("Starting CLI processing", extra={
             "process_type": "cli_start",
             "api_user": request.user,
             "exec_user": exec_user,
@@ -581,13 +570,13 @@ class CLIExecutor:
             await asyncio.wait_for(process.wait(), timeout=self.config.cli_timeout)
 
             duration = time.time() - start_time
-            logger.info(f"CLI processing completed", extra={
+            logger.info("CLI processing completed", extra={
                 "process_type": "cli_complete",
                 "duration_ms": int(duration * 1000),
             })
 
         except asyncio.TimeoutError:
-            logger.error(f"CLI command timeout", extra={"timeout_seconds": self.config.cli_timeout})
+            logger.error("CLI command timeout", extra={"timeout_seconds": self.config.cli_timeout})
             try:
                 process.kill()
             except Exception:
@@ -651,7 +640,7 @@ class CLIExecutor:
                 notification_chat_id=notification_chat_id,
             )
             
-            logger.info(f"Slash command handled", extra={
+            logger.info("Slash command handled", extra={
                 "command": content.split()[0] if content else "",
                 "exec_user": exec_user,
                 "response_length": len(response),
@@ -756,7 +745,7 @@ class CLIExecutor:
                     for sse in self._process_legacy_event(data, event_type, tool_input_buffer):
                         yield sse
 
-                except json.JSONDecodeError as e:
+                except json.JSONDecodeError:
                     logger.warning(f"Invalid JSON line #{line_count}: {line_str[:100]}...")
                 except Exception as e:
                     logger.error(f"Error processing stream line #{line_count}: {e}", exc_info=True)
@@ -1343,7 +1332,7 @@ class CLIExecutor:
         if "su:" in error:
             return f"无法切换到用户 '{exec_user}'。请确保用户存在且当前进程有切换权限。"
         elif "cannot create child process" in error.lower():
-            return f"无法创建子进程。可能是权限不足或资源限制。"
+            return "无法创建子进程。可能是权限不足或资源限制。"
         return f"处理错误: {error}"
 
     def format_legacy_sse(self, response: str, finished: bool = False, answer_success: int = 1) -> str:

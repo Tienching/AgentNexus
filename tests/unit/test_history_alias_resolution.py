@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from src.runtime.history.alias_resolution import (
     build_alias_config_map,

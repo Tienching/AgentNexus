@@ -30,7 +30,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail
-from .cache_store import CacheStore, FileStamp, stat_paths
+from .cache_store import CacheStore, stat_paths
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +325,6 @@ class GeminiHistoryParser(BaseHistoryParser):
             elif msg_type == "gemini":
                 text = content if isinstance(content, str) else ""
                 raw_tool_calls = raw_msg.get("toolCalls", [])
-                thoughts = raw_msg.get("thoughts", [])
 
                 # Build content segments
                 segments: List[ContentSegment] = []

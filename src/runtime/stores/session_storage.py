@@ -12,7 +12,6 @@ TTL is handled via ``expires_at`` columns with periodic cleanup.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import sqlite3
 import time
@@ -1138,8 +1137,6 @@ class SessionStorage:
         messages = self.get_session_messages(session_id)
         tool_calls = self.get_session_tool_calls(session_id)
 
-        # Build tool call result map
-        completed_tool_ids = {tc.id for tc in tool_calls if tc.status.value == "completed"}
         pending_tool_ids = {tc.id for tc in tool_calls if tc.status.value in ("pending", "executing")}
 
         interrupted: List[Dict[str, Any]] = []

@@ -2,7 +2,6 @@
 """Tests for nexus integration into the dispatcher."""
 
 import os
-import pytest
 from unittest.mock import patch, MagicMock
 
 from src.providers.dispatcher import normalize_provider, create_adapter, create_executor

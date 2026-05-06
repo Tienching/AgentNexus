@@ -2,8 +2,7 @@
 """Task Storage Unit Tests with Redis"""
 
 import pytest
-from unittest.mock import MagicMock, patch
-from datetime import datetime, timezone
+from unittest.mock import patch
 
 from src.runtime.stores.task_storage import (
     DuplicatePendingTaskError,
@@ -403,7 +402,7 @@ class TestTaskQueue:
     def test_list_tasks_filters(self, task_queue):
         """Test list_tasks filtering by status/project/workspace/search"""
         t1 = task_queue.add_task(description="Fix login", project_id="proj-a", project_name="Project A", workspace="/ws/a")
-        t2 = task_queue.add_task(description="Refactor API", project_id="proj-b", project_name="Project B", workspace="/ws/b")
+        task_queue.add_task(description="Refactor API", project_id="proj-b", project_name="Project B", workspace="/ws/b")
         t3 = task_queue.add_task(description="Fix checkout", project_id="proj-a", project_name="Project A", workspace="/ws/a")
 
         # Make one task done
@@ -550,7 +549,7 @@ class TestTaskQueue:
     def test_get_executing_count(self, task_queue):
         """Test getting executing task count"""
         task1 = task_queue.add_task(description="Task 1", workspace="/path/a")
-        task2 = task_queue.add_task(description="Task 2", workspace="/path/a")
+        task_queue.add_task(description="Task 2", workspace="/path/a")
         
         task_queue.start_task(task1.id)
         
@@ -844,7 +843,7 @@ class TestListTasksOptimized:
         """Status + project combined narrows via set intersection"""
         t1 = task_queue.add_task(description="A-todo", project_id="alpha")
         t2 = task_queue.add_task(description="A-done", project_id="alpha")
-        t3 = task_queue.add_task(description="B-todo", project_id="beta")
+        task_queue.add_task(description="B-todo", project_id="beta")
 
         task_queue.start_task(t2.id)
         task_queue.complete_task(t2.id)
@@ -904,7 +903,7 @@ class TestListTasksOptimized:
         import time
         t1 = task_queue.add_task(description="First")
         time.sleep(0.01)  # Ensure different timestamps
-        t2 = task_queue.add_task(description="Second")
+        task_queue.add_task(description="Second")
         time.sleep(0.01)
         t3 = task_queue.add_task(description="Third")
 

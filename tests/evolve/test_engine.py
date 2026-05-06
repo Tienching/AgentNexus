@@ -1,10 +1,9 @@
 """Tests for the evolution engine."""
 
-import asyncio
 import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from src.nanobot.evolve.models import EvolutionConfig, EvolutionSession, EvolutionTask
 from src.nanobot.evolve.engine import EvolutionEngine

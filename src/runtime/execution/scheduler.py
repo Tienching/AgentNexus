@@ -12,7 +12,6 @@ import logging
 import time
 import uuid
 from typing import Optional, Dict, Any
-from datetime import datetime, timezone
 from enum import Enum
 
 from ..models.schedule_models import Schedule, ScheduleStatus, ScheduleKind

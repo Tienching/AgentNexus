@@ -20,7 +20,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail
-from .cache_store import CacheStore, FileStamp, stat_paths
+from .cache_store import CacheStore, stat_paths
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +274,6 @@ class CodexHistoryParser(BaseHistoryParser):
         """
         session_id = None
         cwd = ""
-        model = ""
         message_count = 0
         last_user_message = ""
         last_timestamp = 0
@@ -286,7 +285,6 @@ class CodexHistoryParser(BaseHistoryParser):
                 payload = entry.get("payload", {})
                 session_id = payload.get("id") or entry.get("id")
                 cwd = payload.get("cwd", "")
-                model = payload.get("model", "")
                 ts = entry.get("timestamp")
                 if ts:
                     last_timestamp = self._parse_timestamp_ms(ts)
@@ -351,7 +349,6 @@ class CodexHistoryParser(BaseHistoryParser):
         """
         session_id = None
         cwd = ""
-        model = ""
         message_count = 0
         last_user_message = ""
         last_timestamp = 0
@@ -363,7 +360,6 @@ class CodexHistoryParser(BaseHistoryParser):
                 payload = entry.get("payload", {})
                 session_id = payload.get("id") or entry.get("id")
                 cwd = payload.get("cwd", "")
-                model = payload.get("model", "")
                 ts = entry.get("timestamp")
                 if ts:
                     last_timestamp = self._parse_timestamp_ms(ts)

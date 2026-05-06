@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """Tests for NexusExecutor — callback→generator bridging."""
 
-import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,9 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from src.providers.base import RequestContext
 from src.providers.nexus.executor import NexusExecutor, _NexusPool, _serialise_event
 from src.providers.nexus.event_schema import (
-    TextStartEvent,
     TextDeltaEvent,
-    TextEndEvent,
     ToolStartEvent,
     ErrorEvent,
 )
@@ -133,11 +130,11 @@ class TestNexusExecutorExecute:
             async for line in executor.execute(mock_request, exec_user="ubuntu"):
                 lines.append(json.loads(line))
 
-        types = [l["type"] for l in lines]
+        types = [event["type"] for event in lines]
         assert "text_start" in types
         assert "text_delta" in types
         assert "text_end" in types
-        deltas = [l["delta"] for l in lines if l["type"] == "text_delta"]
+        deltas = [event["delta"] for event in lines if event["type"] == "text_delta"]
         assert "Hello " in deltas
         assert "world!" in deltas
 
@@ -170,7 +167,7 @@ class TestNexusExecutorExecute:
             async for line in executor.execute(mock_request, exec_user="ubuntu"):
                 lines.append(json.loads(line))
 
-        types = [l["type"] for l in lines]
+        types = [event["type"] for event in lines]
         assert "tool_start" in types
         assert "tool_result" in types
         assert "tool_end" in types

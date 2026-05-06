@@ -6,10 +6,8 @@ Ported from mission-control (commit d4f55dd).
 
 from __future__ import annotations
 
-import json
-import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -217,7 +215,7 @@ class TestCreateRun:
         redis = _make_redis()
         svc = _make_svc(redis)
         run = svc.create_run(_minimal_run())
-        ids = redis.zrangebyscore(f"runs:test_user:by_task:", "-inf", "+inf")
+        ids = redis.zrangebyscore("runs:test_user:by_task:", "-inf", "+inf")
         assert run["id"] not in ids
 
 

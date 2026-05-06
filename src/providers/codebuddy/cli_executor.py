@@ -100,8 +100,6 @@ class CodebuddyCLIExecutor(BaseExecutor):
         if not context.content:
             raise ValueError("Missing required field: content")
 
-        cleaned_content = self._clean_content(context.content)
-
         # Resolve execution directory
         exec_dir = self.resolve_exec_dir(context)
 

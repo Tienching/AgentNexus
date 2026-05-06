@@ -14,9 +14,7 @@ import asyncio
 import json
 import logging
 import os
-import pwd
 import re
-import shlex
 import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Callable, Awaitable
@@ -153,7 +151,7 @@ class CLIExecutor(BaseExecutor):
         final_cmd = self.wrap_command_for_user(cmd, exec_dir, context.exec_user)
         
         logger.info(
-            f"Starting CLI processing",
+            "Starting CLI processing",
             extra={
                 "process_type": "cli_start",
                 "api_user": context.user,
@@ -175,13 +173,13 @@ class CLIExecutor(BaseExecutor):
             await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
             
             duration = time.time() - start_time
-            logger.info(f"CLI processing completed", extra={
+            logger.info("CLI processing completed", extra={
                 "process_type": "cli_complete",
                 "duration_ms": int(duration * 1000),
             })
             
         except asyncio.TimeoutError:
-            logger.error(f"CLI command timeout", extra={"timeout_seconds": self.config.timeout})
+            logger.error("CLI command timeout", extra={"timeout_seconds": self.config.timeout})
             try:
                 process.kill()
             except Exception:
@@ -352,7 +350,7 @@ class CLIExecutor(BaseExecutor):
         try:
             response = await self._slash_command_handler(content, context.session_id)
             
-            logger.info(f"Slash command handled", extra={
+            logger.info("Slash command handled", extra={
                 "command": content.split()[0] if content else "",
                 "exec_user": context.exec_user,
                 "response_length": len(response),
@@ -576,7 +574,7 @@ class CLIExecutor(BaseExecutor):
         if "su:" in error:
             return f"无法切换到用户 '{exec_user}'。请确保用户存在且当前进程有切换权限。"
         elif "cannot create child process" in error.lower():
-            return f"无法创建子进程。可能是权限不足或资源限制。"
+            return "无法创建子进程。可能是权限不足或资源限制。"
         return f"处理错误: {error}"
     
     def format_legacy_sse(self, response: str, finished: bool = False, answer_success: int = 1) -> str:

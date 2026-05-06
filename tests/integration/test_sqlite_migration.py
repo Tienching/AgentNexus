@@ -8,12 +8,9 @@ using only SQLite as the data backend.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
-import tempfile
 import time
-from unittest.mock import patch
 
 import pytest
 

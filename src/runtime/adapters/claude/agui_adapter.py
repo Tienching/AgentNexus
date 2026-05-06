@@ -20,6 +20,7 @@ from ...events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
+    build_tool_call_start_metadata,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
@@ -549,7 +550,7 @@ class AGUIAdapter(BaseAdapter):
                     if tool_name in ("Task", "task", "TodoWrite", "todo_write"):
                         # 这些工具需要等待参数可解析
                         try:
-                            params = json.loads(new_params)
+                            json.loads(new_params)
                             # 参数可解析，生成显示名称
                             display_name = self._get_tool_display_name(tool_name, new_params)
                         except json.JSONDecodeError:
@@ -567,7 +568,12 @@ class AGUIAdapter(BaseAdapter):
                         tool_start = ToolCallStartEvent(
                             toolCallId=tool_id,
                             toolCallName=display_name,
-                            parentMessageId=self.state.current_message_id
+                            parentMessageId=self.state.current_message_id,
+                            **build_tool_call_start_metadata(
+                                tool_name,
+                                new_params,
+                                display_name=display_name,
+                            ),
                         )
                         results.append(tool_start.to_sse())
                         self._tool_start_sent.add(tool_id)
@@ -622,7 +628,12 @@ class AGUIAdapter(BaseAdapter):
                 tool_start = ToolCallStartEvent(
                     toolCallId=tool_id,
                     toolCallName=display_name,
-                    parentMessageId=self.state.current_message_id
+                    parentMessageId=self.state.current_message_id,
+                    **build_tool_call_start_metadata(
+                        tool_name,
+                        params,
+                        display_name=display_name,
+                    ),
                 )
                 results.append(tool_start.to_sse())
                 self._tool_start_sent.add(tool_id)
@@ -710,7 +721,12 @@ class AGUIAdapter(BaseAdapter):
                     tool_start = ToolCallStartEvent(
                         toolCallId=tool_id,
                         toolCallName=display_name,
-                        parentMessageId=self.state.current_message_id
+                        parentMessageId=self.state.current_message_id,
+                        **build_tool_call_start_metadata(
+                            tool_name,
+                            params_json,
+                            display_name=display_name,
+                        ),
                     )
                     results.append(tool_start.to_sse())
                     
@@ -844,7 +860,12 @@ class AGUIAdapter(BaseAdapter):
         tool_start = ToolCallStartEvent(
             toolCallId=call.tool_id,
             toolCallName=display_name,
-            parentMessageId=self.state.current_message_id
+            parentMessageId=self.state.current_message_id,
+            **build_tool_call_start_metadata(
+                call.tool_name,
+                call.arguments,
+                display_name=display_name,
+            ),
         )
         events.append(tool_start.to_sse())
         logger.info(f"[AGUI] Subagent ToolCallStart: tool_id={call.tool_id}, name={display_name}")

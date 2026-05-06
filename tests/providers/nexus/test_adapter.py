@@ -54,6 +54,28 @@ class TestTextEvents:
 
 
 class TestToolEvents:
+    def test_tool_start_includes_description_metadata(self, adapter):
+        start = adapter.convert({
+            "type": "tool_start",
+            "tool_call_id": "tc-desc",
+            "name": "Bash",
+            "arguments": {
+                "command": "pytest tests/unit/test_control_plane_backbone.py",
+                "description": "Run control plane backbone tests",
+            },
+        })
+
+        assert start is not None
+        frames = [
+            json.loads(line.removeprefix("data: "))
+            for line in start.splitlines()
+            if line.startswith("data: ")
+        ]
+        tool_start = next(frame for frame in frames if frame["type"] == "TOOL_CALL_START")
+        assert tool_start["toolCallName"] == "Bash"
+        assert tool_start["toolCallDescription"] == "Run control plane backbone tests"
+        assert tool_start["toolCallDisplayName"] == "Bash: Run control plane backbone tests"
+
     def test_tool_lifecycle(self, adapter):
         start = adapter.convert({
             "type": "tool_start",

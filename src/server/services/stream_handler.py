@@ -7,12 +7,10 @@ Handle AG-UI protocol streaming responses (Legacy protocol removed)
 import asyncio
 import json
 import time
-import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import ValidationError
 
 from ..models import RequestModel
 from src.runtime.events.agui import AGUIRequest
@@ -301,7 +299,7 @@ class StreamHandler:
         effective_alias = target_alias or target_provider.lower()
 
         logger.info(
-            f"Inline /switch -a detected, generating summary immediately",
+            "Inline /switch -a detected, generating summary immediately",
             extra={
                 "session_id": session_id,
                 "target": effective_alias,
@@ -566,7 +564,7 @@ class StreamHandler:
                         handoff_model = storage.get_handoff_model(session_id)
 
                         logger.info(
-                            f"Switch context found, switching provider",
+                            "Switch context found, switching provider",
                             extra={
                                 "session_id": session_id,
                                 "target": handoff_target,
@@ -950,7 +948,7 @@ class StreamHandler:
                             }
                         )
         
-        producer_task = asyncio.create_task(producer())
+        _producer_task = asyncio.create_task(producer())
         
         async def generate():
             """生成 AG-UI SSE 流"""

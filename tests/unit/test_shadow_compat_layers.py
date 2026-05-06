@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from src.core.tasks.task import Task as CoreCompatTask
 from src.core.tasks.task import TaskManager as CoreCompatTaskManager
 from src.runtime.execution.task import Task as RuntimeCompatTask
 from src.runtime.models.task_models import TaskStatus

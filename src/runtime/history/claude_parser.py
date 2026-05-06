@@ -8,7 +8,6 @@ to the project's unified AGUI data models.
 import logging
 import time
 import uuid
-from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -22,7 +21,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail, decode_encoded_project_path
-from .cache_store import CacheStore, FileStamp, stat_paths
+from .cache_store import CacheStore, stat_paths
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +467,6 @@ class ClaudeHistoryParser(BaseHistoryParser):
         # Parse entries into messages and tool calls
         messages: List[StoredMessage] = []
         tool_calls: List[StoredToolCall] = []
-        current_message_id: Optional[str] = None
 
         for entry in entries:
             if entry.get("isApiErrorMessage"):
@@ -517,7 +515,6 @@ class ClaudeHistoryParser(BaseHistoryParser):
                     timestamp=ts_ms,
                     status=MessageStatus.COMPLETE,
                 ))
-                current_message_id = None
 
             elif role == "assistant":
                 msg_id = entry.get("uuid") or str(uuid.uuid4())
@@ -572,7 +569,6 @@ class ClaudeHistoryParser(BaseHistoryParser):
                     content_segments=segments if segments else None,
                 )
                 messages.append(stored_msg)
-                current_message_id = msg_id
 
         # Process tool results from user messages (tool_result type in content)
         for entry in entries:

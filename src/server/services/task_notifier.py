@@ -17,7 +17,6 @@ from .callback_handler import CallbackHandler
 from .session_storage import get_session_storage
 from .notification import (
     NotificationTarget,
-    UnifiedNotificationHandler,
     get_notification_handler,
 )
 

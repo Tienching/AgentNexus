@@ -19,7 +19,6 @@ import json
 import logging
 import time
 import uuid
-from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -33,7 +32,7 @@ from ..models.session import (
     ToolCallStatus,
 )
 from .base_parser import BaseHistoryParser, HistorySessionDetail, decode_encoded_project_path
-from .cache_store import CacheStore, FileStamp, stat_paths
+from .cache_store import CacheStore, stat_paths
 
 logger = logging.getLogger(__name__)
 

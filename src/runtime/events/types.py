@@ -5,7 +5,6 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Optional
-import time
 
 from .base import Event, EventType
 
@@ -27,6 +26,8 @@ class ToolCallStartEvent(Event):
     tool_name: str = ""
     tool_id: str = ""
     arguments: dict[str, Any] = field(default_factory=dict)
+    description: Optional[str] = None
+    display_name: Optional[str] = None
     
     def __post_init__(self):
         self.data.update({
@@ -34,6 +35,10 @@ class ToolCallStartEvent(Event):
             "tool_id": self.tool_id,
             "arguments": self.arguments,
         })
+        if self.description:
+            self.data["description"] = self.description
+        if self.display_name:
+            self.data["display_name"] = self.display_name
 
 
 @dataclass

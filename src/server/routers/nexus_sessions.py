@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pwd
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 

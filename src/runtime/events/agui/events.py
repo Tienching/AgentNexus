@@ -5,7 +5,7 @@
 """
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 import json
 import uuid as uuid_lib
@@ -158,6 +158,74 @@ class ToolCallStartEvent(AGUIBaseEvent):
     toolCallId: str
     toolCallName: str
     parentMessageId: Optional[str] = None
+    toolCallDisplayName: Optional[str] = Field(
+        default=None,
+        description="UI-friendly tool call label derived from provider metadata/arguments",
+    )
+    toolCallDescription: Optional[str] = Field(
+        default=None,
+        description="Human-readable tool call description when supplied by the provider",
+    )
+
+
+_TOOL_CALL_DESCRIPTION_KEYS = (
+    "description",
+    "explanation",
+    "query",
+    "command",
+    "pattern",
+    "path",
+    "file_path",
+    "filePath",
+)
+
+
+def extract_tool_call_description(arguments: Any) -> Optional[str]:
+    """Extract a concise human-readable description from known tool arguments."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(arguments, dict):
+        return None
+
+    for key in _TOOL_CALL_DESCRIPTION_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+
+    return None
+
+
+def build_tool_call_start_metadata(
+    tool_name: str,
+    arguments: Any = None,
+    *,
+    description: Optional[str] = None,
+    display_name: Optional[str] = None,
+) -> Dict[str, str]:
+    """Build optional AGUI tool-call metadata without changing required fields."""
+    explicit_description = description.strip() if isinstance(description, str) else ""
+    resolved_description = explicit_description or extract_tool_call_description(arguments)
+    resolved_display_name = display_name.strip() if isinstance(display_name, str) else ""
+
+    if not resolved_display_name and resolved_description:
+        resolved_display_name = (
+            tool_name
+            if resolved_description in tool_name
+            else f"{tool_name}: {resolved_description}"
+        )
+
+    metadata: Dict[str, str] = {}
+    if resolved_display_name and resolved_display_name != tool_name:
+        metadata["toolCallDisplayName"] = resolved_display_name
+    if resolved_description:
+        metadata["toolCallDescription"] = resolved_description
+    return metadata
 
 
 class ToolCallArgsEvent(AGUIBaseEvent):

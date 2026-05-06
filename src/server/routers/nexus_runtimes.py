@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field
 
 from ..logger import get_logger
 from ..services.agent_runtimes import (
-    RuntimeStatus as _RuntimeStatus,
     RuntimeDaemon,
     get_runtime_daemon_registry,
     detect_all_runtimes,

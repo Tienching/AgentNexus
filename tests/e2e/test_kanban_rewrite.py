@@ -214,7 +214,7 @@ def test_task_board_navigation_survives_refresh_and_api_updates(live_server, pag
 
 def test_task_summary_strip_reports_total_active_running_reviewing_failed_cancelled_and_scheduled(live_server, page):
     exec_user = f"summary-{uuid.uuid4().hex[:8]}"
-    pending = _create_task(live_server, f"summary pending {uuid.uuid4().hex[:8]}", exec_user=exec_user)
+    _create_task(live_server, f"summary pending {uuid.uuid4().hex[:8]}", exec_user=exec_user)
     running = _create_task(live_server, f"summary running {uuid.uuid4().hex[:8]}", exec_user=exec_user)
     reviewing = _create_task(live_server, f"summary reviewing {uuid.uuid4().hex[:8]}", exec_user=exec_user)
     failed = _create_task(live_server, f"summary failed {uuid.uuid4().hex[:8]}", exec_user=exec_user)

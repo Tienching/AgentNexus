@@ -38,9 +38,7 @@ from .routers.nexus_teleport import router as nexus_teleport_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
-    TaskExecutor,
     create_and_start_executor,
-    get_executor,
     get_task_queue,
 )
 from src.runtime import __version__ as runtime_version

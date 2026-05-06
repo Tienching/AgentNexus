@@ -11,8 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Set, Callable, Awaitable, Any, List
-from datetime import datetime, timezone
+from typing import Dict, Optional, Set, Any, List
 
 from ..models.task_models import Task, TaskStatus, ExecutorConfig
 from ..stores.task_storage import TaskQueue

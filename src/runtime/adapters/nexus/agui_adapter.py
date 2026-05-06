@@ -25,6 +25,7 @@ from src.runtime.events.agui import (
     ToolCallEndEvent,
     ToolCallResultEvent,
     ToolCallStartEvent,
+    build_tool_call_start_metadata,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,6 +190,12 @@ class NexusAGUIAdapter(BaseAdapter):
             toolCallId=tool_call_id,
             toolCallName=name,
             parentMessageId=self._active_message_id,
+            **build_tool_call_start_metadata(
+                name,
+                arguments,
+                description=event.get("tool_call_description") or event.get("description"),
+                display_name=event.get("tool_call_display_name") or event.get("display_name"),
+            ),
         ).to_sse())
 
         # ToolCallArgs (send full arguments if available)

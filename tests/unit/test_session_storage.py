@@ -4,9 +4,8 @@
 import pytest
 import json
 import time
-from unittest.mock import MagicMock, patch
 
-from src.server.services.session_storage import SessionStorage, SESSION_TTL
+from src.server.services.session_storage import SessionStorage
 from src.server.models import (
     SessionMeta,
     SessionStatus,

@@ -130,9 +130,13 @@ class GitHubIssueSync:
         mapped_priority = self._map_issue_priority(issue)
         mapped_assignee = self._map_assignee(issue, assignee_map or {})
 
-        labels = [l.get("name") for l in issue.get("labels", []) if isinstance(l, dict) and l.get("name")]
+        labels = [
+            label.get("name")
+            for label in issue.get("labels", [])
+            if isinstance(label, dict) and label.get("name")
+        ]
         non_control_labels = [
-            l for l in labels if l not in LABEL_TO_STATUS and not l.startswith("priority:")
+            label for label in labels if label not in LABEL_TO_STATUS and not label.startswith("priority:")
         ]
 
         description = self._issue_to_task_description(issue, repo)
@@ -240,7 +244,9 @@ class GitHubIssueSync:
         if issue.get("state") == "closed":
             return TaskStatus.COMPLETED.value
 
-        labels = [l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)]
+        labels = [
+            label.get("name", "") for label in issue.get("labels", []) if isinstance(label, dict)
+        ]
         for label in labels:
             if label in LABEL_TO_STATUS:
                 return LABEL_TO_STATUS[label]
@@ -248,7 +254,9 @@ class GitHubIssueSync:
 
     @staticmethod
     def _map_issue_priority(issue: Dict[str, Any]) -> TaskPriority:
-        labels = [l.get("name", "") for l in issue.get("labels", []) if isinstance(l, dict)]
+        labels = [
+            label.get("name", "") for label in issue.get("labels", []) if isinstance(label, dict)
+        ]
         if "priority:critical" in labels or "priority:high" in labels:
             return TaskPriority.PROJECT
         if "priority:medium" in labels:

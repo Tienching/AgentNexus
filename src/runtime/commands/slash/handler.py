@@ -1780,8 +1780,6 @@ class SlashCommandHandler:
         Instead of returning to global home (/home/ubuntu), this should return to
         the session-specific directory if it exists, or home if not.
         """
-        current = Path.cwd()
-
         # Determine the "Home" for this session
         # Logic: {home_base}/sessions/{current_session_id}
         # But wait, we don't have current_session_id stored in self.
@@ -2316,10 +2314,9 @@ class SlashCommandHandler:
         msgs = detail.messages or []
         title = (detail.session.title if detail.session else None) or session_id
 
-        from datetime import datetime, timezone
 
-        response = f"## 📋 History 详情\n\n"
-        response += f"| 项 | 值 |\n|---|---|\n"
+        response = "## 📋 History 详情\n\n"
+        response += "| 项 | 值 |\n|---|---|\n"
         provider_label = found_alias or found_provider or "?"
         if found_provider and found_alias and found_alias != found_provider:
             provider_label = f"{found_alias} ({found_provider})"
@@ -2340,7 +2337,7 @@ class SlashCommandHandler:
                 show_msgs.append(None)  # separator
                 show_msgs.extend(msgs[-3:])
 
-            response += f"\n### 消息预览\n\n"
+            response += "\n### 消息预览\n\n"
             for m in show_msgs:
                 if m is None:
                     response += f"\n... （省略 {len(msgs) - 6} 条消息）...\n\n"
@@ -2414,7 +2411,6 @@ class SlashCommandHandler:
             msg_count += 1
 
         for tc in detail.tool_calls or []:
-            from ...models.session import StoredToolCall
             tc_copy = tc.model_copy(deep=True)
             tc_copy.id = f"hist-{tc.id}"
             if tc_copy.parent_message_id:
@@ -2528,7 +2524,6 @@ class SlashCommandHandler:
                         storage.add_session_message(current_session_id, imported)
 
                     for tc in detail.tool_calls or []:
-                        from ...models.session import StoredToolCall
                         tc_copy = tc.model_copy(deep=True)
                         tc_copy.id = f"hist-{tc.id}"
                         if tc_copy.parent_message_id:
@@ -2589,7 +2584,6 @@ class SlashCommandHandler:
             msg_count += 1
 
         for tc in detail.tool_calls or []:
-            from ...models.session import StoredToolCall
             tc_copy = tc.model_copy(deep=True)
             tc_copy.id = f"hist-{tc.id}"
             if tc_copy.parent_message_id:
@@ -2680,8 +2674,8 @@ class SlashCommandHandler:
 
         lines = [
             "## ✅ Worktree 已创建\n",
-            f"| 属性 | 值 |",
-            f"|---|---|",
+            "| 属性 | 值 |",
+            "|---|---|",
             f"| ID | `{entry.worktree_id}` |",
             f"| 路径 | `{entry.path}` |",
             f"| 分支 | `{entry.branch}` |",
@@ -2719,11 +2713,6 @@ class SlashCommandHandler:
 
         for e in entries:
             age_h = (time.time() - e.last_accessed) / 3600
-            binding = ""
-            if e.session_key:
-                binding = f"sess:{e.session_key}"
-            elif e.agent_name:
-                binding = f"agent:{e.agent_name}"
             lines.append(
                 f"| `{e.worktree_id}` | `{e.path}` | `{e.branch}` | "
                 f"{e.isolation_level.value} | {e.status} | {age_h:.1f}h |"
@@ -2766,8 +2755,8 @@ class SlashCommandHandler:
 
         prefix = "🔍 GC 预览" if dry_run else "🧹 GC 结果"
         lines = [f"## {prefix}\n"]
-        lines.append(f"| 类型 | 数量 | ID 列表 |")
-        lines.append(f"|---|---|---|")
+        lines.append("| 类型 | 数量 | ID 列表 |")
+        lines.append("|---|---|---|")
         lines.append(f"| 已删除 | {len(result.removed)} | {', '.join(f'`{x}`' for x in result.removed) or '-'} |")
         lines.append(f"| 已 Stash | {len(result.stashed)} | {', '.join(f'`{x}`' for x in result.stashed) or '-'} |")
         lines.append(f"| 已跳过 | {len(result.skipped)} | {', '.join(f'`{x}`' for x in result.skipped) or '-'} |")

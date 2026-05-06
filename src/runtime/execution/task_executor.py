@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
 from typing import Optional, Callable, Awaitable, Any, Dict
-from datetime import datetime, timezone
 from enum import Enum
 
 from ..models.task_models import Task, TaskStatus, ExecutorConfig
@@ -137,7 +135,7 @@ class TaskExecutor:
                     timeout=timeout
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"Timeout waiting for tasks, cancelling...")
+                logger.warning("Timeout waiting for tasks, cancelling...")
                 for task in self._running_tasks.values():
                     task.cancel()
         

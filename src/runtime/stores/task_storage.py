@@ -974,11 +974,6 @@ class TaskQueue:
         if existing is not None:
             previous_status = existing.status if isinstance(existing.status, str) else existing.status.value
             previous_session_id = getattr(existing, "session_id", None)
-        row = _task_to_row(task)
-        update_cols = [k for k in _TASK_FIELDS if k not in ("id", "exec_user")]
-        set_clause = ", ".join(f"{k} = ?" for k in update_cols)
-        values = [row[k] for k in update_cols] + [task.exec_user or self.exec_user, task.id]
-
         try:
             updated = self.tasks.update(task)
         except InvalidTaskTransitionError:
