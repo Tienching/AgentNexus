@@ -290,14 +290,7 @@ class CallbackHandler:
                         
                         # 工具调用开始
                         elif event_type == "TOOL_CALL_START":
-                            tool_name = (
-                                event_data.get("toolCallDisplayName")
-                                or event_data.get("toolCallName")
-                                or "未知工具"
-                            )
-                            description = event_data.get("toolCallDescription")
-                            if description and description not in tool_name:
-                                tool_name = f"{tool_name}: {description}"
+                            tool_name = event_data.get("toolCallName") or "未知工具"
                             markdown_parts.append(f"\n🛠️ **[调用工具: {tool_name}]**\n")
                         
                         # 工具调用结果

@@ -14,7 +14,7 @@ from src.runtime.events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
-    build_tool_call_start_metadata,
+    build_tool_call_name,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
@@ -83,9 +83,8 @@ class GeminiAGUIAdapter(BaseAdapter):
                     results.append(
                         ToolCallStartEvent(
                             toolCallId=tool_id,
-                            toolCallName=tool_name,
+                            toolCallName=build_tool_call_name(tool_name, parameters),
                             parentMessageId=self.state.current_message_id,
-                            **build_tool_call_start_metadata(tool_name, parameters),
                         ).to_sse()
                     )
                 if parameters is not None:

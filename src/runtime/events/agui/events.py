@@ -158,14 +158,6 @@ class ToolCallStartEvent(AGUIBaseEvent):
     toolCallId: str
     toolCallName: str
     parentMessageId: Optional[str] = None
-    toolCallDisplayName: Optional[str] = Field(
-        default=None,
-        description="UI-friendly tool call label derived from provider metadata/arguments",
-    )
-    toolCallDescription: Optional[str] = Field(
-        default=None,
-        description="Human-readable tool call description when supplied by the provider",
-    )
 
 
 _TOOL_CALL_DESCRIPTION_KEYS = (
@@ -201,31 +193,43 @@ def extract_tool_call_description(arguments: Any) -> Optional[str]:
     return None
 
 
-def build_tool_call_start_metadata(
+def build_tool_call_name(
     tool_name: str,
     arguments: Any = None,
     *,
     description: Optional[str] = None,
     display_name: Optional[str] = None,
-) -> Dict[str, str]:
-    """Build optional AGUI tool-call metadata without changing required fields."""
+) -> str:
+    """Build the AG-UI standard toolCallName with provider/context details."""
+    resolved_display_name = display_name.strip() if isinstance(display_name, str) else ""
+    if resolved_display_name and resolved_display_name != tool_name:
+        return resolved_display_name
+
+    params = arguments
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except json.JSONDecodeError:
+            params = None
+
+    if isinstance(params, dict):
+        tool_key = (tool_name or "").strip().lower()
+        if tool_key in ("skill", "use_skill"):
+            skill = (
+                params.get("skill")
+                or params.get("skill_name")
+                or params.get("name")
+                or params.get("command")
+            )
+            if isinstance(skill, str) and skill.strip():
+                return f"Skill: {skill.strip()}"
+
     explicit_description = description.strip() if isinstance(description, str) else ""
     resolved_description = explicit_description or extract_tool_call_description(arguments)
-    resolved_display_name = display_name.strip() if isinstance(display_name, str) else ""
+    if resolved_description and resolved_description not in tool_name:
+        return f"{tool_name}: {resolved_description}"
 
-    if not resolved_display_name and resolved_description:
-        resolved_display_name = (
-            tool_name
-            if resolved_description in tool_name
-            else f"{tool_name}: {resolved_description}"
-        )
-
-    metadata: Dict[str, str] = {}
-    if resolved_display_name and resolved_display_name != tool_name:
-        metadata["toolCallDisplayName"] = resolved_display_name
-    if resolved_description:
-        metadata["toolCallDescription"] = resolved_description
-    return metadata
+    return tool_name
 
 
 class ToolCallArgsEvent(AGUIBaseEvent):

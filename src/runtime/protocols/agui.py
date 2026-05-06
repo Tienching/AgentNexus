@@ -29,7 +29,7 @@ from ..events import (
     MessageStartEvent,
     ErrorEvent,
 )
-from ..events.agui import build_tool_call_start_metadata
+from ..events.agui import build_tool_call_name
 
 if TYPE_CHECKING:
     from ...core.streaming.orchestrator import TombstoneRecord
@@ -138,8 +138,7 @@ class AGUIProtocol:
             start_payload = {
                 "type": "TOOL_CALL_START",
                 "toolCallId": tool_id,
-                "toolCallName": display_name or tool_name,
-                **build_tool_call_start_metadata(
+                "toolCallName": build_tool_call_name(
                     tool_name,
                     arguments,
                     description=description,

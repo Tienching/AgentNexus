@@ -284,3 +284,14 @@ class TestSendCallbackGuards:
             result = await handler.send_callback("http://example.com/hook", [])
         assert result is False
         MockClient.assert_not_called()
+
+
+class TestAGUIEventsToMarkdown:
+    def test_tool_start_uses_standard_tool_call_name(self):
+        handler = _make_handler()
+
+        parts = handler.agui_events_to_markdown([
+            'data: {"type":"TOOL_CALL_START","toolCallId":"tool-1","toolCallName":"Bash: 收集系统状态"}\n\n',
+        ])
+
+        assert parts == ["\n🛠️ **[调用工具: Bash: 收集系统状态]**\n"]

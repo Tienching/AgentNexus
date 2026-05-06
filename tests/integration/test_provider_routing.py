@@ -440,7 +440,7 @@ class TestCodebuddyProvider:
         tool_start = next((e for e in events if e.get("type") == "TOOL_CALL_START"), None)
         assert tool_start is not None
         assert tool_start.get("toolCallId") == "tool_123"
-        assert tool_start.get("toolCallName") == "Read"
+        assert tool_start.get("toolCallName") == "Read: /test/file.txt"
 
     @pytest.mark.asyncio
     async def test_codebuddy_error_handling(self, client):

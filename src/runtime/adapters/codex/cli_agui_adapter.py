@@ -38,7 +38,7 @@ from src.runtime.events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
-    build_tool_call_start_metadata,
+    build_tool_call_name,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     CustomEvent,
@@ -308,9 +308,8 @@ class CodexCLIAGUIAdapter(BaseAdapter):
         results = []
         results.append(ToolCallStartEvent(
             toolCallId=tool_call_id,
-            toolCallName="bash",
+            toolCallName=build_tool_call_name("bash", {"command": command}),
             parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata("bash", {"command": command}),
         ).to_sse())
         
         if command:
@@ -346,7 +345,7 @@ class CodexCLIAGUIAdapter(BaseAdapter):
         
         return ToolCallStartEvent(
             toolCallId=tool_call_id,
-            toolCallName="apply_patch",
+            toolCallName=build_tool_call_name("apply_patch", item),
             parentMessageId=self._state.current_message_id,
         ).to_sse()
     
@@ -374,9 +373,8 @@ class CodexCLIAGUIAdapter(BaseAdapter):
         results = []
         results.append(ToolCallStartEvent(
             toolCallId=tool_call_id,
-            toolCallName=tool_name,
+            toolCallName=build_tool_call_name(tool_name, arguments),
             parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata(tool_name, arguments),
         ).to_sse())
         
         # Add arguments if available
@@ -408,9 +406,8 @@ class CodexCLIAGUIAdapter(BaseAdapter):
         results = []
         results.append(ToolCallStartEvent(
             toolCallId=tool_call_id,
-            toolCallName="web_search",
+            toolCallName=build_tool_call_name("web_search", {"query": query}),
             parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata("web_search", {"query": query}),
         ).to_sse())
         
         if query:

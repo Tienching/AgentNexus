@@ -1317,18 +1317,11 @@ class TaskBoardPanel {
             onToolCallStart: (toolCall, data = {}) => {
                 const toolCallId = toolCall.id;
                 const toolName = toolCall.name;
-                const toolTitle = data.toolCallDisplayName
-                    || toolCall.displayName
-                    || chatView?.formatToolCallTitle?.(
-                        toolName,
-                        toolCall.description ? { description: toolCall.description } : {},
-                        '',
-                    )
-                    || toolName;
+                const toolTitle = chatView?.formatToolCallTitle?.(toolName, {}, '') || toolName;
                 streamingToolCalls.set(toolCallId, {
                     name: toolName,
-                    displayName: data.toolCallDisplayName || toolCall.displayName || '',
-                    description: data.toolCallDescription || toolCall.description || '',
+                    displayName: '',
+                    description: '',
                     args: '',
                     status: 'executing',
                     result: '',

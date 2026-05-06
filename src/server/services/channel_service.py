@@ -593,7 +593,8 @@ class ChannelService:
         timeout = self._resolve_cli_timeout(message.channel)
 
         result = ExecutorResult()
-        tool_block_buffer: Dict[int, Dict[str, str]] = {}
+        tool_block_buffer: Dict[int, Dict[str, Any]] = {}
+        legacy_tool_buffer: Dict[str, Dict[str, Any]] = {}
         agui_tool_buffer: Dict[str, Dict[str, str]] = {}
         has_streamed_text = False
         _tool_display_updated: set = set()  # tool_ids that already got a display update
@@ -622,9 +623,6 @@ class ChannelService:
         async def _handle_tool_start(
             tool_id: str,
             tool_name: str,
-            *,
-            tool_description: Optional[str] = None,
-            tool_display_name: Optional[str] = None,
         ) -> None:
             """Shared logic when a tool call begins (AG-UI or legacy).
 
@@ -647,10 +645,6 @@ class ChannelService:
                 "toolCallId": tool_id,
                 "toolCallName": tool_name,
             }
-            if tool_display_name:
-                start_event["toolCallDisplayName"] = tool_display_name
-            if tool_description:
-                start_event["toolCallDescription"] = tool_description
             _emit_agui(start_event)
 
             # Notify channel that a tool call is starting (real-time progress)
@@ -708,9 +702,6 @@ class ChannelService:
             tool_name: str,
             args_string: str,
             tc_result: Any = None,
-            *,
-            tool_description: Optional[str] = None,
-            tool_display_name: Optional[str] = None,
         ) -> None:
             """Shared logic when a tool call completes (AG-UI or legacy).
 
@@ -724,10 +715,10 @@ class ChannelService:
             raw_name = tool_name
             if ": " in tool_name:
                 raw_name = self._resolve_raw_tool_key(tool_name)
-            display_params = params_obj
-            if not display_params and tool_description:
-                display_params = {"description": tool_description}
-            display = tool_display_name or self._get_tool_display_name(raw_name, display_params)
+            if not params_obj and ": " in tool_name:
+                display = tool_name
+            else:
+                display = self._get_tool_display_name(raw_name, params_obj)
             summary = self._format_tool_summary(message.channel, display)
             result.tool_summaries.append(summary)
             if on_tool_summary:
@@ -735,7 +726,7 @@ class ChannelService:
 
             _tool_calls.append(StoredToolCall(
                 id=tool_id,
-                tool_name=tool_name,
+                tool_name=display,
                 args=params_obj,
                 args_string=args_string,
                 status=ToolCallStatus.COMPLETED,
@@ -747,8 +738,87 @@ class ChannelService:
                 "type": "TOOL_CALL_END",
                 "toolCallId": tool_id,
                 "result": tc_result,
-                "toolCallDisplayName": display,
             })
+
+        def _is_complete_json(raw: str) -> bool:
+            if not raw:
+                return False
+            try:
+                json.loads(raw)
+                return True
+            except (TypeError, json.JSONDecodeError):
+                return False
+
+        def _legacy_display(raw_name: str, args_string: str) -> tuple[str, str]:
+            params = self._parse_tool_params(args_string)
+            display = self._get_tool_display_name(raw_name, params)
+            fallback = self._get_tool_display_name(raw_name, {})
+            return display, fallback
+
+        async def _start_legacy_tool(entry: Dict[str, Any], *, force: bool = False) -> bool:
+            """Start a legacy tool once its semantic name is known."""
+            if entry.get("started"):
+                return True
+
+            raw_name = entry.get("raw_name", entry.get("name", "unknown"))
+            display, fallback = _legacy_display(raw_name, entry.get("json_buf", ""))
+            if display and display != fallback:
+                entry["name"] = display
+            elif force:
+                entry["name"] = entry.get("name") or raw_name
+            else:
+                return False
+
+            entry["started"] = True
+            await _handle_tool_start(entry["id"], entry["name"])
+            if entry.get("json_buf") and not entry.get("args_emitted"):
+                _emit_agui({
+                    "type": "TOOL_CALL_ARGS",
+                    "toolCallId": entry["id"],
+                    "delta": entry["json_buf"],
+                })
+                entry["args_emitted"] = True
+            return True
+
+        def _legacy_tool_ready_to_start(entry: Dict[str, Any]) -> bool:
+            raw_name = entry.get("raw_name", entry.get("name", "unknown"))
+            raw_key = (raw_name or "").strip().lower()
+            display, fallback = _legacy_display(raw_name, entry.get("json_buf", ""))
+            if not display or display == fallback:
+                return False
+            if raw_key == "task":
+                return _is_complete_json(entry.get("json_buf", ""))
+            return True
+
+        async def _close_pending_tools(tc_result: Any = None) -> None:
+            """Close any tools left open by malformed streams, timeout, or final result."""
+            for index in list(tool_block_buffer.keys()):
+                entry = tool_block_buffer.pop(index)
+                await _start_legacy_tool(entry, force=True)
+                await _handle_tool_end(
+                    entry["id"],
+                    entry["name"],
+                    entry.get("json_buf", ""),
+                    tc_result,
+                )
+
+            for tool_id in list(legacy_tool_buffer.keys()):
+                entry = legacy_tool_buffer.pop(tool_id)
+                await _handle_tool_end(
+                    tool_id,
+                    entry["name"],
+                    entry.get("json_buf", ""),
+                    tc_result,
+                )
+
+            for tool_id in list(agui_tool_buffer.keys()):
+                entry = agui_tool_buffer.pop(tool_id)
+                await _handle_tool_end(
+                    tool_id,
+                    entry["name"],
+                    entry.get("args", ""),
+                    tc_result,
+                )
 
         async def _process_stream():
             nonlocal has_streamed_text, _agui_text_started
@@ -787,15 +857,26 @@ class ChannelService:
                             index = event.get("index", 0)
                             partial = delta.get("partial_json", "")
                             if partial and index in tool_block_buffer:
-                                tool_block_buffer[index]["json_buf"] += partial
-                                tool_id = tool_block_buffer[index].get("id")
+                                entry = tool_block_buffer[index]
+                                if entry.pop("from_initial_input", False):
+                                    existing = entry.get("json_buf", "")
+                                    if _is_complete_json(existing) and partial.lstrip().startswith("{"):
+                                        entry["json_buf"] = ""
+                                entry["json_buf"] += partial
+                                tool_id = entry.get("id")
                                 if tool_id:
-                                    _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": partial})
-                                    await _try_update_tool_display(
-                                        tool_id,
-                                        tool_block_buffer[index].get("name", "unknown"),
-                                        tool_block_buffer[index]["json_buf"],
-                                    )
+                                    if not entry.get("started"):
+                                        if _legacy_tool_ready_to_start(entry):
+                                            await _start_legacy_tool(entry)
+                                    else:
+                                        arg_delta = entry["json_buf"] if not entry.get("args_emitted") else partial
+                                        _emit_agui({"type": "TOOL_CALL_ARGS", "toolCallId": tool_id, "delta": arg_delta})
+                                        entry["args_emitted"] = True
+                                        await _try_update_tool_display(
+                                            tool_id,
+                                            entry.get("name", "unknown"),
+                                            entry["json_buf"],
+                                        )
 
                     # AG-UI tool tracking
                     elif evt_type == "TOOL_CALL_START":
@@ -805,15 +886,8 @@ class ChannelService:
                             agui_tool_buffer[tool_id] = {
                                 "name": tool_name,
                                 "args": "",
-                                "description": event.get("toolCallDescription"),
-                                "display": event.get("toolCallDisplayName"),
                             }
-                            await _handle_tool_start(
-                                tool_id,
-                                tool_name,
-                                tool_description=event.get("toolCallDescription"),
-                                tool_display_name=event.get("toolCallDisplayName"),
-                            )
+                            await _handle_tool_start(tool_id, tool_name)
 
                     elif evt_type == "TOOL_CALL_ARGS":
                         tool_id = event.get("toolCallId", "")
@@ -837,8 +911,6 @@ class ChannelService:
                                 entry["name"],
                                 entry["args"],
                                 tc_result,
-                                tool_description=entry.get("description"),
-                                tool_display_name=entry.get("display"),
                             )
 
                     # Legacy tool blocks
@@ -848,14 +920,47 @@ class ChannelService:
                             tool_name = content_block.get("name", "unknown")
                             tool_id = content_block.get("id", f"tool-{uuid.uuid4().hex[:8]}")
                             index = event.get("index", 0)
-                            tool_block_buffer[index] = {"name": tool_name, "json_buf": "", "id": tool_id}
-                            await _handle_tool_start(tool_id, tool_name)
+                            initial_input = content_block.get("input")
+                            from_initial_input = False
+                            initial_args = (
+                                json.dumps(initial_input, ensure_ascii=False)
+                                if isinstance(initial_input, (dict, list)) and initial_input
+                                else (initial_input if isinstance(initial_input, str) else "")
+                            )
+                            if initial_args:
+                                from_initial_input = True
+                            initial_params = self._parse_tool_params(initial_args)
+                            initial_display = self._get_tool_display_name(tool_name, initial_params)
+                            fallback_display = self._get_tool_display_name(tool_name, {})
+                            start_name = initial_display if initial_display != fallback_display else tool_name
+                            should_defer_start = start_name == tool_name
+                            tool_block_buffer[index] = {
+                                "name": start_name,
+                                "raw_name": tool_name,
+                                "json_buf": initial_args,
+                                "id": tool_id,
+                                "from_initial_input": from_initial_input,
+                                "started": False,
+                                "args_emitted": False,
+                            }
+                            if not should_defer_start:
+                                tool_block_buffer[index]["started"] = True
+                                await _handle_tool_start(tool_id, start_name)
 
                     elif evt_type == "content_block_stop":
                         index = event.get("index", 0)
                         if index in tool_block_buffer:
                             entry = tool_block_buffer.pop(index)
-                            await _handle_tool_end(entry["id"], entry["name"], entry["json_buf"])
+                            if not entry.get("started"):
+                                await _start_legacy_tool(entry, force=True)
+                            elif entry.get("json_buf") and not entry.get("args_emitted"):
+                                _emit_agui({
+                                    "type": "TOOL_CALL_ARGS",
+                                    "toolCallId": entry["id"],
+                                    "delta": entry["json_buf"],
+                                })
+                                entry["args_emitted"] = True
+                            legacy_tool_buffer[entry["id"]] = entry
 
                 # --- assistant event (skip if already streamed) ---
                 elif event_type == "assistant":
@@ -886,6 +991,7 @@ class ChannelService:
 
                             parent_tool_use_id = item.get("tool_use_id", "")
                             raw_result = self._extract_tool_result_text(item.get("content"))
+                            parent_tool_entry = legacy_tool_buffer.pop(parent_tool_use_id, None)
                             nested_calls = self._parse_subagent_tool_calls(raw_result)
                             for nested in nested_calls:
                                 tool_id = nested["tool_id"]
@@ -927,6 +1033,14 @@ class ChannelService:
                                         f"({len(subagent_text)} chars) from tool {parent_tool_use_id}"
                                     )
 
+                            if parent_tool_entry:
+                                await _handle_tool_end(
+                                    parent_tool_use_id,
+                                    parent_tool_entry["name"],
+                                    parent_tool_entry.get("json_buf", ""),
+                                    raw_result,
+                                )
+
                 # --- result event ---
                 elif event_type == "result":
                     is_error = data.get("is_error", False)
@@ -937,6 +1051,7 @@ class ChannelService:
                             content = "❌ " + "; ".join(str(e) for e in errors[:3])
                     result.final_content = content or ""
                     result.is_error = is_error
+                    await _close_pending_tools()
                     return  # result is terminal
 
         try:
@@ -951,10 +1066,19 @@ class ChannelService:
             result.is_error = True
             result.final_content = f"❌ 处理出错：{str(e)[:200]}"
 
+        await _close_pending_tools(result.final_content if result.is_error else None)
+
         # --- Close any open AGUI text segment and emit RUN_FINISHED ---
         if _agui_text_started:
             _emit_agui({"type": "TEXT_MESSAGE_END", "messageId": _agui_msg_id})
-        _emit_agui({"type": "RUN_FINISHED", "threadId": session_id})
+        if result.is_error:
+            _emit_agui({
+                "type": "RUN_ERROR",
+                "threadId": session_id,
+                "message": result.final_content or "处理失败",
+            })
+        else:
+            _emit_agui({"type": "RUN_FINISHED", "threadId": session_id})
 
         # --- Set session status to COMPLETED ---
         try:
@@ -1984,6 +2108,8 @@ class ChannelService:
             "prompt",
             "url",
             "skill",
+            "skill_name",
+            "name",
         ):
             # Try strict match first: "key": "value"
             match = re.search(
@@ -2103,7 +2229,12 @@ class ChannelService:
                 return f"Task: {desc}"
 
         elif tool_key in ("skill", "use_skill"):
-            skill = params.get("skill", params.get("command", ""))
+            skill = (
+                params.get("skill")
+                or params.get("skill_name")
+                or params.get("name")
+                or params.get("command", "")
+            )
             if skill:
                 return f"Skill: {skill}"
 

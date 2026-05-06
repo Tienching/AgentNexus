@@ -162,12 +162,6 @@ class NexusStreamingController {
             result: '',
             error: '',
         };
-        if (data.toolCallDisplayName) {
-            toolCall.displayName = data.toolCallDisplayName;
-        }
-        if (data.toolCallDescription) {
-            toolCall.description = data.toolCallDescription;
-        }
         this.toolCalls.set(toolCallId, toolCall);
         return toolCall;
     }
@@ -403,9 +397,7 @@ class NexusStreamSessionView {
         const bubble = this._ensureBubble();
         if (!bubble) return;
         this.endTextSegment();
-        const title = data.toolCallDisplayName
-            || toolCall.displayName
-            || this.formatToolCallTitle(toolCall.name, toolCall.description ? { description: toolCall.description } : {}, toolCall.args || '');
+        const title = this.formatToolCallTitle(toolCall.name, {}, toolCall.args || '');
         bubble.insertAdjacentHTML('beforeend', this.renderStreamingToolCall(toolCall.id, title, toolCall.status || 'executing'));
         this.hasRenderedContent = true;
         this._scrollToBottom();
@@ -418,17 +410,14 @@ class NexusStreamSessionView {
         }
         const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
         if (titleEl) {
-            titleEl.textContent = toolCall.displayName
-                || this.formatToolCallTitle(toolCall.name, toolCall.description ? { description: toolCall.description } : {}, toolCall.args || '');
+            titleEl.textContent = this.formatToolCallTitle(toolCall.name, {}, toolCall.args || '');
         }
     }
 
     updateToolCallResult(toolCall, data = {}) {
         const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
         if (titleEl) {
-            titleEl.textContent = data.toolCallDisplayName
-                || toolCall.displayName
-                || this.formatToolCallTitle(toolCall.name, toolCall.description ? { description: toolCall.description } : {}, toolCall.args || '');
+            titleEl.textContent = this.formatToolCallTitle(toolCall.name, {}, toolCall.args || '');
         }
 
         const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-status-icon`);

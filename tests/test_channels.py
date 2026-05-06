@@ -1016,6 +1016,33 @@ async def _fake_executor_factory(events):
     return mock_executor
 
 
+class _CaptureAguiStorage:
+    def __init__(self):
+        self.events = []
+        self.statuses = []
+        self.messages = []
+        self.tool_calls = []
+
+    def append_agui_event(self, session_id, event):
+        self.events.append(event)
+        return True
+
+    def update_session_status(self, session_id, status):
+        self.statuses.append(status)
+        return True
+
+    def add_session_message(self, session_id, message):
+        self.messages.append(message)
+        return True
+
+    def save_tool_call(self, session_id, tool_call):
+        self.tool_calls.append(tool_call)
+        return True
+
+    def get_session_exec_user(self, session_id):
+        return None
+
+
 class _FakeWeComBotSimulator:
     def __init__(self, chat_id: str = "group-1"):
         self.chat_id = chat_id
@@ -1183,17 +1210,15 @@ class TestProcessWithAiToolCalls:
         assert "Done." in result
 
     @pytest.mark.asyncio
-    async def test_agui_tool_call_start_preserves_display_metadata(
+    async def test_agui_tool_call_start_uses_standard_tool_call_name(
         self, service, inbound, target, handler, monkeypatch
     ):
-        """AGUI service events should keep display metadata when relayed to Nexus SSE."""
+        """AGUI service events should carry display details in the standard name."""
         events = [
             _make_stream_event({
                 "type": "TOOL_CALL_START",
                 "toolCallId": "tc1",
-                "toolCallName": "Bash",
-                "toolCallDescription": "Check existing diag tar files",
-                "toolCallDisplayName": "Bash: Check existing diag tar files",
+                "toolCallName": "Bash: Check existing diag tar files",
             }),
             _make_stream_event({"type": "TOOL_CALL_END", "toolCallId": "tc1"}),
         ]
@@ -1226,9 +1251,10 @@ class TestProcessWithAiToolCalls:
 
         starts = [event for event in storage.agui_events if event.get("type") == "TOOL_CALL_START"]
         ends = [event for event in storage.agui_events if event.get("type") == "TOOL_CALL_END"]
-        assert starts[0]["toolCallDescription"] == "Check existing diag tar files"
-        assert starts[0]["toolCallDisplayName"] == "Bash: Check existing diag tar files"
-        assert ends[0]["toolCallDisplayName"] == "Bash: Check existing diag tar files"
+        assert starts[0]["toolCallName"] == "Bash: Check existing diag tar files"
+        assert "toolCallDescription" not in starts[0]
+        assert "toolCallDisplayName" not in starts[0]
+        assert "toolCallDisplayName" not in ends[0]
         assert "Bash: Check existing diag tar files" in result
 
     @pytest.mark.asyncio
@@ -1398,6 +1424,124 @@ class TestProcessWithAiToolCalls:
             result = await service._process_with_ai(inbound, "sess1", target, handler)
 
         assert "`Grep: `TODO` in /src`" in result
+
+    @pytest.mark.asyncio
+    async def test_legacy_tool_summary_waits_for_tool_result(
+        self, service, inbound, monkeypatch
+    ):
+        """content_block_stop 只结束输入；summary 应等 tool_result 到达。"""
+        events = [
+            _make_stream_event({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tool-bash-1", "name": "execute_command"}}),
+            _make_stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"command": "echo ok"}'}}),
+            _make_stream_event({"type": "content_block_stop", "index": 1}),
+            _make_stream_event({"type": "content_block_delta", "delta": {"type": "text_delta", "text": "after stop"}}),
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": "tool-bash-1",
+                        "content": [{"type": "text", "text": "ok"}],
+                    }],
+                },
+            }),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+        order = []
+
+        async def _on_start(tool_id, tool_name):
+            order.append(f"start:{tool_name}")
+
+        async def _on_text(text):
+            order.append(f"text:{text}")
+
+        async def _on_summary(tool_id, summary):
+            order.append(f"summary:{summary}")
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._consume_executor_events(
+                inbound,
+                "sess1",
+                object(),
+                on_tool_start=_on_start,
+                on_text_delta=_on_text,
+                on_tool_summary=_on_summary,
+            )
+
+        assert order == [
+            "start:Bash: echo ok",
+            "text:after stop",
+            "summary:🔧 `Bash: echo ok`",
+        ]
+        assert result.tool_summaries == ["🔧 `Bash: echo ok`"]
+
+    @pytest.mark.asyncio
+    async def test_legacy_skill_tool_start_waits_for_skill_name(
+        self, service, inbound, monkeypatch
+    ):
+        """Legacy Skill blocks should start with Skill: <name>, not raw Skill."""
+        events = [
+            _make_stream_event({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "name": "Skill"}}),
+            _make_stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"skill": "knot-data"}'}}),
+            _make_stream_event({"type": "content_block_stop", "index": 1}),
+        ]
+        mock_exec = await _fake_executor_factory(events)
+        starts = []
+        summaries = []
+
+        async def _on_start(tool_id, tool_name):
+            starts.append((tool_id, tool_name))
+
+        async def _on_summary(tool_id, summary):
+            summaries.append((tool_id, summary))
+
+        with patch("src.server.services.CLIExecutor", return_value=mock_exec):
+            monkeypatch.setattr(settings, "cli_timeout", 30)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._consume_executor_events(
+                inbound,
+                "sess1",
+                object(),
+                on_tool_start=_on_start,
+                on_tool_summary=_on_summary,
+            )
+
+        assert len(starts) == 1
+        assert starts[0][1] == "Skill: knot-data"
+        assert result.tool_call_count == 1
+        assert result.tool_summaries == ["🔧 `Skill: knot-data`"]
+        assert summaries == [(starts[0][0], "🔧 `Skill: knot-data`")]
+
+    @pytest.mark.asyncio
+    async def test_pending_tool_is_closed_with_run_error_on_timeout(
+        self, service, inbound, monkeypatch
+    ):
+        storage = _CaptureAguiStorage()
+        monkeypatch.setattr("src.server.services.channel_service.get_session_storage", lambda: storage)
+
+        class _SlowExecutor:
+            async def execute(self, *args, **kwargs):
+                yield _make_stream_event({"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "tool-skill-1", "name": "Skill"}})
+                yield _make_stream_event({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"skill": "knot-data"}'}})
+                await asyncio.sleep(1)
+
+            def kill_process(self):
+                return None
+
+        with patch("src.server.services.CLIExecutor", return_value=_SlowExecutor()):
+            monkeypatch.setattr(service, "_resolve_cli_timeout", lambda channel: 0.01)
+            monkeypatch.setattr(settings, "exec_user", "ubuntu")
+            result = await service._consume_executor_events(inbound, "sess-timeout", object())
+
+        event_types = [e.get("type") for e in storage.events]
+        assert result.is_error is True
+        assert "TOOL_CALL_START" in event_types
+        assert "TOOL_CALL_END" in event_types
+        assert "RUN_ERROR" in event_types
+        assert "RUN_FINISHED" not in event_types
 
     # --- result event takes precedence ---
 

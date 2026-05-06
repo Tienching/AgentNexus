@@ -22,7 +22,7 @@ from src.runtime.events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
-    build_tool_call_start_metadata,
+    build_tool_call_name,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
@@ -335,13 +335,12 @@ class CodexAGUIAdapter(BaseAdapter):
         shell_display_name = f"Shell: {cmd_str[:50]}"
         results.append(ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName=shell_display_name,
-            parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata(
+            toolCallName=build_tool_call_name(
                 "Shell",
                 {"command": cmd_str},
                 display_name=shell_display_name,
             ),
+            parentMessageId=self._state.current_message_id,
         ).to_sse())
         
         # Emit args
@@ -423,13 +422,12 @@ class CodexAGUIAdapter(BaseAdapter):
         edit_display_name = f"Edit: {len(files)} file(s)"
         results.append(ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName=edit_display_name,
-            parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata(
+            toolCallName=build_tool_call_name(
                 "Edit",
                 {"description": ", ".join(files) if files else ""},
                 display_name=edit_display_name,
             ),
+            parentMessageId=self._state.current_message_id,
         ).to_sse())
         
         args = json.dumps({"files": files}, ensure_ascii=False)
@@ -487,13 +485,12 @@ class CodexAGUIAdapter(BaseAdapter):
         mcp_display_name = f"MCP: {server}/{tool}"
         results.append(ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName=mcp_display_name,
-            parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata(
+            toolCallName=build_tool_call_name(
                 "MCP",
                 arguments,
                 display_name=mcp_display_name,
             ),
+            parentMessageId=self._state.current_message_id,
         ).to_sse())
         
         if arguments:
@@ -555,9 +552,8 @@ class CodexAGUIAdapter(BaseAdapter):
         
         return ToolCallStartEvent(
             toolCallId=call_id,
-            toolCallName="Web Search",
+            toolCallName=build_tool_call_name("Web Search", {"query": query}),
             parentMessageId=self._state.current_message_id,
-            **build_tool_call_start_metadata("Web Search", {"query": query}),
         ).to_sse()
     
     def _handle_web_search_end(self, msg: Dict[str, Any]) -> Optional[str]:

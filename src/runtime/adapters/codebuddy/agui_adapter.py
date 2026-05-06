@@ -15,7 +15,7 @@ from src.runtime.events.agui import (
     TextMessageContentEvent,
     TextMessageEndEvent,
     ToolCallStartEvent,
-    build_tool_call_start_metadata,
+    build_tool_call_name,
     ToolCallArgsEvent,
     ToolCallEndEvent,
     ToolCallResultEvent,
@@ -35,6 +35,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
         self._in_thinking_block: bool = False
         self._thinking_buffer: str = ""
         self._has_streamed_text_content: bool = False
+        self._tool_start_sent: set = set()
 
     def init_state(self, thread_id: str, run_id: str) -> None:
         """Initialize adapter state (override parent method)"""
@@ -198,9 +199,8 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                         results.append(
                             ToolCallStartEvent(
                                 toolCallId=tool_id,
-                                toolCallName=tool_name,
+                                toolCallName=build_tool_call_name(tool_name, parameters),
                                 parentMessageId=self.state.current_message_id,
-                                **build_tool_call_start_metadata(tool_name, parameters),
                             ).to_sse()
                         )
                     if parameters is not None:
@@ -286,9 +286,8 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                     results.append(
                         ToolCallStartEvent(
                             toolCallId=tool_id,
-                            toolCallName=tool_name,
+                            toolCallName=build_tool_call_name(tool_name, parameters),
                             parentMessageId=self.state.current_message_id,
-                            **build_tool_call_start_metadata(tool_name, parameters),
                         ).to_sse()
                     )
                 if parameters is not None:
@@ -536,20 +535,37 @@ class CodebuddyAGUIAdapter(BaseAdapter):
 
             # Find the tool_id for this index
             if index in self.state.tool_input_buffer:
-                tool_name, tool_id, _ = self.state.tool_input_buffer[index]
+                tool_name, tool_id, existing = self.state.tool_input_buffer[index]
+                new_params = existing + partial_json
+                self.state.tool_input_buffer[index] = (tool_name, tool_id, new_params)
 
                 results = []
 
                 # Send ToolCallStart first if not sent
-                if tool_id not in self.state.active_tool_calls:
-                    self.state.active_tool_calls[tool_id] = tool_name
-                    results.append(
-                        ToolCallStartEvent(
-                            toolCallId=tool_id,
-                            toolCallName=tool_name,
-                            parentMessageId=self.state.current_message_id,
-                        ).to_sse()
-                    )
+                if tool_id not in self._tool_start_sent:
+                    tool_label = build_tool_call_name(tool_name, new_params)
+                    tool_key = (tool_name or "").strip().lower()
+                    should_send = tool_key not in ("skill", "use_skill", "task")
+                    if tool_label != tool_name:
+                        should_send = True
+
+                    if should_send:
+                        self._tool_start_sent.add(tool_id)
+                        self.state.active_tool_calls[tool_id] = tool_name
+                        results.append(
+                            ToolCallStartEvent(
+                                toolCallId=tool_id,
+                                toolCallName=tool_label,
+                                parentMessageId=self.state.current_message_id,
+                            ).to_sse()
+                        )
+                        results.append(
+                            ToolCallArgsEvent(
+                                toolCallId=tool_id,
+                                delta=new_params,
+                            ).to_sse()
+                        )
+                    return "".join(results) if results else None
 
                 # Send args delta
                 results.append(
@@ -569,9 +585,23 @@ class CodebuddyAGUIAdapter(BaseAdapter):
 
         # Check if this was a tool_use block
         if index in self.state.tool_input_buffer:
-            tool_name, tool_id, _ = self.state.tool_input_buffer.pop(index, (None, None, None))
-            if tool_id:
-                # Tool call complete - ToolCallEnd will be sent when we get tool_result
-                pass
+            tool_name, tool_id, params = self.state.tool_input_buffer.pop(index, (None, None, None))
+            if tool_id and tool_id not in self._tool_start_sent:
+                self._tool_start_sent.add(tool_id)
+                results = [
+                    ToolCallStartEvent(
+                        toolCallId=tool_id,
+                        toolCallName=build_tool_call_name(tool_name, params),
+                        parentMessageId=self.state.current_message_id,
+                    ).to_sse()
+                ]
+                if params:
+                    results.append(
+                        ToolCallArgsEvent(
+                            toolCallId=tool_id,
+                            delta=params,
+                        ).to_sse()
+                    )
+                return "".join(results)
 
         return None

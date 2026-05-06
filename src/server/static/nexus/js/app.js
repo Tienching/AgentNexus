@@ -1451,7 +1451,7 @@ class ChatView {
         }
 
         if (normalizedName === 'skill' || normalizedName === 'use_skill') {
-            const skill = params.skill || params.command || '';
+            const skill = params.skill || params.skill_name || params.name || params.command || '';
             if (skill) return `Skill: ${skill}`;
         }
 

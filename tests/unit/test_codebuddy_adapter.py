@@ -153,13 +153,88 @@ class TestToolUseEvent:
         assert len(events) == 2
         assert events[0]["type"] == "TOOL_CALL_START"
         assert events[0]["toolCallId"] == "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg"
-        assert events[0]["toolCallName"] == "Read"
+        assert events[0]["toolCallName"] == "Read: /home/ubuntu/Projects/agent-nexus/pyproject.toml"
         
         assert events[1]["type"] == "TOOL_CALL_ARGS"
         assert events[1]["toolCallId"] == "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg"
         # delta 应该包含序列化的参数
         args = json.loads(events[1]["delta"])
         assert args["file_path"] == "/home/ubuntu/Projects/agent-nexus/pyproject.toml"
+
+    def test_convert_skill_tool_use_includes_skill_name(self, adapter):
+        """Skill 工具应把具体 skill 名称写入标准 toolCallName。"""
+        event = {
+            "type": "tool_use",
+            "tool_id": "tool-skill-1",
+            "tool_name": "Skill",
+            "parameters": {"skill": "knot-data"},
+        }
+        result = adapter.convert(event)
+
+        events = parse_sse_events(result)
+        assert events[0]["type"] == "TOOL_CALL_START"
+        assert events[0]["toolCallName"] == "Skill: knot-data"
+        assert "toolCallDisplayName" not in events[0]
+        assert "toolCallDescription" not in events[0]
+
+    def test_stream_event_tool_use_emits_start_before_args(self, adapter):
+        """CodeBuddy stream_event 工具流也必须先发 START 再发 ARGS。"""
+        start = adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "tool_use", "id": "tool-read-1", "name": "Read"},
+            },
+        })
+        delta = adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"file_path": "/tmp/a.py"}'},
+            },
+        })
+
+        assert start is None
+        events = parse_sse_events(delta)
+        assert [e["type"] for e in events] == ["TOOL_CALL_START", "TOOL_CALL_ARGS"]
+        assert events[0]["toolCallId"] == "tool-read-1"
+        assert events[0]["toolCallName"] == "Read: /tmp/a.py"
+        assert "toolCallDisplayName" not in events[0]
+        assert "toolCallDescription" not in events[0]
+
+    def test_stream_event_skill_waits_for_skill_name(self, adapter):
+        """Skill 参数分片时，等拿到具体 skill 名称后再发 START。"""
+        adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "tool_use", "id": "tool-skill-1", "name": "Skill"},
+            },
+        })
+        first = adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"skill"'},
+            },
+        })
+        second = adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": ': "knot-data"}'},
+            },
+        })
+
+        assert first is None
+        events = parse_sse_events(second)
+        assert [e["type"] for e in events] == ["TOOL_CALL_START", "TOOL_CALL_ARGS"]
+        assert events[0]["toolCallName"] == "Skill: knot-data"
 
     def test_tool_use_dedup(self, adapter):
         """验证同一工具调用不会重复发送 START"""
@@ -305,7 +380,7 @@ class TestMixedContentEvent:
         # 验证工具调用
         tool_start = next((e for e in events if e["type"] == "TOOL_CALL_START"), None)
         assert tool_start is not None
-        assert tool_start["toolCallName"] == "Read"
+        assert tool_start["toolCallName"] == "Read: /path/to/file.txt"
 
 
 class TestEndEvent:
