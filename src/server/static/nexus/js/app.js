@@ -2193,6 +2193,9 @@ class ChatView {
             try { es.close(); } catch {}
             delete this.taskSessionStreams[paneId];
         }
+        if (this._lastChannelStreamSession) {
+            delete this._lastChannelStreamSession[paneId];
+        }
         // Hard-finalize the paired streaming view so any SSE event that
         // races past `es.close()` (browsers flush queued 'message' events
         // asynchronously) cannot spawn a fresh bubble via _ensureBubble().
@@ -2379,8 +2382,10 @@ class ChatView {
     }
 
     async _streamChannelSessionMessages(paneId, sessionId) {
+        const hasRenderedMessages = !!document.getElementById(`chatMessages-${paneId}`);
         const alreadyRendered = this._lastChannelStreamSession
-            && this._lastChannelStreamSession[paneId] === sessionId;
+            && this._lastChannelStreamSession[paneId] === sessionId
+            && hasRenderedMessages;
         if (!this._lastChannelStreamSession) this._lastChannelStreamSession = {};
         this._lastChannelStreamSession[paneId] = sessionId;
 
