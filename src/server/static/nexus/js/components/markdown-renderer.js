@@ -46,16 +46,38 @@ class MarkdownRenderer {
                 continue;
             }
 
-            const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
+            // Tolerate fenced blocks where the closing ``` is glued to the previous code
+            // line or to the next markdown block (a common streaming artifact when the
+            // model omits the trailing newline). Anything past the opening language tag
+            // is re-injected as the first code line so it isn't lost.
+            const fenceMatch = line.match(/^(\s*)```([\w-]*)\s*(.*)$/);
             if (fenceMatch) {
-                const language = fenceMatch[1] || '';
+                const language = fenceMatch[2] || '';
+                const openingTail = fenceMatch[3] || '';
                 const codeLines = [];
                 index++;
-                while (index < lines.length && !/^```\s*$/.test(lines[index])) {
-                    codeLines.push(lines[index]);
-                    index++;
+                if (openingTail) {
+                    lines.splice(index, 0, openingTail);
                 }
-                if (index < lines.length && /^```\s*$/.test(lines[index])) index++;
+                while (index < lines.length) {
+                    const current = lines[index];
+                    const closeIdx = current.indexOf('```');
+                    if (closeIdx === -1) {
+                        codeLines.push(current);
+                        index++;
+                        continue;
+                    }
+                    const before = current.slice(0, closeIdx);
+                    const after = current.slice(closeIdx + 3);
+                    if (before.length > 0) codeLines.push(before);
+                    const trailing = after.replace(/^[ \t]+/, '');
+                    if (trailing.length > 0) {
+                        lines[index] = trailing;
+                    } else {
+                        index++;
+                    }
+                    break;
+                }
                 const codeHtml = this.highlightCode(codeLines.join('\n'), language);
                 const languageClass = language ? ` language-${this.escapeHtml(language)}` : '';
                 blocks.push(`<pre class="message-code-block"><code class="md-code${languageClass}">${codeHtml}</code></pre>`);

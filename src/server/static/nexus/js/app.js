@@ -3703,18 +3703,50 @@ class ChatView {
                 continue;
             }
 
-            const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
+            // Match opening fence. We accept the strict form (``` on its own line) AND a
+            // glued form (```json{...) that is common when a stream omits the trailing newline
+            // before the fence terminator. Anything past the language tag on the opening line
+            // is rewound so the block parser still sees it.
+            const fenceMatch = line.match(/^(\s*)```([\w-]*)\s*(.*)$/);
             if (fenceMatch) {
-                const language = fenceMatch[1] || '';
+                const language = fenceMatch[2] || '';
+                const openingTail = fenceMatch[3] || '';
                 const codeLines = [];
                 index++;
-                while (index < lines.length && !/^```\s*$/.test(lines[index])) {
-                    codeLines.push(lines[index]);
-                    index++;
+                if (openingTail) {
+                    // Re-inject the glued content as the first line inside the code block so it
+                    // is not lost. The closing-fence scan below will still split it correctly
+                    // if a ``` is embedded mid-line.
+                    lines.splice(index, 0, openingTail);
                 }
-                if (index < lines.length && /^```\s*$/.test(lines[index])) {
-                    index++;
+                let closed = false;
+                while (index < lines.length) {
+                    const current = lines[index];
+                    // Recognise a closing fence anywhere on the line, not just on its own line.
+                    // This tolerates streams that glue the closer to the previous code line
+                    // (e.g. `}```` or to the next markdown block (e.g. ```# Heading``).
+                    const closeIdx = current.indexOf('```');
+                    if (closeIdx === -1) {
+                        codeLines.push(current);
+                        index++;
+                        continue;
+                    }
+                    const before = current.slice(0, closeIdx);
+                    const after = current.slice(closeIdx + 3);
+                    if (before.length > 0) codeLines.push(before);
+                    const trailing = after.replace(/^[ \t]+/, '');
+                    if (trailing.length > 0) {
+                        // Re-feed the glued tail as the next line so headings/paragraphs that
+                        // were joined to the closing fence still render as markdown.
+                        lines[index] = trailing;
+                    } else {
+                        index++;
+                    }
+                    closed = true;
+                    break;
                 }
+                // If `closed` is false the fence is truncated/unterminated. We render what we
+                // have rather than swallowing the remainder of the document — there is none.
                 const languageClass = language ? ` class="language-${this.escapeHtml(language)}"` : '';
                 blocks.push(`<pre class="message-code-block"><code${languageClass}>${this.escapeHtml(codeLines.join('\n'))}</code></pre>`);
                 continue;
