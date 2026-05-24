@@ -196,6 +196,9 @@ class ProviderSettings(BaseSettings):
 
     # Gemini CLI 配置
     gemini_command: str = "gemini"
+
+    # CodeBuddy CLI 配置
+    codebuddy_default_model: str = ""
     
     # 默认 Provider 和 Exec User
     default_provider: str = "nexus"

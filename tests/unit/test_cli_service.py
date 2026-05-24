@@ -114,6 +114,41 @@ class TestCLIExecutorAlias:
         )
         assert cmd[0] == "codebuddy"
 
+    def test_codebuddy_provider_uses_configured_default_model(self):
+        cfg = Mock()
+        cfg.agent_cli_command_map = {}
+        cfg.cli_command = "claude"
+        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        executor = CLIExecutor(config=cfg)
+
+        cmd = executor._build_command(
+            exec_user="ubuntu",
+            content="Hello",
+            use_continue=False,
+            agent_type="codebuddy",
+        )
+
+        idx_model = cmd.index("--model")
+        assert cmd[idx_model + 1] == "gemini-3.5-flash"
+
+    def test_explicit_model_overrides_codebuddy_default_model(self):
+        cfg = Mock()
+        cfg.agent_cli_command_map = {}
+        cfg.cli_command = "claude"
+        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        executor = CLIExecutor(config=cfg)
+
+        cmd = executor._build_command(
+            exec_user="ubuntu",
+            content="Hello",
+            use_continue=False,
+            agent_type="codebuddy",
+            model="venus",
+        )
+
+        idx_model = cmd.index("--model")
+        assert cmd[idx_model + 1] == "venus"
+
     def test_alias_with_codex_provider(self, executor):
         cmd = executor._build_command(
             exec_user="ubuntu",

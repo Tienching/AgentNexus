@@ -150,6 +150,39 @@ class TestCodebuddyProviderSessionResume:
         assert "--resume" not in cmd
         assert "-c" not in cmd
 
+    def test_default_model_applied_without_explicit_model(self):
+        """Configured CodeBuddy default model is passed when request has no model."""
+        from src.providers.codebuddy.cli_executor import CodebuddyCLIExecutor
+        cfg = Mock()
+        cfg.codebuddy_command = "codebuddy"
+        cfg.timeout = 120
+        cfg.user_home_base = "/home"
+        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        executor = CodebuddyCLIExecutor(config=cfg)
+        cmd = executor._build_command(_make_context("Hello"))
+        idx_model = cmd.index("--model")
+        assert cmd[idx_model + 1] == "gemini-3.5-flash"
+
+    def test_explicit_model_overrides_default_model(self):
+        """Request model keeps priority over the provider default model."""
+        from src.providers.codebuddy.cli_executor import CodebuddyCLIExecutor
+        cfg = Mock()
+        cfg.codebuddy_command = "codebuddy"
+        cfg.timeout = 120
+        cfg.user_home_base = "/home"
+        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        executor = CodebuddyCLIExecutor(config=cfg)
+        cmd = executor._build_command(_make_context("Hello", model="venus"))
+        idx_model = cmd.index("--model")
+        assert cmd[idx_model + 1] == "venus"
+
+    def test_model_changed_starts_fresh_session(self, executor):
+        """A model transition should not resume a previous CodeBuddy CLI session."""
+        ctx = _make_context("Hello", cli_session_id=TEST_SESSION_UUID, model_changed=True)
+        cmd = executor._build_command(ctx)
+        assert "-r" not in cmd
+        assert "-c" not in cmd
+
     def test_resume_comes_before_prompt(self, executor):
         """-r SESSION_ID should appear before -p."""
         ctx = _make_context("Follow up", run_kind="chat_continue",

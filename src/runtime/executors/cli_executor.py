@@ -41,11 +41,13 @@ class CLIExecutorConfig(ExecutorConfig):
         user_home_base: str = "/home",
         cli_command: str = "claude",
         agent_cli_command_map: Optional[Dict[str, str]] = None,
+        codebuddy_default_model: str = "",
         **kwargs,
     ):
         super().__init__(timeout=timeout, user_home_base=user_home_base)
         self.cli_command = cli_command
         self.agent_cli_command_map = agent_cli_command_map or {}
+        self.codebuddy_default_model = codebuddy_default_model
         self.extra.update(kwargs)
 
 
@@ -214,10 +216,22 @@ class CLIExecutor(BaseExecutor):
         """Resolve canonical provider name from CLI command/alias."""
         return self._CLI_COMMAND_TO_PROVIDER.get(cli_command, cli_command)
 
+    def _default_model_for_provider(self, provider: str) -> Optional[str]:
+        if provider != "codebuddy" and not provider.startswith("codebuddy-"):
+            return None
+        configured = getattr(self.cli_config, "codebuddy_default_model", "")
+        if not isinstance(configured, str):
+            configured = ""
+        return (
+            configured.strip()
+            or os.environ.get("CODEBUDDY_DEFAULT_MODEL", "").strip()
+            or os.environ.get("AGENT_NEXUS_CODEBUDDY_DEFAULT_MODEL", "").strip()
+            or None
+        )
+
     def _build_command(self, context: RequestContext, use_continue: bool = True) -> List[str]:
         """Build CLI command."""
         cleaned_content, inline_model = self._parse_model_param(context.content)
-        model_param = inline_model or getattr(context, "model", None) or None
         cli_session_id = (getattr(context, "cli_session_id", None) or "").strip() or None
         
         # Determine CLI command name: alias overrides the command map
@@ -239,6 +253,13 @@ class CLIExecutor(BaseExecutor):
         provider = self._resolve_provider_from_cli_command(cli_command)
         is_codex = provider == "codex"
         is_gemini = provider == "gemini"
+        model_param = (
+            (inline_model.strip() if isinstance(inline_model, str) else "")
+            or (getattr(context, "model", "").strip() if isinstance(getattr(context, "model", ""), str) else "")
+            or self._default_model_for_provider(provider)
+            or None
+        )
+        model_changed = bool(getattr(context, "model_changed", False))
 
         if cleaned_content.lower() == "/clear":
             message = "你好"
@@ -251,7 +272,7 @@ class CLIExecutor(BaseExecutor):
             #   - codex: resume SESSION_ID (instead of resume --last)
             session_cleared = getattr(context, "session_cleared", False)
 
-            if use_continue and not session_cleared:
+            if use_continue and not session_cleared and not model_changed:
                 if is_codex:
                     pass  # codex uses "resume ..." appended after prompt
                 elif is_gemini:

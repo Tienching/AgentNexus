@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, AsyncGenerator, List, Optional
@@ -20,6 +21,18 @@ from typing import Any, AsyncGenerator, List, Optional
 from ..base import BaseExecutor, ExecutorConfig, RequestContext
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_default_model(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _env_default_model() -> str:
+    return (
+        os.environ.get("CODEBUDDY_DEFAULT_MODEL")
+        or os.environ.get("AGENT_NEXUS_CODEBUDDY_DEFAULT_MODEL")
+        or ""
+    ).strip()
 
 
 class CodebuddyExecutorConfig(ExecutorConfig):
@@ -30,10 +43,12 @@ class CodebuddyExecutorConfig(ExecutorConfig):
         timeout: float = 600.0,
         user_home_base: str = "/home",
         codebuddy_command: str = "codebuddy",
+        default_model: str = "",
         **kwargs,
     ):
         super().__init__(timeout=timeout, user_home_base=user_home_base)
         self.codebuddy_command = codebuddy_command
+        self.default_model = _clean_default_model(default_model) or _env_default_model()
         self.extra.update(kwargs)
 
 
@@ -56,6 +71,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
                 timeout=getattr(config, "cli_timeout", 600.0),
                 user_home_base=getattr(config, "user_home_base", "/home"),
                 codebuddy_command=getattr(config, "codebuddy_command", "codebuddy"),
+                default_model=getattr(config, "codebuddy_default_model", ""),
             )
         )
 
@@ -157,11 +173,18 @@ class CodebuddyCLIExecutor(BaseExecutor):
     def _build_command(self, context: RequestContext) -> List[str]:
         """Build Codebuddy CLI command."""
         cleaned_content, inline_model = self._parse_model_param(context.content)
-        model_param = inline_model or getattr(context, "model", None) or None
+        model_param = (
+            _clean_default_model(inline_model)
+            or _clean_default_model(getattr(context, "model", None))
+            or _clean_default_model(getattr(self.codebuddy_config, "default_model", ""))
+            or _env_default_model()
+            or None
+        )
 
         is_inplace = getattr(context, "cwd_mode", "") == "inplace"
         is_chat_continue = getattr(context, "run_kind", "") == "chat_continue"
-        use_continue = (not is_inplace) or is_chat_continue
+        model_changed = bool(getattr(context, "model_changed", False))
+        use_continue = ((not is_inplace) or is_chat_continue) and not model_changed
         cli_session_id = (getattr(context, "cli_session_id", None) or "").strip() or None
         session_cleared = getattr(context, "session_cleared", False)
         is_clear = cleaned_content.lower() == "/clear"

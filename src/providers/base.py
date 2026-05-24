@@ -47,6 +47,7 @@ class RequestContext:
     model: Optional[str] = None  # LLM model name override
     cli_session_id: Optional[str] = None  # CLI session UUID for precise resume
     session_cleared: bool = False  # True if /clear was just executed; skip resume
+    model_changed: bool = False  # True when CLI should start a fresh model session
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
@@ -70,6 +71,7 @@ class RequestContext:
             model=getattr(model_obj, "model", None) or None,
             cli_session_id=getattr(model_obj, "cli_session_id", None) or None,
             session_cleared=bool(getattr(model_obj, "session_cleared", False)),
+            model_changed=bool(getattr(model_obj, "model_changed", False)),
             metadata=metadata,
         )
 

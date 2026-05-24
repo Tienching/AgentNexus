@@ -482,6 +482,28 @@ class ChannelService:
                             f"[{message.channel}] Provider override (channel): provider={ch_cfg.provider}, alias={ch_cfg.alias}",
                             extra={"session_id": session_id},
                         )
+            effective_provider = (getattr(request, "provider", None) or settings.default_provider or "").strip().lower()
+            default_model = getattr(settings, "codebuddy_default_model", "")
+            if (
+                not getattr(request, "model", None)
+                and (effective_provider == "codebuddy" or effective_provider.startswith("codebuddy-"))
+                and isinstance(default_model, str)
+                and default_model.strip()
+            ):
+                default_model = default_model.strip()
+                request.model = default_model
+                active_model = storage.get_active_model(session_id)
+                if active_model != default_model:
+                    request.model_changed = True
+                    logger.info(
+                        f"[{message.channel}] Model changed by provider default: {active_model} -> {default_model}",
+                        extra={"session_id": session_id},
+                    )
+                else:
+                    logger.info(
+                        f"[{message.channel}] Provider default model applied: {default_model}",
+                        extra={"session_id": session_id},
+                    )
         except Exception as e:
             logger.warning(f"[{message.channel}] Failed to read session overrides: {e}")
 

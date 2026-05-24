@@ -6,6 +6,7 @@ Handle AG-UI protocol streaming responses (Legacy protocol removed)
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -65,6 +66,48 @@ class StreamHandler:
     def _get_agui_adapter(self, provider: str):
         """Create a fresh AG-UI adapter via the centralized dispatcher."""
         return create_adapter(provider)
+
+    def _default_model_for_provider(self, provider: str) -> Optional[str]:
+        provider_key = (provider or "").strip().lower()
+        if provider_key != "codebuddy" and not provider_key.startswith("codebuddy-"):
+            return None
+        configured = getattr(settings, "codebuddy_default_model", "")
+        if not isinstance(configured, str):
+            configured = ""
+        return (
+            configured.strip()
+            or os.environ.get("CODEBUDDY_DEFAULT_MODEL", "").strip()
+            or os.environ.get("AGENT_NEXUS_CODEBUDDY_DEFAULT_MODEL", "").strip()
+            or None
+        )
+
+    def _apply_model_with_change_detection(
+        self,
+        request_model: RequestModel,
+        session_id: str,
+        model_name: str,
+        storage,
+        source: str,
+    ) -> None:
+        request_model.model = model_name
+        if not session_id:
+            return
+        try:
+            storage_obj = storage or get_session_storage()
+            active_model = storage_obj.get_active_model(session_id)
+            if active_model != model_name:
+                request_model.model_changed = True
+                logger.info(
+                    f"Model changed by {source}: {active_model} -> {model_name}, will start new CLI session",
+                    extra={"session_id": session_id},
+                )
+            else:
+                logger.info(
+                    f"Model applied by {source}: {model_name}",
+                    extra={"session_id": session_id},
+                )
+        except Exception as e:
+            logger.warning(f"Failed to check active model for {source}: {e}")
 
     def _sync_execution_binding(
         self,
@@ -443,29 +486,24 @@ class StreamHandler:
         model_name = (forwarded.get("model") if isinstance(forwarded, dict) else None) or body_dict.get("model") or ""
         model_name = model_name.strip() if model_name else ""
         if model_name:
-            request_model.model = model_name
+            self._apply_model_with_change_detection(request_model, session_id, model_name, storage, "request")
 
         # Apply persistent model override from /switch -m (if no explicit model in request)
         if session_id and not model_name:
             try:
-                storage = get_session_storage()
+                storage = storage or get_session_storage()
                 model_override = storage.get_model_override(session_id)
                 if model_override:
-                    request_model.model = model_override
-                    active_model = storage.get_active_model(session_id)
-                    if active_model != model_override:
-                        request_model.model_changed = True
-                        logger.info(
-                            f"Model changed: {active_model} -> {model_override}, will start new CLI session",
-                            extra={"session_id": session_id},
-                        )
-                    else:
-                        logger.info(
-                            f"Model override applied: {model_override}",
-                            extra={"session_id": session_id},
-                        )
+                    self._apply_model_with_change_detection(request_model, session_id, model_override, storage, "session")
+                    model_name = model_override
             except Exception as e:
                 logger.warning(f"Failed to read model override: {e}")
+
+        if not model_name:
+            default_model = self._default_model_for_provider(provider)
+            if default_model:
+                self._apply_model_with_change_detection(request_model, session_id, default_model, storage, "provider-default")
+                model_name = default_model
 
         # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
         if workspace_provider:
@@ -660,6 +698,9 @@ class StreamHandler:
                 try:
                     storage_obj = storage or get_session_storage()
                     storage_obj.set_cli_session_id(session_id, cli_session_id)
+                    active_model = (getattr(request_model, "model", None) or "").strip()
+                    if active_model:
+                        storage_obj.set_active_model(session_id, active_model)
                     logger.debug(
                         "Saved cli_session_id from provider stream",
                         extra={"session_id": session_id, "cli_session_id": cli_session_id},

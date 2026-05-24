@@ -1142,6 +1142,19 @@ class CLIExecutor:
             },
         )
 
+    def _default_model_for_provider(self, provider: str) -> Optional[str]:
+        if provider != "codebuddy" and not provider.startswith("codebuddy-"):
+            return None
+        configured = getattr(self.config, "codebuddy_default_model", "")
+        if not isinstance(configured, str):
+            configured = ""
+        return (
+            configured.strip()
+            or os.environ.get("CODEBUDDY_DEFAULT_MODEL", "").strip()
+            or os.environ.get("AGENT_NEXUS_CODEBUDDY_DEFAULT_MODEL", "").strip()
+            or None
+        )
+
     def _build_command(
         self,
         exec_user: str,
@@ -1172,10 +1185,15 @@ class CLIExecutor:
             content_parts: Ordered list of content parts preserving text/image interleaving.
         """
         cleaned_content, inline_model = self._parse_model_param(content)
-        model_param = inline_model or model or None
         cli_session_id = (cli_session_id or "").strip() or None
         provider = (agent_type or "").strip().lower()
         is_codebuddy_provider = provider == "codebuddy" or provider.startswith("codebuddy-")
+        model_param = (
+            (inline_model.strip() if isinstance(inline_model, str) else "")
+            or (model.strip() if isinstance(model, str) else "")
+            or self._default_model_for_provider(provider)
+            or None
+        )
         provider_command_map = {
             "claude": "claude",
             "codex": "codex",
