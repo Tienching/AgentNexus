@@ -16,7 +16,7 @@ import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from ..base import BaseExecutor, ExecutorConfig, RequestContext
+from ..base import BaseExecutor, ExecutorConfig, RequestContext, assemble_cli_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,12 @@ class GeminiExecutor(BaseExecutor):
         """Internal execution implementation using RequestContext."""
         start_time = time.time()
         
-        if not context.content:
+        if not (
+            context.content
+            or getattr(context, "content_parts", None)
+            or getattr(context, "image_paths", None)
+            or getattr(context, "file_paths", None)
+        ):
             raise ValueError("Missing required field: content")
         
         cleaned_content = self._clean_content(context.content)
@@ -149,7 +154,13 @@ class GeminiExecutor(BaseExecutor):
                 cmd.extend(["--resume", cli_session_id])
             else:
                 cmd.extend(["--resume", "latest"])
-        cmd.extend(["-p", cleaned_content, "--output-format", "stream-json"])
+        message = assemble_cli_prompt(
+            cleaned_content,
+            image_paths=getattr(context, "image_paths", None) or None,
+            file_paths=getattr(context, "file_paths", None) or None,
+            content_parts=getattr(context, "content_parts", None) or None,
+        )
+        cmd.extend(["-p", message, "--output-format", "stream-json"])
         if model_param:
             cmd.extend(["--model", model_param])
         return cmd

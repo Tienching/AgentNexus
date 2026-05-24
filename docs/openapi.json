@@ -62,7 +62,7 @@
           "health"
         ],
         "summary": "Nexus Redirect",
-        "description": "\u65e7\u8def\u5f84\u517c\u5bb9 \u2014 /nexus \u91cd\u5b9a\u5411\u5230\u6839\u8def\u5f84",
+        "description": "旧路径兼容 — /nexus 重定向到根路径",
         "operationId": "nexus_redirect_nexus__get",
         "responses": {
           "200": {
@@ -82,7 +82,7 @@
           "health"
         ],
         "summary": "Nexus Redirect",
-        "description": "\u65e7\u8def\u5f84\u517c\u5bb9 \u2014 /nexus \u91cd\u5b9a\u5411\u5230\u6839\u8def\u5f84",
+        "description": "旧路径兼容 — /nexus 重定向到根路径",
         "operationId": "nexus_redirect_nexus_get",
         "responses": {
           "200": {
@@ -102,7 +102,7 @@
           "chat"
         ],
         "summary": "Chat Stream Default",
-        "description": "\u9ed8\u8ba4 agent \u7684\u6d41\u5f0f\u804a\u5929\u5165\u53e3\u3002\n\n\u4e3b\u8981\u7528\u4e8e\u8ba9 `/chat/stream` \u8fd9\u4e2a\u8def\u5f84\u5b58\u5728\uff0c\u4ece\u800c\u5bf9 GET \u8fd4\u56de 405\uff08\u7b26\u5408\u6d4b\u8bd5\u671f\u671b\uff09\u3002",
+        "description": "默认 agent 的流式聊天入口。\n\n主要用于让 `/chat/stream` 这个路径存在，从而对 GET 返回 405（符合测试期望）。",
         "operationId": "chat_stream_default_chat_stream_post",
         "responses": {
           "200": {
@@ -117,7 +117,7 @@
           "chat"
         ],
         "summary": "Chat Stream",
-        "description": "\u7edf\u4e00\u6d41\u5f0f\u804a\u5929\u63a5\u53e3\uff08AG-UI \u534f\u8bae\uff09\n\nArgs:\n    request: FastAPI\u8bf7\u6c42\u5bf9\u8c61\n    exec_user: Linux\u7cfb\u7edf\u7528\u6237\u540d\uff0c\u901a\u8fc7su\u5207\u6362\u5230\u8be5\u7528\u6237\u8fd0\u884cCLI\u547d\u4ee4",
+        "description": "统一流式聊天接口（AG-UI 协议）\n\nArgs:\n    request: FastAPI请求对象\n    exec_user: Linux系统用户名，通过su切换到该用户运行CLI命令",
         "operationId": "chat_stream_chat_stream__exec_user__post",
         "parameters": [
           {
@@ -153,7 +153,7 @@
           "chat"
         ],
         "summary": "Agui Test",
-        "description": "AG-UI SSE \u683c\u5f0f\u6d4b\u8bd5\u7aef\u70b9 - \u8fd4\u56de\u6807\u51c6\u7684 AG-UI \u4e8b\u4ef6\u5e8f\u5217",
+        "description": "AG-UI SSE 格式测试端点 - 返回标准的 AG-UI 事件序列",
         "operationId": "agui_test_agui_test_get",
         "responses": {
           "200": {
@@ -173,7 +173,7 @@
           "channels"
         ],
         "summary": "Telegram Webhook",
-        "description": "Telegram Webhook \u5165\u53e3",
+        "description": "Telegram Webhook 入口",
         "operationId": "telegram_webhook_api_channels_telegram_webhook_post",
         "responses": {
           "200": {
@@ -193,7 +193,7 @@
           "channels"
         ],
         "summary": "Slack Webhook",
-        "description": "Slack Webhook \u5165\u53e3\uff08HTTP \u6a21\u5f0f\uff09",
+        "description": "Slack Webhook 入口（HTTP 模式）",
         "operationId": "slack_webhook_api_channels_slack_webhook_post",
         "responses": {
           "200": {
@@ -213,7 +213,7 @@
           "channels"
         ],
         "summary": "Feishu Webhook",
-        "description": "\u98de\u4e66 Webhook \u5165\u53e3\n\n\u5904\u7406\u98de\u4e66\u4e8b\u4ef6\u8ba2\u9605\u56de\u8c03\uff0c\u5305\u62ec URL \u9a8c\u8bc1\u548c\u6d88\u606f\u4e8b\u4ef6\u3002",
+        "description": "飞书 Webhook 入口\n\n处理飞书事件订阅回调，包括 URL 验证和消息事件。",
         "operationId": "feishu_webhook_api_channels_feishu_webhook_post",
         "responses": {
           "200": {
@@ -233,7 +233,7 @@
           "channels"
         ],
         "summary": "Wecom Webhook Verify",
-        "description": "\u4f01\u4e1a\u5fae\u4fe1\u667a\u80fd\u673a\u5668\u4eba URL \u9a8c\u8bc1\u5165\u53e3 (GET)",
+        "description": "企业微信智能机器人 URL 验证入口 (GET)",
         "operationId": "wecom_webhook_verify_api_channels_wecom_webhook_get",
         "responses": {
           "200": {
@@ -251,7 +251,7 @@
           "channels"
         ],
         "summary": "Wecom Webhook",
-        "description": "\u4f01\u4e1a\u5fae\u4fe1\u667a\u80fd\u673a\u5668\u4eba\u6d88\u606f\u56de\u8c03\u5165\u53e3 (POST)",
+        "description": "企业微信智能机器人消息回调入口 (POST)",
         "operationId": "wecom_webhook_api_channels_wecom_webhook_post",
         "responses": {
           "200": {
@@ -271,7 +271,7 @@
           "channels"
         ],
         "summary": "Wecom Bot Webhook Verify",
-        "description": "\u4f01\u4e1a\u5fae\u4fe1\u666e\u901a\u673a\u5668\u4eba URL \u9a8c\u8bc1\u5165\u53e3 (GET)",
+        "description": "企业微信普通机器人 URL 验证入口 (GET)",
         "operationId": "wecom_bot_webhook_verify_api_channels_wecom_bot_webhook_get",
         "responses": {
           "200": {
@@ -289,7 +289,7 @@
           "channels"
         ],
         "summary": "Wecom Bot Webhook",
-        "description": "\u4f01\u4e1a\u5fae\u4fe1\u666e\u901a\u673a\u5668\u4eba\u6d88\u606f\u56de\u8c03\u5165\u53e3 (POST)",
+        "description": "企业微信普通机器人消息回调入口 (POST)",
         "operationId": "wecom_bot_webhook_api_channels_wecom_bot_webhook_post",
         "responses": {
           "200": {
@@ -406,10 +406,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Unix timestamp \u2014 events after",
+              "description": "Unix timestamp — events after",
               "title": "Since"
             },
-            "description": "Unix timestamp \u2014 events after"
+            "description": "Unix timestamp — events after"
           },
           {
             "name": "until",
@@ -424,10 +424,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Unix timestamp \u2014 events before",
+              "description": "Unix timestamp — events before",
               "title": "Until"
             },
-            "description": "Unix timestamp \u2014 events before"
+            "description": "Unix timestamp — events before"
           }
         ],
         "responses": {
@@ -1056,7 +1056,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -1099,7 +1099,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -1142,7 +1142,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -2047,7 +2047,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -3611,7 +3611,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -3693,7 +3693,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -3801,7 +3801,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -3844,7 +3844,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -3886,7 +3886,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -5370,7 +5370,7 @@
           "nexus-history"
         ],
         "summary": "List History Sessions",
-        "description": "List local history sessions.\n\nThis endpoint reads native CLI session files from the local filesystem.\nIt does NOT access Redis \u2014 runtime sessions use a separate endpoint.\n\nOptional parameter:\n- project_path: When provided, filter history to that workspace path.\n  When empty, aggregate history across all projects.\n\nOptional parameters:\n- custom_paths: JSON dict mapping alias names to their config directories\n  e.g. {\"claude-internal\":\"~/.claude-internal\",\"codex-internal\":\"~/.codex-internal\"}\n- per_alias_limit: Take top N per (provider, alias). Useful for UI that groups by provider.",
+        "description": "List local history sessions.\n\nThis endpoint reads native CLI session files from the local filesystem.\nIt does NOT access Redis — runtime sessions use a separate endpoint.\n\nOptional parameter:\n- project_path: When provided, filter history to that workspace path.\n  When empty, aggregate history across all projects.\n\nOptional parameters:\n- custom_paths: JSON dict mapping alias names to their config directories\n  e.g. {\"claude-internal\":\"~/.claude-internal\",\"codex-internal\":\"~/.codex-internal\"}\n- per_alias_limit: Take top N per (provider, alias). Useful for UI that groups by provider.",
         "operationId": "list_history_sessions_api_nexus_history_sessions_get",
         "parameters": [
           {
@@ -5786,7 +5786,7 @@
           "nexus-history"
         ],
         "summary": "Resume History Session",
-        "description": "Canonical History resume endpoint (read-only source \u2192 runtime binding).",
+        "description": "Canonical History resume endpoint (read-only source → runtime binding).",
         "operationId": "resume_history_session_api_nexus_history_sessions__provider___session_id__resume_post",
         "parameters": [
           {
@@ -6329,7 +6329,7 @@
           "nexus-schedules"
         ],
         "summary": "Update Schedule",
-        "description": "Update schedule fields.\n\nOnly provided (non-null) fields are updated. Does not change status \u2014 use\npause/resume/cancel endpoints for status transitions.",
+        "description": "Update schedule fields.\n\nOnly provided (non-null) fields are updated. Does not change status — use\npause/resume/cancel endpoints for status transitions.",
         "operationId": "update_schedule_api_nexus_schedules__schedule_id__put",
         "parameters": [
           {
@@ -6399,7 +6399,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -6571,7 +6571,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -6652,7 +6652,7 @@
           "nexus-security"
         ],
         "summary": "Security Scan",
-        "description": "Self-diagnostic security scan of the agent-nexus deployment.\n\nPorted from mission-control GET /api/security-scan (lib/security-scan.ts).\nChecks credentials, network exposure, runtime config, OS hardening,\nand Redis security. Returns a severity-weighted score (0\u2013100) with\nactionable fix suggestions.",
+        "description": "Self-diagnostic security scan of the agent-nexus deployment.\n\nPorted from mission-control GET /api/security-scan (lib/security-scan.ts).\nChecks credentials, network exposure, runtime config, OS hardening,\nand Redis security. Returns a severity-weighted score (0–100) with\nactionable fix suggestions.",
         "operationId": "security_scan_api_nexus_security_scan_get",
         "responses": {
           "200": {
@@ -7038,7 +7038,7 @@
           "nexus-utils"
         ],
         "summary": "Schedule Parse",
-        "description": "Parse natural language schedule into a cron expression.\n\nPorted from mission-control GET /api/schedule-parse (lib/schedule-parser.ts).\n\nExamples:\n  - \"every 5 minutes\" \u2192 */5 * * * *\n  - \"daily at 9am\" \u2192 0 9 * * *\n  - \"every monday at 2:30pm\" \u2192 30 14 * * 1\n  - \"hourly\" \u2192 0 * * * *\n  - \"0 9 * * 1-5\" \u2192 passthrough (raw cron)",
+        "description": "Parse natural language schedule into a cron expression.\n\nPorted from mission-control GET /api/schedule-parse (lib/schedule-parser.ts).\n\nExamples:\n  - \"every 5 minutes\" → */5 * * * *\n  - \"daily at 9am\" → 0 9 * * *\n  - \"every monday at 2:30pm\" → 30 14 * * 1\n  - \"hourly\" → 0 * * * *\n  - \"0 9 * * 1-5\" → passthrough (raw cron)",
         "operationId": "schedule_parse_api_nexus_schedule_parse_get",
         "parameters": [
           {
@@ -7121,10 +7121,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Unix timestamp \u2014 only export items created after this time",
+              "description": "Unix timestamp — only export items created after this time",
               "title": "Since"
             },
-            "description": "Unix timestamp \u2014 only export items created after this time"
+            "description": "Unix timestamp — only export items created after this time"
           },
           {
             "name": "until",
@@ -7139,10 +7139,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Unix timestamp \u2014 only export items created before this time",
+              "description": "Unix timestamp — only export items created before this time",
               "title": "Until"
             },
-            "description": "Unix timestamp \u2014 only export items created before this time"
+            "description": "Unix timestamp — only export items created before this time"
           },
           {
             "name": "limit",
@@ -8496,7 +8496,7 @@
           "evolution"
         ],
         "summary": "Trigger Synthesis",
-        "description": "Trigger memory synthesis immediately (archive \u2192 active_learnings.md).",
+        "description": "Trigger memory synthesis immediately (archive → active_learnings.md).",
         "operationId": "trigger_synthesis_api_nexus_evolution_synthesis_post",
         "responses": {
           "200": {
@@ -8757,7 +8757,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -8857,7 +8857,7 @@
           "nexus-permissions"
         ],
         "summary": "Enter Plan Mode",
-        "description": "Enter plan mode \u2014 only read-only tools are allowed.\n\nThe previous permission mode is saved and will be restored when plan mode\nis exited (either via approve or explicit exit).",
+        "description": "Enter plan mode — only read-only tools are allowed.\n\nThe previous permission mode is saved and will be restored when plan mode\nis exited (either via approve or explicit exit).",
         "operationId": "enter_plan_mode_api_nexus_plan_enter_post",
         "responses": {
           "200": {
@@ -9906,7 +9906,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
+                  "$ref": "#/components/schemas/src__server__routers__nexus_models__SuccessResponse"
                 }
               }
             }
@@ -14941,7 +14941,7 @@
           "session_id"
         ],
         "title": "ExecutionBinding",
-        "description": "Control-plane metadata for a session\u2194CLI mapping."
+        "description": "Control-plane metadata for a session↔CLI mapping."
       },
       "ExtensionCatalogResponse": {
         "properties": {
@@ -15403,17 +15403,17 @@
           "status": {
             "type": "string",
             "title": "Status",
-            "description": "\u670d\u52a1\u72b6\u6001"
+            "description": "服务状态"
           },
           "service": {
             "type": "string",
             "title": "Service",
-            "description": "\u670d\u52a1\u540d\u79f0"
+            "description": "服务名称"
           },
           "version": {
             "type": "string",
             "title": "Version",
-            "description": "\u670d\u52a1\u7248\u672c"
+            "description": "服务版本"
           },
           "uptime_seconds": {
             "anyOf": [
@@ -15443,7 +15443,7 @@
           "version"
         ],
         "title": "HealthResponse",
-        "description": "\u5065\u5eb7\u68c0\u67e5\u54cd\u5e94 \u2014 enhanced with structured checks.\n\nPorted from mission-control performHealthCheck (commits 4eda03a / afa8e9d):\n- checks: list of per-subsystem health results\n- overall status degrades to worst check status"
+        "description": "健康检查响应 — enhanced with structured checks.\n\nPorted from mission-control performHealthCheck (commits 4eda03a / afa8e9d):\n- checks: list of per-subsystem health results\n- overall status degrades to worst check status"
       },
       "HistoryAliasGroup": {
         "properties": {
@@ -16272,23 +16272,23 @@
           "version": {
             "type": "string",
             "title": "Version",
-            "description": "\u670d\u52a1\u7248\u672c"
+            "description": "服务版本"
           },
           "cli_command": {
             "type": "string",
             "title": "Cli Command",
-            "description": "CLI \u6267\u884c\u547d\u4ee4"
+            "description": "CLI 执行命令"
           },
           "requests_total": {
             "type": "integer",
             "title": "Requests Total",
-            "description": "\u603b\u8bf7\u6c42\u6570",
+            "description": "总请求数",
             "default": 0
           },
           "requests_active": {
             "type": "integer",
             "title": "Requests Active",
-            "description": "\u6d3b\u8dc3\u8bf7\u6c42\u6570",
+            "description": "活跃请求数",
             "default": 0
           },
           "storage_backend": {
@@ -16322,7 +16322,7 @@
           "cli_command"
         ],
         "title": "MetricsResponse",
-        "description": "\u6307\u6807\u54cd\u5e94"
+        "description": "指标响应"
       },
       "MissionActionResponse": {
         "properties": {
@@ -19804,28 +19804,6 @@
         ],
         "title": "SubmitQualityReviewRequest"
       },
-      "SuccessResponse": {
-        "properties": {
-          "success": {
-            "type": "boolean",
-            "title": "Success",
-            "default": true
-          },
-          "message": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Message"
-          }
-        },
-        "type": "object",
-        "title": "SuccessResponse"
-      },
       "SyncTriggerRequest": {
         "properties": {
           "agent_name": {
@@ -22502,6 +22480,28 @@
           "updated_at"
         ],
         "title": "WorkspaceItem"
+      },
+      "src__server__routers__nexus_models__SuccessResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "title": "SuccessResponse"
       }
     }
   },

@@ -18,7 +18,7 @@ import re
 import time
 from typing import Any, AsyncGenerator, List, Optional
 
-from ..base import BaseExecutor, ExecutorConfig, RequestContext
+from ..base import BaseExecutor, ExecutorConfig, RequestContext, assemble_cli_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,12 @@ class CodebuddyCLIExecutor(BaseExecutor):
         """Internal execution implementation using RequestContext."""
         start_time = time.time()
 
-        if not context.content:
+        if not (
+            context.content
+            or getattr(context, "content_parts", None)
+            or getattr(context, "image_paths", None)
+            or getattr(context, "file_paths", None)
+        ):
             raise ValueError("Missing required field: content")
 
         # Resolve execution directory
@@ -188,7 +193,12 @@ class CodebuddyCLIExecutor(BaseExecutor):
         cli_session_id = (getattr(context, "cli_session_id", None) or "").strip() or None
         session_cleared = getattr(context, "session_cleared", False)
         is_clear = cleaned_content.lower() == "/clear"
-        message = "你好" if is_clear else cleaned_content
+        message = "你好" if is_clear else assemble_cli_prompt(
+            cleaned_content,
+            image_paths=getattr(context, "image_paths", None) or None,
+            file_paths=getattr(context, "file_paths", None) or None,
+            content_parts=getattr(context, "content_parts", None) or None,
+        )
 
         # Use alias as CLI command name if provided, otherwise default
         cli_command = (getattr(context, "alias", None) or "").strip() or self.codebuddy_config.codebuddy_command

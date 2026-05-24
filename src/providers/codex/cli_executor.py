@@ -17,7 +17,7 @@ import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from ..base import BaseExecutor, ExecutorConfig, RequestContext
+from ..base import BaseExecutor, ExecutorConfig, RequestContext, assemble_cli_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +94,10 @@ class CodexCLIExecutor(BaseExecutor):
         Yields:
             Output lines (JSON format)
         """
-        # Convert RequestModel to RequestContext
-        context = RequestContext.from_request_model(request, exec_user)
+        if isinstance(request, RequestContext):
+            context = request
+        else:
+            context = RequestContext.from_request_model(request, exec_user)
         
         async for line in self._execute_internal(context):
             yield line
@@ -107,7 +109,12 @@ class CodexCLIExecutor(BaseExecutor):
         """Internal execution implementation."""
         start_time = time.time()
         
-        if not context.content:
+        if not (
+            context.content
+            or getattr(context, "content_parts", None)
+            or getattr(context, "image_paths", None)
+            or getattr(context, "file_paths", None)
+        ):
             raise ValueError("Missing required field: content")
         
         cleaned_content = self._clean_content(context.content)
@@ -207,7 +214,13 @@ class CodexCLIExecutor(BaseExecutor):
             cmd.extend(["--model", model_param])
         
         # Add the prompt
-        cmd.append(cleaned_content)
+        message = assemble_cli_prompt(
+            cleaned_content,
+            image_paths=getattr(context, "image_paths", None) or None,
+            file_paths=getattr(context, "file_paths", None) or None,
+            content_parts=getattr(context, "content_parts", None) or None,
+        )
+        cmd.append(message)
         
         # When continuing a chat session, append "resume SESSION_ID" or "resume --last"
         # Format: codex-internal exec [options] "prompt" resume SESSION_ID

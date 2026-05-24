@@ -219,3 +219,60 @@ class TestStreamResponse:
             "HTTP_422_UNPROCESSABLE_ENTITY" in str(warning.message)
             for warning in caught
         )
+
+    @pytest.mark.asyncio
+    async def test_agui_multimodal_content_array_streams_without_legacy_422(self, client: AsyncClient):
+        """AG-UI 多模态 content 数组应被按顺序送入执行器，而不是被 legacy RequestModel 拒绝"""
+        image_url = "https://example.com/case.png"
+        agui_request = {
+            "threadId": "thread-multimodal",
+            "runId": "run-multimodal",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "介绍一下这张图片"},
+                        {"type": "binary", "mimeType": "image/png", "url": image_url},
+                    ],
+                }
+            ],
+            "forwardedProps": {
+                "username": "jonaszchen",
+                "provider": "codebuddy",
+            },
+        }
+        mock_cli_output = [
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "这是一张测试图片"}
+                    ]
+                },
+            }),
+            json.dumps({"type": "result", "subtype": "success"}),
+        ]
+
+        with patch("asyncio.create_subprocess_exec") as mock_subprocess:
+            mock_process = AsyncMock()
+            mock_process.stdout.readline = AsyncMock(
+                side_effect=[(line + "\n").encode() for line in mock_cli_output] + [b""]
+            )
+            mock_process.stderr.read = AsyncMock(return_value=b"")
+            mock_process.wait.return_value = None
+            mock_subprocess.return_value = mock_process
+
+            async with client.stream("POST", "/chat/stream/testuser", json=agui_request) as response:
+                assert response.status_code == 200
+
+                events = []
+                async for line in response.aiter_lines():
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if data_str:
+                            events.append(json.loads(data_str))
+
+        command = " ".join(str(arg) for arg in mock_subprocess.call_args.args)
+        assert "介绍一下这张图片" in command
+        assert f"{{image: {image_url}}}" in command
+        assert any(event.get("type") == "RUN_FINISHED" for event in events)

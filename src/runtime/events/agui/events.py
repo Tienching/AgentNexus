@@ -336,13 +336,70 @@ class AGUIRequest(BaseModel):
     image_paths: List[str] = Field(default_factory=list, description="Local image paths")
     file_paths: List[str] = Field(default_factory=list, description="Local file paths")
     content_parts: List[Dict[str, Any]] = Field(default_factory=list, description="Ordered content parts")
+
+    @staticmethod
+    def _normalize_content_parts(content: Any) -> List[Dict[str, Any]]:
+        """Normalize AG-UI message content into ordered text/media parts."""
+        if isinstance(content, str):
+            return [{"type": "text", "content": content}] if content else []
+
+        if not isinstance(content, list):
+            return [{"type": "text", "content": str(content)}] if content not in (None, "") else []
+
+        parts: list[dict[str, Any]] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append({"type": "text", "content": item})
+                continue
+            if not isinstance(item, dict):
+                continue
+
+            part_type = str(item.get("type") or "").strip().lower()
+            if part_type in ("text", "input_text"):
+                text = item.get("text", item.get("content", ""))
+                if text:
+                    parts.append({"type": "text", "content": str(text)})
+                continue
+
+            url = item.get("url")
+            if not url and isinstance(item.get("image_url"), dict):
+                url = item["image_url"].get("url")
+            if not url:
+                url = item.get("path")
+
+            mime_type = item.get("mimeType") or item.get("mime_type") or item.get("mediaType")
+            if part_type in ("binary", "image", "image_url", "input_image") and url:
+                media_type = "image" if str(mime_type or "").lower().startswith("image/") or part_type != "binary" else "file"
+                normalized = {"type": media_type, "url": str(url)}
+                if mime_type:
+                    normalized["mime_type"] = str(mime_type)
+                parts.append(normalized)
+                continue
+
+            if part_type == "file" and url:
+                normalized = {"type": "file", "url": str(url)}
+                if mime_type:
+                    normalized["mime_type"] = str(mime_type)
+                parts.append(normalized)
+
+        return parts
+
+    def get_user_content_parts(self) -> List[Dict[str, Any]]:
+        """获取最后一条用户消息的有序内容部件。"""
+        for msg in reversed(self.messages):
+            if msg.get("role") == "user":
+                return self._normalize_content_parts(msg.get("content", ""))
+        return []
     
     def get_user_content(self) -> str:
         """获取最后一条用户消息内容"""
-        for msg in reversed(self.messages):
-            if msg.get("role") == "user":
-                return msg.get("content", "")
-        return ""
+        text_parts = [
+            str(part.get("content", ""))
+            for part in self.get_user_content_parts()
+            if part.get("type") == "text" and part.get("content")
+        ]
+        return "\n".join(text_parts)
     
     def get_username(self) -> Optional[str]:
         """从 forwardedProps 获取用户名"""
@@ -368,6 +425,7 @@ class AGUIRequest(BaseModel):
     
     def to_legacy_request(self) -> Dict[str, Any]:
         """转换为 Legacy 请求格式"""
+        content_parts = self.get_user_content_parts()
         result = {
             "user": self.get_username(),
             "content": self.get_user_content(),
@@ -376,6 +434,8 @@ class AGUIRequest(BaseModel):
             "msg_type": "text",
             "response_url": self.get_response_url() or "",
         }
+        if content_parts:
+            result["content_parts"] = content_parts
         # Include alias from forwardedProps if present
         alias = self.get_alias()
         if alias:

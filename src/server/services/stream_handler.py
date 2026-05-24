@@ -13,8 +13,8 @@ from typing import Any, Dict, Optional
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from ..models import RequestModel
 from src.runtime.events.agui import AGUIRequest
+from src.providers.base import RequestContext
 from ..config import settings
 from ..logger import get_logger
 from .observability import record_sampled_event, telemetry
@@ -46,7 +46,7 @@ class StreamHandler:
         resolved = reg.resolve_provider(request, body_dict)
         return resolved.name
 
-    def _get_executor(self, provider: str, request_model: RequestModel | None = None):
+    def _get_executor(self, provider: str, request_model: RequestContext | None = None):
         """Select executor for this request.
 
         Uses the centralized :mod:`src.providers.dispatcher` for provider
@@ -83,7 +83,7 @@ class StreamHandler:
 
     def _apply_model_with_change_detection(
         self,
-        request_model: RequestModel,
+        request_model: RequestContext,
         session_id: str,
         model_name: str,
         storage,
@@ -285,11 +285,25 @@ class StreamHandler:
 
 {conversation_history}"""
 
+    def _set_request_content(self, request_model: RequestContext, content: str) -> None:
+        """Update prompt text while preserving non-text AG-UI media parts."""
+        request_model.content = content
+        media_parts = [
+            part
+            for part in (getattr(request_model, "content_parts", None) or [])
+            if isinstance(part, dict) and part.get("type") != "text"
+        ]
+        request_model.content_parts = (
+            [{"type": "text", "content": content}] + media_parts
+            if media_parts
+            else []
+        )
+
     def _try_inline_handoff_auto(
         self,
         session_id: str,
         content: str,
-        request_model: RequestModel,
+        request_model: RequestContext,
     ) -> tuple[str, str | None, str] | None:
         """Try to handle ``/switch ... -a`` inline in the current request.
 
@@ -349,7 +363,10 @@ class StreamHandler:
             },
         )
 
-        request_model.content = self._prepare_handoff_prompt(session_id, effective_alias, context_mode=context_mode)
+        self._set_request_content(
+            request_model,
+            self._prepare_handoff_prompt(session_id, effective_alias, context_mode=context_mode),
+        )
         return (effective_alias, model_arg, context_mode)
 
     async def handle_agui_request(
@@ -369,25 +386,33 @@ class StreamHandler:
                 detail=f"Invalid AG-UI request: {str(e)}"
             )
         
-        legacy_data = agui_request.to_legacy_request()
-        for passthrough_key in ("cwd", "cwd_mode", "run_kind", "cli_session_id", "image_paths", "file_paths", "content_parts"):
-            if body_dict.get(passthrough_key) not in (None, "", [], {}):
-                legacy_data[passthrough_key] = body_dict.get(passthrough_key)
-        # Username is optional for AG-UI callers; use an internal default.
-        if not legacy_data.get("user"):
-            legacy_data["user"] = "anonymous"
-
         # Normalize session_id: AG-UI 可能传入空 threadId，需统一补齐，避免写入空会话
-        resolved_session_id = resolve_session_id(legacy_data.get("session_id") or agui_request.threadId)
-        legacy_data["session_id"] = resolved_session_id
+        resolved_session_id = resolve_session_id(agui_request.threadId)
 
-        request_model = RequestModel.model_validate(legacy_data)
-        request_model.session_id = resolved_session_id
-        for passthrough_key in ("cwd", "cwd_mode", "run_kind", "cli_session_id", "image_paths", "file_paths", "content_parts"):
-            if legacy_data.get(passthrough_key) not in (None, "", [], {}):
-                setattr(request_model, passthrough_key, legacy_data.get(passthrough_key))
-        requested_cwd_mode = str(legacy_data.get("cwd_mode") or body_dict.get("cwd_mode") or getattr(request_model, "cwd_mode", "") or "").strip()
-        requested_work_dir = str(legacy_data.get("cwd") or body_dict.get("cwd") or getattr(request_model, "cwd", "") or "").strip()
+        request_content_parts = (
+            list(agui_request.content_parts)
+            if agui_request.content_parts
+            else agui_request.get_user_content_parts()
+        )
+        request_model = RequestContext(
+            content=agui_request.get_user_content(),
+            user=agui_request.get_username() or "anonymous",
+            session_id=resolved_session_id,
+            exec_user=exec_user,
+            cwd=agui_request.cwd or body_dict.get("cwd"),
+            cwd_mode=agui_request.cwd_mode or body_dict.get("cwd_mode") or "",
+            run_kind=agui_request.run_kind or body_dict.get("run_kind") or "",
+            alias=agui_request.get_alias(),
+            cli_session_id=agui_request.cli_session_id or body_dict.get("cli_session_id") or None,
+            msg_id=agui_request.get_msg_id() or agui_request.runId,
+            response_url=agui_request.get_response_url() or "",
+            image_paths=list(agui_request.image_paths or body_dict.get("image_paths") or []),
+            file_paths=list(agui_request.file_paths or body_dict.get("file_paths") or []),
+            content_parts=request_content_parts,
+        )
+
+        requested_cwd_mode = str(body_dict.get("cwd_mode") or getattr(request_model, "cwd_mode", "") or "").strip()
+        requested_work_dir = str(body_dict.get("cwd") or getattr(request_model, "cwd", "") or "").strip()
         if requested_work_dir and requested_cwd_mode == "inplace":
             request_model.cwd = requested_work_dir
             request_model.cwd_mode = "inplace"
@@ -475,6 +500,7 @@ class StreamHandler:
             except Exception as e:
                 logger.warning(f"Failed to check workspace/switch provider/alias/exec_user: {e}")
 
+        request_model.exec_user = exec_user
         request_model.provider = provider
         request_model.agent_type = provider
         # Set alias on request_model so executors (e.g., GeminiExecutor) use the correct CLI command
@@ -541,8 +567,11 @@ class StreamHandler:
                     })
                     pending_context_mode = storage.get_handoff_pending_context_mode(session_id)
                     storage.clear_handoff_pending_summary(session_id)
-                    request_model.content = self._prepare_handoff_prompt(
-                        session_id, handoff_pending_target, context_mode=pending_context_mode
+                    self._set_request_content(
+                        request_model,
+                        self._prepare_handoff_prompt(
+                            session_id, handoff_pending_target, context_mode=pending_context_mode
+                        ),
                     )
             except Exception as e:
                 logger.warning(f"Failed to check pending handoff summary: {e}")
@@ -568,7 +597,7 @@ class StreamHandler:
                     bootstrap_context = storage.consume_history_bootstrap_context(session_id)
                     if bootstrap_context:
                         original_content = request_model.content
-                        request_model.content = f"""[History Bootstrap Context]
+                        self._set_request_content(request_model, f"""[History Bootstrap Context]
 
 以下是该会话从本地历史迁移到 Runtime 时注入的上下文摘要：
 
@@ -579,7 +608,7 @@ class StreamHandler:
 请基于以上历史上下文继续回答用户问题。
 
 用户的当前请求：
-{original_content}"""
+{original_content}""")
                         logger.info(
                             "Injected one-time history bootstrap context",
                             extra={"session_id": session_id, "context_length": len(bootstrap_context)},
@@ -646,7 +675,7 @@ class StreamHandler:
                         # Inject handoff context into user message (only if non-empty)
                         if handoff_context:
                             original_content = request_model.content
-                            request_model.content = f"""[Handoff Context - 从上一个 Agent 切换]
+                            self._set_request_content(request_model, f"""[Handoff Context - 从上一个 Agent 切换]
 
 以下是上一个 Agent 传递的上下文摘要：
 
@@ -657,7 +686,7 @@ class StreamHandler:
 请基于以上上下文继续工作。
 
 用户的当前请求：
-{original_content}"""
+{original_content}""")
             except Exception as e:
                 logger.warning(f"Failed to check switch context: {e}")
         
@@ -684,7 +713,13 @@ class StreamHandler:
         )
         
         # For AG-UI, content is required but user is not.
-        if not request_model.content:
+        has_user_input = bool(
+            (request_model.content or "").strip()
+            or getattr(request_model, "content_parts", None)
+            or getattr(request_model, "image_paths", None)
+            or getattr(request_model, "file_paths", None)
+        )
+        if not has_user_input:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Missing required field: content (or messages for AG-UI)"
@@ -708,7 +743,7 @@ class StreamHandler:
                 except Exception:
                     logger.debug("Failed to save cli_session_id from provider stream", exc_info=True)
 
-            request_model.on_cli_session_id = _remember_cli_session_id
+            request_model.metadata["on_cli_session_id"] = _remember_cli_session_id
         
         # 如果有 response_url 且 response_url_callback_enabled 已启用，进入超时回调模式
         # 默认关闭：即使有 response_url 也走标准 AG-UI 流式处理，不主动断连、不主动通告
@@ -768,7 +803,7 @@ class StreamHandler:
     async def _stream_agui_with_callback(
         self,
         request: Request,
-        request_model: RequestModel,
+        request_model: RequestContext,
         agui_request: AGUIRequest,
         adapter,
         exec_user: str,
