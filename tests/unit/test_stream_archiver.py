@@ -268,6 +268,33 @@ class TestOnRunStarted:
         messages = mock_storage.get_session_messages("session-123")
         assert len(messages) == 3
 
+    @pytest.mark.asyncio
+    async def test_on_run_started_stores_multimodal_user_content_as_text(self, archiver, mock_storage):
+        """AG-UI 多模态用户消息归档时应落成字符串，不能把 content list 传给 StoredMessage。"""
+        initial_messages = [
+            {
+                "id": "msg-image",
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "介绍一下这张图片"},
+                    {
+                        "type": "binary",
+                        "mimeType": "image/png",
+                        "url": "https://example.com/case.png",
+                    },
+                ],
+            }
+        ]
+
+        await archiver.on_run_started(initial_messages)
+
+        session = mock_storage.get_session_meta("session-123")
+        messages = mock_storage.get_session_messages("session-123")
+        assert session.title == "介绍一下这张图片\n{image: https://example.com/case.png}"
+        assert len(messages) == 1
+        assert messages[0].role == "user"
+        assert messages[0].content == "介绍一下这张图片\n{image: https://example.com/case.png}"
+
 
 class TestOnRunFinished:
     """Test on_run_finished method"""

@@ -104,6 +104,44 @@ class CodebuddyAGUIAdapter(BaseAdapter):
     def _generate_message_id(self) -> str:
         return f"codebuddy-msg-{uuid.uuid4().hex}"
 
+    def _sanitize_tool_result_text(self, text: str) -> str:
+        """Remove inline binary payloads from tool results before streaming."""
+        if not text:
+            return ""
+        return re.sub(
+            r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+",
+            "[image output omitted: inline data URL]",
+            text,
+        )
+
+    def _stringify_tool_result_content(self, output: Any) -> str:
+        """Convert provider tool result content into bounded text for AG-UI."""
+        if output is None:
+            return ""
+
+        if isinstance(output, list):
+            parts = []
+            for item in output:
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type == "text":
+                        parts.append(str(item.get("text", "")))
+                        continue
+                    if item_type == "image_url":
+                        image_url = item.get("image_url")
+                        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+                        if isinstance(url, str) and url.startswith("data:image/"):
+                            parts.append("[image output omitted: inline data URL]")
+                        elif url:
+                            parts.append(f"[image output: {url}]")
+                        else:
+                            parts.append("[image output omitted]")
+                        continue
+                parts.append(self._sanitize_tool_result_text(str(item)))
+            return "".join(parts)
+
+        return self._sanitize_tool_result_text(str(output))
+
     def convert(self, event: Dict[str, Any]) -> Optional[str]:
         if not self.state or not isinstance(event, dict):
             return None
@@ -221,17 +259,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                 if not self.state.current_message_id:
                     self.state.current_message_id = self._generate_message_id()
                     self.state.message_started = True
-                content_text = ""
-                if isinstance(output, list):
-                    parts = []
-                    for out_item in output:
-                        if isinstance(out_item, dict) and out_item.get("type") == "text":
-                            parts.append(out_item.get("text", ""))
-                        else:
-                            parts.append(str(out_item))
-                    content_text = "".join(parts)
-                else:
-                    content_text = "" if output is None else str(output)
+                content_text = self._stringify_tool_result_content(output)
                 results.append(
                     ToolCallResultEvent(
                         messageId=self.state.current_message_id,
@@ -308,7 +336,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
             if not self.state.current_message_id:
                 self.state.current_message_id = self._generate_message_id()
                 self.state.message_started = True
-            content = "" if output is None else str(output)
+            content = self._stringify_tool_result_content(output)
             results = [
                 ToolCallResultEvent(
                     messageId=self.state.current_message_id,

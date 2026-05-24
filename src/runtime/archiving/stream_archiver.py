@@ -75,6 +75,46 @@ class StreamArchiver:
         self._segment_sequence: int = 0
         self._last_text_content: str = ""  # Track text content before tool call
 
+    def _format_initial_message_content(self, content: Any) -> str:
+        """Render AG-UI text/multimodal message content into storable text."""
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return "" if content is None else str(content)
+
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in ("text", "input_text"):
+                text = item.get("text", item.get("content", ""))
+                if text:
+                    parts.append(str(text))
+                continue
+
+            url = item.get("url")
+            if not url and isinstance(item.get("image_url"), dict):
+                url = item["image_url"].get("url")
+            if not url:
+                url = item.get("path")
+
+            mime_type = str(item.get("mimeType") or item.get("mime_type") or "").lower()
+            if item_type in ("binary", "image", "image_url", "input_image") and url:
+                label = "image" if item_type != "binary" or mime_type.startswith("image/") else "file"
+                parts.append(f"{{{label}: {url}}}")
+                continue
+
+            if item_type == "file" and url:
+                parts.append(f"{{file: {url}}}")
+
+        return "\n".join(parts)
+
     async def on_run_started(self, initial_messages: Optional[List[Dict[str, Any]]] = None):
         """Called when a run starts
         
@@ -115,7 +155,7 @@ class StreamArchiver:
                 if initial_messages:
                     for msg in initial_messages:
                         if msg.get("role") == "user":
-                            content = msg.get("content", "")
+                            content = self._format_initial_message_content(msg.get("content", ""))
                             if content:
                                 # Use first 50 chars as title
                                 title = content[:50] + ("..." if len(content) > 50 else "")
@@ -170,7 +210,7 @@ class StreamArchiver:
                     stored_msg = StoredMessage(
                         id=msg_id,
                         role=role,
-                        content=msg.get("content", ""),
+                        content=self._format_initial_message_content(msg.get("content", "")),
                         status=MessageStatus.COMPLETE,
                     )
                     self._storage.add_session_message(self.session_id, stored_msg)

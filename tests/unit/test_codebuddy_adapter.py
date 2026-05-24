@@ -284,6 +284,38 @@ class TestToolResultEvent:
         assert end_event["type"] == "TOOL_CALL_END"
         assert end_event["toolCallId"] == "toolu_bdrk_01P9CDuNtb1JvRoJCf1y4RZg"
 
+    def test_tool_result_omits_inline_image_data_url(self, adapter):
+        """Read 图片返回的 data URL 不应原样透传到 SSE，避免阻塞上游桥接。"""
+        data_url = "data:image/png;base64," + ("A" * 4096)
+        event = {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-read-image",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": data_url},
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+
+        result = adapter.convert(event)
+        events = parse_sse_events(result)
+
+        result_event = events[0]
+        end_event = events[1]
+        assert result_event["type"] == "TOOL_CALL_RESULT"
+        assert end_event["type"] == "TOOL_CALL_END"
+        assert "data:image/png;base64" not in result_event["content"]
+        assert "data:image/png;base64" not in end_event["result"]
+        assert "[image output omitted" in result_event["content"]
+
 
 class TestErrorEvent:
     """测试错误事件转换"""
