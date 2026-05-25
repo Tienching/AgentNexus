@@ -944,6 +944,51 @@ class StreamHandler:
             "callback_sent": False,
             "start_time": time.time(),
         }
+        force_background_callback = bool(
+            getattr(request_model, "image_paths", None)
+            or getattr(request_model, "file_paths", None)
+            or any(
+                isinstance(part, dict) and part.get("type") != "text"
+                for part in (getattr(request_model, "content_parts", None) or [])
+            )
+        )
+        if force_background_callback:
+            stream_state["stream_timeout"] = True
+
+        def build_background_notice_events() -> list[str]:
+            from src.runtime.events.agui import (
+                MessageRole,
+                RunFinishedEvent,
+                TextMessageContentEvent,
+                TextMessageEndEvent,
+                TextMessageStartEvent,
+            )
+
+            timeout_msg = "\n\n---\n⏰ **处理时间较长，已转为后台处理**\n\n内容较多，为避免连接超时，已转为后台继续处理。处理完成后会将完整结果发送给您，请耐心等待。\n"
+            events: list[str] = []
+            if not adapter.state.message_started:
+                adapter.state.current_message_id = f"timeout-msg-{agui_request.runId}"
+                adapter.state.message_started = True
+                events.append(
+                    TextMessageStartEvent(
+                        messageId=adapter.state.current_message_id,
+                        role=MessageRole.ASSISTANT,
+                    ).to_sse()
+                )
+            events.append(
+                TextMessageContentEvent(
+                    messageId=adapter.state.current_message_id,
+                    delta=timeout_msg,
+                ).to_sse()
+            )
+            events.append(TextMessageEndEvent(messageId=adapter.state.current_message_id).to_sse())
+            events.append(
+                RunFinishedEvent(
+                    threadId=agui_request.threadId,
+                    runId=agui_request.runId,
+                ).to_sse()
+            )
+            return events
         
         async def send_callback_events_once() -> None:
             if not response_url or stream_state.get("callback_sent"):
@@ -1022,7 +1067,8 @@ class StreamHandler:
                                 if event_str.strip():
                                     stream_state["all_events"].append(event_str + '\n\n')
                             
-                            await message_queue.put(("events", converted))
+                            if not (stream_state["stream_timeout"] or stream_state["client_disconnected"]):
+                                await message_queue.put(("events", converted))
                     except json.JSONDecodeError:
                         logger.warning(f"AG-UI JSON decode error: {line[:200]}")
                         continue
@@ -1134,6 +1180,14 @@ class StreamHandler:
                 if start_event:
                     event_count += 1
                     yield start_event
+
+                if force_background_callback:
+                    logger.info("AG-UI media request switched to immediate response_url callback mode")
+                    callback_task = asyncio.create_task(send_callback_events_once())
+                    _track_background_callback_task(callback_task)
+                    for notice_event in build_background_notice_events():
+                        yield notice_event
+                    return
                 
                 while True:
                     elapsed_time = time.time() - stream_state["start_time"]
@@ -1145,47 +1199,8 @@ class StreamHandler:
                         callback_task = asyncio.create_task(send_callback_events_once())
                         _track_background_callback_task(callback_task)
                         
-                        # 发送超时提示
-                        timeout_msg = "\n\n---\n⏰ **处理时间较长，已转为后台处理**\n\n内容较多，为避免连接超时，已转为后台继续处理。处理完成后会将完整结果发送给您，请耐心等待。\n"
-                        
-                        from src.runtime.events.agui import (
-                            TextMessageContentEvent,
-                            TextMessageEndEvent,
-                            RunFinishedEvent,
-                        )
-                        
-                        # 确保有消息 ID
-                        if not adapter.state.message_started:
-                            adapter.state.current_message_id = f"timeout-msg-{agui_request.runId}"
-                            adapter.state.message_started = True
-                            from src.runtime.events.agui import (
-                                TextMessageStartEvent,
-                                MessageRole,
-                            )
-                            msg_start = TextMessageStartEvent(
-                                messageId=adapter.state.current_message_id,
-                                role=MessageRole.ASSISTANT
-                            )
-                            yield msg_start.to_sse()
-                        
-                        # 发送超时提示内容
-                        content_event = TextMessageContentEvent(
-                            messageId=adapter.state.current_message_id,
-                            delta=timeout_msg
-                        )
-                        yield content_event.to_sse()
-                        
-                        # 发送消息结束
-                        msg_end = TextMessageEndEvent(messageId=adapter.state.current_message_id)
-                        yield msg_end.to_sse()
-                        
-                        # 发送运行结束
-                        run_finished = RunFinishedEvent(
-                            threadId=agui_request.threadId,
-                            runId=agui_request.runId
-                        )
-                        yield run_finished.to_sse()
-                        
+                        for notice_event in build_background_notice_events():
+                            yield notice_event
                         return
                     
                     # 检查客户端断开
