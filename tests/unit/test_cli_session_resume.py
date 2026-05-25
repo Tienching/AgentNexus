@@ -148,6 +148,18 @@ class TestCodebuddyProviderSessionResume:
         assert "@/tmp/agui-case.png" in " ".join(cmd)
         assert "{image:" not in " ".join(cmd)
 
+    def test_unlocalized_http_image_url_is_not_rendered_as_codebuddy_reference(self, executor):
+        """CodeBuddy image references should stay local filesystem paths."""
+        ctx = _make_context("Describe this image")
+        ctx.content_parts = [
+            {"type": "text", "content": "Describe this image"},
+            {"type": "image", "url": "https://example.com/agui-case.png"},
+        ]
+        command = " ".join(executor._build_command(ctx))
+        assert "Describe this image" in command
+        assert "https://example.com/agui-case.png" not in command
+        assert "@https://" not in command
+
     def test_session_id_used_for_default_non_inplace_continue(self, executor):
         """Non-inplace CodeBuddy runs should still restore the bound CLI session."""
         ctx = _make_context("Hello", run_kind="",

@@ -36,6 +36,14 @@ def _env_default_model() -> str:
     ).strip()
 
 
+def _is_local_reference(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not value.startswith(("http://", "https://", "data:"))
+    )
+
+
 def _assemble_codebuddy_prompt(
     content: str,
     *,
@@ -56,7 +64,7 @@ def _assemble_codebuddy_prompt(
                 assembled.append(str(part.get("content", "")))
             elif part_type == "image":
                 path = part.get("path") or part.get("url") or ""
-                if path:
+                if _is_local_reference(path):
                     assembled.append(f"@{path}")
             elif part_type == "file":
                 path = part.get("path") or part.get("url") or ""
@@ -66,7 +74,7 @@ def _assemble_codebuddy_prompt(
 
     prefix_parts: list[str] = []
     for path in image_paths or []:
-        if path:
+        if _is_local_reference(path):
             prefix_parts.append(f"@{path}")
     for path in file_paths or []:
         if path:

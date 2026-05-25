@@ -256,9 +256,9 @@ class TestStreamResponse:
 
         with (
             patch(
-                "src.server.services.stream_handler.download_images",
-                new=AsyncMock(return_value=["/tmp/agui-case.png"]),
-            ) as mock_download_images,
+                "src.server.services.stream_handler.download_images_with_sources",
+                new=AsyncMock(return_value=[({"url": image_url}, "/tmp/agui-case.png")]),
+            ) as mock_download_image_pairs,
             patch("asyncio.create_subprocess_exec") as mock_subprocess,
         ):
             mock_process = AsyncMock()
@@ -280,9 +280,9 @@ class TestStreamResponse:
                             events.append(json.loads(data_str))
 
         command = " ".join(str(arg) for arg in mock_subprocess.call_args.args)
-        mock_download_images.assert_awaited_once()
+        mock_download_image_pairs.assert_awaited_once()
         assert "介绍一下这张图片" in command
-        assert "{image: /tmp/agui-case.png}" in command
+        assert "@/tmp/agui-case.png" in command
         assert image_url not in command
         assert any(event.get("type") == "RUN_FINISHED" for event in events)
 
@@ -325,8 +325,8 @@ class TestStreamResponse:
 
         with (
             patch(
-                "src.server.services.stream_handler.download_images",
-                new=AsyncMock(return_value=["/tmp/agui-quick-case.png"]),
+                "src.server.services.stream_handler.download_images_with_sources",
+                new=AsyncMock(return_value=[({"url": image_url}, "/tmp/agui-quick-case.png")]),
             ),
             patch("asyncio.create_subprocess_exec") as mock_subprocess,
             patch.object(stream_handler_module.settings, "response_url_callback_enabled", True),
@@ -414,8 +414,8 @@ class TestStreamResponse:
 
         with (
             patch(
-                "src.server.services.stream_handler.download_images",
-                new=AsyncMock(return_value=["/tmp/agui-slow-case.png"]),
+                "src.server.services.stream_handler.download_images_with_sources",
+                new=AsyncMock(return_value=[({"url": image_url}, "/tmp/agui-slow-case.png")]),
             ),
             patch("asyncio.create_subprocess_exec") as mock_subprocess,
             patch.object(stream_handler_module.settings, "response_url_callback_enabled", True),

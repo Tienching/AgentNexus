@@ -25,6 +25,7 @@ dependencies = [
     "chardet>=3.0.2",
     "ddgs>=9.5.5",
     "readability-lxml>=0.8.4",
+    "pillow>=11.0.0",
 ]
 
 [project.scripts]

@@ -22,7 +22,7 @@ from .observability import record_sampled_event, telemetry
 from ..providers import get_provider_registry
 from ..utils.ids import resolve_session_id
 from .callback_handler import CallbackHandler
-from .media_downloader import download_images
+from .media_downloader import download_images_with_sources, prepare_image_for_cli
 from .stream_archiver import create_archiver
 from .session_storage import get_session_storage
 from src.providers.dispatcher import (
@@ -327,8 +327,6 @@ class StreamHandler:
             and isinstance(part.get("url"), str)
             and part["url"].startswith(("http://", "https://"))
         ]
-        if not image_items:
-            return
 
         session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
         dest_dir: str | None = None
@@ -341,46 +339,63 @@ class StreamHandler:
                 extra={"session_id": session_id},
             )
 
-        try:
-            image_paths = await download_images(
-                image_items,
-                dest_dir=dest_dir,
-                session_id=session_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                f"AG-UI image download failed: {exc}",
-                extra={"session_id": session_id},
-            )
-            return
+        image_pairs: list[tuple[dict[str, Any], str]] = []
+        if image_items:
+            try:
+                image_pairs = await download_images_with_sources(
+                    image_items,
+                    dest_dir=dest_dir,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"AG-UI image download failed: {exc}",
+                    extra={"session_id": session_id},
+                )
 
-        if not image_paths:
-            return
-
-        url_to_path = {
-            item["url"]: path
-            for item, path in zip(image_items, image_paths)
-        }
+        url_to_path = {item["url"]: path for item, path in image_pairs}
         localized_parts: list[dict[str, Any]] = []
+        prepared_part_paths: list[str] = []
         for part in content_parts:
-            if part.get("type") == "image" and part.get("url") in url_to_path:
-                localized = dict(part)
-                localized["path"] = url_to_path[part["url"]]
-                localized_parts.append(localized)
-            else:
-                localized_parts.append(part)
+            localized = dict(part)
+            if localized.get("type") == "image" and localized.get("url") in url_to_path:
+                localized["path"] = url_to_path[localized["url"]]
+
+            candidate = localized.get("path")
+            if not candidate:
+                url = localized.get("url")
+                if isinstance(url, str) and not url.startswith(("http://", "https://", "data:")):
+                    candidate = url
+
+            if isinstance(candidate, str) and candidate:
+                prepared = await asyncio.to_thread(prepare_image_for_cli, candidate)
+                if prepared:
+                    localized["path"] = prepared
+                    prepared_part_paths.append(prepared)
+
+            localized_parts.append(localized)
 
         request_model.content_parts = localized_parts
-        existing_paths = [
-            path
-            for path in (getattr(request_model, "image_paths", None) or [])
-            if not (isinstance(path, str) and path.startswith(("http://", "https://")))
-        ]
-        request_model.image_paths = existing_paths + image_paths
-        logger.info(
-            f"AG-UI downloaded {len(image_paths)} image(s)",
-            extra={"session_id": session_id},
-        )
+
+        existing_paths: list[str] = []
+        for path in getattr(request_model, "image_paths", None) or []:
+            if not isinstance(path, str) or path.startswith(("http://", "https://", "data:")):
+                continue
+            prepared = await asyncio.to_thread(prepare_image_for_cli, path)
+            if prepared:
+                existing_paths.append(prepared)
+
+        merged_paths: list[str] = []
+        for path in [*existing_paths, *prepared_part_paths]:
+            if path not in merged_paths:
+                merged_paths.append(path)
+        request_model.image_paths = merged_paths
+
+        if image_pairs:
+            logger.info(
+                f"AG-UI downloaded {len(image_pairs)} image(s)",
+                extra={"session_id": session_id},
+            )
 
     def _try_inline_handoff_auto(
         self,
