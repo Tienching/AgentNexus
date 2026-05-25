@@ -25,9 +25,10 @@ class ServerSettings(BaseSettings):
 
     # Response URL 超时回调配置
     # 当启用时，AGUI 请求带有 response_url 会进入超时回调模式：
-    # SSE 流在 5分30秒时主动断开，剩余内容通过 response_url 回调发送。
+    # SSE 流在同步窗口内主动结束，后台继续处理，剩余内容通过 response_url 回调发送。
     # 默认关闭：即使有 response_url 也走标准 AG-UI 流式处理，不主动断连、不主动通告。
     response_url_callback_enabled: bool = False
+    response_url_stream_timeout_seconds: float = 25.0
 
     # 调试模式
     debug: bool = False

@@ -34,6 +34,13 @@ from src.runtime.streaming import StreamOrchestrator
 
 logger = get_logger(__name__)
 
+_background_callback_tasks: set[asyncio.Task] = set()
+
+
+def _track_background_callback_task(task: asyncio.Task) -> None:
+    _background_callback_tasks.add(task)
+    task.add_done_callback(_background_callback_tasks.discard)
+
 
 class StreamHandler:
     """流式处理器 - 统一使用 AG-UI 协议"""
@@ -892,10 +899,17 @@ class StreamHandler:
     ) -> StreamingResponse:
         """支持超时回调的 AG-UI 流式处理
         
-        在 5分30秒 时发送超时提示并结束 SSE 流，
+        在同步窗口内发送后台化提示并结束 SSE 流，
         后台继续收集 CLI 回复，完成后通过 response_url 发送剩余结果。
         """
-        STREAM_TIMEOUT = 330  # 5分30秒
+        try:
+            stream_timeout = float(
+                getattr(settings, "response_url_stream_timeout_seconds", 25.0) or 25.0
+            )
+        except (TypeError, ValueError):
+            stream_timeout = 25.0
+        if stream_timeout <= 0:
+            stream_timeout = 25.0
         
         response_url = agui_request.get_response_url()
         msg_id = agui_request.get_msg_id()
@@ -927,9 +941,45 @@ class StreamHandler:
             "all_events": [],      # 所有 AG-UI 事件
             "sent_count": 0,       # 已发送的事件数
             "producer_done": False,
+            "callback_sent": False,
             "start_time": time.time(),
         }
         
+        async def send_callback_events_once() -> None:
+            if not response_url or stream_state.get("callback_sent"):
+                return
+
+            if stream_state["stream_timeout"] or stream_state["client_disconnected"]:
+                callback_events = stream_state["all_events"][stream_state["sent_count"]:]
+                label = "remaining"
+            elif handoff_pending_target:
+                callback_events = stream_state["all_events"]
+                label = "all (switch)"
+            else:
+                return
+
+            if not callback_events:
+                return
+
+            stream_state["callback_sent"] = True
+            logger.info(
+                f"Sending {label} AG-UI events via callback",
+                extra={
+                    "event_count": len(callback_events),
+                    "total_count": len(stream_state["all_events"]),
+                }
+            )
+            await self.callback_handler.send_agui_callback(
+                response_url,
+                callback_events,
+                {
+                    "user": request_model.user,
+                    "msg_id": msg_id or request_model.msg_id,
+                    "session_id": request_model.session_id,
+                    "content": request_model.content,
+                }
+            )
+
         async def producer():
             """后台生产者：执行 CLI 并收集事件"""
             summary_text_parts = [] if handoff_pending_target else None
@@ -1068,40 +1118,12 @@ class StreamHandler:
                     await archiver.on_run_finished()
                 
                 # Send results via response_url callback.
-                # - Timeout / disconnect: send unsent (remaining) events.
-                # - Handoff summary flow (normal completion): send ALL events
-                #   so the enterprise WeChat user sees the handoff notification.
-                if response_url and stream_state["all_events"]:
-                    if stream_state["stream_timeout"] or stream_state["client_disconnected"]:
-                        callback_events = stream_state["all_events"][stream_state["sent_count"]:]
-                        label = "remaining"
-                    elif handoff_pending_target:
-                        callback_events = stream_state["all_events"]
-                        label = "all (switch)"
-                    else:
-                        callback_events = None
-                        label = None
-
-                    if callback_events:
-                        logger.info(
-                            f"Sending {label} AG-UI events via callback",
-                            extra={
-                                "event_count": len(callback_events),
-                                "total_count": len(stream_state["all_events"]),
-                            }
-                        )
-                        await self.callback_handler.send_agui_callback(
-                            response_url,
-                            callback_events,
-                            {
-                                "user": request_model.user,
-                                "msg_id": msg_id or request_model.msg_id,
-                                "session_id": request_model.session_id,
-                                "content": request_model.content,
-                            }
-                        )
+                # Producer completion and SSE timeout can race, so both sides call
+                # the same one-shot helper.
+                await send_callback_events_once()
         
-        _producer_task = asyncio.create_task(producer())
+        producer_task = asyncio.create_task(producer())
+        _track_background_callback_task(producer_task)
         
         async def generate():
             """生成 AG-UI SSE 流"""
@@ -1117,9 +1139,11 @@ class StreamHandler:
                     elapsed_time = time.time() - stream_state["start_time"]
                     
                     # 超时检查
-                    if elapsed_time >= STREAM_TIMEOUT:
+                    if elapsed_time >= stream_timeout:
                         logger.info("AG-UI stream timeout reached, switching to background processing")
                         stream_state["stream_timeout"] = True
+                        callback_task = asyncio.create_task(send_callback_events_once())
+                        _track_background_callback_task(callback_task)
                         
                         # 发送超时提示
                         timeout_msg = "\n\n---\n⏰ **处理时间较长，已转为后台处理**\n\n内容较多，为避免连接超时，已转为后台继续处理。处理完成后会将完整结果发送给您，请耐心等待。\n"
@@ -1168,13 +1192,19 @@ class StreamHandler:
                     if await request.is_disconnected():
                         logger.info("AG-UI client disconnected during streaming")
                         stream_state["client_disconnected"] = True
+                        callback_task = asyncio.create_task(send_callback_events_once())
+                        _track_background_callback_task(callback_task)
                         return
                     
-                    # 获取消息
+                    # 获取消息；等待时间不能越过后台化阈值，否则慢请求会错过
+                    # response_url 兜底窗口。
+                    queue_wait_timeout = min(1.0, max(0.0, stream_timeout - elapsed_time))
+                    if queue_wait_timeout <= 0:
+                        continue
                     try:
                         msg_type, msg_data = await asyncio.wait_for(
                             message_queue.get(),
-                            timeout=1.0
+                            timeout=queue_wait_timeout
                         )
                     except asyncio.TimeoutError:
                         continue

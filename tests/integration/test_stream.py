@@ -284,3 +284,119 @@ class TestStreamResponse:
         assert "{image: /tmp/agui-case.png}" in command
         assert image_url not in command
         assert any(event.get("type") == "RUN_FINISHED" for event in events)
+
+
+    @pytest.mark.asyncio
+    async def test_agui_media_response_url_times_out_to_background_callback(self, client: AsyncClient):
+        """带 response_url 的慢读图请求应在同步窗口内转后台，并用 callback 发最终结果。"""
+        from src.server.services import stream_handler as stream_handler_module
+
+        image_url = "https://example.com/slow-case.png"
+        callback_url = "https://example.com/response-url"
+        agui_request = {
+            "threadId": "thread-media-callback",
+            "runId": "run-media-callback",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "介绍一下这张图片"},
+                        {"type": "binary", "mimeType": "image/png", "url": image_url},
+                    ],
+                }
+            ],
+            "forwardedProps": {
+                "username": "jonaszchen",
+                "provider": "codebuddy",
+                "rawCallback": {
+                    "response_url": callback_url,
+                    "msgid": "msg-media-callback",
+                },
+            },
+        }
+        mock_cli_output = [
+            json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "图片回调完成"}]},
+            }),
+            json.dumps({"type": "result", "subtype": "success"}),
+        ]
+        output_lines = [(line + "\n").encode() for line in mock_cli_output] + [b""]
+        first_read = True
+
+        async def delayed_readline():
+            nonlocal first_read
+            if first_read:
+                first_read = False
+                await asyncio.sleep(0.12)
+            return output_lines.pop(0)
+
+        callback_mock = AsyncMock(return_value=True)
+        had_timeout_setting = hasattr(
+            stream_handler_module.settings,
+            "response_url_stream_timeout_seconds",
+        )
+        original_timeout_setting = getattr(
+            stream_handler_module.settings,
+            "response_url_stream_timeout_seconds",
+            None,
+        )
+        object.__setattr__(
+            stream_handler_module.settings,
+            "response_url_stream_timeout_seconds",
+            0.05,
+        )
+
+        try:
+            with (
+                patch(
+                    "src.server.services.stream_handler.download_images",
+                    new=AsyncMock(return_value=["/tmp/agui-slow-case.png"]),
+                ),
+                patch("asyncio.create_subprocess_exec") as mock_subprocess,
+                patch.object(stream_handler_module.settings, "response_url_callback_enabled", True),
+                patch(
+                    "src.server.services.stream_handler.CallbackHandler.send_agui_callback",
+                    callback_mock,
+                ),
+            ):
+                mock_process = AsyncMock()
+                mock_process.stdout.readline = AsyncMock(side_effect=delayed_readline)
+                mock_process.stderr.read = AsyncMock(return_value=b"")
+                mock_process.wait.return_value = None
+                mock_subprocess.return_value = mock_process
+
+                async with client.stream("POST", "/chat/stream/testuser", json=agui_request) as response:
+                    assert response.status_code == 200
+
+                    events = []
+                    async for line in response.aiter_lines():
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            if data_str:
+                                events.append(json.loads(data_str))
+
+                await asyncio.sleep(0.3)
+        finally:
+            if had_timeout_setting:
+                object.__setattr__(
+                    stream_handler_module.settings,
+                    "response_url_stream_timeout_seconds",
+                    original_timeout_setting,
+                )
+            else:
+                object.__delattr__(
+                    stream_handler_module.settings,
+                    "response_url_stream_timeout_seconds",
+                )
+
+        streamed_content = "".join(
+            event.get("delta", "")
+            for event in events
+            if event.get("type") == "TEXT_MESSAGE_CONTENT"
+        )
+        assert "已转为后台继续处理" in streamed_content
+        callback_mock.assert_awaited_once()
+        callback_args = callback_mock.await_args.args
+        assert callback_args[0] == callback_url
+        assert any("图片回调完成" in event for event in callback_args[1])
