@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException, Request, status
@@ -21,6 +22,7 @@ from .observability import record_sampled_event, telemetry
 from ..providers import get_provider_registry
 from ..utils.ids import resolve_session_id
 from .callback_handler import CallbackHandler
+from .media_downloader import download_images
 from .stream_archiver import create_archiver
 from .session_storage import get_session_storage
 from src.providers.dispatcher import (
@@ -299,6 +301,80 @@ class StreamHandler:
             else []
         )
 
+    async def _localize_agui_image_parts(
+        self,
+        request_model: RequestContext,
+        session_id: str,
+        exec_user: str,
+    ) -> None:
+        """Download AG-UI image URLs so the CLI receives local image paths."""
+        content_parts = [
+            part
+            for part in (getattr(request_model, "content_parts", None) or [])
+            if isinstance(part, dict)
+        ]
+        image_items = [
+            {"url": part["url"], "mime_type": part.get("mime_type")}
+            for part in content_parts
+            if part.get("type") == "image"
+            and isinstance(part.get("url"), str)
+            and part["url"].startswith(("http://", "https://"))
+        ]
+        if not image_items:
+            return
+
+        session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
+        dest_dir: str | None = None
+        try:
+            session_dir.mkdir(parents=True, exist_ok=True)
+            dest_dir = str(session_dir)
+        except OSError as exc:
+            logger.warning(
+                f"AG-UI image session directory unavailable, using fallback: {exc}",
+                extra={"session_id": session_id},
+            )
+
+        try:
+            image_paths = await download_images(
+                image_items,
+                dest_dir=dest_dir,
+                session_id=session_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"AG-UI image download failed: {exc}",
+                extra={"session_id": session_id},
+            )
+            return
+
+        if not image_paths:
+            return
+
+        url_to_path = {
+            item["url"]: path
+            for item, path in zip(image_items, image_paths)
+        }
+        localized_parts: list[dict[str, Any]] = []
+        for part in content_parts:
+            if part.get("type") == "image" and part.get("url") in url_to_path:
+                localized = dict(part)
+                localized["path"] = url_to_path[part["url"]]
+                localized_parts.append(localized)
+            else:
+                localized_parts.append(part)
+
+        request_model.content_parts = localized_parts
+        existing_paths = [
+            path
+            for path in (getattr(request_model, "image_paths", None) or [])
+            if not (isinstance(path, str) and path.startswith(("http://", "https://")))
+        ]
+        request_model.image_paths = existing_paths + image_paths
+        logger.info(
+            f"AG-UI downloaded {len(image_paths)} image(s)",
+            extra={"session_id": session_id},
+        )
+
     def _try_inline_handoff_auto(
         self,
         session_id: str,
@@ -410,6 +486,7 @@ class StreamHandler:
             file_paths=list(agui_request.file_paths or body_dict.get("file_paths") or []),
             content_parts=request_content_parts,
         )
+        await self._localize_agui_image_parts(request_model, resolved_session_id, exec_user)
 
         requested_cwd_mode = str(body_dict.get("cwd_mode") or getattr(request_model, "cwd_mode", "") or "").strip()
         requested_work_dir = str(body_dict.get("cwd") or getattr(request_model, "cwd", "") or "").strip()

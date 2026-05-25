@@ -253,7 +253,13 @@ class TestStreamResponse:
             json.dumps({"type": "result", "subtype": "success"}),
         ]
 
-        with patch("asyncio.create_subprocess_exec") as mock_subprocess:
+        with (
+            patch(
+                "src.server.services.stream_handler.download_images",
+                new=AsyncMock(return_value=["/tmp/agui-case.png"]),
+            ) as mock_download_images,
+            patch("asyncio.create_subprocess_exec") as mock_subprocess,
+        ):
             mock_process = AsyncMock()
             mock_process.stdout.readline = AsyncMock(
                 side_effect=[(line + "\n").encode() for line in mock_cli_output] + [b""]
@@ -273,6 +279,8 @@ class TestStreamResponse:
                             events.append(json.loads(data_str))
 
         command = " ".join(str(arg) for arg in mock_subprocess.call_args.args)
+        mock_download_images.assert_awaited_once()
         assert "介绍一下这张图片" in command
-        assert f"{{image: {image_url}}}" in command
+        assert "{image: /tmp/agui-case.png}" in command
+        assert image_url not in command
         assert any(event.get("type") == "RUN_FINISHED" for event in events)
