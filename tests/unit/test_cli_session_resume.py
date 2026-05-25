@@ -131,6 +131,22 @@ class TestCodebuddyProviderSessionResume:
         assert "--resume" not in cmd
         assert "-c" not in cmd
 
+    def test_media_input_starts_fresh_even_with_session_id(self, executor):
+        """Image/file prompts should avoid resuming old CodeBuddy context."""
+        ctx = _make_context(
+            "Describe this image",
+            run_kind="chat_continue",
+            cli_session_id=TEST_SESSION_UUID,
+        )
+        ctx.content_parts = [
+            {"type": "text", "content": "Describe this image"},
+            {"type": "image", "path": "/tmp/agui-case.png"},
+        ]
+        cmd = executor._build_command(ctx)
+        assert "-r" not in cmd
+        assert "-c" not in cmd
+        assert "{image: /tmp/agui-case.png}" in " ".join(cmd)
+
     def test_session_id_used_for_default_non_inplace_continue(self, executor):
         """Non-inplace CodeBuddy runs should still restore the bound CLI session."""
         ctx = _make_context("Hello", run_kind="",

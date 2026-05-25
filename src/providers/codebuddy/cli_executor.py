@@ -193,6 +193,17 @@ class CodebuddyCLIExecutor(BaseExecutor):
         cli_session_id = (getattr(context, "cli_session_id", None) or "").strip() or None
         session_cleared = getattr(context, "session_cleared", False)
         is_clear = cleaned_content.lower() == "/clear"
+        has_media_input = bool(
+            getattr(context, "image_paths", None)
+            or getattr(context, "file_paths", None)
+            or [
+                part
+                for part in (getattr(context, "content_parts", None) or [])
+                if isinstance(part, dict) and part.get("type") != "text"
+            ]
+        )
+        if has_media_input:
+            use_continue = False
         message = "你好" if is_clear else assemble_cli_prompt(
             cleaned_content,
             image_paths=getattr(context, "image_paths", None) or None,
