@@ -29,6 +29,7 @@ class ServerSettings(BaseSettings):
     # 默认关闭：即使有 response_url 也走标准 AG-UI 流式处理，不主动断连、不主动通告。
     response_url_callback_enabled: bool = False
     response_url_stream_timeout_seconds: float = 25.0
+    response_url_stream_progress_notices: int = 2
 
     # 调试模式
     debug: bool = False

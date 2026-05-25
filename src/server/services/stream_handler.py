@@ -910,6 +910,12 @@ class StreamHandler:
             stream_timeout = 25.0
         if stream_timeout <= 0:
             stream_timeout = 25.0
+        try:
+            progress_notice_limit = int(getattr(settings, "response_url_stream_progress_notices", 2) or 0)
+        except (TypeError, ValueError):
+            progress_notice_limit = 2
+        if progress_notice_limit < 0:
+            progress_notice_limit = 0
         
         response_url = agui_request.get_response_url()
         msg_id = agui_request.get_msg_id()
@@ -937,6 +943,7 @@ class StreamHandler:
         
         stream_state = {
             "client_disconnected": False,
+            "progress_notices_sent": 0,
             "stream_timeout": False,
             "all_events": [],      # 所有 AG-UI 事件
             "sent_count": 0,       # 已发送的事件数
@@ -944,7 +951,7 @@ class StreamHandler:
             "callback_sent": False,
             "start_time": time.time(),
         }
-        force_background_callback = bool(
+        has_media_input = bool(
             getattr(request_model, "image_paths", None)
             or getattr(request_model, "file_paths", None)
             or any(
@@ -952,8 +959,6 @@ class StreamHandler:
                 for part in (getattr(request_model, "content_parts", None) or [])
             )
         )
-        if force_background_callback:
-            stream_state["stream_timeout"] = True
 
         def build_background_notice_events() -> list[str]:
             from src.runtime.events.agui import (
@@ -964,7 +969,7 @@ class StreamHandler:
                 TextMessageStartEvent,
             )
 
-            timeout_msg = "\n\n---\n⏰ **处理时间较长，已转为后台处理**\n\n内容较多，为避免连接超时，已转为后台继续处理。处理完成后会将完整结果发送给您，请耐心等待。\n"
+            timeout_msg = "\n\n---\n⏰ **处理时间较长，已转为后台处理**\n\n已连续等待多轮仍未完成，为避免连接超时，已转为后台继续处理。处理完成后会将完整结果发送给您，请耐心等待。\n"
             events: list[str] = []
             if not adapter.state.message_started:
                 adapter.state.current_message_id = f"timeout-msg-{agui_request.runId}"
@@ -990,6 +995,35 @@ class StreamHandler:
             )
             return events
         
+        def build_progress_notice_events() -> list[str]:
+            from src.runtime.events.agui import (
+                MessageRole,
+                TextMessageContentEvent,
+                TextMessageEndEvent,
+                TextMessageStartEvent,
+            )
+
+            notice_index = int(stream_state["progress_notices_sent"])
+            waited_seconds = int(stream_timeout * notice_index)
+            subject = "图片" if has_media_input else "请求"
+            message_id = f"progress-msg-{agui_request.runId}-{notice_index}"
+            progress_msg = (
+                f"\n\n---\n⏳ **{subject}还在处理中**\n\n"
+                f"已处理约 {waited_seconds} 秒，系统仍在继续执行。"
+                f"有结果会立即返回；若连续多轮仍未完成，会自动转为后台处理。\n"
+            )
+            return [
+                TextMessageStartEvent(
+                    messageId=message_id,
+                    role=MessageRole.ASSISTANT,
+                ).to_sse(),
+                TextMessageContentEvent(
+                    messageId=message_id,
+                    delta=progress_msg,
+                ).to_sse(),
+                TextMessageEndEvent(messageId=message_id).to_sse(),
+            ]
+
         async def send_callback_events_once() -> None:
             if not response_url or stream_state.get("callback_sent"):
                 return
@@ -1181,20 +1215,27 @@ class StreamHandler:
                     event_count += 1
                     yield start_event
 
-                if force_background_callback:
-                    logger.info("AG-UI media request switched to immediate response_url callback mode")
-                    callback_task = asyncio.create_task(send_callback_events_once())
-                    _track_background_callback_task(callback_task)
-                    for notice_event in build_background_notice_events():
-                        yield notice_event
-                    return
-                
                 while True:
                     elapsed_time = time.time() - stream_state["start_time"]
+                    next_notice_deadline = stream_timeout * (
+                        int(stream_state["progress_notices_sent"]) + 1
+                    )
                     
                     # 超时检查
-                    if elapsed_time >= stream_timeout:
-                        logger.info("AG-UI stream timeout reached, switching to background processing")
+                    if elapsed_time >= next_notice_deadline:
+                        if int(stream_state["progress_notices_sent"]) < progress_notice_limit:
+                            stream_state["progress_notices_sent"] = (
+                                int(stream_state["progress_notices_sent"]) + 1
+                            )
+                            logger.info(
+                                "AG-UI stream progress notice emitted before background fallback",
+                                extra={"notice_count": stream_state["progress_notices_sent"]},
+                            )
+                            for notice_event in build_progress_notice_events():
+                                yield notice_event
+                            continue
+
+                        logger.info("AG-UI stream progress notices exhausted, switching to background processing")
                         stream_state["stream_timeout"] = True
                         callback_task = asyncio.create_task(send_callback_events_once())
                         _track_background_callback_task(callback_task)
@@ -1213,7 +1254,7 @@ class StreamHandler:
                     
                     # 获取消息；等待时间不能越过后台化阈值，否则慢请求会错过
                     # response_url 兜底窗口。
-                    queue_wait_timeout = min(1.0, max(0.0, stream_timeout - elapsed_time))
+                    queue_wait_timeout = min(1.0, max(0.0, next_notice_deadline - elapsed_time))
                     if queue_wait_timeout <= 0:
                         continue
                     try:

@@ -3,6 +3,7 @@
 import pytest
 import json
 import asyncio
+import time
 import warnings
 from unittest.mock import patch, AsyncMock
 from httpx import AsyncClient
@@ -285,10 +286,88 @@ class TestStreamResponse:
         assert image_url not in command
         assert any(event.get("type") == "RUN_FINISHED" for event in events)
 
+    @pytest.mark.asyncio
+    async def test_agui_media_response_url_streams_quick_result_without_background_notice(self, client: AsyncClient):
+        """图片请求应先正常处理；快速完成时不应直接转后台。"""
+        from src.server.services import stream_handler as stream_handler_module
+
+        image_url = "https://example.com/quick-case.png"
+        callback_url = "https://example.com/response-url"
+        agui_request = {
+            "threadId": "thread-media-quick",
+            "runId": "run-media-quick",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "介绍一下这张图片"},
+                        {"type": "binary", "mimeType": "image/png", "url": image_url},
+                    ],
+                }
+            ],
+            "forwardedProps": {
+                "username": "jonaszchen",
+                "provider": "codebuddy",
+                "rawCallback": {
+                    "response_url": callback_url,
+                    "msgid": "msg-media-quick",
+                },
+            },
+        }
+        mock_cli_output = [
+            json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "图片快速完成"}]},
+            }),
+            json.dumps({"type": "result", "subtype": "success"}),
+        ]
+        callback_mock = AsyncMock(return_value=True)
+
+        with (
+            patch(
+                "src.server.services.stream_handler.download_images",
+                new=AsyncMock(return_value=["/tmp/agui-quick-case.png"]),
+            ),
+            patch("asyncio.create_subprocess_exec") as mock_subprocess,
+            patch.object(stream_handler_module.settings, "response_url_callback_enabled", True),
+            patch.object(stream_handler_module.settings, "response_url_stream_timeout_seconds", 1.0),
+            patch(
+                "src.server.services.stream_handler.CallbackHandler.send_agui_callback",
+                callback_mock,
+            ),
+        ):
+            mock_process = AsyncMock()
+            mock_process.stdout.readline = AsyncMock(
+                side_effect=[(line + "\n").encode() for line in mock_cli_output] + [b""]
+            )
+            mock_process.stderr.read = AsyncMock(return_value=b"")
+            mock_process.wait.return_value = None
+            mock_subprocess.return_value = mock_process
+
+            async with client.stream("POST", "/chat/stream/testuser", json=agui_request) as response:
+                assert response.status_code == 200
+
+                events = []
+                async for line in response.aiter_lines():
+                    if line.startswith("data:"):
+                        data_str = line[5:].strip()
+                        if data_str:
+                            events.append(json.loads(data_str))
+
+            await asyncio.sleep(0.1)
+
+        streamed_content = "".join(
+            event.get("delta", "")
+            for event in events
+            if event.get("type") == "TEXT_MESSAGE_CONTENT"
+        )
+        assert "图片快速完成" in streamed_content
+        assert "已转为后台继续处理" not in streamed_content
+        callback_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_agui_media_response_url_starts_background_callback_without_waiting(self, client: AsyncClient):
-        """带 response_url 的读图请求应立即转后台，并用 callback 发最终结果。"""
+    async def test_agui_media_response_url_sends_progress_before_background_after_repeated_timeouts(self, client: AsyncClient):
+        """带 response_url 的读图请求应先发进度提示，多轮未完成后再转后台。"""
         from src.server.services import stream_handler as stream_handler_module
 
         image_url = "https://example.com/slow-case.png"
@@ -328,7 +407,7 @@ class TestStreamResponse:
             nonlocal first_read
             if first_read:
                 first_read = False
-                await asyncio.sleep(0.12)
+                await asyncio.sleep(0.2)
             return output_lines.pop(0)
 
         callback_mock = AsyncMock(return_value=True)
@@ -340,6 +419,8 @@ class TestStreamResponse:
             ),
             patch("asyncio.create_subprocess_exec") as mock_subprocess,
             patch.object(stream_handler_module.settings, "response_url_callback_enabled", True),
+            patch.object(stream_handler_module.settings, "response_url_stream_timeout_seconds", 0.05),
+            patch.object(stream_handler_module.settings, "response_url_stream_progress_notices", 2),
             patch(
                 "src.server.services.stream_handler.CallbackHandler.send_agui_callback",
                 callback_mock,
@@ -351,6 +432,7 @@ class TestStreamResponse:
             mock_process.wait.return_value = None
             mock_subprocess.return_value = mock_process
 
+            stream_start = time.monotonic()
             async with client.stream("POST", "/chat/stream/testuser", json=agui_request) as response:
                 assert response.status_code == 200
 
@@ -361,6 +443,7 @@ class TestStreamResponse:
                         if data_str:
                             events.append(json.loads(data_str))
 
+            stream_elapsed = time.monotonic() - stream_start
             await asyncio.sleep(0.3)
 
         streamed_content = "".join(
@@ -368,6 +451,8 @@ class TestStreamResponse:
             for event in events
             if event.get("type") == "TEXT_MESSAGE_CONTENT"
         )
+        assert stream_elapsed >= 0.15
+        assert streamed_content.count("图片还在处理中") >= 2
         assert "已转为后台继续处理" in streamed_content
         callback_mock.assert_awaited_once()
         callback_args = callback_mock.await_args.args
