@@ -145,7 +145,8 @@ class TestCodebuddyProviderSessionResume:
         cmd = executor._build_command(ctx)
         assert "-r" not in cmd
         assert "-c" not in cmd
-        assert "{image: /tmp/agui-case.png}" in " ".join(cmd)
+        assert "@/tmp/agui-case.png" in " ".join(cmd)
+        assert "{image:" not in " ".join(cmd)
 
     def test_session_id_used_for_default_non_inplace_continue(self, executor):
         """Non-inplace CodeBuddy runs should still restore the bound CLI session."""

@@ -19,7 +19,7 @@ import signal
 import time
 from typing import Any, AsyncGenerator, List, Optional
 
-from ..base import BaseExecutor, ExecutorConfig, RequestContext, assemble_cli_prompt
+from ..base import BaseExecutor, ExecutorConfig, RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,49 @@ def _env_default_model() -> str:
         or os.environ.get("AGENT_NEXUS_CODEBUDDY_DEFAULT_MODEL")
         or ""
     ).strip()
+
+
+def _assemble_codebuddy_prompt(
+    content: str,
+    *,
+    image_paths: Optional[List[str]] = None,
+    file_paths: Optional[List[str]] = None,
+    content_parts: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    """Render text/media request parts using CodeBuddy's native reference syntax."""
+    message = content or ""
+
+    if content_parts:
+        assembled: list[str] = []
+        for part in content_parts:
+            if not isinstance(part, dict):
+                continue
+            part_type = part.get("type")
+            if part_type == "text":
+                assembled.append(str(part.get("content", "")))
+            elif part_type == "image":
+                path = part.get("path") or part.get("url") or ""
+                if path:
+                    assembled.append(f"@{path}")
+            elif part_type == "file":
+                path = part.get("path") or part.get("url") or ""
+                if path:
+                    assembled.append(f"{{file: {path}}}")
+        return "\n".join(item for item in assembled if item != "")
+
+    prefix_parts: list[str] = []
+    for path in image_paths or []:
+        if path:
+            prefix_parts.append(f"@{path}")
+    for path in file_paths or []:
+        if path:
+            prefix_parts.append(f"{{file: {path}}}")
+
+    if not prefix_parts:
+        return message
+    if message.strip():
+        return f"{' '.join(prefix_parts)}\n\n{message}"
+    return " ".join(prefix_parts)
 
 
 class CodebuddyExecutorConfig(ExecutorConfig):
@@ -235,7 +278,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
         )
         if has_media_input:
             use_continue = False
-        message = "你好" if is_clear else assemble_cli_prompt(
+        message = "你好" if is_clear else _assemble_codebuddy_prompt(
             cleaned_content,
             image_paths=getattr(context, "image_paths", None) or None,
             file_paths=getattr(context, "file_paths", None) or None,
