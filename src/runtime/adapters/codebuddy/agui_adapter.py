@@ -34,6 +34,8 @@ class CodebuddyAGUIAdapter(BaseAdapter):
         """Reset tracking state (called before each request)"""
         self._in_thinking_block: bool = False
         self._thinking_buffer: str = ""
+        self._in_summary_block: bool = False
+        self._summary_buffer: str = ""
         self._has_streamed_text_content: bool = False
         self._tool_start_sent: set = set()
 
@@ -45,6 +47,50 @@ class CodebuddyAGUIAdapter(BaseAdapter):
     @property
     def protocol_type(self) -> ProtocolType:
         return ProtocolType.AGUI
+
+    def _strip_conversation_history_summary(self, text: str) -> str:
+        """Remove CodeBuddy microcompact summaries from user-visible text."""
+        if not text:
+            return ""
+
+        start_tag = "<conversation_history_summary>"
+        end_tag = "</conversation_history_summary>"
+        buffer = self._summary_buffer + text
+        self._summary_buffer = ""
+        result_parts: list[str] = []
+
+        while buffer:
+            if self._in_summary_block:
+                end_index = buffer.find(end_tag)
+                if end_index < 0:
+                    # Everything currently buffered is summary body.
+                    return "".join(result_parts)
+                buffer = buffer[end_index + len(end_tag):]
+                self._in_summary_block = False
+                continue
+
+            start_index = buffer.find(start_tag)
+            if start_index < 0:
+                # Keep a possible split "<conversation_history_summary>" prefix
+                # for the next delta so it is not leaked to the client.
+                keep = 0
+                max_suffix = min(len(start_tag) - 1, len(buffer))
+                for suffix_len in range(max_suffix, 0, -1):
+                    if start_tag.startswith(buffer[-suffix_len:]):
+                        keep = suffix_len
+                        break
+                if keep:
+                    result_parts.append(buffer[:-keep])
+                    self._summary_buffer = buffer[-keep:]
+                else:
+                    result_parts.append(buffer)
+                return "".join(result_parts)
+
+            result_parts.append(buffer[:start_index])
+            buffer = buffer[start_index + len(start_tag):]
+            self._in_summary_block = True
+
+        return "".join(result_parts)
 
     def _sanitize_text(self, text: str) -> str:
         """Sanitize text by removing thinking tags.
@@ -87,7 +133,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                         result_parts.append(buffer[:partial_match.start()])
                         self._thinking_buffer = buffer[partial_match.start():]
                         result = "".join(result_parts)
-                        return result
+                        return self._strip_conversation_history_summary(result)
                     else:
                         # No partial tag, output all
                         result_parts.append(buffer)
@@ -99,7 +145,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
         # Combine results
         result = "".join(result_parts)
         
-        return result
+        return self._strip_conversation_history_summary(result)
 
     def _generate_message_id(self) -> str:
         return f"codebuddy-msg-{uuid.uuid4().hex}"
@@ -185,7 +231,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
 
             # Process text items first
             for item in text_items:
-                text = item.get("text", "")
+                text = self._sanitize_text(item.get("text", ""))
                 if not text:
                     continue
                 if not self.state.message_started:
@@ -274,7 +320,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
             role = event.get("role")
             if role != "assistant":
                 return None
-            content = event.get("content", "")
+            content = self._sanitize_text(event.get("content", ""))
             if not content:
                 return None
             results = []
@@ -380,9 +426,10 @@ class CodebuddyAGUIAdapter(BaseAdapter):
 
             # Compatibility: when provider only returns final text in result/success,
             # convert it into visible text content before run finishes.
+            visible_result_text = self._sanitize_text(str(result_text)) if result_text else ""
             if (
                 subtype == "success"
-                and result_text
+                and visible_result_text
                 and not self._has_streamed_text_content
             ):
                 if not self.state.message_started:
@@ -397,7 +444,7 @@ class CodebuddyAGUIAdapter(BaseAdapter):
                 results.append(
                     TextMessageContentEvent(
                         messageId=self.state.current_message_id,
-                        delta=str(result_text),
+                        delta=visible_result_text,
                     ).to_sse()
                 )
                 self._has_streamed_text_content = True

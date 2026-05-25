@@ -380,6 +380,52 @@ class TestResultEvent:
         assert len(events) == 1
         assert events[0]["type"] == "TEXT_MESSAGE_END"
 
+    def test_conversation_summary_does_not_hide_final_result(self, adapter):
+        """CodeBuddy microcompact 摘要不是用户可见答案，不能阻止 result 补发最终正文。"""
+        start_event = {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        }
+        summary_event = {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": (
+                        "<conversation_history_summary>\n"
+                        "<summary>Pending task: describe the image.</summary>\n"
+                        "</conversation_history_summary>"
+                    ),
+                },
+            },
+        }
+        result_event = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "这张图片展示了一台交换机的命令执行结果表格。",
+        }
+
+        output = "".join(
+            part or ""
+            for part in (
+                adapter.convert(start_event),
+                adapter.convert(summary_event),
+                adapter.convert(result_event),
+            )
+        )
+
+        events = parse_sse_events(output)
+        content_events = [e for e in events if e["type"] == "TEXT_MESSAGE_CONTENT"]
+        assert [e["delta"] for e in content_events] == ["这张图片展示了一台交换机的命令执行结果表格。"]
+        assert "conversation_history_summary" not in output
+
 
 class TestMixedContentEvent:
     """测试混合内容事件（text + tool_use）"""
