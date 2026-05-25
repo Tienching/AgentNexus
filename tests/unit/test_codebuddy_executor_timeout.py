@@ -4,6 +4,7 @@
 import asyncio
 import gc
 import json
+import signal
 import warnings
 from unittest.mock import AsyncMock, Mock
 
@@ -18,7 +19,7 @@ async def test_execute_internal_timeout_awaits_async_kill_without_warnings(monke
     """Timeout cleanup should await async-mock kill() and still emit the timeout event."""
     cfg = Mock()
     cfg.codebuddy_command = "codebuddy"
-    cfg.timeout = 0.01
+    cfg.cli_timeout = 0.01
     cfg.user_home_base = "/home"
     executor = CodebuddyCLIExecutor(config=cfg)
 
@@ -56,3 +57,72 @@ async def test_execute_internal_timeout_awaits_async_kill_without_warnings(monke
     process.stderr.read.assert_awaited_once()
     runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
     assert runtime_warnings == []
+
+
+@pytest.mark.asyncio
+async def test_execute_internal_enforces_overall_timeout_while_stream_keeps_output(monkeypatch):
+    """Continuous CLI output must not extend the overall CodeBuddy timeout forever."""
+    cfg = Mock()
+    cfg.codebuddy_command = "codebuddy"
+    cfg.cli_timeout = 0.05
+    cfg.user_home_base = "/home"
+    executor = CodebuddyCLIExecutor(config=cfg)
+
+    class ContinuousStdout:
+        async def readline(self):
+            await asyncio.sleep(0.02)
+            return b'{"type":"assistant","message":{"content":[{"type":"text","text":"still running"}]}}\n'
+
+    process = Mock(spec=asyncio.subprocess.Process)
+    process.stdout = ContinuousStdout()
+    process.stderr = AsyncMock()
+    process.stderr.read = AsyncMock(return_value=b"")
+    process.kill = Mock()
+    process.wait = AsyncMock(return_value=0)
+
+    monkeypatch.setattr(executor, "run_subprocess", AsyncMock(return_value=process))
+
+    context = RequestContext(
+        content="hello",
+        exec_user="ubuntu",
+        session_id="timeout-test",
+        cwd="/tmp",
+        cwd_mode="inplace",
+    )
+
+    async def collect_outputs():
+        return [json.loads(item) async for item in executor._execute_internal(context)]
+
+    outputs = await asyncio.wait_for(collect_outputs(), timeout=0.3)
+
+    assert outputs[-1] == {"type": "error", "message": "处理超时，请重试"}
+    process.kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_timeout_cleanup_kills_codebuddy_process_group(monkeypatch):
+    """Timeout cleanup should terminate child tool processes spawned by CodeBuddy."""
+    cfg = Mock()
+    cfg.codebuddy_command = "codebuddy"
+    cfg.cli_timeout = 0.05
+    cfg.user_home_base = "/home"
+    executor = CodebuddyCLIExecutor(config=cfg)
+
+    process = Mock(spec=asyncio.subprocess.Process)
+    process.pid = 1234
+    process.kill = Mock()
+    process.wait = AsyncMock(return_value=0)
+    process.stderr = AsyncMock()
+    process.stderr.read = AsyncMock(return_value=b"")
+
+    killed_groups = []
+    monkeypatch.setattr("src.providers.codebuddy.cli_executor.os.getpgid", lambda pid: 5678)
+    monkeypatch.setattr(
+        "src.providers.codebuddy.cli_executor.os.killpg",
+        lambda pgid, sig: killed_groups.append((pgid, sig)),
+    )
+
+    await executor._cleanup_timed_out_process(process)
+
+    assert killed_groups == [(5678, signal.SIGKILL)]
+    process.kill.assert_not_called()

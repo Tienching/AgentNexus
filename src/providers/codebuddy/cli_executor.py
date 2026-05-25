@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import signal
 import time
 from typing import Any, AsyncGenerator, List, Optional
 
@@ -80,6 +81,21 @@ class CodebuddyCLIExecutor(BaseExecutor):
         """Get Codebuddy-specific config."""
         return self.config  # type: ignore
 
+    async def run_subprocess(
+        self,
+        final_cmd: List[str],
+        timeout: Optional[float] = None,
+    ) -> asyncio.subprocess.Process:
+        """Start CodeBuddy in its own process group so timeout cleanup kills tools too."""
+        return await asyncio.create_subprocess_exec(
+            *final_cmd,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=10 * 1024 * 1024,
+            start_new_session=True,
+        )
+
     async def execute(
         self,
         request: Any,
@@ -134,16 +150,18 @@ class CodebuddyCLIExecutor(BaseExecutor):
         process: Optional[asyncio.subprocess.Process] = None
 
         try:
-            process = await self.run_subprocess(final_cmd)
+            async with asyncio.timeout(float(self.config.timeout)):
+                process = await self.run_subprocess(final_cmd)
 
-            async for output in self._process_stream(process, context):
-                yield output
+                async for output in self._process_stream(process, context):
+                    yield output
 
-            await asyncio.wait_for(process.wait(), timeout=self.config.timeout)
+                await process.wait()
 
         except asyncio.TimeoutError:
             if process is not None:
                 await self._cleanup_timed_out_process(process)
+            logger.error("Codebuddy command timeout", extra={"timeout_seconds": self.config.timeout})
             yield json.dumps({"type": "error", "message": "处理超时，请重试"})
 
         except Exception as e:
@@ -159,11 +177,24 @@ class CodebuddyCLIExecutor(BaseExecutor):
     ) -> None:
         """Best-effort timeout cleanup for real processes and async mocks."""
         try:
-            kill_result = process.kill()
+            pid = getattr(process, "pid", None)
+            if isinstance(pid, int):
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                kill_result = None
+            else:
+                kill_result = process.kill()
             if inspect.isawaitable(kill_result):
                 await kill_result
         except Exception:
-            pass
+            try:
+                kill_result = process.kill()
+            except Exception:
+                kill_result = None
+            try:
+                if inspect.isawaitable(kill_result):
+                    await kill_result
+            except Exception:
+                pass
 
         try:
             await asyncio.wait_for(process.wait(), timeout=1.0)
