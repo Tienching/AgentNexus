@@ -69,6 +69,8 @@ class StreamArchiver:
         self._pending_tool_calls: List[str] = []
         self._first_user_message: Optional[str] = None
         self._initialized = False
+        self._last_assistant_message_id: Optional[str] = None
+        self._saw_run_error = False
         
         # Content segments tracking for ordering text and tool calls
         self._content_segments: List[ContentSegment] = []
@@ -225,6 +227,17 @@ class StreamArchiver:
         try:
             # Finalize any pending message
             await self._finalize_current_message()
+
+            # If a RUN_ERROR was already observed in this run, do not overwrite
+            # the terminal state with completed. The CodeBuddy CLI executor emits
+            # timeout/model errors as stream events and then the outer stream still
+            # reaches its normal finally path; without this guard the UI sees
+            # RUN_ERROR immediately followed by RUN_FINISHED and reloads a
+            # misleading "completed" snapshot.
+            if self._saw_run_error:
+                self._storage.update_session_status(self.session_id, SessionStatus.ERROR)
+                logger.debug(f"Run finished skipped after prior error for session: {self.session_id}")
+                return
             
             # Update session status
             self._storage.update_session_status(self.session_id, SessionStatus.COMPLETED)
@@ -247,6 +260,8 @@ class StreamArchiver:
             error: Error message
         """
         try:
+            self._saw_run_error = True
+
             # Finalize any pending message with error status
             if self._current_message_id:
                 msg = StoredMessage(
@@ -255,8 +270,10 @@ class StreamArchiver:
                     content=self._current_message_content,
                     status=MessageStatus.ERROR,
                     tool_call_ids=self._pending_tool_calls if self._pending_tool_calls else None,
+                    content_segments=self._content_segments if self._content_segments else None,
                 )
                 self._storage.update_message(self.session_id, msg)
+                self._last_assistant_message_id = self._current_message_id
             
             # Update session status
             self._storage.update_session_status(self.session_id, SessionStatus.ERROR)
@@ -302,10 +319,18 @@ class StreamArchiver:
             # ================= AG-UI events =================
             # We archive based on the already-converted AG-UI event stream to ensure
             # what the client sees is what we persist.
+            if event_type == "RUN_ERROR":
+                self._saw_run_error = True
+
             if event_type == "TEXT_MESSAGE_START":
                 message_id = event_data.get("messageId") or f"msg-{int(time.time() * 1000)}"
                 self._current_message_id = message_id
                 self._current_message_content = ""
+                self._current_tool_call_id = None
+                self._pending_tool_calls = []
+                self._content_segments = []
+                self._segment_sequence = 0
+                self._last_text_content = ""
 
                 msg = StoredMessage(
                     id=message_id,
@@ -324,6 +349,11 @@ class StreamArchiver:
                     await self._finalize_current_message()
                     self._current_message_id = msg_id
                     self._current_message_content = ""
+                    self._current_tool_call_id = None
+                    self._pending_tool_calls = []
+                    self._content_segments = []
+                    self._segment_sequence = 0
+                    self._last_text_content = ""
                     msg = StoredMessage(
                         id=msg_id,
                         role="assistant",
@@ -346,15 +376,22 @@ class StreamArchiver:
             if event_type == "TOOL_CALL_START":
                 tool_id = event_data.get("toolCallId") or f"tool-{int(time.time() * 1000)}"
                 tool_name = event_data.get("toolCallName", "unknown")
-                parent_id = event_data.get("parentMessageId") or self._current_message_id
+                parent_id = event_data.get("parentMessageId") or self._current_message_id or self._last_assistant_message_id
 
-                # Add tool call segment
-                self._content_segments.append(ContentSegment(
-                    type="tool_call",
-                    tool_call_id=tool_id,
-                    sequence=self._segment_sequence
-                ))
-                self._segment_sequence += 1
+                if self._current_message_id:
+                    # Add tool call segment to the active message.
+                    self._content_segments.append(ContentSegment(
+                        type="tool_call",
+                        tool_call_id=tool_id,
+                        sequence=self._segment_sequence
+                    ))
+                    self._segment_sequence += 1
+                else:
+                    # The assistant text segment may already have ended. Link
+                    # this late tool call to the last finalized assistant
+                    # message so a later snapshot preserves what the live UI
+                    # showed instead of falling back to only the first text.
+                    self._append_tool_segment_to_message(parent_id, tool_id)
 
                 tool_call = StoredToolCall(
                     id=tool_id,
@@ -367,7 +404,8 @@ class StreamArchiver:
                 self._storage.save_tool_call(self.session_id, tool_call)
                 self._pending_tool_calls.append(tool_id)
                 self._current_tool_call_id = tool_id
-                self._update_current_message()
+                if self._current_message_id:
+                    self._update_current_message()
                 return
 
             if event_type == "TOOL_CALL_ARGS":
@@ -500,6 +538,41 @@ class StreamArchiver:
         if not updated:
             self._storage.add_session_message(self.session_id, msg)
 
+    def _append_tool_segment_to_message(self, message_id: Optional[str], tool_id: str) -> None:
+        """Attach a tool call to an already-finalized assistant message.
+
+        Some AG-UI streams close the assistant text message before subsequent
+        tool calls arrive. The live UI still shows those tools in the same
+        streaming bubble, but the persisted snapshot used after reload only
+        knows about StoredMessage.content/tool_call_ids. Link late tool calls
+        back to the most recent assistant message so refresh/timeout snapshots
+        don't appear to roll back to the first visible text chunk.
+        """
+        if not message_id or not tool_id:
+            return
+        msg = self._storage.get_message_by_id(self.session_id, message_id)
+        if not msg or msg.role != "assistant":
+            return
+
+        tool_call_ids = list(msg.tool_call_ids or [])
+        if tool_id not in tool_call_ids:
+            tool_call_ids.append(tool_id)
+
+        segments = list(msg.content_segments or [])
+        if not any(seg.type == "tool_call" and seg.tool_call_id == tool_id for seg in segments):
+            next_sequence = (max((seg.sequence for seg in segments), default=-1) + 1)
+            segments.append(ContentSegment(
+                type="tool_call",
+                tool_call_id=tool_id,
+                sequence=next_sequence,
+            ))
+
+        updated = msg.model_copy(update={
+            "tool_call_ids": tool_call_ids,
+            "content_segments": segments,
+        })
+        self._storage.update_message(self.session_id, updated)
+
     async def _handle_tool_use_event(self, event_data: Dict[str, Any]):
         """Handle tool use start event"""
         tool_id = event_data.get("id", f"tool-{int(time.time() * 1000)}")
@@ -513,13 +586,17 @@ class StreamArchiver:
                 self._append_text_segment(new_text)
             self._last_text_content = self._current_message_content
         
-        # Add tool call segment
-        self._content_segments.append(ContentSegment(
-            type="tool_call",
-            tool_call_id=tool_id,
-            sequence=self._segment_sequence
-        ))
-        self._segment_sequence += 1
+        parent_id = self._current_message_id or self._last_assistant_message_id
+        if self._current_message_id:
+            # Add tool call segment to the active message.
+            self._content_segments.append(ContentSegment(
+                type="tool_call",
+                tool_call_id=tool_id,
+                sequence=self._segment_sequence
+            ))
+            self._segment_sequence += 1
+        else:
+            self._append_tool_segment_to_message(parent_id, tool_id)
         
         # Create tool call record
         tool_call = StoredToolCall(
@@ -528,7 +605,7 @@ class StreamArchiver:
             args=args if isinstance(args, dict) else {},
             args_string=json.dumps(args, ensure_ascii=False) if args else "",
             status=ToolCallStatus.EXECUTING,
-            parent_message_id=self._current_message_id,
+            parent_message_id=parent_id,
         )
         self._storage.save_tool_call(self.session_id, tool_call)
         
@@ -607,6 +684,7 @@ class StreamArchiver:
                 content_segments=self._content_segments if self._content_segments else None,
             )
             self._storage.update_message(self.session_id, msg)
+            self._last_assistant_message_id = self._current_message_id
             
             # Clean up streaming content
             self._storage.delete_streaming_content(self.session_id, self._current_message_id)

@@ -63,6 +63,16 @@ class MockSessionStorage:
     
     def get_session_messages(self, session_id: str):
         return self.messages.get(session_id, [])
+
+    def get_message_by_id(self, session_id: str, message_id: str):
+        for message in self.messages.get(session_id, []):
+            if message.id == message_id:
+                return message
+        return None
+
+    def append_agui_event(self, session_id: str, event_data: dict) -> bool:
+        self.call_log.append(("append_agui_event", session_id, event_data.get("type")))
+        return True
     
     def save_tool_call(self, session_id: str, tool_call: StoredToolCall) -> bool:
         self.call_log.append(("save_tool_call", session_id, tool_call.id))
@@ -336,6 +346,17 @@ class TestOnRunFinished:
         assert messages[0].content == "Hello, I'm the assistant!"
         assert messages[0].status == MessageStatus.COMPLETE
 
+    @pytest.mark.asyncio
+    async def test_on_run_finished_does_not_overwrite_prior_run_error(self, archiver, mock_storage):
+        await archiver.on_run_started([{"id": "msg-1", "role": "user", "content": "Hi"}])
+        await archiver.archive_event({"type": "RUN_ERROR", "message": "处理超时，请重试"})
+
+        await archiver.on_run_finished()
+
+        session = mock_storage.get_session_meta("session-123")
+        assert session.status == SessionStatus.ERROR
+        assert ("append_agui_event", "session-123", "RUN_FINISHED") not in mock_storage.call_log
+
 
 class TestOnRunError:
     """Test on_run_error method"""
@@ -434,6 +455,29 @@ class TestArchiveEvent:
         # Verify tracking
         assert "tool-123" in archiver._pending_tool_calls
         assert archiver._current_tool_call_id == "tool-123"
+
+    @pytest.mark.asyncio
+    async def test_agui_tool_call_after_text_end_attaches_to_last_assistant_message(self, archiver, mock_storage):
+        await archiver.on_run_started()
+        await archiver.archive_event({"type": "TEXT_MESSAGE_START", "messageId": "assistant-1"})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_CONTENT", "messageId": "assistant-1", "delta": "Working..."})
+        await archiver.archive_event({"type": "TEXT_MESSAGE_END", "messageId": "assistant-1"})
+
+        await archiver.archive_event({
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-late",
+            "toolCallName": "Glob: *",
+        })
+
+        message = mock_storage.get_message_by_id("session-123", "assistant-1")
+        assert message is not None
+        assert "tool-late" in (message.tool_call_ids or [])
+        assert any(
+            segment.type == "tool_call" and segment.tool_call_id == "tool-late"
+            for segment in (message.content_segments or [])
+        )
+        tool_call = mock_storage.get_tool_call("session-123", "tool-late")
+        assert tool_call.parent_message_id == "assistant-1"
 
     @pytest.mark.asyncio
     async def test_archive_tool_result_event(self, archiver, mock_storage):

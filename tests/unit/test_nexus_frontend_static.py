@@ -23,7 +23,7 @@ def test_task_frontend_loads_shared_stream_and_form_controllers():
     streaming_controller = read_text("src/server/static/nexus/js/components/streaming-controller.js")
     task_form_controller = read_text("src/server/static/nexus/js/components/task-form-controller.js")
 
-    assert "js/components/streaming-controller.js?v=32" in index_html
+    assert "js/components/streaming-controller.js?v=33" in index_html
     assert "js/components/task-form-controller.js?v=32" in index_html
     assert "class NexusStreamingController" in streaming_controller
     assert "class NexusTaskFormController" in task_form_controller
@@ -39,6 +39,15 @@ def test_live_session_streams_delegate_to_shared_helper():
     assert "phase: 'task-stream'" in app_js
     assert "phase: 'channel-stream'" in app_js
     assert "NexusStreamingController.bindEventSource(stream, sessionAdapter);" in app_js
+
+
+def test_snapshot_render_preserves_orphaned_stream_tool_calls():
+    app_js = read_text("src/server/static/nexus/js/app.js")
+
+    assert "getRenderedToolCallIds(messages, toolCalls)" in app_js
+    assert "renderStandaloneToolCallMessages(standaloneToolCalls)" in app_js
+    assert "Recovered stream activity" in app_js
+    assert "tools:${toolCalls.length}" in app_js
 
 
 def test_chat_shell_uses_css_classes_for_session_visibility_states():

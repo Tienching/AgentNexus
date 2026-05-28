@@ -2444,6 +2444,19 @@ class ChatView {
             // real changes without serialising full payloads.
             signatureParts.push(m.id || '', m.updated_at || m.created_at || '', (m.content || '').length);
         }
+        signatureParts.push(`tools:${toolCalls.length}`);
+        for (const tc of toolCalls) {
+            signatureParts.push(
+                tc.id || tc.call_id || '',
+                tc.status || '',
+                tc.parent_message_id || '',
+                tc.message_id || '',
+                tc.start_time || '',
+                tc.end_time || '',
+                String(tc.result || '').length,
+                String(tc.error || '').length,
+            );
+        }
         const signature = signatureParts.join('|');
         if (this._lastRenderedSignature[sigKey] === signature) {
             // Still make sure the tracked state stays in sync so other callers
@@ -2499,6 +2512,14 @@ class ChatView {
             messageCount: messages.length,
         });
 
+        const renderedToolCallIds = this.getRenderedToolCallIds(messages, toolCalls);
+        const standaloneToolCalls = toolCalls
+            .filter((tc) => {
+                const id = tc?.id || tc?.call_id || '';
+                return id && !renderedToolCallIds.has(id);
+            })
+            .sort((a, b) => (a.start_time || a.created_at || 0) - (b.start_time || b.created_at || 0));
+
         detail.innerHTML = `
             <div class="chat-header">
                 <div class="chat-header-info">
@@ -2533,9 +2554,9 @@ class ChatView {
                 </div>
             </div>
             <div class="chat-messages" id="chatMessages-${paneId}">
-                ${messages.length === 0 
+                ${messages.length === 0 && standaloneToolCalls.length === 0
                     ? '<div class="empty-state"><p class="empty-state-text">No messages yet</p></div>'
-                    : messages.map(msg => this.renderMessage(msg, toolCalls)).join('')}
+                    : `${messages.map(msg => this.renderMessage(msg, toolCalls)).join('')}${this.renderStandaloneToolCallMessages(standaloneToolCalls)}`}
             </div>
             ${isHistory ? `
                 <div class="history-readonly-panel">
@@ -3085,6 +3106,47 @@ class ChatView {
         }
 
         return normalized;
+    }
+
+    getRenderedToolCallIds(messages, toolCalls) {
+        const rendered = new Set();
+        const messageIds = new Set((messages || []).map((msg) => msg?.id).filter(Boolean));
+
+        for (const msg of messages || []) {
+            for (const id of msg?.tool_call_ids || []) {
+                if (id) rendered.add(id);
+            }
+            for (const segment of this.normalizeContentSegments(msg?.content_segments)) {
+                if (segment.type === 'tool_call' && segment.tool_call_id) {
+                    rendered.add(segment.tool_call_id);
+                }
+            }
+        }
+
+        for (const tc of toolCalls || []) {
+            const id = tc?.id || tc?.call_id || '';
+            if (!id) continue;
+            if ((tc.parent_message_id && messageIds.has(tc.parent_message_id)) || (tc.message_id && messageIds.has(tc.message_id))) {
+                rendered.add(id);
+            }
+        }
+
+        return rendered;
+    }
+
+    renderStandaloneToolCallMessages(toolCalls) {
+        if (!Array.isArray(toolCalls) || toolCalls.length === 0) return '';
+        return `
+            <div class="message assistant recovered-tool-calls">
+                <div class="message-avatar">A</div>
+                <div class="message-content">
+                    <div class="message-bubble">
+                        <div class="message-recovered-note">Recovered stream activity</div>
+                        ${toolCalls.map(tc => this.renderToolCallStandalone(tc)).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
     }
 
     renderMessage(msg, toolCalls) {
