@@ -22,9 +22,38 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, AsyncGenerator, Iterable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+_CODEBUDDY_AGENT_TASK_RE = re.compile(r"\bagent-[0-9A-Za-z_-]+\b")
+_CODEBUDDY_AGENT_WAIT_MARKERS = (
+    "等待分析结果",
+    "等待其通过 SendMessage",
+    "等待 `SendMessage`",
+    "正在后台运行",
+    "正在等待",
+    "等待专家",
+    "专家返回",
+    "结果稍后",
+    "收到后汇总",
+    "已启动待返回",
+    "待返回",
+)
+_CODEBUDDY_FINAL_MARKERS = (
+    "# 故障诊断报告",
+    "## 诊断结论",
+    "**根本原因:**",
+    "根本原因:",
+    "## 证据链",
+    "## 修复方案",
+    "RETRY_REQUIRED",
+    "NEED_USER_INPUT",
+    "ESCALATE",
+)
+_CODEBUDDY_MAX_AGENT_WAIT_CONTINUES = 2
 
 
 class StreamOrchestrator:
@@ -75,30 +104,56 @@ class StreamOrchestrator:
                 event_count += self._count_sse_events(start_event)
                 yield start_event
 
-            async for line in executor.execute(request_model, exec_user=exec_user, output_format="raw"):
-                if not line or not str(line).strip():
-                    continue
+            text_parts: list[str] = []
+            codebuddy_agent_task_ids: set[str] = set()
+            auto_continue_count = 0
 
-                try:
-                    event_data = json.loads(line)
-                except Exception:
-                    continue
+            while True:
+                async for line in executor.execute(request_model, exec_user=exec_user, output_format="raw"):
+                    if not line or not str(line).strip():
+                        continue
 
-                try:
-                    converted = adapter.convert(event_data)
-                except Exception:
-                    continue
+                    try:
+                        event_data = json.loads(line)
+                    except Exception:
+                        continue
 
-                if converted:
-                    # Archive converted AG-UI events asynchronously (non-blocking)
-                    self._schedule_archive_converted(converted, archiver)
-                    # Collect text from AG-UI events for switch summary
-                    if summary_text_parts is not None:
+                    codebuddy_agent_task_ids.update(self._extract_codebuddy_agent_task_ids(event_data))
+                    self._remember_cli_session_id(request_model, event_data)
+
+                    try:
+                        converted = adapter.convert(event_data)
+                    except Exception:
+                        continue
+
+                    if converted:
+                        # Archive converted AG-UI events asynchronously (non-blocking)
+                        self._schedule_archive_converted(converted, archiver)
+                        # Collect text from AG-UI events for switch summary and CodeBuddy wait-state recovery.
                         for payload in self._iter_agui_payloads(converted):
                             if payload.get("type") == "TEXT_MESSAGE_CONTENT":
-                                summary_text_parts.append(payload.get("delta", ""))
-                    event_count += self._count_sse_events(converted)
-                    yield converted
+                                delta = payload.get("delta", "")
+                                if delta:
+                                    text_parts.append(str(delta))
+                                if summary_text_parts is not None:
+                                    summary_text_parts.append(delta)
+                        event_count += self._count_sse_events(converted)
+                        yield converted
+
+                if not self._should_continue_codebuddy_agent_wait(
+                    "".join(text_parts),
+                    codebuddy_agent_task_ids,
+                    auto_continue_count,
+                ):
+                    break
+
+                auto_continue_count += 1
+                task_ids = sorted(codebuddy_agent_task_ids)
+                logger.warning(
+                    "CodeBuddy analyst run ended in wait state; auto-continuing before RUN_FINISHED",
+                    extra={"task_ids": task_ids, "auto_continue_count": auto_continue_count},
+                )
+                self._prepare_codebuddy_agent_wait_continue(request_model, task_ids)
 
             # Store agent-generated summary and append notification before end event
             if handoff_pending_target and summary_text_parts and session_id:
@@ -192,6 +247,85 @@ class StreamOrchestrator:
     def _count_sse_events(self, sse: str) -> int:
         # Each event is separated by blank line.
         return sum(1 for part in str(sse).split("\n\n") if part.strip())
+
+    def _extract_codebuddy_agent_task_ids(self, event_data: dict[str, Any]) -> set[str]:
+        combined = "\n".join(self._iter_string_fragments(event_data))
+        if not combined:
+            return set()
+        task_ids = set(_CODEBUDDY_AGENT_TASK_RE.findall(combined))
+        if not task_ids:
+            return set()
+        agent_markers = (
+            "Agent",
+            "Spawned successfully",
+            "subagent_type",
+            "team member task",
+            "TaskOutput",
+            "SendMessage",
+        )
+        if any(marker in combined for marker in agent_markers):
+            return task_ids
+        return set()
+
+    def _iter_string_fragments(self, value: Any) -> Iterable[str]:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield str(key)
+                yield from self._iter_string_fragments(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from self._iter_string_fragments(item)
+        elif isinstance(value, str):
+            yield value
+        elif value is not None:
+            yield str(value)
+
+    def _remember_cli_session_id(self, request_model: Any, event_data: dict[str, Any]) -> None:
+        if not isinstance(event_data, dict):
+            return
+        cli_session_id = event_data.get("session_id") or event_data.get("thread_id")
+        if not cli_session_id:
+            return
+        try:
+            if not getattr(request_model, "cli_session_id", None):
+                setattr(request_model, "cli_session_id", str(cli_session_id))
+        except Exception:
+            return
+
+    def _should_continue_codebuddy_agent_wait(
+        self,
+        text: str,
+        task_ids: set[str],
+        auto_continue_count: int,
+    ) -> bool:
+        if auto_continue_count >= _CODEBUDDY_MAX_AGENT_WAIT_CONTINUES:
+            return False
+        if not task_ids or not text:
+            return False
+        if any(marker in text for marker in _CODEBUDDY_FINAL_MARKERS):
+            return False
+        return any(marker in text for marker in _CODEBUDDY_AGENT_WAIT_MARKERS)
+
+    def _prepare_codebuddy_agent_wait_continue(self, request_model: Any, task_ids: list[str]) -> None:
+        task_list = ", ".join(task_ids) if task_ids else "未知"
+        followup = (
+            "上一轮已经启动 CodeBuddy analyst，但用户可见输出停在等待状态，这不是完成态。\n"
+            f"已启动但未汇总的 task_id: {task_list}\n\n"
+            "请继续同一个 RCA 会话，并遵守：\n"
+            "1. 不要重新派发重复 analyst；先读取已经收到的 SendMessage/专家结论。\n"
+            "2. 如果仍未读到结论，必须对未完成 task 调用 TaskOutput(block=true, timeout=600) 形成等待屏障。\n"
+            "3. 拿到可读专家结论后，必须由 AGENTS 自行裁决并输出 FINAL_READY 的完整故障诊断报告；"
+            "若工具明确失败，则输出 RETRY_REQUIRED、NEED_USER_INPUT 或 ESCALATE。\n"
+            "4. 禁止只回复“正在等待/后台运行/稍后返回/收到后汇总”。"
+        )
+        try:
+            setattr(request_model, "content", followup)
+            setattr(request_model, "content_parts", [])
+            setattr(request_model, "image_paths", [])
+            setattr(request_model, "file_paths", [])
+            setattr(request_model, "session_cleared", False)
+        except Exception:
+            logger.warning("Failed to prepare CodeBuddy analyst wait-state continuation", exc_info=True)
 
     def _build_text_content_sse(self, adapter: Any, text: str) -> Optional[str]:
         """Build a TEXT_MESSAGE_CONTENT SSE event using the adapter's current state.
