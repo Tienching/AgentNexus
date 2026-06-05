@@ -1168,10 +1168,14 @@ class CLIExecutor:
                         "You are an RCA analyst teammate. Work independently on the "
                         "assigned evidence gap. Prefer the smallest useful set of tools, "
                         "reuse existing collected_data and expert_conclusions, and avoid "
-                        "duplicating another analyst's scope. Return a concise conclusion "
-                        "with evidence triples, confidence, and a machine-readable JSON "
-                        "summary. If running in a CodeBuddy team, send the final conclusion "
-                        "back to main with SendMessage."
+                        "duplicating another analyst's scope. Hard budget: use at most 6 "
+                        "tool calls total, at most 3 large file Read/Grep/Bash inspections, "
+                        "and stop searching once the strongest available evidence is found "
+                        "or a critical artifact is absent. Do not keep broad-scanning diag "
+                        "files for missing evidence; report the gap and confidence impact. "
+                        "Return a concise conclusion with evidence triples, confidence, "
+                        "and a machine-readable JSON summary. If running in a CodeBuddy "
+                        "team, send the final conclusion back to main with SendMessage."
                     ),
                 }
             },
@@ -1366,7 +1370,7 @@ class CLIExecutor:
                     "--agents", self._codebuddy_agents_json(),
                     "--subagent-permission-mode", "bypassPermissions",
                     "--swarm",
-                    "--max-turns", "80",
+                    "--max-turns", "45",
                 ])
             cmd.extend(["-p", message, "--dangerously-skip-permissions"])
         else:

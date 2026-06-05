@@ -150,11 +150,13 @@ class TestCLIExecutorAlias:
         assert "analyst" in agents
         assert agents["analyst"]["description"]
         assert "SendMessage" in agents["analyst"]["prompt"]
+        assert "at most 6 tool calls" in agents["analyst"]["prompt"]
+        assert "at most 3 large file Read/Grep/Bash inspections" in agents["analyst"]["prompt"]
         assert "--swarm" in cmd
         assert "--subagent-permission-mode" in cmd
         assert cmd[cmd.index("--subagent-permission-mode") + 1] == "bypassPermissions"
         assert "--max-turns" in cmd
-        assert int(cmd[cmd.index("--max-turns") + 1]) >= 80
+        assert int(cmd[cmd.index("--max-turns") + 1]) == 45
 
     def test_explicit_model_overrides_codebuddy_default_model(self):
         cfg = Mock()
