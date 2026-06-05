@@ -1223,35 +1223,47 @@ class CLIExecutor:
         else:
             message = cleaned_content
 
+        def is_local_cli_reference(value: Any) -> bool:
+            return (
+                isinstance(value, str)
+                and bool(value)
+                and not value.startswith(("http://", "https://", "data:"))
+                and "://" not in value
+            )
+
         # Inject image/file paths into the prompt.
         # Prefer content_parts (preserves original interleaving order).
         if content_parts:
             assembled: list[str] = []
             for part in content_parts:
                 if part.get("type") == "image":
-                    p = part.get("path") or part.get("url", "")
-                    assembled.append(f"{{image: {p}}}")
+                    p = part.get("path") or ""
+                    if is_local_cli_reference(p):
+                        assembled.append(f"{{image: {p}}}")
                 elif part.get("type") == "text":
                     assembled.append(part.get("content", ""))
                 elif part.get("type") == "file":
-                    p = part.get("path") or part.get("url", "")
-                    assembled.append(f"{{file: {p}}}")
+                    p = part.get("path") or ""
+                    if is_local_cli_reference(p):
+                        assembled.append(f"{{file: {p}}}")
             message = "\n".join(assembled)
         else:
             # Fallback: flat image_paths/file_paths (all images before text)
             if image_paths:
-                tags = " ".join(f"{{image: {p}}}" for p in image_paths)
-                if message.strip():
-                    message = f"{tags}\n\n{message}"
-                else:
-                    message = tags
+                tags = " ".join(f"{{image: {p}}}" for p in image_paths if is_local_cli_reference(p))
+                if tags:
+                    if message.strip():
+                        message = f"{tags}\n\n{message}"
+                    else:
+                        message = tags
 
             if file_paths:
-                tags = " ".join(f"{{file: {p}}}" for p in file_paths)
-                if message.strip():
-                    message = f"{tags}\n\n{message}"
-                else:
-                    message = tags
+                tags = " ".join(f"{{file: {p}}}" for p in file_paths if is_local_cli_reference(p))
+                if tags:
+                    if message.strip():
+                        message = f"{tags}\n\n{message}"
+                    else:
+                        message = tags
 
         # Provider-aware continue/resume logic:
         # When cli_session_id is available, use precise session resume:

@@ -160,6 +160,24 @@ class TestCodebuddyProviderSessionResume:
         assert "https://example.com/agui-case.png" not in command
         assert "@https://" not in command
 
+    def test_unlocalized_file_url_is_not_rendered_as_codebuddy_reference(self, executor):
+        """CodeBuddy file references should not use unresolved AG-UI URLs."""
+        ctx = _make_context("List uploaded file contents")
+        ctx.content_parts = [
+            {"type": "text", "content": "List uploaded file contents"},
+            {
+                "type": "file",
+                "url": "wecom://media/abc123",
+                "file_name": "diag.tar",
+            },
+        ]
+
+        command = " ".join(executor._build_command(ctx))
+
+        assert "List uploaded file contents" in command
+        assert "wecom://media/abc123" not in command
+        assert "{file: wecom://media/abc123}" not in command
+
     def test_session_id_used_for_default_non_inplace_continue(self, executor):
         """Non-inplace CodeBuddy runs should still restore the bound CLI session."""
         ctx = _make_context("Hello", run_kind="",

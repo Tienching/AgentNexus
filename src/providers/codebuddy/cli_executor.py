@@ -41,6 +41,7 @@ def _is_local_reference(value: Any) -> bool:
         isinstance(value, str)
         and bool(value)
         and not value.startswith(("http://", "https://", "data:"))
+        and "://" not in value
     )
 
 
@@ -67,8 +68,8 @@ def _assemble_codebuddy_prompt(
                 if _is_local_reference(path):
                     assembled.append(f"@{path}")
             elif part_type == "file":
-                path = part.get("path") or part.get("url") or ""
-                if path:
+                path = part.get("path") or ""
+                if _is_local_reference(path):
                     assembled.append(f"{{file: {path}}}")
         return "\n".join(item for item in assembled if item != "")
 
@@ -77,7 +78,7 @@ def _assemble_codebuddy_prompt(
         if _is_local_reference(path):
             prefix_parts.append(f"@{path}")
     for path in file_paths or []:
-        if path:
+        if _is_local_reference(path):
             prefix_parts.append(f"{{file: {path}}}")
 
     if not prefix_parts:

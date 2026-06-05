@@ -103,3 +103,106 @@ async def test_agui_file_url_is_downloaded_and_replaced_with_local_path(tmp_path
         },
     ]
     assert request.file_paths == [str(local_file)]
+
+
+@pytest.mark.asyncio
+async def test_agui_wecom_media_reference_can_be_resolved_to_local_path(tmp_path, monkeypatch):
+    local_file = tmp_path / "diag.tar"
+    local_file.write_bytes(b"tar data")
+    captured = {}
+
+    async def fake_download_files_with_sources(items, **kwargs):
+        captured["items"] = items
+        captured["dest_dir"] = kwargs.get("dest_dir")
+        captured["session_id"] = kwargs.get("session_id")
+        return [(items[0], str(local_file))]
+
+    monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+    monkeypatch.setattr(
+        stream_handler,
+        "download_files_with_sources",
+        fake_download_files_with_sources,
+        raising=False,
+    )
+
+    request = RequestContext(
+        content="列一下附件里的文件",
+        user="tester",
+        session_id="agui-wecom-file-session",
+        exec_user="tester",
+        content_parts=[
+            {"type": "text", "content": "列一下附件里的文件"},
+            {
+                "type": "file",
+                "url": "wecom://media/abc123",
+                "mime_type": "application/octet-stream",
+                "file_name": "diag.tar",
+            },
+        ],
+    )
+
+    handler = StreamHandler.__new__(StreamHandler)
+    await handler._localize_agui_image_parts(request, "agui-wecom-file-session", "tester")
+
+    assert captured["items"] == [
+        {
+            "url": "wecom://media/abc123",
+            "mime_type": "application/octet-stream",
+            "file_name": "diag.tar",
+        }
+    ]
+    assert Path(captured["dest_dir"]).name == "agui-wecom-file-session"
+    assert captured["session_id"] == "agui-wecom-file-session"
+    assert request.content_parts == [
+        {"type": "text", "content": "列一下附件里的文件"},
+        {
+            "type": "file",
+            "url": "wecom://media/abc123",
+            "mime_type": "application/octet-stream",
+            "file_name": "diag.tar",
+            "path": str(local_file),
+        },
+    ]
+    assert request.file_paths == [str(local_file)]
+
+
+@pytest.mark.asyncio
+async def test_agui_wecom_media_reference_without_resolver_is_not_treated_as_local_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+
+    request = RequestContext(
+        content="列一下附件里的文件",
+        user="tester",
+        session_id="agui-wecom-file-session",
+        exec_user="tester",
+        content_parts=[
+            {"type": "text", "content": "列一下附件里的文件"},
+            {
+                "type": "file",
+                "url": "wecom://media/abc123",
+                "mime_type": "application/octet-stream",
+                "file_name": "diag.tar",
+            },
+        ],
+    )
+
+    handler = StreamHandler.__new__(StreamHandler)
+    await handler._localize_agui_image_parts(request, "agui-wecom-file-session", "tester")
+
+    assert request.file_paths == []
+    assert all(
+        part.get("path") != "wecom://media/abc123"
+        for part in request.content_parts
+        if isinstance(part, dict)
+    )
+    assert request.content_parts == [
+        {"type": "text", "content": "列一下附件里的文件"},
+        {
+            "type": "text",
+            "content": (
+                '[附件未落地] 用户上传的文件 "diag.tar" 只包含 wecom://media 引用，'
+                "当前服务未配置该协议解析器或解析失败，因此还没有本地文件可读。"
+                "请不要改用设备远程 DIAG 兜底，应要求上游提供可下载 URL/本地路径后再处理该附件。"
+            ),
+        },
+    ]

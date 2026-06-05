@@ -18,6 +18,15 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _is_local_reference(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not value.startswith(("http://", "https://", "data:"))
+        and "://" not in value
+    )
+
+
 def assemble_cli_prompt(
     content: str,
     *,
@@ -37,21 +46,21 @@ def assemble_cli_prompt(
             if part_type == "text":
                 assembled.append(str(part.get("content", "")))
             elif part_type == "image":
-                path = part.get("path") or part.get("url") or ""
-                if path:
+                path = part.get("path") or ""
+                if _is_local_reference(path):
                     assembled.append(f"{{image: {path}}}")
             elif part_type == "file":
-                path = part.get("path") or part.get("url") or ""
-                if path:
+                path = part.get("path") or ""
+                if _is_local_reference(path):
                     assembled.append(f"{{file: {path}}}")
         return "\n".join(item for item in assembled if item != "")
 
     prefix_parts: list[str] = []
     for path in image_paths or []:
-        if path:
+        if _is_local_reference(path):
             prefix_parts.append(f"{{image: {path}}}")
     for path in file_paths or []:
-        if path:
+        if _is_local_reference(path):
             prefix_parts.append(f"{{file: {path}}}")
 
     if not prefix_parts:

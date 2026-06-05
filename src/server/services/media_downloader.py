@@ -12,12 +12,14 @@ may also supply an explicit ``dest_dir``; otherwise a fallback under
 """
 
 import asyncio
+import base64
 import hashlib
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -32,6 +34,8 @@ CLI_IMAGE_TARGET_MAX_SIZE = 900 * 1024  # Leave headroom below the CodeBuddy lim
 CLI_IMAGE_MAX_DIMENSION = 1800
 DOWNLOAD_TIMEOUT = 30  # seconds
 IMAGE_TTL = 3600  # 1 hour — files older than this are eligible for cleanup
+AGUI_MEDIA_RESOLVER_URL_ENV = "AGUI_MEDIA_RESOLVER_URL"
+AGUI_MEDIA_RESOLVER_TOKEN_ENV = "AGUI_MEDIA_RESOLVER_TOKEN"
 
 # MIME → extension mapping
 MIME_EXT_MAP = {
@@ -51,6 +55,15 @@ def _fallback_dir(session_id: str) -> Path:
     return FALLBACK_DIR_ROOT / safe
 
 
+def _out_dir(dest_dir: Optional[str], session_id: str) -> Path:
+    if dest_dir:
+        out_dir = Path(dest_dir)
+    else:
+        out_dir = _fallback_dir(session_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
 def _guess_extension(url: str, mime_type: Optional[str] = None) -> str:
     """Guess file extension from MIME type or URL path."""
     if mime_type:
@@ -64,6 +77,59 @@ def _guess_extension(url: str, mime_type: Optional[str] = None) -> str:
         if path.endswith(ext):
             return ext if ext != ".jpeg" else ".jpg"
     return ".png"  # default
+
+
+def _is_http_url(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+
+def _is_wecom_media_reference(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("wecom://media/")
+
+
+def _media_reference_id(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.netloc == "media":
+        return parsed.path.lstrip("/")
+    return f"{parsed.netloc}{parsed.path}".lstrip("/")
+
+
+def _safe_file_name(file_name: Optional[str], source_url: str) -> str:
+    if not file_name:
+        parsed = urlparse(source_url)
+        path_name = Path(parsed.path).name
+        if path_name and "." in path_name and len(path_name) < 200:
+            file_name = path_name
+        else:
+            file_name = f"file_{uuid.uuid4().hex[:8]}"
+    return file_name.replace("/", "_").replace("\\", "_")
+
+
+def _write_file_bytes(
+    data: bytes,
+    *,
+    dest_dir: Optional[str],
+    session_id: str,
+    source_url: str,
+    file_name: Optional[str],
+    max_size: int,
+) -> Optional[str]:
+    if len(data) > max_size:
+        logger.warning(f"File data exceeds limit ({len(data)} bytes), skipping: {source_url}")
+        return None
+
+    out_dir = _out_dir(dest_dir, session_id)
+    safe_name = _safe_file_name(file_name, source_url)
+    out_path = out_dir / safe_name
+    if out_path.exists():
+        stem = out_path.stem
+        suffix = out_path.suffix
+        safe_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+        out_path = out_dir / safe_name
+
+    out_path.write_bytes(data)
+    logger.info(f"Downloaded file: {source_url[:120]} -> {out_path} ({len(data)} bytes)")
+    return str(out_path)
 
 
 def _has_whitespace_path(path: Path) -> bool:
@@ -381,12 +447,6 @@ async def download_file(
     Returns:
         Local file path on success, ``None`` on failure.
     """
-    if dest_dir:
-        out_dir = Path(dest_dir)
-    else:
-        out_dir = _fallback_dir(session_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             resp = await client.get(url)
@@ -394,9 +454,6 @@ async def download_file(
                 logger.warning(f"File download failed: HTTP {resp.status_code} for {url}")
                 return None
             data = resp.content
-            if len(data) > max_size:
-                logger.warning(f"File data exceeds limit ({len(data)} bytes), skipping: {url}")
-                return None
 
             # Try to extract file name from Content-Disposition header
             if not file_name:
@@ -413,35 +470,167 @@ async def download_file(
                 logger.warning(f"File decryption failed: {e} for {url}")
                 return None
 
-        # Determine file name: prefer explicit name, then URL path, then random
-        if not file_name:
-            parsed = urlparse(url)
-            path_name = Path(parsed.path).name
-            # Only use URL path name if it looks like a real file name
-            if path_name and "." in path_name and len(path_name) < 200:
-                file_name = path_name
-            else:
-                file_name = f"file_{uuid.uuid4().hex[:8]}"
-
-        # Sanitize file name
-        file_name = file_name.replace("/", "_").replace("\\", "_")
-        # Avoid overwriting: prefix with short uuid if file exists
-        out_path = out_dir / file_name
-        if out_path.exists():
-            stem = out_path.stem
-            suffix = out_path.suffix
-            file_name = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
-            out_path = out_dir / file_name
-
-        out_path.write_bytes(data)
-        logger.info(f"Downloaded file: {url[:120]} -> {out_path} ({len(data)} bytes)")
-        return str(out_path)
+        return _write_file_bytes(
+            data,
+            dest_dir=dest_dir,
+            session_id=session_id,
+            source_url=url,
+            file_name=file_name,
+            max_size=max_size,
+        )
     except httpx.TimeoutException:
         logger.warning(f"File download timed out ({timeout}s): {url}")
         return None
     except Exception as e:
         logger.warning(f"File download error: {e} for {url}")
         return None
+
+
+async def _download_file_via_agui_media_resolver(
+    url: str,
+    dest_dir: Optional[str] = None,
+    session_id: str = "default",
+    file_name: Optional[str] = None,
+    mime_type: Optional[str] = None,
+    timeout: int = DOWNLOAD_TIMEOUT,
+    max_size: int = MAX_IMAGE_SIZE,
+) -> Optional[str]:
+    """Resolve non-HTTP AG-UI media references such as ``wecom://media/...``.
+
+    The resolver endpoint is intentionally generic because AG-UI bridges own
+    platform-specific credentials. It may return either a binary response, a
+    JSON ``{"url": "https://..."}``, a JSON ``{"path": "/local/file"}``, or
+    a JSON ``{"content_base64": "..."}``.
+    """
+    resolver_url = os.environ.get(AGUI_MEDIA_RESOLVER_URL_ENV, "").strip()
+    if not resolver_url:
+        logger.warning("AG-UI media resolver is not configured for %s", url[:80])
+        return None
+
+    headers: dict[str, str] = {}
+    token = os.environ.get(AGUI_MEDIA_RESOLVER_TOKEN_ENV, "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    payload = {
+        "url": url,
+        "scheme": urlparse(url).scheme,
+        "media_id": _media_reference_id(url),
+        "session_id": session_id,
+        "file_name": file_name,
+        "mime_type": mime_type,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.post(resolver_url, json=payload, headers=headers)
+        if resp.status_code != 200:
+            logger.warning(
+                "AG-UI media resolver failed: HTTP %s for %s",
+                resp.status_code,
+                url[:80],
+            )
+            return None
+
+        content_type = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type == "application/json":
+            data = resp.json()
+            if not isinstance(data, dict):
+                logger.warning("AG-UI media resolver returned non-object JSON for %s", url[:80])
+                return None
+
+            local_path = data.get("path") or data.get("file_path")
+            if isinstance(local_path, str) and local_path:
+                path = Path(local_path)
+                if path.exists():
+                    return str(path)
+                logger.warning("AG-UI media resolver returned missing local path: %s", local_path)
+                return None
+
+            resolved_url = data.get("url")
+            if isinstance(resolved_url, str) and resolved_url:
+                return await download_file(
+                    resolved_url,
+                    dest_dir=dest_dir,
+                    session_id=session_id,
+                    file_name=file_name or data.get("file_name"),
+                    timeout=timeout,
+                    max_size=max_size,
+                )
+
+            content_base64 = data.get("content_base64")
+            if isinstance(content_base64, str) and content_base64:
+                return _write_file_bytes(
+                    base64.b64decode(content_base64),
+                    dest_dir=dest_dir,
+                    session_id=session_id,
+                    source_url=url,
+                    file_name=file_name or data.get("file_name"),
+                    max_size=max_size,
+                )
+
+            logger.warning("AG-UI media resolver did not return file content for %s", url[:80])
+            return None
+
+        resolved_name = file_name
+        if not resolved_name:
+            cd = resp.headers.get("content-disposition", "")
+            if cd:
+                resolved_name = _parse_content_disposition_filename(cd)
+        return _write_file_bytes(
+            resp.content,
+            dest_dir=dest_dir,
+            session_id=session_id,
+            source_url=url,
+            file_name=resolved_name,
+            max_size=max_size,
+        )
+    except httpx.TimeoutException:
+        logger.warning("AG-UI media resolver timed out (%ss): %s", timeout, url[:80])
+        return None
+    except Exception as e:
+        logger.warning("AG-UI media resolver error: %s for %s", e, url[:80])
+        return None
+
+
+async def download_file_reference(
+    url: str,
+    dest_dir: Optional[str] = None,
+    session_id: str = "default",
+    file_name: Optional[str] = None,
+    mime_type: Optional[str] = None,
+    timeout: int = DOWNLOAD_TIMEOUT,
+    max_size: int = MAX_IMAGE_SIZE,
+    decrypt_fn: Optional[Callable[[bytes], bytes]] = None,
+) -> Optional[str]:
+    """Download a file reference from AG-UI/channel input.
+
+    HTTP(S) URLs are downloaded directly. ``wecom://media/...`` can be resolved
+    through ``AGUI_MEDIA_RESOLVER_URL``. Unknown URI schemes are rejected so
+    they are not mistaken for local paths.
+    """
+    if _is_http_url(url):
+        return await download_file(
+            url,
+            dest_dir=dest_dir,
+            session_id=session_id,
+            file_name=file_name,
+            timeout=timeout,
+            max_size=max_size,
+            decrypt_fn=decrypt_fn,
+        )
+    if _is_wecom_media_reference(url):
+        return await _download_file_via_agui_media_resolver(
+            url,
+            dest_dir=dest_dir,
+            session_id=session_id,
+            file_name=file_name,
+            mime_type=mime_type,
+            timeout=timeout,
+            max_size=max_size,
+        )
+    logger.warning("Unsupported file reference scheme for AG-UI media: %s", url[:80])
+    return None
 
 
 async def download_files_with_sources(
@@ -453,11 +642,12 @@ async def download_files_with_sources(
     """Download files while preserving the source item for URL-to-path mapping."""
     source_items = [item for item in items if item.get("url")]
     tasks = [
-        download_file(
+        download_file_reference(
             url=item["url"],
             dest_dir=dest_dir,
             session_id=session_id,
             file_name=item.get("file_name"),
+            mime_type=item.get("mime_type"),
             decrypt_fn=decrypt_fn,
         )
         for item in source_items

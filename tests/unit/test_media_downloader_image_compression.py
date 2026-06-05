@@ -77,3 +77,36 @@ async def test_download_images_with_sources_keeps_url_mapping_when_some_download
         (items[1], "/tmp/second.png"),
         (items[2], "/tmp/third.png"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_download_files_with_sources_uses_agui_media_resolver_for_wecom_reference(monkeypatch):
+    item = {
+        "url": "wecom://media/abc123",
+        "mime_type": "application/octet-stream",
+        "file_name": "diag.tar",
+    }
+    calls = []
+
+    async def fake_resolver(url, **kwargs):
+        calls.append((url, kwargs))
+        return "/tmp/diag.tar"
+
+    monkeypatch.setattr(media_downloader, "_download_file_via_agui_media_resolver", fake_resolver)
+
+    assert await media_downloader.download_files_with_sources([item], dest_dir="/tmp/session", session_id="sess") == [
+        (item, "/tmp/diag.tar")
+    ]
+    assert calls == [
+        (
+            "wecom://media/abc123",
+            {
+                "dest_dir": "/tmp/session",
+                "session_id": "sess",
+                "file_name": "diag.tar",
+                "mime_type": "application/octet-stream",
+                "timeout": media_downloader.DOWNLOAD_TIMEOUT,
+                "max_size": media_downloader.MAX_IMAGE_SIZE,
+            },
+        )
+    ]

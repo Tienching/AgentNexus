@@ -328,11 +328,41 @@ class StreamHandler:
         def is_remote_url(value: Any) -> bool:
             return isinstance(value, str) and value.startswith(("http://", "https://"))
 
+        def is_wecom_media_reference(value: Any) -> bool:
+            return isinstance(value, str) and value.startswith("wecom://media/")
+
+        def is_file_download_reference(value: Any) -> bool:
+            return is_remote_url(value) or is_wecom_media_reference(value)
+
         def is_local_reference(value: Any) -> bool:
             return (
                 isinstance(value, str)
                 and bool(value)
                 and not value.startswith(("http://", "https://", "data:"))
+                and "://" not in value
+            )
+
+        def unavailable_file_notice(part: dict[str, Any]) -> str:
+            file_name = (
+                part.get("file_name")
+                or part.get("fileName")
+                or part.get("filename")
+                or part.get("name")
+                or "未命名附件"
+            )
+            url = part.get("url") or part.get("path") or ""
+            if is_wecom_media_reference(url):
+                ref_label = "wecom://media"
+            elif is_remote_url(url):
+                ref_label = "远程 URL"
+            elif isinstance(url, str) and "://" in url:
+                ref_label = f"{url.split('://', 1)[0]}://"
+            else:
+                ref_label = "附件"
+            return (
+                f'[附件未落地] 用户上传的文件 "{file_name}" 只包含 {ref_label} 引用，'
+                "当前服务未配置该协议解析器或解析失败，因此还没有本地文件可读。"
+                "请不要改用设备远程 DIAG 兜底，应要求上游提供可下载 URL/本地路径后再处理该附件。"
             )
 
         image_items = [
@@ -346,7 +376,7 @@ class StreamHandler:
         seen_file_urls: set[str] = set()
 
         def add_file_item(url: Any, source: dict[str, Any] | None = None) -> None:
-            if not is_remote_url(url) or url in seen_file_urls:
+            if not is_file_download_reference(url) or url in seen_file_urls:
                 return
             seen_file_urls.add(url)
             item: dict[str, Any] = {"url": url}
@@ -427,9 +457,13 @@ class StreamHandler:
                 if prepared:
                     localized["path"] = prepared
                     prepared_image_part_paths.append(prepared)
-            elif part_type == "file" and is_local_reference(candidate):
-                localized["path"] = candidate
-                file_part_paths.append(candidate)
+            elif part_type == "file":
+                if is_local_reference(candidate):
+                    localized["path"] = candidate
+                    file_part_paths.append(candidate)
+                else:
+                    localized_parts.append({"type": "text", "content": unavailable_file_notice(localized)})
+                    continue
 
             localized_parts.append(localized)
 
@@ -452,6 +486,10 @@ class StreamHandler:
         existing_file_paths: list[str] = []
         for path in getattr(request_model, "file_paths", None) or []:
             if is_remote_url(path):
+                localized_path = file_url_to_path.get(path)
+                if localized_path:
+                    existing_file_paths.append(localized_path)
+            elif is_wecom_media_reference(path):
                 localized_path = file_url_to_path.get(path)
                 if localized_path:
                     existing_file_paths.append(localized_path)
