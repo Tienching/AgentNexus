@@ -22,7 +22,11 @@ from .observability import record_sampled_event, telemetry
 from ..providers import get_provider_registry
 from ..utils.ids import resolve_session_id
 from .callback_handler import CallbackHandler
-from .media_downloader import download_images_with_sources, prepare_image_for_cli
+from .media_downloader import (
+    download_files_with_sources,
+    download_images_with_sources,
+    prepare_image_for_cli,
+)
 from .stream_archiver import create_archiver
 from .session_storage import get_session_storage
 from src.providers.dispatcher import (
@@ -314,19 +318,51 @@ class StreamHandler:
         session_id: str,
         exec_user: str,
     ) -> None:
-        """Download AG-UI image URLs so the CLI receives local image paths."""
+        """Download AG-UI media URLs so the CLI receives local file paths."""
         content_parts = [
             part
             for part in (getattr(request_model, "content_parts", None) or [])
             if isinstance(part, dict)
         ]
+
+        def is_remote_url(value: Any) -> bool:
+            return isinstance(value, str) and value.startswith(("http://", "https://"))
+
+        def is_local_reference(value: Any) -> bool:
+            return (
+                isinstance(value, str)
+                and bool(value)
+                and not value.startswith(("http://", "https://", "data:"))
+            )
+
         image_items = [
             {"url": part["url"], "mime_type": part.get("mime_type")}
             for part in content_parts
             if part.get("type") == "image"
-            and isinstance(part.get("url"), str)
-            and part["url"].startswith(("http://", "https://"))
+            and is_remote_url(part.get("url"))
         ]
+
+        file_items: list[dict[str, Any]] = []
+        seen_file_urls: set[str] = set()
+
+        def add_file_item(url: Any, source: dict[str, Any] | None = None) -> None:
+            if not is_remote_url(url) or url in seen_file_urls:
+                return
+            seen_file_urls.add(url)
+            item: dict[str, Any] = {"url": url}
+            if source:
+                if source.get("mime_type"):
+                    item["mime_type"] = source.get("mime_type")
+                if source.get("file_name"):
+                    item["file_name"] = source.get("file_name")
+            file_items.append(item)
+
+        for part in content_parts:
+            if part.get("type") == "file":
+                add_file_item(part.get("url"), part)
+
+        for path in getattr(request_model, "file_paths", None) or []:
+            add_file_item(path)
 
         session_dir = Path(settings.user_home_base) / exec_user / ".nexus" / "sessions" / session_id
         dest_dir: str | None = None
@@ -335,7 +371,7 @@ class StreamHandler:
             dest_dir = str(session_dir)
         except OSError as exc:
             logger.warning(
-                f"AG-UI image session directory unavailable, using fallback: {exc}",
+                f"AG-UI media session directory unavailable, using fallback: {exc}",
                 extra={"session_id": session_id},
             )
 
@@ -353,47 +389,89 @@ class StreamHandler:
                     extra={"session_id": session_id},
                 )
 
-        url_to_path = {item["url"]: path for item, path in image_pairs}
+        file_pairs: list[tuple[dict[str, Any], str]] = []
+        if file_items:
+            try:
+                file_pairs = await download_files_with_sources(
+                    file_items,
+                    dest_dir=dest_dir,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"AG-UI file download failed: {exc}",
+                    extra={"session_id": session_id},
+                )
+
+        image_url_to_path = {item["url"]: path for item, path in image_pairs}
+        file_url_to_path = {item["url"]: path for item, path in file_pairs}
         localized_parts: list[dict[str, Any]] = []
-        prepared_part_paths: list[str] = []
+        prepared_image_part_paths: list[str] = []
+        file_part_paths: list[str] = []
         for part in content_parts:
             localized = dict(part)
-            if localized.get("type") == "image" and localized.get("url") in url_to_path:
-                localized["path"] = url_to_path[localized["url"]]
+            part_type = localized.get("type")
+            url = localized.get("url")
+            if part_type == "image" and url in image_url_to_path:
+                localized["path"] = image_url_to_path[url]
+            elif part_type == "file" and url in file_url_to_path:
+                localized["path"] = file_url_to_path[url]
 
             candidate = localized.get("path")
             if not candidate:
-                url = localized.get("url")
-                if isinstance(url, str) and not url.startswith(("http://", "https://", "data:")):
+                if is_local_reference(url):
                     candidate = url
 
-            if isinstance(candidate, str) and candidate:
+            if part_type == "image" and isinstance(candidate, str) and candidate:
                 prepared = await asyncio.to_thread(prepare_image_for_cli, candidate)
                 if prepared:
                     localized["path"] = prepared
-                    prepared_part_paths.append(prepared)
+                    prepared_image_part_paths.append(prepared)
+            elif part_type == "file" and is_local_reference(candidate):
+                localized["path"] = candidate
+                file_part_paths.append(candidate)
 
             localized_parts.append(localized)
 
         request_model.content_parts = localized_parts
 
-        existing_paths: list[str] = []
+        existing_image_paths: list[str] = []
         for path in getattr(request_model, "image_paths", None) or []:
-            if not isinstance(path, str) or path.startswith(("http://", "https://", "data:")):
+            if not is_local_reference(path):
                 continue
             prepared = await asyncio.to_thread(prepare_image_for_cli, path)
             if prepared:
-                existing_paths.append(prepared)
+                existing_image_paths.append(prepared)
 
-        merged_paths: list[str] = []
-        for path in [*existing_paths, *prepared_part_paths]:
-            if path not in merged_paths:
-                merged_paths.append(path)
-        request_model.image_paths = merged_paths
+        merged_image_paths: list[str] = []
+        for path in [*existing_image_paths, *prepared_image_part_paths]:
+            if path not in merged_image_paths:
+                merged_image_paths.append(path)
+        request_model.image_paths = merged_image_paths
+
+        existing_file_paths: list[str] = []
+        for path in getattr(request_model, "file_paths", None) or []:
+            if is_remote_url(path):
+                localized_path = file_url_to_path.get(path)
+                if localized_path:
+                    existing_file_paths.append(localized_path)
+            elif is_local_reference(path):
+                existing_file_paths.append(path)
+
+        merged_file_paths: list[str] = []
+        for path in [*existing_file_paths, *file_part_paths]:
+            if path not in merged_file_paths:
+                merged_file_paths.append(path)
+        request_model.file_paths = merged_file_paths
 
         if image_pairs:
             logger.info(
                 f"AG-UI downloaded {len(image_pairs)} image(s)",
+                extra={"session_id": session_id},
+            )
+        if file_pairs:
+            logger.info(
+                f"AG-UI downloaded {len(file_pairs)} file(s)",
                 extra={"session_id": session_id},
             )
 

@@ -369,11 +369,19 @@ class AGUIRequest(BaseModel):
                 url = item.get("path")
 
             mime_type = item.get("mimeType") or item.get("mime_type") or item.get("mediaType")
+            file_name = (
+                item.get("fileName")
+                or item.get("file_name")
+                or item.get("filename")
+                or item.get("name")
+            )
             if part_type in ("binary", "image", "image_url", "input_image") and url:
                 media_type = "image" if str(mime_type or "").lower().startswith("image/") or part_type != "binary" else "file"
                 normalized = {"type": media_type, "url": str(url)}
                 if mime_type:
                     normalized["mime_type"] = str(mime_type)
+                if media_type == "file" and file_name:
+                    normalized["file_name"] = str(file_name)
                 parts.append(normalized)
                 continue
 
@@ -381,6 +389,8 @@ class AGUIRequest(BaseModel):
                 normalized = {"type": "file", "url": str(url)}
                 if mime_type:
                     normalized["mime_type"] = str(mime_type)
+                if file_name:
+                    normalized["file_name"] = str(file_name)
                 parts.append(normalized)
 
         return parts

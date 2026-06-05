@@ -444,6 +444,37 @@ async def download_file(
         return None
 
 
+async def download_files_with_sources(
+    items: List[dict],
+    dest_dir: Optional[str] = None,
+    session_id: str = "default",
+    decrypt_fn: Optional[Callable[[bytes], bytes]] = None,
+) -> list[tuple[dict, str]]:
+    """Download files while preserving the source item for URL-to-path mapping."""
+    source_items = [item for item in items if item.get("url")]
+    tasks = [
+        download_file(
+            url=item["url"],
+            dest_dir=dest_dir,
+            session_id=session_id,
+            file_name=item.get("file_name"),
+            decrypt_fn=decrypt_fn,
+        )
+        for item in source_items
+    ]
+    if not tasks:
+        return []
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    pairs: list[tuple[dict, str]] = []
+    for item, result in zip(source_items, results):
+        if isinstance(result, str):
+            pairs.append((item, result))
+        elif isinstance(result, Exception):
+            logger.warning(f"File download exception: {result}")
+    return pairs
+
+
 async def download_files(
     items: List[dict],
     dest_dir: Optional[str] = None,
