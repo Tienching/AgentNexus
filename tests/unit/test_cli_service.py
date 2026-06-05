@@ -131,6 +131,31 @@ class TestCLIExecutorAlias:
         idx_model = cmd.index("--model")
         assert cmd[idx_model + 1] == "gemini-3.5-flash"
 
+    def test_codebuddy_provider_enables_native_analyst_team(self):
+        cfg = Mock()
+        cfg.agent_cli_command_map = {}
+        cfg.cli_command = "claude"
+        cfg.codebuddy_default_model = "glm-5v-turbo"
+        executor = CLIExecutor(config=cfg)
+
+        cmd = executor._build_command(
+            exec_user="ubuntu",
+            content="Hello",
+            use_continue=False,
+            agent_type="codebuddy",
+        )
+
+        assert "--agents" in cmd
+        agents = json.loads(cmd[cmd.index("--agents") + 1])
+        assert "analyst" in agents
+        assert agents["analyst"]["description"]
+        assert "SendMessage" in agents["analyst"]["prompt"]
+        assert "--swarm" in cmd
+        assert "--subagent-permission-mode" in cmd
+        assert cmd[cmd.index("--subagent-permission-mode") + 1] == "bypassPermissions"
+        assert "--max-turns" in cmd
+        assert int(cmd[cmd.index("--max-turns") + 1]) >= 80
+
     def test_explicit_model_overrides_codebuddy_default_model(self):
         cfg = Mock()
         cfg.agent_cli_command_map = {}

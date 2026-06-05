@@ -1155,6 +1155,29 @@ class CLIExecutor:
             or None
         )
 
+    def _codebuddy_agents_json(self) -> str:
+        """Return built-in CodeBuddy teammates used by RCA orchestration prompts."""
+        return json.dumps(
+            {
+                "analyst": {
+                    "description": (
+                        "RCA analyst teammate for independent evidence collection, "
+                        "hypothesis testing, and concise conclusion reporting."
+                    ),
+                    "prompt": (
+                        "You are an RCA analyst teammate. Work independently on the "
+                        "assigned evidence gap. Prefer the smallest useful set of tools, "
+                        "reuse existing collected_data and expert_conclusions, and avoid "
+                        "duplicating another analyst's scope. Return a concise conclusion "
+                        "with evidence triples, confidence, and a machine-readable JSON "
+                        "summary. If running in a CodeBuddy team, send the final conclusion "
+                        "back to main with SendMessage."
+                    ),
+                }
+            },
+            ensure_ascii=False,
+        )
+
     def _build_command(
         self,
         exec_user: str,
@@ -1338,6 +1361,13 @@ class CLIExecutor:
             ])
             if model_param:
                 cmd.extend(["--model", model_param])
+            if is_codebuddy:
+                cmd.extend([
+                    "--agents", self._codebuddy_agents_json(),
+                    "--subagent-permission-mode", "bypassPermissions",
+                    "--swarm",
+                    "--max-turns", "80",
+                ])
             cmd.extend(["-p", message, "--dangerously-skip-permissions"])
         else:
             # Unknown provider — fall back to Claude-style, log warning
