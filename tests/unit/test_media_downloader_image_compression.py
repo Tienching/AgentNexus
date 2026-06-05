@@ -110,3 +110,17 @@ async def test_download_files_with_sources_uses_agui_media_resolver_for_wecom_re
             },
         )
     ]
+
+
+def test_write_file_bytes_improves_generic_drawio_filename(tmp_path):
+    path = media_downloader._write_file_bytes(
+        b"<mxfile host=\"app.diagrams.net\"></mxfile>",
+        dest_dir=str(tmp_path),
+        session_id="sess",
+        source_url="https://example.com/file.bin",
+        file_name="file.bin",
+        max_size=media_downloader.MAX_IMAGE_SIZE,
+    )
+
+    assert path is not None
+    assert Path(path).name == "file.drawio"

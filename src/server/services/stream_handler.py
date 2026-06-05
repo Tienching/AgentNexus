@@ -375,6 +375,14 @@ class StreamHandler:
         file_items: list[dict[str, Any]] = []
         seen_file_urls: set[str] = set()
 
+        def get_part_file_name(source: dict[str, Any]) -> Any:
+            return (
+                source.get("file_name")
+                or source.get("fileName")
+                or source.get("filename")
+                or source.get("name")
+            )
+
         def add_file_item(url: Any, source: dict[str, Any] | None = None) -> None:
             if not is_file_download_reference(url) or url in seen_file_urls:
                 return
@@ -383,8 +391,9 @@ class StreamHandler:
             if source:
                 if source.get("mime_type"):
                     item["mime_type"] = source.get("mime_type")
-                if source.get("file_name"):
-                    item["file_name"] = source.get("file_name")
+                file_name = get_part_file_name(source)
+                if file_name:
+                    item["file_name"] = file_name
             file_items.append(item)
 
         for part in content_parts:

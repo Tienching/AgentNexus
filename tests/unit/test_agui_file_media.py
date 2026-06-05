@@ -106,6 +106,52 @@ async def test_agui_file_url_is_downloaded_and_replaced_with_local_path(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_agui_file_part_filename_alias_is_passed_to_downloader(tmp_path, monkeypatch):
+    local_file = tmp_path / "report.pdf"
+    local_file.write_bytes(b"%PDF-1.4 test")
+    captured = {}
+
+    async def fake_download_files_with_sources(items, **kwargs):
+        captured["items"] = items
+        return [(items[0], str(local_file))]
+
+    monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+    monkeypatch.setattr(
+        stream_handler,
+        "download_files_with_sources",
+        fake_download_files_with_sources,
+        raising=False,
+    )
+
+    request = RequestContext(
+        content="请总结附件",
+        user="tester",
+        session_id="agui-file-session",
+        exec_user="tester",
+        content_parts=[
+            {"type": "text", "content": "请总结附件"},
+            {
+                "type": "file",
+                "url": "https://example.com/report.pdf",
+                "mime_type": "application/pdf",
+                "filename": "report.pdf",
+            },
+        ],
+    )
+
+    handler = StreamHandler.__new__(StreamHandler)
+    await handler._localize_agui_image_parts(request, "agui-file-session", "tester")
+
+    assert captured["items"] == [
+        {
+            "url": "https://example.com/report.pdf",
+            "mime_type": "application/pdf",
+            "file_name": "report.pdf",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_agui_wecom_media_reference_can_be_resolved_to_local_path(tmp_path, monkeypatch):
     local_file = tmp_path / "diag.tar"
     local_file.write_bytes(b"tar data")

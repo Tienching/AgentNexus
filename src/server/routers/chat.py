@@ -2,8 +2,10 @@
 """Chat streaming endpoint router"""
 
 import json
+import re
 import uuid
 from typing import Any, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Request, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -17,6 +19,82 @@ from ..utils.ids import resolve_session_id, resolve_run_id, gen_run_id, gen_sess
 
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
+
+_SENSITIVE_FIELD_RE = re.compile(
+    r"(authorization|token|secret|password|api[_-]?key|signature|credential|media[_-]?id)",
+    re.IGNORECASE,
+)
+_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def _redact_url_for_log(value: str) -> str:
+    """Keep URL shape for debugging while removing signed query values."""
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return value
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return value
+
+    query = urlencode(
+        [(key, "<redacted>") for key, _value in parse_qsl(parsed.query, keep_blank_values=True)],
+        doseq=True,
+    )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
+
+
+def _sanitize_debug_string(value: str) -> str:
+    if value.startswith("wecom://media/"):
+        return "wecom://media/<redacted>"
+    if value.startswith(("http://", "https://")):
+        return _redact_url_for_log(value)
+    value = _URL_RE.sub(lambda match: _redact_url_for_log(match.group(0)), value)
+    if len(value) > 1000:
+        return value[:1000] + f"...[truncated, total: {len(value)} chars]"
+    return value
+
+
+def _sanitize_agui_debug_value(value: Any, key: str = "") -> Any:
+    if _SENSITIVE_FIELD_RE.search(key):
+        return "***REDACTED***"
+    if isinstance(value, str):
+        return _sanitize_debug_string(value)
+    if isinstance(value, list):
+        return [_sanitize_agui_debug_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(item_key): _sanitize_agui_debug_value(item_value, str(item_key))
+            for item_key, item_value in value.items()
+        }
+    return value
+
+
+def _has_agui_media_debug_signal(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"content_parts", "file_paths", "image_paths"} and item:
+                return True
+            if _has_agui_media_debug_signal(item):
+                return True
+    elif isinstance(value, list):
+        return any(_has_agui_media_debug_signal(item) for item in value)
+    elif isinstance(value, str):
+        lowered = value.lower()
+        return "wecom://media/" in lowered or "cos" in lowered or "q-signature" in lowered
+    return False
+
+
+def _log_agui_debug_dump(body_dict: dict[str, Any]) -> None:
+    if not _has_agui_media_debug_signal(body_dict):
+        return
+
+    logger.info(
+        "AG-UI request debug dump",
+        extra={
+            "agui_request_debug": _sanitize_agui_debug_value(body_dict),
+        },
+    )
 
 
 def _normalize_selector(value: Any) -> str:
@@ -197,6 +275,8 @@ async def chat_stream(request: Request, exec_user: str):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Request body must be a JSON object",
         )
+
+    _log_agui_debug_dump(body_dict)
 
     # 兼容 legacy/minimal 请求：仅包含 user/content
     if "threadId" not in body_dict and "runId" not in body_dict:

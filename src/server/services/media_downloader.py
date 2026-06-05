@@ -105,6 +105,40 @@ def _safe_file_name(file_name: Optional[str], source_url: str) -> str:
     return file_name.replace("/", "_").replace("\\", "_")
 
 
+def _is_generic_file_name(file_name: Optional[str]) -> bool:
+    if not file_name:
+        return True
+    return Path(str(file_name).strip()).name.lower() in {
+        "file",
+        "file.bin",
+        "attachment",
+        "attachment.bin",
+        "download",
+        "download.bin",
+    }
+
+
+def _guess_file_name_from_bytes(file_name: Optional[str], data: bytes) -> Optional[str]:
+    """Improve generic names like file.bin when the bytes reveal a format."""
+    if not _is_generic_file_name(file_name):
+        return file_name
+
+    stripped = data.lstrip()
+    if stripped.startswith(b"PK\x03\x04"):
+        return "file.zip"
+    if stripped.startswith(b"%PDF-"):
+        return "file.pdf"
+    if len(data) > 265 and data[257:262] == b"ustar":
+        return "file.tar"
+    if stripped.startswith(b"\x1f\x8b"):
+        return "file.gz"
+    if stripped.startswith(b"<mxfile"):
+        return "file.drawio"
+    if stripped.startswith(b"<?xml") or stripped.startswith(b"<"):
+        return "file.xml"
+    return file_name
+
+
 def _write_file_bytes(
     data: bytes,
     *,
@@ -119,6 +153,7 @@ def _write_file_bytes(
         return None
 
     out_dir = _out_dir(dest_dir, session_id)
+    file_name = _guess_file_name_from_bytes(file_name, data)
     safe_name = _safe_file_name(file_name, source_url)
     out_path = out_dir / safe_name
     if out_path.exists():
@@ -455,11 +490,13 @@ async def download_file(
                 return None
             data = resp.content
 
-            # Try to extract file name from Content-Disposition header
-            if not file_name:
+            # Try to extract file name from Content-Disposition header.
+            # Prefer it when the platform only supplied a generic placeholder
+            # such as file.bin.
+            if _is_generic_file_name(file_name):
                 cd = resp.headers.get("content-disposition", "")
                 if cd:
-                    file_name = _parse_content_disposition_filename(cd)
+                    file_name = _parse_content_disposition_filename(cd) or file_name
 
         # Decrypt if needed (e.g. WeCom encrypted file attachments)
         if decrypt_fn:
