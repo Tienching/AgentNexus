@@ -18,7 +18,8 @@ from src.runtime.events.agui import ToolCallStartEvent, build_tool_call_name
         ("Bash", {"description": "收集系统状态", "command": "uname -a"}, "Bash: 收集系统状态"),
         ("web_search", {"query": "配置下发超时"}, "web_search: 配置下发超时"),
         ("Read", '{"file_path": "/tmp/a.py"}', "Read: /tmp/a.py"),
-        ("TaskOutput", {"task_id": "agent-123", "block": True}, "TaskOutput: 等待专家返回结果"),
+        ("TaskOutput", {"task_id": "agent-123", "block": True}, "TaskOutput: 等待任务输出"),
+        ("TaskOutput", {"task_id": "agent-123", "block": False}, "TaskOutput: 读取任务输出"),
         ("Read", "not-json", "Read"),
     ],
 )

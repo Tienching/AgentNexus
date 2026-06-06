@@ -134,7 +134,7 @@ async def test_codebuddy_wait_state_auto_continues_before_run_finished():
     joined = "".join(chunks)
     assert executor.calls == 2
     assert "已开始诊断" in joined
-    assert "TaskOutput 表示正在等待专家返回结果" in joined
+    assert "TaskOutput 表示" not in joined
     assert "内部工具调用将被隐藏" not in joined
     assert "Analyst 正在后台运行" not in joined
     assert "# 故障诊断报告" in joined
@@ -150,7 +150,7 @@ def test_terminal_filter_keeps_tool_calls_visible_while_holding_draft_text():
     tool_payload = {
         "type": "TOOL_CALL_START",
         "toolCallId": "tool-taskoutput-1",
-        "toolCallName": "TaskOutput: 等待专家返回结果",
+        "toolCallName": "TaskOutput: 等待任务输出",
     }
 
     assert terminal_filter.filter_agui_payload(tool_payload) == [tool_payload]

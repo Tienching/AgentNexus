@@ -215,7 +215,9 @@ def build_tool_call_name(
     if isinstance(params, dict):
         tool_key = (tool_name or "").strip().lower()
         if tool_key == "taskoutput":
-            return "TaskOutput: 等待专家返回结果"
+            if params.get("block") is True:
+                return "TaskOutput: 等待任务输出"
+            return "TaskOutput: 读取任务输出"
 
         if tool_key in ("skill", "use_skill"):
             skill = (
