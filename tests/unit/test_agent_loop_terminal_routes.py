@@ -20,6 +20,17 @@ class CountingProvider(LLMProvider):
         return "test-model"
 
 
+class RecordingProvider(CountingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_messages = []
+
+    async def chat(self, messages, *args, **kwargs) -> LLMResponse:  # noqa: ANN001, ANN002, ANN003
+        self.calls += 1
+        self.last_messages = messages
+        return LLMResponse(content="done")
+
+
 class DummyBus:
     async def publish_outbound(self, _msg):
         return None
@@ -53,3 +64,37 @@ async def test_suppresses_late_teammate_message_after_terminal_route(tmp_path):
 
     assert response is None
     assert provider.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_compacts_large_tool_results_before_provider_call(tmp_path):
+    provider = RecordingProvider()
+    loop = AgentLoop(
+        bus=DummyBus(),
+        provider=provider,
+        workspace=tmp_path,
+        context_window_tokens=10_000,
+    )
+    large_result = "x" * 80_000
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "start"},
+        {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "Bash", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "name": "Bash", "content": large_result},
+        {"role": "assistant", "content": "noted"},
+        {"role": "user", "content": "more"},
+        {"role": "assistant", "content": "more"},
+        {"role": "user", "content": "more2"},
+        {"role": "assistant", "content": "more2"},
+        {"role": "user", "content": "finish"},
+    ]
+
+    await loop._run_agent_loop(messages)
+
+    sent_content = "\n".join(str(msg.get("content", "")) for msg in provider.last_messages)
+    assert large_result not in sent_content
+    assert "MicroCompact" in sent_content or "EMERGENCY" in sent_content

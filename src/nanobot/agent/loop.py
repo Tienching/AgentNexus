@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 
-from src.nanobot.agent.context import ContextBuilder
+from src.nanobot.agent.context import ContextBudget, ContextBudgetManager, ContextBuilder
 from src.nanobot.agent.permissions import PermissionGate, PermissionMode, create_permission_gate
 from src.nanobot.agent.hooks import ToolHooks
 from src.nanobot.agent.memory import MemoryConsolidator
@@ -157,6 +157,13 @@ class AgentLoop:
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
             max_completion_tokens=provider.generation.max_tokens,
+        )
+        self.context_budget_manager = ContextBudgetManager(
+            ContextBudget(
+                total_tokens=context_window_tokens,
+                max_completion_tokens=provider.generation.max_tokens,
+            ),
+            consolidator=None,
         )
         self._register_default_tools()
         self.commands = CommandRouter()
@@ -435,6 +442,15 @@ class AgentLoop:
             iteration += 1
 
             tool_defs = self.tools.get_definitions()
+            budget_result = await self.context_budget_manager.check_and_compact(messages)
+            if budget_result.actions_taken:
+                logger.info(
+                    "Context compacted before LLM call: {} -> {} tokens; actions={}",
+                    budget_result.tokens_before,
+                    budget_result.tokens_after,
+                    budget_result.actions_taken,
+                )
+                messages = budget_result.messages
 
             if on_stream:
                 response = await self.provider.chat_stream_with_retry(
