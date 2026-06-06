@@ -7,6 +7,7 @@ Handle AG-UI protocol streaming responses (Legacy protocol removed)
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,6 +40,16 @@ from src.runtime.streaming import StreamOrchestrator
 logger = get_logger(__name__)
 
 _background_callback_tasks: set[asyncio.Task] = set()
+
+_AGENTHUB_GROUP_HISTORY_REQUEST_MARKERS = (
+    "群历史",
+    "聊天历史",
+    "历史消息",
+    "聊天记录",
+    "总结一下历史",
+    "总结历史",
+)
+_AGENTHUB_GROUP_ID_RE = re.compile(r"群\s*ID\s*=\s*['\"]?([^'\"\s/>]+)")
 
 
 def _track_background_callback_task(task: asyncio.Task) -> None:
@@ -311,6 +322,64 @@ class StreamHandler:
             if media_parts
             else []
         )
+
+    def _is_agenthub_group_history_request(self, request_model: RequestContext) -> bool:
+        text_parts: list[str] = []
+        try:
+            text_parts.append(self._stringify_request_part(getattr(request_model, "content", "")))
+        except Exception:
+            pass
+        try:
+            for part in getattr(request_model, "content_parts", []) or []:
+                if isinstance(part, dict):
+                    text_parts.append(self._stringify_request_part(part.get("content") or part.get("text")))
+        except Exception:
+            pass
+
+        text = "\n".join(part for part in text_parts if part)
+        if not text:
+            return False
+        if not any(marker in text for marker in _AGENTHUB_GROUP_HISTORY_REQUEST_MARKERS):
+            return False
+        return bool(_AGENTHUB_GROUP_ID_RE.search(text))
+
+    def _stringify_request_part(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+
+    def _prepare_fresh_agenthub_history_request(self, request_model: RequestContext) -> bool:
+        """Force group-history turns to query AgentHub instead of reusing old tool output."""
+        if not self._is_agenthub_group_history_request(request_model):
+            return False
+
+        original_content = (getattr(request_model, "content", "") or "").strip()
+        self._set_request_content(
+            request_model,
+            f"""[AgentHub Data Freshness Requirement]
+
+本轮用户请求是总结群聊天历史。必须重新调用 `agenthub-data` 查询当前群 ID 的最新客服号聊天历史。
+不得复用本会话中任何此前的 `agenthub-data` / `search_group_chat_history` / Bash 查询结果，也不得基于“刚才的查询结果”直接作答。
+最终回复必须只基于本轮新调用得到的工具输出；如果工具未在本轮执行成功，请明确说明查询失败和失败原因。
+
+---
+
+用户原始请求：
+{original_content}""",
+        )
+        request_model.cli_session_id = None
+        request_model.model_changed = True
+        request_model.metadata["force_fresh_agenthub_history"] = True
+        logger.info(
+            "Forced fresh AgentHub group-history query",
+            extra={"session_id": getattr(request_model, "session_id", None)},
+        )
+        return True
 
     async def _localize_agui_image_parts(
         self,
@@ -755,6 +824,8 @@ class StreamHandler:
             if default_model:
                 self._apply_model_with_change_detection(request_model, session_id, default_model, storage, "provider-default")
                 model_name = default_model
+
+        self._prepare_fresh_agenthub_history_request(request_model)
 
         # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
         if workspace_provider:

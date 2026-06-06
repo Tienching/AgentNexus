@@ -315,6 +315,8 @@ class StreamOrchestrator:
             flags=re.IGNORECASE,
         )
         user_text = user_text.replace("交换机智能诊断助手", "")
+        if any(marker in user_text for marker in _GROUP_HISTORY_REQUEST_MARKERS):
+            return False
 
         diagnosis_keywords = (
             "RCA",
