@@ -121,6 +121,29 @@ async def test_codebuddy_wait_state_auto_continues_before_run_finished():
     assert request.content_parts == []
 
 
+def test_codebuddy_wait_continue_requires_retry_when_experts_missing():
+    orchestrator = StreamOrchestrator()
+    request = SimpleNamespace(
+        content="诊断端口抖动",
+        content_parts=[{"type": "text", "content": "诊断端口抖动"}],
+        image_paths=["/tmp/a.png"],
+        file_paths=["/tmp/a.tar"],
+        session_cleared=True,
+    )
+
+    orchestrator._prepare_codebuddy_agent_wait_continue(request, ["agent-abc123", "agent-def456"])
+
+    assert "TaskOutput(block=true, timeout=600)" in request.content
+    assert "未读到可读专家最终结论" in request.content
+    assert "只能输出 RETRY_REQUIRED 或 ESCALATE" in request.content
+    assert "不得输出 FINAL_READY" in request.content
+    assert "不得输出完整故障诊断报告" in request.content
+    assert request.content_parts == []
+    assert request.image_paths == []
+    assert request.file_paths == []
+    assert request.session_cleared is False
+
+
 @pytest.mark.asyncio
 async def test_codebuddy_final_report_does_not_auto_continue():
     orchestrator = StreamOrchestrator()

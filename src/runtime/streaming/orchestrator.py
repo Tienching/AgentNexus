@@ -312,11 +312,13 @@ class StreamOrchestrator:
             "上一轮已经启动 CodeBuddy analyst，但用户可见输出停在等待状态，这不是完成态。\n"
             f"已启动但未汇总的 task_id: {task_list}\n\n"
             "请继续同一个 RCA 会话，并遵守：\n"
-            "1. 不要重新派发重复 analyst；先读取已经收到的 SendMessage/专家结论。\n"
+            "1. 不要重新派发重复 analyst；先读取已经收到的 SendMessage/专家结论文件。\n"
             "2. 如果仍未读到结论，必须对未完成 task 调用 TaskOutput(block=true, timeout=600) 形成等待屏障。\n"
-            "3. 拿到可读专家结论后，必须由 AGENTS 自行裁决并输出 FINAL_READY 的完整故障诊断报告；"
-            "若工具明确失败，则输出 RETRY_REQUIRED、NEED_USER_INPUT 或 ESCALATE。\n"
-            "4. 禁止只回复“正在等待/后台运行/稍后返回/收到后汇总”。"
+            "3. 只有所有已启动 analyst 都返回可读专家最终结论，才允许进入 FINAL_READY 并输出完整故障诊断报告。\n"
+            "4. 如果 TaskOutput 返回 task 不存在、running 后仍未读到可读专家最终结论、仅有 evidence_brief、"
+            "仅有你自己的推理、工具超时或专家失败，只能输出 RETRY_REQUIRED 或 ESCALATE；"
+            "不得输出 FINAL_READY，不得输出完整故障诊断报告，不得以 AGENTS 自行裁决绕过专家。\n"
+            "5. 禁止只回复“正在等待/后台运行/稍后返回/收到后汇总”。"
         )
         try:
             setattr(request_model, "content", followup)
