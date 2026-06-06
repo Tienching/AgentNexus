@@ -69,6 +69,8 @@ _GROUP_HISTORY_REQUEST_MARKERS = (
     "历史消息",
     "聊天记录",
 )
+_ACTIVE_SESSION_STREAMS: set[str] = set()
+_ACTIVE_SESSION_STREAMS_LOCK = asyncio.Lock()
 
 
 class StreamOrchestrator:
@@ -114,6 +116,30 @@ class StreamOrchestrator:
         terminal_filter = TerminalOutputFilter(
             enabled=self._should_filter_terminal_output(request_model, initial_messages)
         )
+        session_lock_key = (session_id or getattr(request_model, "session_id", "") or "").strip()
+        session_lock_acquired = False
+        if session_lock_key:
+            async with _ACTIVE_SESSION_STREAMS_LOCK:
+                if session_lock_key in _ACTIVE_SESSION_STREAMS:
+                    await archiver.on_run_started(initial_messages)
+                    start_event = adapter.create_start_event()
+                    if start_event:
+                        yield start_event
+                    busy_sse = self._build_text_message_sse(
+                        adapter,
+                        "上一轮诊断仍在处理中。为避免同一会话并发 resume 导致上下文串扰，本轮未启动新的诊断；请等待上一轮完成后再发送这个问题。",
+                    )
+                    self._schedule_archive_converted(busy_sse, archiver)
+                    yield busy_sse
+                    end_event = adapter.create_end_event()
+                    if end_event:
+                        yield end_event
+                    await self._flush_pending_archives()
+                    await archiver.on_run_finished()
+                    return
+                _ACTIVE_SESSION_STREAMS.add(session_lock_key)
+                session_lock_acquired = True
+
         try:
             await archiver.on_run_started(initial_messages)
 
@@ -121,6 +147,14 @@ class StreamOrchestrator:
             if start_event:
                 event_count += self._count_sse_events(start_event)
                 yield start_event
+            if terminal_filter.enabled:
+                progress_sse = self._build_text_message_sse(
+                    adapter,
+                    "已开始诊断，正在采集和核验证据。过程中的内部工具调用将被隐藏，完成后会直接返回诊断报告。",
+                )
+                self._schedule_archive_converted(progress_sse, archiver)
+                event_count += self._count_sse_events(progress_sse)
+                yield progress_sse
 
             text_parts: list[str] = []
             visible_text_parts: list[str] = []
@@ -263,6 +297,10 @@ class StreamOrchestrator:
             except Exception:
                 pass
             yield adapter.create_error_event(str(e))
+        finally:
+            if session_lock_acquired and session_lock_key:
+                async with _ACTIVE_SESSION_STREAMS_LOCK:
+                    _ACTIVE_SESSION_STREAMS.discard(session_lock_key)
 
     def _schedule_archive_converted(self, converted_sse: str, archiver: Any) -> None:
         for payload in self._iter_agui_payloads(converted_sse):
@@ -653,3 +691,17 @@ class StreamOrchestrator:
         except Exception as e:
             logger.warning(f"Failed to build text content SSE: {e}")
             return None
+
+    def _build_text_message_sse(self, adapter: Any, text: str) -> str:
+        message_id = None
+        try:
+            message_id = getattr(getattr(adapter, "state", None), "current_message_id", None)
+        except Exception:
+            message_id = None
+        message_id = message_id or f"nexus-status-{uuid.uuid4().hex}"
+        payloads = [
+            {"type": "TEXT_MESSAGE_START", "messageId": message_id, "role": "assistant"},
+            {"type": "TEXT_MESSAGE_CONTENT", "messageId": message_id, "delta": text},
+            {"type": "TEXT_MESSAGE_END", "messageId": message_id},
+        ]
+        return "".join(self._format_agui_payload_sse(payload) for payload in payloads)
