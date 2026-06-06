@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.core.streaming.orchestrator import TerminalOutputFilter
 from src.runtime.streaming.orchestrator import StreamOrchestrator
 
 
@@ -133,6 +134,8 @@ async def test_codebuddy_wait_state_auto_continues_before_run_finished():
     joined = "".join(chunks)
     assert executor.calls == 2
     assert "已开始诊断" in joined
+    assert "TaskOutput 表示正在等待专家返回结果" in joined
+    assert "内部工具调用将被隐藏" not in joined
     assert "Analyst 正在后台运行" not in joined
     assert "# 故障诊断报告" in joined
     assert joined.rfind("RUN_FINISHED") > joined.rfind("# 故障诊断报告")
@@ -140,6 +143,22 @@ async def test_codebuddy_wait_state_auto_continues_before_run_finished():
     assert "agent-68335b40" in executor.contents[1]
     assert "TaskOutput(block=true, timeout=600)" in executor.contents[1]
     assert request.content_parts == []
+
+
+def test_terminal_filter_keeps_tool_calls_visible_while_holding_draft_text():
+    terminal_filter = TerminalOutputFilter(enabled=True)
+    tool_payload = {
+        "type": "TOOL_CALL_START",
+        "toolCallId": "tool-taskoutput-1",
+        "toolCallName": "TaskOutput: 等待专家返回结果",
+    }
+
+    assert terminal_filter.filter_agui_payload(tool_payload) == [tool_payload]
+    assert terminal_filter.filter_agui_payload({
+        "type": "TEXT_MESSAGE_CONTENT",
+        "messageId": "msg-1",
+        "delta": "Analyst 正在后台运行，等待专家返回。",
+    }) == []
 
 
 def test_codebuddy_wait_continue_requires_retry_when_experts_missing():

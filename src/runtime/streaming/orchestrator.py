@@ -150,7 +150,7 @@ class StreamOrchestrator:
             if terminal_filter.enabled:
                 progress_sse = self._build_text_message_sse(
                     adapter,
-                    "已开始诊断，正在采集和核验证据。过程中的内部工具调用将被隐藏，完成后会直接返回诊断报告。",
+                    "已开始诊断，正在采集和核验证据。过程中的关键工具进度会持续显示；TaskOutput 表示正在等待专家返回结果。",
                 )
                 self._schedule_archive_converted(progress_sse, archiver)
                 event_count += self._count_sse_events(progress_sse)

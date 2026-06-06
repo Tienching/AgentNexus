@@ -177,6 +177,20 @@ class TestToolUseEvent:
         assert "toolCallDisplayName" not in events[0]
         assert "toolCallDescription" not in events[0]
 
+    def test_convert_taskoutput_tool_use_shows_waiting_description(self, adapter):
+        """TaskOutput 应展示为等待专家结果，而不是裸工具名。"""
+        event = {
+            "type": "tool_use",
+            "tool_id": "tool-taskoutput-1",
+            "tool_name": "TaskOutput",
+            "parameters": {"task_id": "agent-123", "block": True, "timeout": 600},
+        }
+        result = adapter.convert(event)
+
+        events = parse_sse_events(result)
+        assert events[0]["type"] == "TOOL_CALL_START"
+        assert events[0]["toolCallName"] == "TaskOutput: 等待专家返回结果"
+
     def test_stream_event_tool_use_emits_start_before_args(self, adapter):
         """CodeBuddy stream_event 工具流也必须先发 START 再发 ARGS。"""
         start = adapter.convert({
@@ -203,6 +217,33 @@ class TestToolUseEvent:
         assert events[0]["toolCallName"] == "Read: /tmp/a.py"
         assert "toolCallDisplayName" not in events[0]
         assert "toolCallDescription" not in events[0]
+
+    def test_stream_event_taskoutput_shows_waiting_description(self, adapter):
+        """stream_event 形式的 TaskOutput 也应展示为等待专家结果。"""
+        start = adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "tool_use", "id": "tool-taskoutput-1", "name": "TaskOutput"},
+            },
+        })
+        delta = adapter.convert({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"task_id": "agent-123", "block": true, "timeout": 600}',
+                },
+            },
+        })
+
+        assert start is None
+        events = parse_sse_events(delta)
+        assert [e["type"] for e in events] == ["TOOL_CALL_START", "TOOL_CALL_ARGS"]
+        assert events[0]["toolCallName"] == "TaskOutput: 等待专家返回结果"
 
     def test_stream_event_skill_waits_for_skill_name(self, adapter):
         """Skill 参数分片时，等拿到具体 skill 名称后再发 START。"""

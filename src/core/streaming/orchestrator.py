@@ -62,7 +62,7 @@ class TombstoneRecord:
 
 @dataclass
 class TerminalOutputFilter:
-    """Hide RCA orchestration chatter before a terminal user-visible answer."""
+    """Hold RCA draft text until a terminal user-visible answer is available."""
 
     enabled: bool
     buffer: str = ""
@@ -79,21 +79,11 @@ class TerminalOutputFilter:
         "NEED_USER_INPUT",
         "ESCALATE",
     )
-    INTERNAL_TOOL_EVENT_TYPES = (
-        "TOOL_CALL_START",
-        "TOOL_CALL_ARGS",
-        "TOOL_CALL_RESULT",
-        "TOOL_CALL_END",
-    )
-
     def filter_agui_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         if not self.enabled:
             return [payload]
 
         event_type = payload.get("type")
-        if event_type in self.INTERNAL_TOOL_EVENT_TYPES:
-            return []
-
         if event_type == "TEXT_MESSAGE_START":
             self.message_id = payload.get("messageId") or self.message_id
             if self.terminal_seen:
