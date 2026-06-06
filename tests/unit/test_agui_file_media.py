@@ -106,6 +106,64 @@ async def test_agui_file_url_is_downloaded_and_replaced_with_local_path(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_agui_top_level_binary_content_part_is_downloaded(tmp_path, monkeypatch):
+    local_file = tmp_path / "DEBUG_STAT_COUN.1780578903.94.core.gz"
+    local_file.write_bytes(b"gzip data")
+    captured = {}
+
+    async def fake_download_files_with_sources(items, **kwargs):
+        captured["items"] = items
+        captured["dest_dir"] = kwargs.get("dest_dir")
+        return [(items[0], str(local_file))]
+
+    monkeypatch.setattr(settings, "user_home_base", str(tmp_path))
+    monkeypatch.setattr(
+        stream_handler,
+        "download_files_with_sources",
+        fake_download_files_with_sources,
+        raising=False,
+    )
+
+    agui_request = AGUIRequest.model_validate(
+        {
+            "threadId": "agui-top-level-file-session",
+            "runId": "run-top-level-file",
+            "messages": [{"role": "user", "content": "请分析附件"}],
+            "content_parts": [
+                {"type": "text", "content": "请分析附件"},
+                {
+                    "type": "binary",
+                    "mimeType": "application/gzip",
+                    "url": "https://example.com/DEBUG_STAT_COUN.1780578903.94.core.gz",
+                    "fileName": "DEBUG_STAT_COUN.1780578903.94.core.gz",
+                },
+            ],
+        }
+    )
+
+    request = RequestContext(
+        content=agui_request.get_user_content(),
+        user="tester",
+        session_id=agui_request.threadId,
+        exec_user="tester",
+        content_parts=list(agui_request.content_parts),
+    )
+
+    handler = StreamHandler.__new__(StreamHandler)
+    await handler._localize_agui_image_parts(request, agui_request.threadId, "tester")
+
+    assert captured["items"] == [
+        {
+            "url": "https://example.com/DEBUG_STAT_COUN.1780578903.94.core.gz",
+            "mime_type": "application/gzip",
+            "file_name": "DEBUG_STAT_COUN.1780578903.94.core.gz",
+        }
+    ]
+    assert Path(captured["dest_dir"]).name == "agui-top-level-file-session"
+    assert request.file_paths == [str(local_file)]
+
+
+@pytest.mark.asyncio
 async def test_agui_file_part_filename_alias_is_passed_to_downloader(tmp_path, monkeypatch):
     local_file = tmp_path / "report.pdf"
     local_file.write_bytes(b"%PDF-1.4 test")

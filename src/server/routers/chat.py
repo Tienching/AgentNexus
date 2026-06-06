@@ -85,10 +85,86 @@ def _has_agui_media_debug_signal(value: Any) -> bool:
     return False
 
 
-def _log_agui_debug_dump(body_dict: dict[str, Any]) -> None:
+def _summarize_agui_headers(request: Request) -> dict[str, str]:
+    summary: dict[str, str] = {}
+    for key, value in request.headers.items():
+        key_lower = key.lower()
+        if _SENSITIVE_FIELD_RE.search(key_lower) or key_lower in {"cookie", "set-cookie"}:
+            summary[key_lower] = "***REDACTED***"
+        elif key_lower.startswith(("x-", "ag-", "aegis-")) or key_lower in {
+            "content-type",
+            "user-agent",
+            "host",
+        }:
+            summary[key_lower] = _sanitize_debug_string(str(value))
+    return dict(sorted(summary.items()))
+
+
+def _summarize_agui_part(part: Any) -> dict[str, Any]:
+    if not isinstance(part, dict):
+        return {"kind": type(part).__name__}
+    url = part.get("url") or part.get("path")
+    if not url and isinstance(part.get("image_url"), dict):
+        url = part["image_url"].get("url")
+    url_summary = None
+    if isinstance(url, str) and url:
+        if url.startswith(("http://", "https://")):
+            parsed = urlsplit(url)
+            url_summary = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        elif "://" in url:
+            url_summary = f"{url.split('://', 1)[0]}://<redacted>"
+        else:
+            url_summary = "local-path"
+    file_name = part.get("fileName") or part.get("file_name") or part.get("filename") or part.get("name")
+    return {
+        "type": part.get("type"),
+        "mime": part.get("mimeType") or part.get("mime_type") or part.get("mediaType"),
+        "file_name": file_name,
+        "url": url_summary,
+        "keys": sorted(str(key) for key in part.keys()),
+    }
+
+
+def _summarize_agui_body_shape(body_dict: dict[str, Any]) -> dict[str, Any]:
+    last_user_content: Any = None
+    messages = body_dict.get("messages")
+    if isinstance(messages, list):
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                last_user_content = msg.get("content")
+                break
+
+    top_level_parts = body_dict.get("content_parts")
+    if not isinstance(top_level_parts, list):
+        top_level_parts = []
+    message_parts = last_user_content if isinstance(last_user_content, list) else []
+
+    return {
+        "threadId": body_dict.get("threadId") or body_dict.get("session_id"),
+        "runId": body_dict.get("runId") or body_dict.get("msg_id"),
+        "has_top_level_content_parts": bool(top_level_parts),
+        "top_level_parts": [_summarize_agui_part(part) for part in top_level_parts[:8]],
+        "message_content_kind": type(last_user_content).__name__,
+        "message_parts": [_summarize_agui_part(part) for part in message_parts[:8]],
+        "file_paths_count": len(body_dict.get("file_paths") or []),
+        "image_paths_count": len(body_dict.get("image_paths") or []),
+    }
+
+
+def _log_agui_debug_dump(request: Request, body_dict: dict[str, Any]) -> None:
     if not _has_agui_media_debug_signal(body_dict):
         return
 
+    logger.info(
+        "AG-UI media request boundary: "
+        + json.dumps(
+            {
+                "headers": _summarize_agui_headers(request),
+                "body_shape": _summarize_agui_body_shape(body_dict),
+            },
+            ensure_ascii=False,
+        )
+    )
     logger.info(
         "AG-UI request debug dump",
         extra={
@@ -276,7 +352,7 @@ async def chat_stream(request: Request, exec_user: str):
             detail="Request body must be a JSON object",
         )
 
-    _log_agui_debug_dump(body_dict)
+    _log_agui_debug_dump(request, body_dict)
 
     # 兼容 legacy/minimal 请求：仅包含 user/content
     if "threadId" not in body_dict and "runId" not in body_dict:

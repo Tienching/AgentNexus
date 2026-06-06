@@ -319,11 +319,12 @@ class StreamHandler:
         exec_user: str,
     ) -> None:
         """Download AG-UI media URLs so the CLI receives local file paths."""
-        content_parts = [
+        raw_content_parts = [
             part
             for part in (getattr(request_model, "content_parts", None) or [])
             if isinstance(part, dict)
         ]
+        content_parts = AGUIRequest._normalize_content_parts(raw_content_parts)
 
         def is_remote_url(value: Any) -> bool:
             return isinstance(value, str) and value.startswith(("http://", "https://"))
