@@ -52,6 +52,12 @@ class AgentLoop:
     """
 
     _TOOL_RESULT_MAX_CHARS = 16_000
+    _RCA_TERMINAL_ROUTES = (
+        "FINAL_READY",
+        "RETRY_REQUIRED",
+        "NEED_USER_INPUT",
+        "ESCALATE",
+    )
 
     def __init__(
         self,
@@ -343,6 +349,47 @@ class AgentLoop:
                 return tc.name
             return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
         return ", ".join(_fmt(tc) for tc in tool_calls)
+
+    @classmethod
+    def _detect_rca_terminal_route(cls, content: str | None) -> str | None:
+        """Return the RCA route marker when the response has reached a route boundary."""
+        text = (content or "").lstrip()
+        if not text:
+            return None
+        first_line = text.splitlines()[0].strip()
+        for route in cls._RCA_TERMINAL_ROUTES:
+            if first_line == route:
+                return route
+        return None
+
+    @staticmethod
+    def _is_teammate_message(msg: InboundMessage) -> bool:
+        return msg.sender_id == "subagent" or "<teammate-message" in (msg.content or "")
+
+    def _record_rca_terminal_route(self, session: Session, content: str | None) -> None:
+        route = self._detect_rca_terminal_route(content)
+        if route is None:
+            return
+        session.metadata["rca_terminal_route"] = {
+            "route": route,
+            "created_at_ms": int(time.time() * 1000),
+        }
+
+    def _suppress_late_teammate_if_terminal(self, msg: InboundMessage, session: Session) -> bool:
+        route_state = session.metadata.get("rca_terminal_route") or {}
+        route = route_state.get("route")
+        if msg.channel != "system" or not route or not self._is_teammate_message(msg):
+            return False
+
+        suppressed = session.metadata.setdefault("suppressed_teammate_messages", [])
+        suppressed.append({
+            "route": route,
+            "sender_id": msg.sender_id,
+            "created_at_ms": int(time.time() * 1000),
+            "preview": (msg.content or "")[:200],
+        })
+        del suppressed[:-10]
+        return True
 
     async def _run_agent_loop(
         self,
@@ -651,6 +698,11 @@ class AgentLoop:
             logger.info("Processing system message from {}", msg.sender_id)
             key = f"{channel}:{chat_id}"
             session = self.sessions.get_or_create(key)
+            if self._suppress_late_teammate_if_terminal(msg, session):
+                self.sessions.save(session)
+                logger.info("Suppressed late teammate message after RCA terminal route for {}", key)
+                return None
+
             await self.memory_consolidator.maybe_consolidate_by_tokens(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=0)
@@ -664,6 +716,7 @@ class AgentLoop:
                 messages, channel=channel, chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
             )
+            self._record_rca_terminal_route(session, final_content)
             self._save_turn(session, all_msgs, 1 + len(history))
             self.sessions.save(session)
             self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
@@ -675,6 +728,7 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+        session.metadata.pop("rca_terminal_route", None)
 
         # Slash commands
         raw = msg.content.strip()
@@ -719,6 +773,7 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
 
+        self._record_rca_terminal_route(session, final_content)
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
         self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
