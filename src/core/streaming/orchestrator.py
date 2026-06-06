@@ -60,6 +60,81 @@ class TombstoneRecord:
     parent_chunk_id: str | None = None  # 父块 ID（用于嵌套块）
 
 
+@dataclass
+class TerminalOutputFilter:
+    """Hide RCA orchestration chatter before a terminal user-visible answer."""
+
+    enabled: bool
+    buffer: str = ""
+    terminal_seen: bool = False
+    message_id: str | None = None
+
+    TERMINAL_MARKERS = (
+        "## 故障诊断报告",
+        "# 故障诊断报告",
+        "故障诊断报告",
+        "RETRY_REQUIRED",
+        "NEED_USER_INPUT",
+        "ESCALATE",
+    )
+
+    def filter_agui_payload(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return [payload]
+
+        event_type = payload.get("type")
+        if event_type == "TEXT_MESSAGE_CONTENT":
+            self.message_id = payload.get("messageId") or self.message_id
+            delta = str(payload.get("delta") or "")
+            visible_delta = self._filter_text(delta)
+            if not visible_delta:
+                return []
+            updated = dict(payload)
+            updated["delta"] = visible_delta
+            return [updated]
+
+        if event_type in ("TEXT_MESSAGE_END", "RUN_FINISHED"):
+            flushed = self._flush_if_needed()
+            if not flushed:
+                return [payload]
+            flush_payload = {
+                "type": "TEXT_MESSAGE_CONTENT",
+                "messageId": payload.get("messageId") or self.message_id,
+                "delta": flushed,
+            }
+            return [flush_payload, payload]
+
+        return [payload]
+
+    def _filter_text(self, text: str) -> str:
+        if not text:
+            return ""
+        if self.terminal_seen:
+            return text
+
+        self.buffer += text
+        marker_index = self._find_terminal_marker(self.buffer)
+        if marker_index < 0:
+            return ""
+
+        self.terminal_seen = True
+        visible = self.buffer[marker_index:]
+        self.buffer = ""
+        return visible
+
+    def _flush_if_needed(self) -> str:
+        if self.terminal_seen or not self.buffer:
+            return ""
+        visible = self.buffer
+        self.buffer = ""
+        return visible
+
+    def _find_terminal_marker(self, text: str) -> int:
+        indexes = [text.find(marker) for marker in self.TERMINAL_MARKERS]
+        indexes = [idx for idx in indexes if idx >= 0]
+        return min(indexes) if indexes else -1
+
+
 class WithholdingQueue:
     """可恢复错误的块队列"""
 
@@ -252,6 +327,9 @@ class StreamOrchestrator:
 
         event_count = 0
         current_retry_delay = retry_delay
+        terminal_filter = TerminalOutputFilter(
+            enabled=self._should_filter_terminal_output(request_model, initial_messages)
+        )
 
         try:
             await archiver.on_run_started(initial_messages)
@@ -306,6 +384,8 @@ class StreamOrchestrator:
                 except Exception:
                     continue
 
+                if converted:
+                    converted = self._filter_terminal_output_sse(converted, terminal_filter)
                 if converted:
                     # Archive converted AG-UI events asynchronously (non-blocking)
                     self._schedule_archive_converted(converted, archiver)
@@ -405,6 +485,9 @@ class StreamOrchestrator:
         """
 
         event_count = 0
+        terminal_filter = TerminalOutputFilter(
+            enabled=self._should_filter_terminal_output(request_model, initial_messages)
+        )
         try:
             await archiver.on_run_started(initial_messages)
 
@@ -427,6 +510,8 @@ class StreamOrchestrator:
                 except Exception:
                     continue
 
+                if converted:
+                    converted = self._filter_terminal_output_sse(converted, terminal_filter)
                 if converted:
                     # Archive converted AG-UI events asynchronously (non-blocking)
                     self._schedule_archive_converted(converted, archiver)
@@ -535,6 +620,103 @@ class StreamOrchestrator:
             except Exception:
                 pass
             yield executor.format_legacy_error(f"处理错误: {e}")
+
+    def _should_filter_terminal_output(
+        self,
+        request_model: Any,
+        initial_messages: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether to suppress RCA orchestration chatter for this request."""
+        text_parts: list[str] = []
+        for message in initial_messages or []:
+            if isinstance(message, dict):
+                text_parts.append(self._stringify_message_content(message.get("content")))
+
+        try:
+            for message in getattr(request_model, "messages", []) or []:
+                if isinstance(message, dict):
+                    text_parts.append(self._stringify_message_content(message.get("content")))
+                else:
+                    text_parts.append(self._stringify_message_content(getattr(message, "content", "")))
+        except Exception:
+            pass
+
+        user_text = "\n".join(part for part in text_parts if part)
+        if not user_text:
+            return False
+
+        diagnosis_keywords = (
+            "RCA",
+            "故障",
+            "诊断",
+            "定位",
+            "根因",
+            "处理建议",
+            "设备",
+            "端口",
+            "告警",
+            "重启",
+            "异常",
+            "diag",
+            "PARITYECC",
+            "link down",
+            "flap",
+        )
+        lowered = user_text.lower()
+        return any(keyword.lower() in lowered for keyword in diagnosis_keywords)
+
+    def _stringify_message_content(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or item.get("content") or ""))
+            return "\n".join(part for part in parts if part)
+        return str(content)
+
+    def _filter_terminal_output_sse(
+        self,
+        converted_sse: str,
+        terminal_filter: TerminalOutputFilter,
+    ) -> str:
+        if not terminal_filter.enabled or not converted_sse:
+            return converted_sse
+
+        filtered_chunks: list[str] = []
+        for raw_chunk in str(converted_sse).split("\n\n"):
+            chunk = raw_chunk.strip()
+            if not chunk:
+                continue
+            payload = self._extract_sse_payload(chunk)
+            if payload is None:
+                filtered_chunks.append(f"{chunk}\n\n")
+                continue
+            for filtered_payload in terminal_filter.filter_agui_payload(payload):
+                if filtered_payload.get("type") == "TEXT_MESSAGE_CONTENT" and not filtered_payload.get("messageId"):
+                    continue
+                filtered_chunks.append(self._format_agui_payload_sse(filtered_payload))
+        return "".join(filtered_chunks)
+
+    def _extract_sse_payload(self, chunk: str) -> dict[str, Any] | None:
+        data_lines: list[str] = []
+        for line in chunk.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("data:"):
+                data_lines.append(stripped.replace("data:", "", 1).strip())
+        if not data_lines:
+            return None
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _format_agui_payload_sse(self, payload: dict[str, Any]) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def _schedule_archive_converted(self, converted_sse: str, archiver: Any) -> None:
         for payload in self._iter_agui_payloads(converted_sse):
