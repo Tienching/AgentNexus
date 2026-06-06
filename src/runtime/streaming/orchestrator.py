@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from typing import Any, AsyncGenerator, Iterable, Optional
 
 from src.core.streaming.orchestrator import TerminalOutputFilter
@@ -56,6 +57,18 @@ _CODEBUDDY_FINAL_MARKERS = (
     "ESCALATE",
 )
 _CODEBUDDY_MAX_AGENT_WAIT_CONTINUES = 2
+_AGENTHUB_DATA_RESULT_MARKERS = (
+    "agenthub_data.py",
+    "agenthub-data",
+    "客服号聊天历史",
+    "search_group_chat_history",
+)
+_GROUP_HISTORY_REQUEST_MARKERS = (
+    "群历史",
+    "聊天历史",
+    "历史消息",
+    "聊天记录",
+)
 
 
 class StreamOrchestrator:
@@ -110,6 +123,8 @@ class StreamOrchestrator:
                 yield start_event
 
             text_parts: list[str] = []
+            visible_text_parts: list[str] = []
+            agenthub_data_tool_results: list[str] = []
             codebuddy_agent_task_ids: set[str] = set()
             auto_continue_count = 0
 
@@ -140,8 +155,14 @@ class StreamOrchestrator:
                                     text_parts.append(str(delta))
                                 if summary_text_parts is not None:
                                     summary_text_parts.append(delta)
+                            self._collect_agenthub_data_tool_result(payload, agenthub_data_tool_results)
                         visible_converted = self._filter_terminal_output_sse(converted, terminal_filter)
                         if visible_converted:
+                            for payload in self._iter_agui_payloads(visible_converted):
+                                if payload.get("type") == "TEXT_MESSAGE_CONTENT":
+                                    delta = payload.get("delta", "")
+                                    if delta:
+                                        visible_text_parts.append(str(delta))
                             # Archive user-visible converted AG-UI events asynchronously (non-blocking).
                             self._schedule_archive_converted(visible_converted, archiver)
                             event_count += self._count_sse_events(visible_converted)
@@ -161,6 +182,24 @@ class StreamOrchestrator:
                     extra={"task_ids": task_ids, "auto_continue_count": auto_continue_count},
                 )
                 self._prepare_codebuddy_agent_wait_continue(request_model, task_ids)
+
+            if self._should_emit_agenthub_data_fallback(
+                request_model,
+                initial_messages,
+                "".join(visible_text_parts),
+                agenthub_data_tool_results,
+            ):
+                fallback_sse = self._build_agenthub_data_fallback_sse(
+                    adapter,
+                    agenthub_data_tool_results,
+                )
+                if fallback_sse:
+                    terminal_filter.buffer = ""
+                    terminal_filter.pending_start_payload = None
+                    terminal_filter.visible_message_started = False
+                    self._schedule_archive_converted(fallback_sse, archiver)
+                    event_count += self._count_sse_events(fallback_sse)
+                    yield fallback_sse
 
             # Store agent-generated summary and append notification before end event
             if handoff_pending_target and summary_text_parts and session_id:
@@ -266,6 +305,16 @@ class StreamOrchestrator:
         user_text = "\n".join(part for part in text_parts if part)
         if not user_text:
             return False
+        # WeCom group messages often include the bot mention "TSwitch-RCA".
+        # That name alone should not make ordinary history-summary requests run
+        # through the RCA terminal-output filter.
+        user_text = re.sub(
+            r"@?TSwitch\s*-\s*RCA(?:[（(][^）)]*[）)])?",
+            "",
+            user_text,
+            flags=re.IGNORECASE,
+        )
+        user_text = user_text.replace("交换机智能诊断助手", "")
 
         diagnosis_keywords = (
             "RCA",
@@ -286,6 +335,148 @@ class StreamOrchestrator:
         )
         lowered = user_text.lower()
         return any(keyword.lower() in lowered for keyword in diagnosis_keywords)
+
+    def _collect_agenthub_data_tool_result(
+        self,
+        payload: dict[str, Any],
+        results: list[str],
+    ) -> None:
+        event_type = payload.get("type")
+        if event_type not in ("TOOL_CALL_RESULT", "TOOL_CALL_END"):
+            return
+        content = payload.get("content") if event_type == "TOOL_CALL_RESULT" else payload.get("result")
+        if not content:
+            return
+        text = str(content)
+        if any(marker in text for marker in _AGENTHUB_DATA_RESULT_MARKERS):
+            results.append(text)
+
+    def _should_emit_agenthub_data_fallback(
+        self,
+        request_model: Any,
+        initial_messages: list[dict[str, Any]],
+        visible_text: str,
+        agenthub_data_tool_results: list[str],
+    ) -> bool:
+        if visible_text.strip():
+            return False
+        if not agenthub_data_tool_results:
+            return False
+
+        request_text_parts: list[str] = []
+        for message in initial_messages or []:
+            if isinstance(message, dict):
+                request_text_parts.append(self._stringify_message_content(message.get("content")))
+        try:
+            request_text_parts.append(self._stringify_message_content(getattr(request_model, "content", "")))
+        except Exception:
+            pass
+        request_text = "\n".join(part for part in request_text_parts if part)
+        if not request_text:
+            return False
+        return any(marker in request_text for marker in _GROUP_HISTORY_REQUEST_MARKERS)
+
+    def _build_agenthub_data_fallback_sse(
+        self,
+        adapter: Any,
+        agenthub_data_tool_results: list[str],
+    ) -> Optional[str]:
+        fallback_text = self._build_agenthub_data_fallback_text(agenthub_data_tool_results)
+        if not fallback_text:
+            return None
+
+        message_id = None
+        try:
+            message_id = getattr(getattr(adapter, "state", None), "current_message_id", None)
+        except Exception:
+            message_id = None
+        message_id = message_id or f"nexus-agenthub-data-{uuid.uuid4().hex}"
+
+        try:
+            if getattr(adapter, "state", None) is not None:
+                adapter.state.current_message_id = message_id
+                adapter.state.message_started = False
+        except Exception:
+            pass
+
+        payloads = [
+            {"type": "TEXT_MESSAGE_START", "messageId": message_id, "role": "assistant"},
+            {"type": "TEXT_MESSAGE_CONTENT", "messageId": message_id, "delta": fallback_text},
+            {"type": "TEXT_MESSAGE_END", "messageId": message_id},
+        ]
+        return "".join(self._format_agui_payload_sse(payload) for payload in payloads)
+
+    def _build_agenthub_data_fallback_text(
+        self,
+        agenthub_data_tool_results: list[str],
+    ) -> str:
+        selected = self._select_agenthub_history_result(agenthub_data_tool_results)
+        if not selected:
+            return ""
+
+        stdout = self._extract_tool_stdout(selected).strip()
+        if not stdout:
+            stdout = selected.strip()
+
+        group_id = self._extract_group_id(stdout)
+        message_count = self._extract_message_count(stdout)
+        group_label = f"群 ID: `{group_id}`" if group_id else "该群"
+
+        if "未查询到客服号聊天历史" in stdout:
+            return (
+                "## 群历史总结\n\n"
+                f"已调用 `agenthub-data` 查询{group_label}，但客服号侧没有返回可总结的聊天历史。"
+                "如果这是智能机器人渠道，查询不到客服号历史属于预期边界。"
+            )
+
+        excerpt = self._trim_text(stdout, 3200)
+        if message_count == 1:
+            return (
+                "## 群历史总结\n\n"
+                f"已调用 `agenthub-data` 查询{group_label}，客服号侧当前只返回 1 条消息。"
+                "这条记录就是本次触发查询的消息，因此没有更多群历史可总结。\n\n"
+                "查询摘录：\n"
+                f"{excerpt}"
+            )
+
+        count_text = f"{message_count} 条" if message_count is not None else "若干条"
+        return (
+            "## 群历史总结\n\n"
+            f"已调用 `agenthub-data` 查询{group_label}，客服号侧返回 {count_text}聊天记录。"
+            "由于模型本轮未生成最终总结，以下先返回查询结果摘录，避免本轮只停在工具调用阶段。\n\n"
+            "查询摘录：\n"
+            f"{excerpt}"
+        )
+
+    def _select_agenthub_history_result(self, agenthub_data_tool_results: list[str]) -> str:
+        for result in reversed(agenthub_data_tool_results):
+            if "客服号聊天历史查询结果" in result or "未查询到客服号聊天历史" in result:
+                return result
+        return agenthub_data_tool_results[-1] if agenthub_data_tool_results else ""
+
+    def _extract_tool_stdout(self, text: str) -> str:
+        match = re.search(r"Stdout:\s*(.*?)(?:\nStderr:|\Z)", text, flags=re.S)
+        if not match:
+            return text
+        return match.group(1).strip()
+
+    def _extract_group_id(self, text: str) -> Optional[str]:
+        match = re.search(r"群\s*ID[:：]\s*([^\s`]+)", text)
+        return match.group(1).strip() if match else None
+
+    def _extract_message_count(self, text: str) -> Optional[int]:
+        match = re.search(r"消息数[:：]\s*(\d+)", text)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except Exception:
+            return None
+
+    def _trim_text(self, text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rstrip() + "\n...(已截断)"
 
     def _stringify_message_content(self, content: Any) -> str:
         if content is None:
