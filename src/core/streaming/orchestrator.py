@@ -68,6 +68,8 @@ class TerminalOutputFilter:
     buffer: str = ""
     terminal_seen: bool = False
     message_id: str | None = None
+    pending_start_payload: dict[str, Any] | None = None
+    visible_message_started: bool = False
 
     TERMINAL_MARKERS = (
         "## 故障诊断报告",
@@ -83,6 +85,14 @@ class TerminalOutputFilter:
             return [payload]
 
         event_type = payload.get("type")
+        if event_type == "TEXT_MESSAGE_START":
+            self.message_id = payload.get("messageId") or self.message_id
+            if self.terminal_seen:
+                self.visible_message_started = True
+                return [payload]
+            self.pending_start_payload = dict(payload)
+            return []
+
         if event_type == "TEXT_MESSAGE_CONTENT":
             self.message_id = payload.get("messageId") or self.message_id
             delta = str(payload.get("delta") or "")
@@ -91,7 +101,7 @@ class TerminalOutputFilter:
                 return []
             updated = dict(payload)
             updated["delta"] = visible_delta
-            return [updated]
+            return self._ensure_text_start(payload) + [updated]
 
         if "response" in payload and isinstance(payload.get("response"), str):
             visible_response = self._filter_text(str(payload.get("response") or ""))
@@ -107,7 +117,17 @@ class TerminalOutputFilter:
                     return [updated]
             return []
 
-        if event_type in ("TEXT_MESSAGE_END", "RUN_FINISHED"):
+        if event_type == "TEXT_MESSAGE_END":
+            self.message_id = payload.get("messageId") or self.message_id
+            if not self.terminal_seen:
+                return []
+            if not self.visible_message_started:
+                return []
+            self.visible_message_started = False
+            self.pending_start_payload = None
+            return [payload]
+
+        if event_type == "RUN_FINISHED":
             flushed = self._flush_if_needed()
             if not flushed:
                 return [payload]
@@ -116,9 +136,39 @@ class TerminalOutputFilter:
                 "messageId": payload.get("messageId") or self.message_id,
                 "delta": flushed,
             }
-            return [flush_payload, payload]
+            result = self._ensure_text_start(flush_payload) + [flush_payload]
+            if self.visible_message_started:
+                result.append(
+                    {
+                        "type": "TEXT_MESSAGE_END",
+                        "messageId": flush_payload.get("messageId") or self.message_id,
+                    }
+                )
+                self.visible_message_started = False
+            result.append(payload)
+            return result
 
         return [payload]
+
+    def _ensure_text_start(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        if self.visible_message_started:
+            return []
+
+        message_id = payload.get("messageId") or self.message_id
+        start_payload = dict(
+            self.pending_start_payload
+            or {
+                "type": "TEXT_MESSAGE_START",
+                "role": "assistant",
+            }
+        )
+        start_payload["type"] = "TEXT_MESSAGE_START"
+        if message_id:
+            start_payload["messageId"] = message_id
+        start_payload.setdefault("role", "assistant")
+        self.visible_message_started = True
+        self.pending_start_payload = None
+        return [start_payload]
 
     def _filter_text(self, text: str) -> str:
         if not text:
