@@ -112,7 +112,7 @@ async def test_codebuddy_wait_state_auto_continues_before_run_finished():
 
     joined = "".join(chunks)
     assert executor.calls == 2
-    assert "Analyst 正在后台运行" in joined
+    assert "Analyst 正在后台运行" not in joined
     assert "# 故障诊断报告" in joined
     assert joined.rfind("RUN_FINISHED") > joined.rfind("# 故障诊断报告")
     assert request.cli_session_id == "codebuddy-session-1"
