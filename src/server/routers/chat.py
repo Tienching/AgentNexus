@@ -72,6 +72,14 @@ def _sanitize_agui_debug_value(value: Any, key: str = "") -> Any:
 
 def _has_agui_media_debug_signal(value: Any) -> bool:
     if isinstance(value, dict):
+        part_type = str(value.get("type") or "").strip().lower()
+        if part_type in {"binary", "file", "image", "image_url", "input_image"} and (
+            value.get("url")
+            or value.get("path")
+            or isinstance(value.get("image_url"), dict)
+        ):
+            return True
+
         for key, item in value.items():
             if key in {"content_parts", "file_paths", "image_paths"} and item:
                 return True

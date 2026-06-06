@@ -7,8 +7,30 @@ import pytest
 from src.providers.base import RequestContext
 from src.runtime.events.agui import AGUIRequest
 from src.server.config import settings
+from src.server.routers.chat import _has_agui_media_debug_signal
 from src.server.services import stream_handler
 from src.server.services.stream_handler import StreamHandler
+
+
+def test_agui_media_debug_signal_detects_message_binary_url():
+    assert _has_agui_media_debug_signal(
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "分析附件"},
+                        {
+                            "type": "binary",
+                            "mimeType": "application/gzip",
+                            "url": "http://127.0.0.1:18080/diag.gz",
+                            "fileName": "diag.gz",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
 
 
 def test_agui_binary_file_part_preserves_file_name():
