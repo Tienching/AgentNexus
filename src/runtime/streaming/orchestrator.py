@@ -25,6 +25,8 @@ import logging
 import re
 from typing import Any, AsyncGenerator, Iterable, Optional
 
+from src.core.streaming.orchestrator import TerminalOutputFilter
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +98,9 @@ class StreamOrchestrator:
 
         event_count = 0
         summary_text_parts = [] if handoff_pending_target else None
+        terminal_filter = TerminalOutputFilter(
+            enabled=self._should_filter_terminal_output(request_model, initial_messages)
+        )
         try:
             await archiver.on_run_started(initial_messages)
 
@@ -127,8 +132,6 @@ class StreamOrchestrator:
                         continue
 
                     if converted:
-                        # Archive converted AG-UI events asynchronously (non-blocking)
-                        self._schedule_archive_converted(converted, archiver)
                         # Collect text from AG-UI events for switch summary and CodeBuddy wait-state recovery.
                         for payload in self._iter_agui_payloads(converted):
                             if payload.get("type") == "TEXT_MESSAGE_CONTENT":
@@ -137,8 +140,12 @@ class StreamOrchestrator:
                                     text_parts.append(str(delta))
                                 if summary_text_parts is not None:
                                     summary_text_parts.append(delta)
-                        event_count += self._count_sse_events(converted)
-                        yield converted
+                        visible_converted = self._filter_terminal_output_sse(converted, terminal_filter)
+                        if visible_converted:
+                            # Archive user-visible converted AG-UI events asynchronously (non-blocking).
+                            self._schedule_archive_converted(visible_converted, archiver)
+                            event_count += self._count_sse_events(visible_converted)
+                            yield visible_converted
 
                 if not self._should_continue_codebuddy_agent_wait(
                     "".join(text_parts),
@@ -190,8 +197,10 @@ class StreamOrchestrator:
 
             end_event = adapter.create_end_event()
             if end_event:
-                event_count += self._count_sse_events(end_event)
-                yield end_event
+                end_event = self._filter_terminal_output_sse(end_event, terminal_filter)
+                if end_event:
+                    event_count += self._count_sse_events(end_event)
+                    yield end_event
 
             # Wait for all pending archive tasks before finalizing session status
             await self._flush_pending_archives()
@@ -226,6 +235,110 @@ class StreamOrchestrator:
                 self._pending_archive_tasks.append(task)
             except Exception as e:
                 logger.warning(f"[StreamOrchestrator] Failed to schedule archive: {e}")
+
+    def _should_filter_terminal_output(
+        self,
+        request_model: Any,
+        initial_messages: list[dict[str, Any]],
+    ) -> bool:
+        """Return whether to suppress RCA orchestration chatter for this request."""
+        text_parts: list[str] = []
+        for message in initial_messages or []:
+            if isinstance(message, dict):
+                text_parts.append(self._stringify_message_content(message.get("content")))
+
+        try:
+            content = getattr(request_model, "content", "")
+            if content:
+                text_parts.append(self._stringify_message_content(content))
+        except Exception:
+            pass
+
+        try:
+            for message in getattr(request_model, "messages", []) or []:
+                if isinstance(message, dict):
+                    text_parts.append(self._stringify_message_content(message.get("content")))
+                else:
+                    text_parts.append(self._stringify_message_content(getattr(message, "content", "")))
+        except Exception:
+            pass
+
+        user_text = "\n".join(part for part in text_parts if part)
+        if not user_text:
+            return False
+
+        diagnosis_keywords = (
+            "RCA",
+            "故障",
+            "诊断",
+            "定位",
+            "根因",
+            "处理建议",
+            "设备",
+            "端口",
+            "告警",
+            "重启",
+            "异常",
+            "diag",
+            "PARITYECC",
+            "link down",
+            "flap",
+        )
+        lowered = user_text.lower()
+        return any(keyword.lower() in lowered for keyword in diagnosis_keywords)
+
+    def _stringify_message_content(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or item.get("content") or ""))
+            return "\n".join(part for part in parts if part)
+        return str(content)
+
+    def _filter_terminal_output_sse(
+        self,
+        converted_sse: str,
+        terminal_filter: TerminalOutputFilter,
+    ) -> str:
+        if not terminal_filter.enabled or not converted_sse:
+            return converted_sse
+
+        filtered_chunks: list[str] = []
+        for raw_chunk in str(converted_sse).split("\n\n"):
+            chunk = raw_chunk.strip()
+            if not chunk:
+                continue
+            payload = self._extract_sse_payload(chunk)
+            if payload is None:
+                filtered_chunks.append(f"{chunk}\n\n")
+                continue
+            for filtered_payload in terminal_filter.filter_agui_payload(payload):
+                if filtered_payload.get("type") == "TEXT_MESSAGE_CONTENT" and not filtered_payload.get("messageId"):
+                    continue
+                filtered_chunks.append(self._format_agui_payload_sse(filtered_payload))
+        return "".join(filtered_chunks)
+
+    def _extract_sse_payload(self, chunk: str) -> dict[str, Any] | None:
+        data_lines: list[str] = []
+        for line in chunk.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("data:"):
+                data_lines.append(stripped.replace("data:", "", 1).strip())
+        if not data_lines:
+            return None
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _format_agui_payload_sse(self, payload: dict[str, Any]) -> str:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def _iter_agui_payloads(self, converted_sse: str) -> Iterable[dict[str, Any]]:
         for chunk in str(converted_sse).split("\n\n"):
