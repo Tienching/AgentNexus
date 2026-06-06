@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Defaults
 FALLBACK_DIR_ROOT = Path("/tmp/vh_images")
 MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_FILE_SIZE = 512 * 1024 * 1024  # 512 MB for AG-UI diagnostic/core attachments
 CODEBUDDY_REFERENCE_MAX_IMAGE_SIZE = 1024 * 1024  # CodeBuddy @file pre-read limit
 CLI_IMAGE_TARGET_MAX_SIZE = 900 * 1024  # Leave headroom below the CodeBuddy limit
 CLI_IMAGE_MAX_DIMENSION = 1800
@@ -460,7 +461,7 @@ async def download_file(
     session_id: str = "default",
     file_name: Optional[str] = None,
     timeout: int = DOWNLOAD_TIMEOUT,
-    max_size: int = MAX_IMAGE_SIZE,
+    max_size: int = MAX_FILE_SIZE,
     decrypt_fn: Optional[Callable[[bytes], bytes]] = None,
 ) -> Optional[str]:
     """Download a generic file URL to a local file.
@@ -530,7 +531,7 @@ async def _download_file_via_agui_media_resolver(
     file_name: Optional[str] = None,
     mime_type: Optional[str] = None,
     timeout: int = DOWNLOAD_TIMEOUT,
-    max_size: int = MAX_IMAGE_SIZE,
+    max_size: int = MAX_FILE_SIZE,
 ) -> Optional[str]:
     """Resolve non-HTTP AG-UI media references such as ``wecom://media/...``.
 
@@ -637,7 +638,7 @@ async def download_file_reference(
     file_name: Optional[str] = None,
     mime_type: Optional[str] = None,
     timeout: int = DOWNLOAD_TIMEOUT,
-    max_size: int = MAX_IMAGE_SIZE,
+    max_size: int = MAX_FILE_SIZE,
     decrypt_fn: Optional[Callable[[bytes], bytes]] = None,
 ) -> Optional[str]:
     """Download a file reference from AG-UI/channel input.
@@ -685,6 +686,7 @@ async def download_files_with_sources(
             session_id=session_id,
             file_name=item.get("file_name"),
             mime_type=item.get("mime_type"),
+            max_size=MAX_FILE_SIZE,
             decrypt_fn=decrypt_fn,
         )
         for item in source_items
@@ -726,6 +728,7 @@ async def download_files(
             session_id=session_id,
             file_name=item.get("file_name"),
             decrypt_fn=decrypt_fn,
+            max_size=MAX_FILE_SIZE,
         )
         for item in items
         if item.get("url")

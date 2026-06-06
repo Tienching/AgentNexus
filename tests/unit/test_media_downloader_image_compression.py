@@ -106,10 +106,32 @@ async def test_download_files_with_sources_uses_agui_media_resolver_for_wecom_re
                 "file_name": "diag.tar",
                 "mime_type": "application/octet-stream",
                 "timeout": media_downloader.DOWNLOAD_TIMEOUT,
-                "max_size": media_downloader.MAX_IMAGE_SIZE,
+                "max_size": media_downloader.MAX_FILE_SIZE,
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_download_files_with_sources_uses_file_size_limit(monkeypatch):
+    item = {
+        "url": "https://example.com/DEBUG_STAT_COUN.1780578903.94.core.gz",
+        "mime_type": "application/gzip",
+        "file_name": "DEBUG_STAT_COUN.1780578903.94.core.gz",
+    }
+    calls = []
+
+    async def fake_download_file_reference(url, **kwargs):
+        calls.append((url, kwargs))
+        return "/tmp/DEBUG_STAT_COUN.1780578903.94.core.gz"
+
+    monkeypatch.setattr(media_downloader, "download_file_reference", fake_download_file_reference)
+
+    assert await media_downloader.download_files_with_sources([item], dest_dir="/tmp/session", session_id="sess") == [
+        (item, "/tmp/DEBUG_STAT_COUN.1780578903.94.core.gz")
+    ]
+    assert calls[0][1]["max_size"] == media_downloader.MAX_FILE_SIZE
+    assert calls[0][1]["max_size"] > 46_502_526
 
 
 def test_write_file_bytes_improves_generic_drawio_filename(tmp_path):
