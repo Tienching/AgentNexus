@@ -93,6 +93,20 @@ class TerminalOutputFilter:
             updated["delta"] = visible_delta
             return [updated]
 
+        if "response" in payload and isinstance(payload.get("response"), str):
+            visible_response = self._filter_text(str(payload.get("response") or ""))
+            if visible_response:
+                updated = dict(payload)
+                updated["response"] = visible_response
+                return [updated]
+            if payload.get("finished") is True:
+                flushed = self._flush_if_needed()
+                if flushed:
+                    updated = dict(payload)
+                    updated["response"] = flushed
+                    return [updated]
+            return []
+
         if event_type in ("TEXT_MESSAGE_END", "RUN_FINISHED"):
             flushed = self._flush_if_needed()
             if not flushed:
