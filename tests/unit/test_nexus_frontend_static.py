@@ -231,3 +231,23 @@ def test_frontend_security_cache_and_filter_regressions_are_guarded():
     assert "creator: { label: 'Creator'" not in filters_js
     assert "dueDate: { label: 'Due Date'" not in filters_js
     assert "key === 'creator' || key === 'dueDate'" in filters_js
+
+
+def test_runtime_session_sidebar_uses_created_time_instead_of_last_activity():
+    app_js = read_text("src/server/static/nexus/js/app.js")
+
+    assert "getSessionListTimestamp(session, isHistory = false)" in app_js
+    assert "return isHistory ? (session.updated_at || session.created_at) : (session.created_at || session.updated_at);" in app_js
+    assert "const timeStr = this.formatTime(this.getSessionListTimestamp(session, isHistory));" in app_js
+
+
+def test_consecutive_assistant_messages_render_as_a_single_avatar_group():
+    app_js = read_text("src/server/static/nexus/js/app.js")
+    styles_css = read_text("src/server/static/nexus/css/styles.css")
+
+    assert "buildRenderableMessageGroups(messages)" in app_js
+    assert "renderMessageGroup(group, toolCalls)" in app_js
+    assert "messageGroups.map(group => this.renderMessageGroup(group, toolCalls)).join('')" in app_js
+    assert "group.role === 'assistant'" in app_js
+    assert ".message-group-stack" in styles_css
+    assert ".message-group-entry" in styles_css

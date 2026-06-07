@@ -1960,11 +1960,15 @@ class ChatView {
         });
     }
 
+    getSessionListTimestamp(session, isHistory = false) {
+        return isHistory ? (session.updated_at || session.created_at) : (session.created_at || session.updated_at);
+    }
+
     renderSessionItem(session, paneId) {
         const isHistory = this.sessionSource[paneId] === 'history';
         const statusClass = ['running', 'pending', 'queued'].includes(session.status) ? 'running' :
                            session.status === 'error' ? 'error' : 'completed';
-        const timeStr = this.formatTime(session.updated_at || session.created_at);
+        const timeStr = this.formatTime(this.getSessionListTimestamp(session, isHistory));
         const activeTabId = this.getActiveTabId(paneId);
         const sourceKey = this._normalizeSessionSource(isHistory ? 'history' : 'runtime');
         const activeSessionId = activeTabId
@@ -2519,6 +2523,7 @@ class ChatView {
                 return id && !renderedToolCallIds.has(id);
             })
             .sort((a, b) => (a.start_time || a.created_at || 0) - (b.start_time || b.created_at || 0));
+        const messageGroups = this.buildRenderableMessageGroups(messages);
 
         detail.innerHTML = `
             <div class="chat-header">
@@ -2556,7 +2561,7 @@ class ChatView {
             <div class="chat-messages" id="chatMessages-${paneId}">
                 ${messages.length === 0 && standaloneToolCalls.length === 0
                     ? '<div class="empty-state"><p class="empty-state-text">No messages yet</p></div>'
-                    : `${messages.map(msg => this.renderMessage(msg, toolCalls)).join('')}${this.renderStandaloneToolCallMessages(standaloneToolCalls)}`}
+                    : `${messageGroups.map(group => this.renderMessageGroup(group, toolCalls)).join('')}${this.renderStandaloneToolCallMessages(standaloneToolCalls)}`}
             </div>
             ${isHistory ? `
                 <div class="history-readonly-panel">
@@ -3149,14 +3154,53 @@ class ChatView {
         `;
     }
 
-    renderMessage(msg, toolCalls) {
-        const isUser = msg.role === 'user';
-        const avatar = isUser ? 'U' : 'A';
-        const timeStr = this.formatTime(msg.timestamp);
+    buildRenderableMessageGroups(messages) {
+        const groups = [];
+
+        for (const msg of messages) {
+            const role = msg?.role || 'assistant';
+            const currentGroup = groups[groups.length - 1];
+
+            if (role === 'assistant' && currentGroup && currentGroup.role === 'assistant') {
+                currentGroup.messages.push(msg);
+                continue;
+            }
+
+            groups.push({ role, messages: [msg] });
+        }
+
+        return groups;
+    }
+
+    renderMessageGroup(group, toolCalls) {
+        if (!group?.messages?.length) return '';
+        if (group.messages.length === 1) {
+            return this.renderMessage(group.messages[0], toolCalls);
+        }
+
+        if (group.role === 'assistant') {
+            return `
+                <div class="message assistant">
+                    <div class="message-avatar">A</div>
+                    <div class="message-content message-group-stack">
+                        ${group.messages.map(msg => `
+                            <div class="message-group-entry">
+                                <div class="message-bubble">${this.renderMessageBody(msg, toolCalls)}</div>
+                                <span class="message-time">${this.formatTime(msg.timestamp)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        return group.messages.map(msg => this.renderMessage(msg, toolCalls)).join('');
+    }
+
+    renderMessageBody(msg, toolCalls) {
         const hasContent = msg.content && msg.content.trim();
         const normalizedSegments = this.normalizeContentSegments(msg.content_segments);
 
-        // Find tool calls for this message
         const messageToolCallIds = new Set([
             ...(msg.tool_call_ids || []),
             ...(normalizedSegments
@@ -3169,16 +3213,13 @@ class ChatView {
             messageToolCallIds.has(tc.id)
         ));
 
-        // Build message bubble content
         let bubbleContent = '';
-        
-        // Check if message has content_segments for ordered rendering
+
         if (normalizedSegments.length > 0) {
             for (const segment of normalizedSegments) {
                 if (segment.type === 'text' && segment.content) {
                     bubbleContent += `<div class="message-text">${this.formatMessageContent(segment.content)}</div>`;
                 } else if (segment.type === 'tool_call' && segment.tool_call_id) {
-                    // Find the tool call by ID
                     const tc = messageToolCalls.find(t => t.id === segment.tool_call_id);
                     if (tc) {
                         bubbleContent += this.renderToolCall(tc);
@@ -3186,20 +3227,27 @@ class ChatView {
                 }
             }
         } else {
-            // Fallback: render content + tool calls at the end (legacy behavior)
             if (hasContent) {
                 bubbleContent += `<div class="message-text">${this.formatMessageContent(msg.content)}</div>`;
             }
-            
+
             if (messageToolCalls.length > 0) {
                 bubbleContent += messageToolCalls.map(tc => this.renderToolCall(tc)).join('');
             }
         }
-        
-        // If no content and no tool calls, show empty placeholder
+
         if (!bubbleContent) {
             bubbleContent = '<span class="message-empty">(Empty message)</span>';
         }
+
+        return bubbleContent;
+    }
+
+    renderMessage(msg, toolCalls) {
+        const isUser = msg.role === 'user';
+        const avatar = isUser ? 'U' : 'A';
+        const timeStr = this.formatTime(msg.timestamp);
+        const bubbleContent = this.renderMessageBody(msg, toolCalls);
 
         return `
             <div class="message ${isUser ? 'user' : 'assistant'}">
