@@ -100,6 +100,43 @@ async def test_execute_internal_enforces_overall_timeout_while_stream_keeps_outp
 
 
 @pytest.mark.asyncio
+async def test_execute_internal_emits_error_when_cli_exits_nonzero_without_stdout(monkeypatch):
+    """CodeBuddy startup failures on stderr must not look like a completed answer."""
+    cfg = Mock()
+    cfg.codebuddy_command = "codebuddy"
+    cfg.cli_timeout = 1.0
+    cfg.user_home_base = "/home"
+    executor = CodebuddyCLIExecutor(config=cfg)
+
+    process = Mock(spec=asyncio.subprocess.Process)
+    process.returncode = 1
+    process.stdout = AsyncMock()
+    process.stdout.readline = AsyncMock(return_value=b"")
+    process.stderr = AsyncMock()
+    process.stderr.read = AsyncMock(return_value=b"Error: Cannot find module '@opentelemetry/api'")
+    process.wait = AsyncMock(return_value=1)
+
+    monkeypatch.setattr(executor, "run_subprocess", AsyncMock(return_value=process))
+
+    context = RequestContext(
+        content="hello",
+        exec_user="ubuntu",
+        session_id="nonzero-test",
+        cwd="/tmp",
+        cwd_mode="inplace",
+    )
+
+    outputs = [json.loads(item) async for item in executor._execute_internal(context)]
+
+    assert outputs == [
+        {
+            "type": "error",
+            "message": "CodeBuddy CLI exited with code 1: Error: Cannot find module '@opentelemetry/api'",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_timeout_cleanup_kills_codebuddy_process_group(monkeypatch):
     """Timeout cleanup should terminate child tool processes spawned by CodeBuddy."""
     cfg = Mock()

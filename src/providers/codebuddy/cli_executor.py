@@ -208,7 +208,15 @@ class CodebuddyCLIExecutor(BaseExecutor):
                 async for output in self._process_stream(process, context):
                     yield output
 
-                await process.wait()
+                wait_result = await process.wait()
+                returncode = process.returncode
+                if returncode is None and isinstance(wait_result, int):
+                    returncode = wait_result
+                stderr_text = await self.drain_stderr(process)
+                if returncode not in (0, None):
+                    message = self._format_nonzero_exit_message(returncode, stderr_text)
+                    logger.error(message)
+                    yield json.dumps({"type": "error", "message": message})
 
         except asyncio.TimeoutError:
             if process is not None:
@@ -222,6 +230,15 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
         finally:
             _ = start_time  # keep parity hook for future metrics
+
+    def _format_nonzero_exit_message(self, returncode: int, stderr_text: Optional[str]) -> str:
+        detail = (stderr_text or "").strip()
+        if not detail:
+            return f"CodeBuddy CLI exited with code {returncode}"
+        detail = re.sub(r"\s+", " ", detail)
+        if len(detail) > 600:
+            detail = detail[:600].rstrip() + "..."
+        return f"CodeBuddy CLI exited with code {returncode}: {detail}"
 
     async def _cleanup_timed_out_process(
         self,
@@ -344,9 +361,6 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
             except Exception:
                 continue
-
-        # Drain stderr
-        await self.drain_stderr(process)
 
     async def _notify_cli_session_id(
         self,
