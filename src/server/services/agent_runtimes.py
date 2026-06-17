@@ -58,6 +58,7 @@ class RuntimeDaemon:
     runtime_id: str
     workspace: str = "default"
     provider: str = "unknown"
+    runtime_mode: str = "local"  # "local" (CLI on this host) or "relay" (forwarded)
     device_name: str = ""
     cli_version: Optional[str] = None
     provider_version: Optional[str] = None
@@ -76,6 +77,7 @@ class RuntimeDaemon:
             "runtime_id": self.runtime_id,
             "workspace": self.workspace,
             "provider": self.provider,
+            "runtime_mode": self.runtime_mode,
             "device_name": self.device_name,
             "cli_version": self.cli_version,
             "provider_version": self.provider_version,
@@ -214,6 +216,15 @@ class RuntimeDaemonRegistry:
             self._db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runtime_daemons_triple ON runtime_daemons(workspace, daemon_id, provider)"
             )
+            # runtime_mode column (Phase 5: local vs relay). Added via migration v022
+            # for existing DBs; the ALTER here is a belt-and-suspenders for DBs
+            # created by _ensure_table before migrations run.
+            cols = {row[1] for row in self._db.execute("PRAGMA table_info(runtime_daemons)").fetchall()}
+            if "runtime_mode" not in cols:
+                self._db.execute("ALTER TABLE runtime_daemons ADD COLUMN runtime_mode TEXT NOT NULL DEFAULT 'local'")
+            self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runtime_daemons_mode ON runtime_daemons(runtime_mode, updated_at DESC)"
+            )
             self._db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runtime_daemons_runtime ON runtime_daemons(runtime_id, updated_at DESC)"
             )
@@ -238,6 +249,7 @@ class RuntimeDaemonRegistry:
             runtime_id=row.get("runtime_id", ""),
             workspace=row.get("workspace") or "default",
             provider=row.get("provider") or "unknown",
+            runtime_mode=row.get("runtime_mode") or "local",
             device_name=row.get("device_name") or "",
             cli_version=row.get("cli_version") or None,
             provider_version=row.get("provider_version") or None,
@@ -258,6 +270,7 @@ class RuntimeDaemonRegistry:
         *,
         workspace: str = "default",
         provider: str = "unknown",
+        runtime_mode: str = "local",
         device_name: str = "",
         cli_version: Optional[str] = None,
         provider_version: Optional[str] = None,
@@ -271,6 +284,7 @@ class RuntimeDaemonRegistry:
             runtime_id=runtime_id,
             workspace=workspace or "default",
             provider=provider or (metadata or {}).get("provider") or "unknown",
+            runtime_mode=runtime_mode or "local",
             device_name=device_name or "",
             cli_version=cli_version,
             provider_version=provider_version,
@@ -289,10 +303,11 @@ class RuntimeDaemonRegistry:
                 INSERT INTO runtime_daemons (
                     workspace, daemon_id, provider, runtime_id, device_name, cli_version, provider_version,
                     status, health_endpoint, pending_operations,
-                    last_heartbeat, last_health_check, metadata_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_heartbeat, last_health_check, metadata_json, created_at, updated_at, runtime_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, daemon_id, provider) DO UPDATE SET
                     runtime_id=excluded.runtime_id,
+                    runtime_mode=excluded.runtime_mode,
                     device_name=excluded.device_name,
                     cli_version=excluded.cli_version,
                     provider_version=excluded.provider_version,
@@ -320,6 +335,7 @@ class RuntimeDaemonRegistry:
                     json.dumps(daemon.metadata, ensure_ascii=False),
                     daemon.created_at,
                     daemon.updated_at,
+                    daemon.runtime_mode,
                 ),
             )
         return daemon

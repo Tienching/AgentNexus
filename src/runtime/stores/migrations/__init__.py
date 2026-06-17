@@ -43,6 +43,7 @@ _MIGRATION_MODULES = [
     "src.runtime.stores.migrations.v019_control_plane_group_workspace",
     "src.runtime.stores.migrations.v020_control_plane_group_workspace_maintenance",
     "src.runtime.stores.migrations.v021_runtime_daemon_triple_key",
+    "src.runtime.stores.migrations.v022_runtime_daemon_mode",
 ]
 
 

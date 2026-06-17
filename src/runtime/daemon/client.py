@@ -47,6 +47,7 @@ class DaemonConfig:
     auth_token: str = ""  # NEXUS_AUTH_TOKEN if the server requires it
     daemon_id_override: str = ""  # force a specific id (testing)
     identity_path: Optional[str] = None  # override ~/.agent-nexus/daemon.id
+    runtime_mode: str = "local"  # "local" (this host's CLI) or "relay" (forwarded)
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -59,6 +60,7 @@ class DaemonConfig:
             or os.environ.get("NEXUS_AUTH_TOKEN", ""),
             daemon_id_override=os.environ.get("AGENT_NEXUS_DAEMON_ID", "").strip(),
             identity_path=os.environ.get("AGENT_NEXUS_IDENTITY_PATH", "").strip() or None,
+            runtime_mode=os.environ.get("AGENT_NEXUS_NODE_ROLE", "").strip().lower() == "relay" and "relay" or "local",
         )
 
     @property
@@ -134,6 +136,7 @@ class DaemonClient:
                     "device_name": self.identity.device_name,
                     "status": "idle",
                     "health_endpoint": None,
+                    "runtime_mode": self.config.runtime_mode,
                     "metadata": {
                         "workspace": self.config.workspace,
                         "provider": dp.provider,

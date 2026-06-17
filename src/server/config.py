@@ -89,6 +89,12 @@ class ServerSettings(BaseSettings):
 
     # Default chat provider (defaults to providers.registry.DEFAULT_PROVIDER; overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
     default_chat_provider: str = "claude"
+
+    # Node role: "server" (host a board + expose local providers) or "relay"
+    # (no local CLI; register downstream daemons as relay runtimes and forward
+    # execution upstream). Phase 5 daemon-platform mode.
+    node_role: str = "server"
+    relay_upstream_url: str = ""  # when node_role="relay", the upstream server to forward to
     
     # Telegram 配置
     telegram_bot_token: str | None = None

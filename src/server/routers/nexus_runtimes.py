@@ -61,6 +61,9 @@ class RuntimesResponse(BaseModel):
 class RuntimeDaemonResponse(BaseModel):
     daemon_id: str
     runtime_id: str
+    workspace: str = "default"
+    provider: str = "unknown"
+    runtime_mode: str = "local"
     device_name: str = ""
     cli_version: Optional[str] = None
     provider_version: Optional[str] = None
@@ -84,6 +87,7 @@ class RuntimeDaemonRegisterRequest(BaseModel):
     runtime_id: str
     workspace: str = "default"
     provider: str = "unknown"
+    runtime_mode: str = "local"  # "local" or "relay"
     device_name: str = ""
     cli_version: Optional[str] = None
     provider_version: Optional[str] = None
@@ -173,6 +177,7 @@ async def register_runtime_daemon(request: RuntimeDaemonRegisterRequest):
         runtime_id=request.runtime_id,
         workspace=request.workspace,
         provider=request.provider,
+        runtime_mode=request.runtime_mode,
         device_name=request.device_name,
         cli_version=request.cli_version,
         provider_version=request.provider_version,
