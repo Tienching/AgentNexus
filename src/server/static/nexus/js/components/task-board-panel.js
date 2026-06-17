@@ -1649,6 +1649,18 @@ class TaskBoardPanel {
         const container = document.getElementById(`filterBar-${pid}`);
         if (!container || typeof FilterBar === 'undefined') return;
         this._filterBar = new FilterBar(this);
+        // Phase 6: runtime-health strip (online/offline/relay indicators).
+        const healthHost = document.createElement('div');
+        healthHost.className = 'runtime-health-host';
+        container.appendChild(healthHost);
+        if (typeof RuntimeHealthStrip !== 'undefined') {
+            if (!this._runtimeHealthStrip) {
+                this._runtimeHealthStrip = new RuntimeHealthStrip({
+                    onClick: (provider) => this._setProviderFilter ? this._setProviderFilter(provider) : null,
+                });
+            }
+            this._runtimeHealthStrip.render(healthHost);
+        }
         this._filterBar.render(container);
 
         // Init SortButton and ProjectButton

@@ -1152,6 +1152,13 @@ class NexusAPI {
         });
     }
 
+    static async listRuntimeDaemons() {
+        // Lists all aggregated daemon runtimes (multi-machine/multi-provider).
+        return NexusAPI._request(`${API_BASE}/runtimes/daemons`, {}, {
+            errorMessage: 'Failed to list runtime daemons',
+        });
+    }
+
     // ============ Admin / Ops APIs ============
 
     static async getDiagnostics() {
