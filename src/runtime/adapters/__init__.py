@@ -6,6 +6,8 @@ from .claude import AGUIAdapter, ParsedToolCall
 from .gemini import GeminiAGUIAdapter
 from .codex import CodexAGUIAdapter
 from .codebuddy import CodebuddyAGUIAdapter
+from .hermes import HermesAGUIAdapter
+from .openclaw import OpenClawAGUIAdapter
 
 __all__ = [
     # Base
@@ -21,4 +23,7 @@ __all__ = [
     "CodexAGUIAdapter",
     # Codebuddy adapters
     "CodebuddyAGUIAdapter",
+    # Hermes / OpenClaw adapters (alias the codebuddy stream-json converter)
+    "HermesAGUIAdapter",
+    "OpenClawAGUIAdapter",
 ]

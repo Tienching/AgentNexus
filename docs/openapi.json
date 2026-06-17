@@ -7583,7 +7583,7 @@
           "nexus-admin"
         ],
         "summary": "Get Agent Runtimes",
-        "description": "Detect installed agent runtimes.\n\nPorted from mission-control GET /api/agent-runtimes (src/lib/agent-runtimes.ts).\nChecks for installed CLI tools (claude, codex, gemini, codebuddy, nanobot),\ntheir versions, and authentication status.",
+        "description": "Detect installed agent runtimes.\n\nPorted from mission-control GET /api/agent-runtimes (src/lib/agent-runtimes.ts).\nChecks for installed CLI tools (claude, codex, gemini, codebuddy, hermes, openclaw),\ntheir versions, and authentication status.",
         "operationId": "get_agent_runtimes_api_nexus_agent_runtimes_get",
         "parameters": [
           {

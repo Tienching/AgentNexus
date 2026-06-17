@@ -30,7 +30,7 @@ def normalize_provider(name: Optional[str]) -> str:
         return _default_provider()
 
     # Canonical provider names
-    if n in ("gemini", "codex", "codebuddy", "claude"):
+    if n in ("gemini", "codex", "codebuddy", "claude", "hermes", "openclaw"):
         return n
 
     # Alias lookup — consult the global alias registry so that UI selections
@@ -59,7 +59,7 @@ def normalize_provider(name: Optional[str]) -> str:
     # canonical name (e.g. a user-defined ``claude-work`` without an explicit
     # registry entry). This mirrors the behaviour in
     # ``cli_executor._PROVIDER_COMMAND_MAP`` / ``AliasRegistry.BUILTIN``.
-    for canonical in ("claude", "codex", "gemini", "codebuddy"):
+    for canonical in ("claude", "codex", "gemini", "codebuddy", "hermes", "openclaw"):
         if n == canonical or n.startswith(canonical + "-"):
             return canonical
 
@@ -107,6 +107,14 @@ def create_executor(provider: str, *, config=None):
         from src.providers.codebuddy import CodebuddyCLIExecutor
         return CodebuddyCLIExecutor(config=config)
 
+    if key == "hermes":
+        from src.providers.hermes import HermesCLIExecutor
+        return HermesCLIExecutor(config=config)
+
+    if key == "openclaw":
+        from src.providers.openclaw import OpenClawCLIExecutor
+        return OpenClawCLIExecutor(config=config)
+
     # Default: Claude
     from src.server.services.cli_executor import CLIExecutor
     return CLIExecutor(config=config)
@@ -126,6 +134,8 @@ def create_all_executors(*, config=None) -> dict:
         "gemini":    create_executor("gemini", config=config),
         "codex":     create_executor("codex", config=config),
         "codebuddy": create_executor("codebuddy", config=config),
+        "hermes":    create_executor("hermes", config=config),
+        "openclaw":  create_executor("openclaw", config=config),
     })
 
 
@@ -148,6 +158,14 @@ def create_adapter(provider: str):
     if key == "codebuddy":
         from src.runtime.adapters.codebuddy import CodebuddyAGUIAdapter
         return CodebuddyAGUIAdapter()
+
+    if key == "hermes":
+        from src.runtime.adapters.hermes import HermesAGUIAdapter
+        return HermesAGUIAdapter()
+
+    if key == "openclaw":
+        from src.runtime.adapters.openclaw import OpenClawAGUIAdapter
+        return OpenClawAGUIAdapter()
 
     # Default: Claude
     from src.runtime.adapters.claude import AGUIAdapter

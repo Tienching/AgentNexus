@@ -144,7 +144,7 @@ class TestCreateAdapter:
 # ---------------------------------------------------------------------------
 
 class TestCreateAllExecutors:
-    def test_returns_four_canonical_providers(self):
+    def test_returns_six_canonical_providers(self):
         with (
             patch("src.server.services.cli_executor.CLIExecutor"),
             patch("src.providers.gemini.GeminiExecutor"),
@@ -153,7 +153,7 @@ class TestCreateAllExecutors:
         ):
             from src.providers.dispatcher import create_all_executors
             result = create_all_executors(config=MagicMock())
-            assert set(result) == {"claude", "gemini", "codex", "codebuddy"}
+            assert set(result) == {"claude", "gemini", "codex", "codebuddy", "hermes", "openclaw"}
             assert "nexus" not in result and "nanobot" not in result
 
     def test_each_value_is_unique_instance(self):

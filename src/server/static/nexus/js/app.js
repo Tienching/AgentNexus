@@ -235,7 +235,7 @@ class ChatView {
         const { aliases } = this._getHistoryConfiguredOrder();
         const providerOf = (name) => {
             const lower = String(name || '').toLowerCase();
-            for (const p of ['claude', 'codex', 'codebuddy', 'gemini']) {
+            for (const p of ["claude", "codex", "codebuddy", "gemini", "hermes", "openclaw"]) {
                 if (lower === p || lower.startsWith(p)) return p;
             }
             return lower || 'unknown';
@@ -289,7 +289,7 @@ class ChatView {
     }
 
     _getHistoryConfiguredOrder() {
-        const defaultProviders = (this.app?.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'])
+        const defaultProviders = (this.app?.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'])
             .map(name => String(name || '').trim().toLowerCase())
             .filter(name => name);
         const aliases = (this.app?.getAllProviders ? this.app.getAllProviders() : defaultProviders)
@@ -905,7 +905,7 @@ class ChatView {
             const agentModels = [...new Set(agents.map(agent => this.app?.normalizeProviderName ? this.app.normalizeProviderName(agent.agent_type) : String(agent.agent_type || '').trim().toLowerCase()))];
             // Merge with custom providers (use getCustomProviderNames for new format)
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -1027,7 +1027,7 @@ class ChatView {
             const agents = this.getAvailableAgents(user);
             const agentModels = [...new Set(agents.map(agent => this.app?.normalizeProviderName ? this.app.normalizeProviderName(agent.agent_type) : String(agent.agent_type || '').trim().toLowerCase()))];
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -4479,7 +4479,7 @@ class NexusApp {
         const trimmed = name.trim();
         if (!trimmed) return false;
 
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
         
         if (defaultProviders.includes(trimmed.toLowerCase()) || 
             this.customProviders.some(p => p.name.toLowerCase() === trimmed.toLowerCase())) {
@@ -4537,7 +4537,7 @@ class NexusApp {
     getProviderDefaultModel(providerOrAlias) {
         if (!providerOrAlias) return '';
         const name = providerOrAlias.trim().toLowerCase();
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
         const models = this._loadProviderModels();
         if (defaultProviders.includes(name)) {
             return models[name] || '';
@@ -4555,7 +4555,7 @@ class NexusApp {
         if (!providerOrAlias) return;
         const name = providerOrAlias.trim().toLowerCase();
         const val = (model || '').trim();
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
         if (defaultProviders.includes(name)) {
             const models = this._loadProviderModels();
             if (val) { models[name] = val; } else { delete models[name]; }
@@ -4573,7 +4573,7 @@ class NexusApp {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim().toLowerCase();
         
-        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
         if (defaultProviders.includes(trimmed)) {
             return false;
         }
@@ -4615,7 +4615,7 @@ class NexusApp {
     }
 
     getDefaultProviders() {
-        return ['claude', 'gemini', 'codex', 'codebuddy'];
+        return ['claude', 'gemini', 'codex', 'codebuddy', 'hermes', 'openclaw'];
     }
 
     getAllProviders() {

@@ -23,7 +23,7 @@ from typing import Dict, FrozenSet, Tuple
 # spot here when it has both an executor (src/providers/<name>/) and an AG-UI
 # adapter (src/runtime/adapters/<name>/). Aliases (e.g. "claude-internal")
 # are NOT members — see ALIASES below.
-KNOWN_PROVIDERS: FrozenSet[str] = frozenset({"claude", "codex", "gemini", "codebuddy"})
+KNOWN_PROVIDERS: FrozenSet[str] = frozenset({"claude", "codex", "gemini", "codebuddy", "hermes", "openclaw"})
 
 # Fallback when a request arrives with no/unknown provider. The dispatcher and
 # both settings mixins (ServerSettings, ProviderSettings) read this so the
@@ -44,6 +44,8 @@ ALIASES: Dict[str, str] = {
     "gemini": "gemini",
     "gemini-internal": "gemini",
     "codebuddy": "codebuddy",
+    "hermes": "hermes",
+    "openclaw": "openclaw",
 }
 
 # Providers whose CLI accepts --input-format stream-json for persistent
@@ -93,6 +95,24 @@ PROVIDER_META: Tuple[Dict[str, object], ...] = (
         "binaries": ["codebuddy"],
         "auth_required": True,
         "auth_hint": "Configure API keys in CodeBuddy settings.",
+        "version_flag": "--version",
+    },
+    {
+        "id": "hermes",
+        "name": "Hermes",
+        "description": "Hermes tool-calling agent CLI (stream-json).",
+        "binaries": ["hermes"],
+        "auth_required": True,
+        "auth_hint": 'Run "hermes login" after install to authenticate.',
+        "version_flag": "--version",
+    },
+    {
+        "id": "openclaw",
+        "name": "OpenClaw",
+        "description": "OpenClaw agent CLI (agent-bound model, stream-json).",
+        "binaries": ["openclaw"],
+        "auth_required": True,
+        "auth_hint": 'Run "openclaw auth" after install to authenticate.',
         "version_flag": "--version",
     },
 )

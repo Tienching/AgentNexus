@@ -4,7 +4,7 @@
 Ported from mission-control:
   - src/lib/agent-runtimes.ts  (commit 14f34d1)
 
-Detects installed CLI agent runtimes (claude, codex, gemini, codebuddy),
+Detects installed CLI agent runtimes (claude, codex, gemini, codebuddy, hermes, openclaw),
 their versions, and authentication status. Adapted for Python/FastAPI — no
 Node.js, no SQLite, no install jobs (agent-nexus runs CLI tools, not gateways).
 """
@@ -26,7 +26,7 @@ from src.runtime.stores.db import Database, get_db
 logger = get_logger(__name__)
 
 # Canonical provider set lives in providers.registry.KNOWN_PROVIDERS.
-RuntimeId = Literal["claude", "codex", "gemini", "codebuddy"]
+RuntimeId = Literal["claude", "codex", "gemini", "codebuddy", "hermes", "openclaw"]
 
 
 @dataclass

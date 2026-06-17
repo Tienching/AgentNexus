@@ -2014,7 +2014,7 @@ class SlashCommandHandler:
         alias_registry = get_alias_registry()
         resolved = alias_registry.resolve(target_provider)
         if not resolved:
-            valid_providers = ["claude", "codex", "gemini", "codebuddy"]
+            valid_providers = ["claude", "codex", "gemini", "codebuddy", "hermes", "openclaw"]
             if target_provider.lower() not in valid_providers:
                 all_aliases = alias_registry.list_all()
                 alias_list = ", ".join(f"`{a}`" for a in sorted(all_aliases.keys()))
