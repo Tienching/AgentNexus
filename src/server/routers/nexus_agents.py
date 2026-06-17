@@ -9,11 +9,6 @@ Endpoints:
   - PATCH /api/nexus/agents/{id}/status — Update agent status
   - DELETE /api/nexus/agents/{id}       — Deregister an agent
   - GET  /api/nexus/agents/stats        — Agent count by status
-  - POST /api/nexus/agents/teams        — Create a swarm team
-  - GET  /api/nexus/agents/teams/{name} — Get team status
-  - POST /api/nexus/agents/teams/{name}/shutdown — Shutdown a team
-  - GET  /api/nexus/agents/teams/{name}/mailbox/{agent} — Get agent mailbox
-  - POST /api/nexus/agents/teams/{name}/tasks/claim — Claim a task
 """
 
 from __future__ import annotations
@@ -33,16 +28,12 @@ from .nexus_models import (
     AgentBindingUpdateRequest,
     AgentOverviewActivityItem,
     AgentOverviewSummary,
-    AgentOverviewTeamItem,
     AgentsOverviewResponse,
-    TeamConfigItem,
-    TeamConfigUpdateRequest,
 )
 
 logger = get_logger(__name__)
 
 _AGENT_BINDINGS: dict[str, dict] = {}
-_TEAM_CONFIGS: dict[str, dict] = {}
 
 router = APIRouter(
     prefix="/api/nexus",
@@ -95,44 +86,6 @@ class AgentListResponse(BaseModel):
 class AgentStatsResponse(BaseModel):
     counts: dict
     total: int
-
-
-# ---------------------------------------------------------------------------
-# Swarm team request / response models
-# ---------------------------------------------------------------------------
-
-class TeamWorkerConfig(BaseModel):
-    name: str = Field(..., description="Worker name")
-    capabilities: List[str] = Field(default_factory=list, description="Worker capabilities")
-    task: str = Field("", description="Initial task description for the worker")
-
-
-class TeamLeadConfig(BaseModel):
-    name: str = Field("lead", description="Lead agent name")
-    capabilities: List[str] = Field(default_factory=list, description="Lead capabilities")
-    task: str = Field("", description="Initial task description for the lead")
-
-
-class TeamCreateRequest(BaseModel):
-    name: str = Field(..., description="Team name", min_length=1, max_length=100)
-    lead: TeamLeadConfig = Field(default_factory=TeamLeadConfig, description="Lead agent config")
-    workers: List[TeamWorkerConfig] = Field(default_factory=list, description="Worker agent configs")
-
-
-class TeamShutdownRequest(BaseModel):
-    graceful: bool = Field(True, description="Graceful shutdown (negotiate) vs immediate cancel")
-
-
-class TaskClaimRequest(BaseModel):
-    agent_name: str = Field(..., description="Agent claiming the task")
-    task_id: str = Field(..., description="Task ID to claim")
-
-
-def _safe_subagent_manager():
-    try:
-        return _get_subagent_manager()
-    except HTTPException:
-        return None
 
 
 def _normalize_breakdown_item(entry: Any) -> dict[str, Any]:
@@ -328,145 +281,6 @@ def _get_agent_binding_payload(info, *, cost_row: Optional[dict[str, Any]] = Non
     }
 
 
-def _build_team_members(status: Optional[dict]) -> list[dict[str, Any]]:
-    members = list((status or {}).get("members") or [])
-    normalized: list[dict[str, Any]] = []
-    for member in members:
-        item = dict(member or {})
-        normalized.append(
-            {
-                "name": str(item.get("name") or ""),
-                "agent_id": str(item.get("agent_id") or ""),
-                "role": str(item.get("role") or "worker"),
-                "status": str(item.get("status") or "idle"),
-                "capabilities": list(item.get("capabilities") or []),
-                "unread_mail": int(item.get("unread_mail", 0) or 0),
-                "tasks": list(item.get("tasks") or []),
-            }
-        )
-    return normalized
-
-
-def _aggregate_team_usage(members: list[dict[str, Any]], cost_by_agent: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    total = {"total_cost_usd": 0.0, "total_tokens": 0, "request_count": 0}
-    for member in members:
-        usage = _usage_payload(cost_by_agent.get(member.get("agent_id") or ""))
-        total["total_cost_usd"] += usage["total_cost_usd"]
-        total["total_tokens"] += usage["total_tokens"]
-        total["request_count"] += usage["request_count"]
-    return total
-
-
-def _team_runtime_status(status: Optional[dict], member_count: int) -> tuple[str, int, int]:
-    data = dict(status or {})
-    running_agents = len(data.get("running_agents") or [])
-    available_tasks = len(data.get("available_tasks") or [])
-    runtime_status = "running" if running_agents else ("idle" if member_count else "offline")
-    return runtime_status, running_agents, available_tasks
-
-
-def _get_team_config_payload(
-    team_name: str,
-    status: Optional[dict] = None,
-    *,
-    cost_by_agent: Optional[dict[str, dict[str, Any]]] = None,
-) -> dict[str, Any]:
-    persisted = dict(_TEAM_CONFIGS.get(team_name, {}) or {})
-    data = dict(status or {})
-    detail = dict(data.get("detail", {}) or {})
-    shared_state = dict(data.get("shared_state") or {})
-    members = _build_team_members(data)
-    member_ids = [member["agent_id"] for member in members if member.get("agent_id")]
-    lead_agent_id = next((member["agent_id"] for member in members if member.get("role") == "lead" and member.get("agent_id")), "")
-    runtime_status, running_agents, available_tasks = _team_runtime_status(data, len(members))
-
-    config = {
-        "display_name": persisted.get("display_name") or shared_state.get("display_name") or team_name,
-        "mission": persisted.get("mission") or shared_state.get("mission") or "",
-        "workspace": persisted.get("workspace") or shared_state.get("workspace") or "",
-        "lead_agent_id": persisted.get("lead_agent_id") or lead_agent_id,
-        "member_agent_ids": list(persisted.get("member_agent_ids") or member_ids),
-        "shared_memory_policy": persisted.get("shared_memory_policy") or persisted.get("memory_policy") or shared_state.get("shared_memory_policy") or "team",
-        "auto_balance": bool(persisted.get("auto_balance", shared_state.get("auto_balance", False))),
-        "tags": list(persisted.get("tags") or shared_state.get("tags") or []),
-        "notes": str(persisted.get("notes") or shared_state.get("notes") or ""),
-    }
-    provider = persisted.get("default_provider") or detail.get("provider") or "claude"
-    alias = persisted.get("default_alias") or provider
-    permissions = list(persisted.get("permissions") or detail.get("permissions") or [])
-    capabilities = sorted({cap for member in members for cap in member.get("capabilities") or []})
-    updated_at = persisted.get("updated_at") or time.time()
-    activity_event = {
-        "id": f"team:{team_name}",
-        "title": config["display_name"] or team_name,
-        "subtitle": f"{len(members)} members · {runtime_status}",
-        "timestamp": updated_at,
-        "level": "info",
-        "entity_type": "team",
-        "entity_id": team_name,
-        "scope": "team",
-        "scope_id": team_name,
-        "detail": config["mission"] or "",
-        "status": runtime_status,
-    }
-    usage = _aggregate_team_usage(members, cost_by_agent or {})
-    identity = _identity_payload(
-        title=config["display_name"] or team_name,
-        subtitle=" · ".join([part for part in [f"{len(members)} members", runtime_status] if part]),
-        provider=provider,
-        alias=alias,
-        owner=config["lead_agent_id"],
-        role="team",
-        external_id=team_name,
-    )
-    runtime = _runtime_payload(
-        status=runtime_status,
-        workspace=config["workspace"],
-        model="",
-        runtime_profile=persisted.get("runtime") or detail.get("runtime") or "swarm",
-        team_name=team_name,
-        enabled=True,
-        running_agents=running_agents,
-        available_tasks=available_tasks,
-    )
-    memory = _memory_payload(
-        scope=config["shared_memory_policy"],
-        summary=f"{len(shared_state)} shared state entries" if shared_state else "No shared state",
-        entry_count=len(shared_state),
-        last_updated_at=updated_at,
-    )
-    activity = _activity_payload(
-        last_seen_at=updated_at,
-        headline=f"{config['display_name'] or team_name} has {running_agents} running agents",
-        status=runtime_status,
-        recent_events=[activity_event],
-    )
-    return {
-        "team_name": team_name,
-        "runtime": runtime["runtime_profile"],
-        "default_provider": provider,
-        "default_alias": alias,
-        "memory_policy": config["shared_memory_policy"],
-        "coordination_mode": persisted.get("coordination_mode") or detail.get("coordination_mode") or "mailbox",
-        "permissions": permissions,
-        "metadata": {
-            **dict(detail.get("metadata") or {}),
-            **dict(shared_state or {}),
-            **dict(persisted.get("metadata") or {}),
-            "member_count": len(members),
-        },
-        "updated_at": updated_at,
-        "config": config,
-        "identity": identity,
-        "runtime_detail": runtime,
-        "memory": memory,
-        "capabilities": capabilities,
-        "activity": activity,
-        "cost": usage,
-        "members": members,
-    }
-
-
 def _summarize_recent_activity(
     *,
     limit: int = 8,
@@ -573,7 +387,7 @@ async def register_agent(req: AgentRegisterRequest):
 async def agent_heartbeat(agent_id: str, req: AgentHeartbeatRequest):
     """Record a heartbeat for an agent."""
     from ..services.agent_registry import get_registry
-    from src.nanobot.agent.lifecycle import AgentState
+    from ..services.agent_registry import AgentState
 
     reg = get_registry()
     status = None
@@ -596,7 +410,7 @@ async def list_agents(
 ):
     """List registered agents."""
     from ..services.agent_registry import get_registry
-    from src.nanobot.agent.lifecycle import AgentState
+    from ..services.agent_registry import AgentState
 
     reg = get_registry()
     status_enum = None
@@ -660,42 +474,15 @@ async def agents_overview():
         if status == "failed":
             failures += 1
 
-    teams: list[AgentOverviewTeamItem] = []
-    mgr = _safe_subagent_manager()
-    if mgr is not None:
-        for name in list(getattr(mgr, "_teams", {}).keys()):
-            status = mgr.get_team_status(name)
-            if "error" in status:
-                continue
-            team_payload = _get_team_config_payload(name, status, cost_by_agent=cost_by_agent)
-            team_members = list(team_payload.get("members") or [])
-            claimed_tasks = sum(len(member.get("tasks") or []) for member in team_members)
-            pending_messages = sum(int(member.get("unread_mail", 0) or 0) for member in team_members)
-            fallback_events.extend(team_payload.get("activity", {}).get("recent_events") or [])
-            teams.append(
-                AgentOverviewTeamItem(
-                    team_name=name,
-                    member_count=len(team_members),
-                    claimed_tasks=claimed_tasks,
-                    pending_messages=pending_messages,
-                    status=team_payload.get("runtime_detail", {}).get("status") or "idle",
-                    kind="team",
-                    identity=team_payload.get("identity") or {},
-                    runtime=team_payload.get("runtime_detail") or {},
-                    memory=team_payload.get("memory") or {},
-                    capabilities=team_payload.get("capabilities") or [],
-                    activity=team_payload.get("activity") or {},
-                    cost=team_payload.get("cost") or {},
-                    members=team_members,
-                )
-            )
-
+    # Agent-status tallies (consumed by the summary below).
     online = sum(1 for a in agents if a.status.value != "offline")
-    idle = sum(1 for a in agents if a.status.value == "idle")
     running = sum(1 for a in agents if a.status.value == "running")
-    error = sum(1 for a in agents if a.status.value == "error")
     offline = sum(1 for a in agents if a.status.value == "offline")
-    active_teams = sum(1 for team in teams if (team.runtime or {}).get("running_agents") or (team.runtime or {}).get("available_tasks"))
+    idle = sum(1 for a in agents if a.status.value == "idle")
+    error = sum(1 for a in agents if a.status.value == "error")
+
+    teams: list = []
+    active_teams = 0
 
     queue_depth = max(total_tasks - active_tasks, 0)
     summary = AgentOverviewSummary(
@@ -832,7 +619,7 @@ async def update_agent_binding(agent_id: str, req: AgentBindingUpdateRequest):
 async def update_agent_status(agent_id: str, req: AgentStatusUpdateRequest):
     """Update an agent's status."""
     from ..services.agent_registry import get_registry
-    from src.nanobot.agent.lifecycle import AgentState
+    from ..services.agent_registry import AgentState
 
     reg = get_registry()
     try:
@@ -858,126 +645,3 @@ async def deregister_agent(agent_id: str):
     if not reg.deregister(agent_id):
         raise HTTPException(404, detail=f"Agent not found: {agent_id}")
     return {"success": True, "agent_id": agent_id}
-
-
-# ---------------------------------------------------------------------------
-# Swarm team endpoints
-# ---------------------------------------------------------------------------
-
-def _get_subagent_manager():
-    """Resolve the global SubagentManager instance."""
-    from src.nanobot.agent.subagent import get_subagent_manager
-    mgr = get_subagent_manager()
-    if mgr is None:
-        raise HTTPException(503, detail="SubagentManager not available")
-    return mgr
-
-
-@router.post("/agents/teams", status_code=201)
-async def create_team(req: TeamCreateRequest):
-    """Create a swarm team with a lead and workers."""
-    mgr = _get_subagent_manager()
-
-    team_config = {
-        "name": req.name,
-        "lead": {
-            "name": req.lead.name,
-            "capabilities": req.lead.capabilities,
-            "task": req.lead.task,
-        },
-        "workers": [
-            {
-                "name": w.name,
-                "capabilities": w.capabilities,
-                "task": w.task,
-            }
-            for w in req.workers
-        ],
-    }
-
-    result = await mgr.spawn_team(team_config)
-    return {"success": True, "team_name": req.name, "detail": result}
-
-
-@router.get("/agents/teams/{team_name}/config", response_model=TeamConfigItem)
-async def get_team_config(team_name: str):
-    """Return team-scoped coordination config."""
-    mgr = _get_subagent_manager()
-    status = mgr.get_team_status(team_name)
-    if "error" in status:
-        raise HTTPException(404, detail=status["error"])
-    _, cost_by_agent = _build_cost_summary_payload()
-    return TeamConfigItem(**_get_team_config_payload(team_name, status, cost_by_agent=cost_by_agent))
-
-
-@router.patch("/agents/teams/{team_name}/config", response_model=TeamConfigItem)
-async def update_team_config(team_name: str, req: TeamConfigUpdateRequest):
-    """Update team-scoped coordination config."""
-    mgr = _get_subagent_manager()
-    status = mgr.get_team_status(team_name)
-    if "error" in status:
-        raise HTTPException(404, detail=status["error"])
-    updates = req.model_dump(exclude_none=True)
-    if "shared_memory_policy" in updates and "memory_policy" not in updates:
-        updates["memory_policy"] = updates["shared_memory_policy"]
-    if "memory_policy" in updates and "shared_memory_policy" not in updates:
-        updates["shared_memory_policy"] = updates["memory_policy"]
-
-    persisted = dict(_TEAM_CONFIGS.get(team_name, {}) or {})
-    persisted.update(updates)
-    persisted["updated_at"] = time.time()
-    _TEAM_CONFIGS[team_name] = persisted
-
-    _, cost_by_agent = _build_cost_summary_payload()
-    return TeamConfigItem(**_get_team_config_payload(team_name, status, cost_by_agent=cost_by_agent))
-
-
-@router.get("/agents/teams/{team_name}")
-async def get_team_status(team_name: str):
-    """Get the current status of a swarm team."""
-    mgr = _get_subagent_manager()
-    status = mgr.get_team_status(team_name)
-    if "error" in status:
-        raise HTTPException(404, detail=status["error"])
-    return status
-
-
-@router.post("/agents/teams/{team_name}/shutdown")
-async def shutdown_team(team_name: str, req: TeamShutdownRequest | None = None):
-    """Shutdown a swarm team."""
-    mgr = _get_subagent_manager()
-    result = await mgr.shutdown_team(team_name, graceful=True if req is None else req.graceful)
-    return {"success": True, "detail": result}
-
-
-@router.get("/agents/teams/{team_name}/mailbox/{agent_name}")
-async def get_agent_mailbox(team_name: str, agent_name: str):
-    """Get mailbox messages for a specific agent in a team."""
-    mgr = _get_subagent_manager()
-    handle = mgr._teams.get(team_name)
-    if not handle:
-        raise HTTPException(404, detail=f"Team not found: {team_name}")
-
-    mailbox = handle["mailbox"]
-    messages = mailbox.receive(agent_name)
-    return {
-        "team_name": team_name,
-        "agent_name": agent_name,
-        "messages": [m.to_dict() for m in messages],
-        "unread_count": mailbox.get_unread_count(agent_name),
-    }
-
-
-@router.post("/agents/teams/{team_name}/tasks/claim")
-async def claim_team_task(team_name: str, req: TaskClaimRequest):
-    """Claim a task from the team task board."""
-    mgr = _get_subagent_manager()
-    handle = mgr._teams.get(team_name)
-    if not handle:
-        raise HTTPException(404, detail=f"Team not found: {team_name}")
-
-    coordinator = handle["coordinator"]
-    success = coordinator.claim_task(req.agent_name, req.task_id)
-    if not success:
-        raise HTTPException(409, detail=f"Task {req.task_id} not available for claiming")
-    return {"success": True, "task_id": req.task_id, "claimed_by": req.agent_name}

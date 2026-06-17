@@ -1707,7 +1707,7 @@ class FakeTeamManager:
 
 
 def _build_agent_registry():
-    from src.nanobot.agent.lifecycle import AgentRegistry, AgentState
+    from src.server.services.agent_registry import AgentRegistry, AgentState
 
     registry = AgentRegistry()
     worker = registry.register(
@@ -1746,41 +1746,6 @@ def _build_agent_registry():
 
 class TestAgentsContracts:
     @pytest.mark.asyncio
-    async def test_agents_overview_includes_dashboard_costs_activity_and_team_summaries(self, client):
-        registry = _build_agent_registry()
-        fake_team_manager = FakeTeamManager()
-
-        with patch.dict("src.server.routers.nexus_agents._AGENT_BINDINGS", {}, clear=True), \
-             patch.dict("src.server.routers.nexus_agents._TEAM_CONFIGS", {}, clear=True), \
-             patch("src.server.services.agent_registry.get_registry", return_value=registry), \
-             patch("src.core.cost.tracker.get_token_tracker", return_value=FakeTokenTracker()), \
-             patch("src.server.routers.nexus_models.get_task_queue", return_value=FakeAgentsTaskQueue()), \
-             patch("src.server.routers.nexus_agents._get_subagent_manager", return_value=fake_team_manager):
-            response = await client.get("/api/nexus/agents/overview")
-
-        assert response.status_code == 200
-        data = response.json()
-
-        assert data["dashboard"]["total_agents"] == 2
-        assert data["summary"]["teams_total"] == 1
-        assert data["dashboard"]["online_agents"] == 2
-        assert data["dashboard"]["running_agents"] == 1
-        assert data["dashboard"]["error_agents"] == 1
-        assert data["costs"]["total_cost_usd"] == pytest.approx(1.2345)
-        assert data["recent_activity"]
-
-        worker = next(agent for agent in data["agents"] if agent["id"] == "agent-worker-2")
-        assert worker["identity"]["title"] == "Worker 2"
-        assert worker["runtime"]["status"] == "running"
-        assert worker["memory"]["summary"] == "Shared session context available"
-        assert worker["cost"]["total_cost_usd"] == pytest.approx(0.9345)
-
-        team = next(team for team in data["teams"] if team["team_name"] == "alpha-team")
-        assert team["identity"]["title"] == "Alpha Team"
-        assert team["runtime"]["status"] == "running"
-        assert team["members"][0]["role"] == "lead"
-        assert team["cost"]["total_cost_usd"] == pytest.approx(1.2345)
-
     @pytest.mark.asyncio
     async def test_agent_binding_get_and_patch_returns_stable_detail_sections(self, client):
         registry = _build_agent_registry()
@@ -1822,50 +1787,6 @@ class TestAgentsContracts:
         assert refetched["runtime"]["team_name"] == "alpha-team"
 
     @pytest.mark.asyncio
-    async def test_team_config_get_and_patch_returns_runtime_memory_and_members(self, client):
-        registry = _build_agent_registry()
-        fake_team_manager = FakeTeamManager()
-
-        with patch.dict("src.server.routers.nexus_agents._TEAM_CONFIGS", {}, clear=True), \
-             patch("src.server.services.agent_registry.get_registry", return_value=registry), \
-             patch("src.core.cost.tracker.get_token_tracker", return_value=FakeTokenTracker()), \
-             patch("src.server.routers.nexus_agents._get_subagent_manager", return_value=fake_team_manager):
-            get_response = await client.get("/api/nexus/agents/teams/alpha-team/config")
-            patch_response = await client.patch(
-                "/api/nexus/agents/teams/alpha-team/config",
-                json={
-                    "display_name": "Alpha Control",
-                    "workspace": "/srv/alpha",
-                    "mission": "Coordinate detail views",
-                    "shared_memory_policy": "shared",
-                    "auto_balance": True,
-                    "notes": "Keep overview stable",
-                    "tags": ["ops", "ui"],
-                },
-            )
-            refetch_response = await client.get("/api/nexus/agents/teams/alpha-team/config")
-
-        assert get_response.status_code == 200
-        initial = get_response.json()
-        assert initial["config"]["display_name"] == "Alpha Team"
-        assert initial["runtime_detail"]["status"] == "running"
-        assert initial["memory"]["scope"] == "team"
-        assert len(initial["members"]) == 2
-
-        assert patch_response.status_code == 200
-        updated = patch_response.json()
-        assert updated["config"]["display_name"] == "Alpha Control"
-        assert updated["config"]["workspace"] == "/srv/alpha"
-        assert updated["config"]["mission"] == "Coordinate detail views"
-        assert updated["config"]["shared_memory_policy"] == "shared"
-        assert updated["memory_policy"] == "shared"
-        assert updated["config"]["auto_balance"] is True
-        assert updated["config"]["tags"] == ["ops", "ui"]
-
-        assert refetch_response.status_code == 200
-        refetched = refetch_response.json()
-        assert refetched["config"]["notes"] == "Keep overview stable"
-
     @pytest.mark.asyncio
     async def test_delete_task_idempotent(self, client, mock_storage, mock_task_queue):
         with patch('src.server.routers.nexus_tasks.get_task_queue', return_value=mock_task_queue):

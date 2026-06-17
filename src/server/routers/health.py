@@ -50,7 +50,6 @@ _STARTUP_SUBSYSTEM_ORDER = [
     "task_scheduler",
     "channel_service",
     "terminal_manager",
-    "evolution_service",
 ]
 
 

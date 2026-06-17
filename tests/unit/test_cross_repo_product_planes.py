@@ -142,13 +142,8 @@ def test_collaboration_issue_layer_and_inbox(isolated_client):
     assert inbox_payload["issues"][0]["issue_key"] == "OPS-42"
 
 
-def test_extension_catalog_and_bundled_skill_import(isolated_client):
+def test_extension_catalog_lists_provider_skills(isolated_client):
     client, fake_home = isolated_client
-
-    bundled_root = Path("src/nanobot/skills")
-    bundled_candidates = [p for p in bundled_root.iterdir() if p.is_dir() and (p / "SKILL.md").exists()]
-    assert bundled_candidates, "expected at least one bundled skill in src/nanobot/skills"
-    bundled_name = bundled_candidates[0].name
 
     alias_root = fake_home / ".claude-review"
     (alias_root / "skills" / "review-skill").mkdir(parents=True, exist_ok=True)
@@ -173,17 +168,5 @@ def test_extension_catalog_and_bundled_skill_import(isolated_client):
     assert "claude-review" in payload["provider_skills"]
     assert payload["provider_skills"]["claude-review"][0]["name"] == "review-skill"
 
-    imported = client.post(
-        "/api/nexus/extensions/skills/import",
-        headers=_auth_headers(),
-        params={"exec_user": "ubuntu"},
-        json={
-            "skill_name": bundled_name,
-            "provider": "claude",
-            "overwrite": True,
-        },
-    )
-    assert imported.status_code == 201
-    imported_payload = imported.json()
-    assert imported_payload["provider"] == "claude"
-    assert Path(imported_payload["path"]).exists()
+    # Bundled-skill import was retired with the nanobot engine; only provider-skill
+    # discovery (asserted above) is supported now.

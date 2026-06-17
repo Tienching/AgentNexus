@@ -111,13 +111,6 @@ def _ensure_slash_extensions_loaded() -> None:
     for loader in list(_SLASH_EXTENSION_LOADERS):
         loader()
 
-    try:
-        from src.nanobot.skills.registry import get_skill_registry
-
-        get_skill_registry().load_slash_extensions()
-    except Exception:
-        logger.debug("Skill-based slash extensions not loaded", exc_info=True)
-
     _SLASH_EXTENSION_LOADERS_RAN = True
 
 

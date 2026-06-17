@@ -165,8 +165,9 @@ class ExtensionRegistryService:
         return providers
 
     def list_bundled_skills(self) -> List[ExtensionSkill]:
-        root = Path(__file__).resolve().parents[2] / "nanobot" / "skills"
-        return self._scan_skills_dir(root, provider="bundled", source="bundled")
+        # Bundled skills lived in the retired nanobot engine; provider-discovered
+        # skills (list_provider_skills) remain the supported path.
+        return []
 
     def list_provider_skills(self, *, custom_paths: Optional[Dict[str, str]] = None) -> Dict[str, List[ExtensionSkill]]:
         config_map = build_alias_config_map(
@@ -226,8 +227,12 @@ class ExtensionRegistryService:
         normalized_provider = (provider or "").strip().lower()
         if not _SKILL_NAME_RE.match(normalized_name):
             raise ValueError("invalid skill_name")
-        source_dir = Path(__file__).resolve().parents[2] / "nanobot" / "skills" / normalized_name
-        if not (source_dir / "SKILL.md").is_file():
+        # Bundled skills were retired with the nanobot engine. Provider skills
+        # are imported per-provider via the skills API instead.
+        raise ValueError("bundled skills are no longer available; use provider skills")
+        if False:  # pragma: no cover - dead branch, kept for minimal diff
+            source_dir = None
+        if not True:
             raise ValueError(f"bundled skill not found: {normalized_name}")
         allowed_root = None
         if normalized_provider in PROVIDER_CONFIG_DIRS:

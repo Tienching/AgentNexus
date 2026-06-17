@@ -81,50 +81,8 @@ class FakeTokenTracker:
         }
 
 
-class FakeTeamManager:
-    def __init__(self):
-        self._teams = {"alpha-team": {"detail": {"provider": "claude", "runtime": "swarm"}}}
-
-    def get_team_status(self, team_name: str):
-        if team_name != "alpha-team":
-            return {"error": f"Team not found: {team_name}"}
-        return {
-            "team_name": "alpha-team",
-            "members": [
-                {
-                    "name": "lead",
-                    "role": "lead",
-                    "status": "running",
-                    "agent_id": "agent-worker-2",
-                    "capabilities": ["planning", "review"],
-                    "unread_mail": 1,
-                    "tasks": ["task-1"],
-                },
-                {
-                    "name": "worker-a",
-                    "role": "worker",
-                    "status": "idle",
-                    "agent_id": "agent-planner",
-                    "capabilities": ["memory", "analysis"],
-                    "unread_mail": 0,
-                    "tasks": [],
-                },
-            ],
-            "shared_state": {
-                "display_name": "Alpha Team",
-                "mission": "Ship Agents page",
-                "workspace": "/tmp/agents",
-                "shared_memory_policy": "team",
-                "tags": ["frontend", "agents"],
-            },
-            "task_assignments": {},
-            "available_tasks": ["task-2"],
-            "running_agents": ["run-1"],
-        }
-
-
 def _build_agent_registry():
-    from src.nanobot.agent.lifecycle import AgentRegistry, AgentState
+    from src.server.services.agent_registry import AgentRegistry, AgentState
 
     registry = AgentRegistry()
     worker = registry.register(
@@ -166,15 +124,12 @@ def live_server():
     from src.server import app as server_app
 
     registry = _build_agent_registry()
-    team_manager = FakeTeamManager()
 
     with ExitStack() as stack:
         stack.enter_context(patch.dict("src.server.routers.nexus_agents._AGENT_BINDINGS", {}, clear=True))
-        stack.enter_context(patch.dict("src.server.routers.nexus_agents._TEAM_CONFIGS", {}, clear=True))
         stack.enter_context(patch("src.server.services.agent_registry.get_registry", return_value=registry))
         stack.enter_context(patch("src.core.cost.tracker.get_token_tracker", return_value=FakeTokenTracker()))
         stack.enter_context(patch("src.server.routers.nexus_models.get_task_queue", return_value=FakeAgentsTaskQueue()))
-        stack.enter_context(patch("src.server.routers.nexus_agents._get_subagent_manager", return_value=team_manager))
 
         app = server_app.create_app_with_overrides(
             use_env=False,
@@ -242,35 +197,9 @@ def test_agents_page_default_state_renders_overview_and_list(live_server, page):
     assert page.locator("#agentsPageShell").evaluate("el => el.dataset.agentsMode") == "overview"
     assert page.locator("#agentsSearchInput").count() == 1
     assert page.locator("#agentsStatusFilter").count() == 1
-    assert page.locator("#agentsList .agents-list-item").count() >= 3
+    assert page.locator("#agentsList .agents-list-item").count() >= 2  # 2 seeded agents (team seed removed)
     assert page.locator("#agentsOverviewPanel").is_visible()
     assert page.locator("#agentsOverviewPanel").text_content().find("Agents Overview") >= 0
     assert not page_errors
 
 
-def test_agents_page_switches_between_agent_and_team_details_and_restores_selection(live_server, page):
-    page.goto(f"{live_server}/?page=agents", wait_until="commit", timeout=20_000)
-    page.wait_for_timeout(2500)
-
-    page.locator('.agents-list-item[data-kind="agent"][data-id="agent-worker-2"]').click()
-    page.wait_for_timeout(1200)
-
-    assert page.locator("#agentsPageShell").evaluate("el => el.dataset.agentsMode") == "agent_detail"
-    assert page.locator("#agentsAgentDetail").evaluate("el => el.dataset.agentId") == "agent-worker-2"
-    for section in ["identity", "runtime", "memory", "capabilities", "activity"]:
-        assert page.locator(f'[data-agents-section="{section}"]').count() >= 1
-
-    page.reload(wait_until="domcontentloaded")
-    page.wait_for_timeout(2500)
-
-    assert page.locator("#agentsPageShell").evaluate("el => el.dataset.agentsMode") == "agent_detail"
-    assert page.locator("#agentsAgentDetail").evaluate("el => el.dataset.agentId") == "agent-worker-2"
-
-    page.locator('.agents-list-item[data-kind="team"][data-id="alpha-team"]').click()
-    page.wait_for_timeout(1200)
-
-    assert page.locator("#agentsPageShell").evaluate("el => el.dataset.agentsMode") == "team_detail"
-    assert page.locator("#agentsTeamDetail").evaluate("el => el.dataset.teamName") == "alpha-team"
-    assert page.locator("#teamConfigDisplayName").input_value() == "Alpha Team"
-    for section in ["identity", "runtime", "memory", "capabilities", "activity"]:
-        assert page.locator(f'[data-agents-section="{section}"]').count() >= 1
