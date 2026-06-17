@@ -37,8 +37,9 @@ class InstallCommand(BaseCommand):
         "all": "all-channels",
     }
     
-    # Provider 配置
-    AVAILABLE_PROVIDERS = ["claude", "gemini", "codex", "codebuddy"]
+    # Provider 配置 — sourced from providers.registry (single source).
+    from src.providers.registry import KNOWN_PROVIDERS as _KNOWN_PROVIDERS
+    AVAILABLE_PROVIDERS = sorted(_KNOWN_PROVIDERS)
     
     def __init__(self):
         self.printer = Printer()

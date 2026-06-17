@@ -40,8 +40,8 @@ from .completion_detector import CompletionDetector, CompletionStatus
 
 logger = logging.getLogger(__name__)
 
-# Providers that support --input-format stream-json
-_STREAM_INPUT_PROVIDERS = frozenset({"claude", "codebuddy", "claude-internal"})
+# Providers that support --input-format stream-json — sourced from providers.registry.
+from src.providers.registry import STREAM_INPUT_PROVIDERS as _STREAM_INPUT_PROVIDERS
 
 
 @dataclass

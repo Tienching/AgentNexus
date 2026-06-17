@@ -25,6 +25,7 @@ from src.runtime.stores.db import Database, get_db
 
 logger = get_logger(__name__)
 
+# Canonical provider set lives in providers.registry.KNOWN_PROVIDERS; RuntimeId adds the legacy nexus/nanobot for the detection layer only.
 RuntimeId = Literal["claude", "codex", "gemini", "codebuddy", "nexus", "nanobot"]
 
 
@@ -85,50 +86,42 @@ class RuntimeDaemon:
         }
 
 
-RUNTIME_META: Dict[str, RuntimeMeta] = {
-    "claude": RuntimeMeta(
-        name="Claude Code",
-        description="Anthropic CLI agent for software engineering tasks.",
-        auth_required=True,
-        auth_hint='Run "claude login" after install to authenticate.',
-        binaries=["claude"],
-    ),
-    "codex": RuntimeMeta(
-        name="Codex CLI",
-        description="OpenAI CLI agent for code generation and editing.",
-        auth_required=True,
-        auth_hint='Run "codex auth" after install to authenticate.',
-        binaries=["codex"],
-    ),
-    "gemini": RuntimeMeta(
-        name="Gemini CLI",
-        description="Google CLI agent for code tasks.",
-        auth_required=True,
-        auth_hint='Set GEMINI_API_KEY in environment to authenticate.',
-        binaries=["gemini"],
-    ),
-    "codebuddy": RuntimeMeta(
-        name="CodeBuddy",
-        description="Multi-model CLI agent with tool use.",
-        auth_required=True,
-        auth_hint='Configure API keys in CodeBuddy settings.',
-        binaries=["codebuddy"],
-    ),
-    "nexus": RuntimeMeta(
-        name="Nexus",
-        description="In-process lightweight chat provider.",
-        auth_required=False,
-        auth_hint="",
-        binaries=["nexus"],
-    ),
-    "nanobot": RuntimeMeta(
-        name="Nexus",
-        description="Legacy alias for the in-process lightweight chat provider.",
-        auth_required=False,
-        auth_hint="",
-        binaries=["nexus", "nanobot"],
-    ),
-}
+# Provider detection metadata. The canonical providers (claude/codex/gemini/
+# codebuddy) are sourced from providers.registry.PROVIDER_META so there is a
+# single source of truth for name/binaries/auth hints. The nexus/nanobot
+# entries below are legacy in-process providers retained for compatibility
+# and will be removed in Phase 1 of the daemon-platform refactor.
+def _meta_from_registry() -> Dict[str, RuntimeMeta]:
+    from src.providers.registry import PROVIDER_META
+    return {
+        str(m["id"]): RuntimeMeta(
+            name=str(m["name"]),
+            description=str(m["description"]),
+            auth_required=bool(m["auth_required"]),
+            auth_hint=str(m["auth_hint"]),
+            binaries=list(m["binaries"]),  # type: ignore[arg-type]
+            version_flag=str(m.get("version_flag", "--version")),
+        )
+        for m in PROVIDER_META
+    }
+
+
+RUNTIME_META: Dict[str, RuntimeMeta] = _meta_from_registry()
+# Legacy in-process providers (Phase 1 removal targets).
+RUNTIME_META["nexus"] = RuntimeMeta(
+    name="Nexus",
+    description="In-process lightweight chat provider.",
+    auth_required=False,
+    auth_hint="",
+    binaries=["nexus"],
+)
+RUNTIME_META["nanobot"] = RuntimeMeta(
+    name="Nexus",
+    description="Legacy alias for the in-process lightweight chat provider.",
+    auth_required=False,
+    auth_hint="",
+    binaries=["nexus", "nanobot"],
+)
 
 
 def _detect_binary(

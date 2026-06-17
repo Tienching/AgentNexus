@@ -13,12 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
+from src.providers.registry import ALIASES, KNOWN_PROVIDERS
 from .db import Database, get_db
 
 logger = logging.getLogger(__name__)
 
-# Known provider families.  Used to validate provider values on registration.
-KNOWN_PROVIDERS = frozenset({"claude", "codex", "gemini", "codebuddy"})
+# Known provider families — re-exported from providers.registry (single source).
 
 
 class AliasRegistry:
@@ -26,17 +26,8 @@ class AliasRegistry:
 
     REDIS_KEY = "alias_registry"
 
-    # Built-in aliases that don't need explicit registration.
-    # Keys are alias names, values are the canonical provider.
-    BUILTIN: Dict[str, str] = {
-        "claude": "claude",
-        "claude-internal": "claude",
-        "codex": "codex",
-        "codex-internal": "codex",
-        "gemini": "gemini",
-        "gemini-internal": "gemini",
-        "codebuddy": "codebuddy",
-    }
+    # Built-in aliases — sourced from providers.registry.ALIASES (single source).
+    BUILTIN: Dict[str, str] = dict(ALIASES)
 
     def __init__(self, db: Optional[Database] = None, redis_client=None):
         self._db = db or get_db()
