@@ -6,7 +6,6 @@ from .claude import AGUIAdapter, ParsedToolCall
 from .gemini import GeminiAGUIAdapter
 from .codex import CodexAGUIAdapter
 from .codebuddy import CodebuddyAGUIAdapter
-from .nexus import NexusAGUIAdapter, NanobotAGUIAdapter
 
 __all__ = [
     # Base
@@ -22,7 +21,4 @@ __all__ = [
     "CodexAGUIAdapter",
     # Codebuddy adapters
     "CodebuddyAGUIAdapter",
-    # Nexus / legacy Nanobot adapters
-    "NexusAGUIAdapter",
-    "NanobotAGUIAdapter",
 ]

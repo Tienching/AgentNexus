@@ -728,17 +728,3 @@ def create_app_with_overrides(
 # 创建FastAPI应用
 app = create_app()
 
-
-def get_agent_loop():
-    """Get the primary AgentLoop instance from the NanobotExecutor pool.
-
-    Returns the first available loop, or None if no loops are running.
-    """
-    try:
-        from src.providers.nanobot.executor import _LoopPool
-        instances = _LoopPool._instances
-        if instances:
-            return next(iter(instances.values()))
-    except Exception:
-        pass
-    return None

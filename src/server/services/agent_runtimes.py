@@ -4,7 +4,7 @@
 Ported from mission-control:
   - src/lib/agent-runtimes.ts  (commit 14f34d1)
 
-Detects installed CLI agent runtimes (claude, codex, gemini, codebuddy, nexus),
+Detects installed CLI agent runtimes (claude, codex, gemini, codebuddy),
 their versions, and authentication status. Adapted for Python/FastAPI — no
 Node.js, no SQLite, no install jobs (agent-nexus runs CLI tools, not gateways).
 """
@@ -25,8 +25,8 @@ from src.runtime.stores.db import Database, get_db
 
 logger = get_logger(__name__)
 
-# Canonical provider set lives in providers.registry.KNOWN_PROVIDERS; RuntimeId adds the legacy nexus/nanobot for the detection layer only.
-RuntimeId = Literal["claude", "codex", "gemini", "codebuddy", "nexus", "nanobot"]
+# Canonical provider set lives in providers.registry.KNOWN_PROVIDERS.
+RuntimeId = Literal["claude", "codex", "gemini", "codebuddy"]
 
 
 @dataclass
@@ -86,11 +86,8 @@ class RuntimeDaemon:
         }
 
 
-# Provider detection metadata. The canonical providers (claude/codex/gemini/
-# codebuddy) are sourced from providers.registry.PROVIDER_META so there is a
-# single source of truth for name/binaries/auth hints. The nexus/nanobot
-# entries below are legacy in-process providers retained for compatibility
-# and will be removed in Phase 1 of the daemon-platform refactor.
+# Provider detection metadata. Sourced from providers.registry.PROVIDER_META
+# so there is a single source of truth for name/binaries/auth hints.
 def _meta_from_registry() -> Dict[str, RuntimeMeta]:
     from src.providers.registry import PROVIDER_META
     return {
@@ -107,21 +104,6 @@ def _meta_from_registry() -> Dict[str, RuntimeMeta]:
 
 
 RUNTIME_META: Dict[str, RuntimeMeta] = _meta_from_registry()
-# Legacy in-process providers (Phase 1 removal targets).
-RUNTIME_META["nexus"] = RuntimeMeta(
-    name="Nexus",
-    description="In-process lightweight chat provider.",
-    auth_required=False,
-    auth_hint="",
-    binaries=["nexus"],
-)
-RUNTIME_META["nanobot"] = RuntimeMeta(
-    name="Nexus",
-    description="Legacy alias for the in-process lightweight chat provider.",
-    auth_required=False,
-    auth_hint="",
-    binaries=["nexus", "nanobot"],
-)
 
 
 def _detect_binary(
@@ -185,25 +167,12 @@ def _check_codebuddy_auth() -> bool:
     return (home / ".codebuddy").exists() or (home / ".config" / "codebuddy").exists()
 
 
-def _check_nexus_auth() -> bool:
-    """Nexus is in-process, always authenticated if importable."""
-    try:
-        import importlib
-        return (
-            importlib.util.find_spec("src.nexus") is not None
-            or importlib.util.find_spec("src.nanobot") is not None
-        )
-    except Exception:
-        return False
-
 
 AUTH_CHECKERS = {
     "claude": _check_claude_auth,
     "codex": _check_codex_auth,
     "gemini": _check_gemini_auth,
     "codebuddy": _check_codebuddy_auth,
-    "nexus": _check_nexus_auth,
-    "nanobot": _check_nexus_auth,
 }
 
 
@@ -498,22 +467,6 @@ def detect_runtime(runtime_id: str) -> RuntimeStatus:
     auth_checker = AUTH_CHECKERS.get(runtime_id)
     authenticated = auth_checker() if auth_checker else False
 
-    # Special case: nexus (and legacy nanobot alias) is always "installed" if the module exists
-    if runtime_id in ("nexus", "nanobot") and not installed:
-        try:
-            import importlib
-            spec = (
-                importlib.util.find_spec("src.nexus")
-                or importlib.util.find_spec("src.nanobot")
-            )
-            if spec is not None:
-                installed = True
-                version = "in-process"
-                bin_path = None
-                authenticated = True
-        except Exception:
-            pass
-
     return RuntimeStatus(
         id=runtime_id,
         name=meta.name,
@@ -529,4 +482,4 @@ def detect_runtime(runtime_id: str) -> RuntimeStatus:
 
 def detect_all_runtimes() -> List[RuntimeStatus]:
     """Detect all known runtimes."""
-    return [detect_runtime(rid) for rid in RUNTIME_META if rid != "nanobot"]
+    return [detect_runtime(rid) for rid in RUNTIME_META]

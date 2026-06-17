@@ -83,18 +83,12 @@ class ServerSettings(BaseSettings):
     # Channel 服务配置
     channels_enabled: bool = True
 
-    # Nexus Mission System
-    nexus_model: str = ""  # Empty = use ~/.nexus/config.json setting
-    nexus_workspace: str = ""  # Default: ~/Projects
-    nexus_missions_enabled: bool = True
+    # NOTE: the Nexus Mission System + nanobot engine fields were removed in the
+    # daemon-platform refactor (mission/evolution capabilities retired with the
+    # nanobot engine). The web console auth still lives in NexusSettings below.
 
-    # Legacy nanobot aliases kept for compatibility
-    nanobot_model: str = ""  # Empty = use ~/.nanobot/config.json setting
-    nanobot_workspace: str = ""  # Default: ~/Projects
-    nanobot_missions_enabled: bool = True
-
-    # Default chat provider (can be overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
-    default_chat_provider: str = "nexus"  # "claude", "nexus", "gemini", etc.
+    # Default chat provider (defaults to providers.registry.DEFAULT_PROVIDER; overridden via AGENT_NEXUS_DEFAULT_PROVIDER env var)
+    default_chat_provider: str = "claude"
     
     # Telegram 配置
     telegram_bot_token: str | None = None
@@ -202,8 +196,8 @@ class ProviderSettings(BaseSettings):
     # CodeBuddy CLI 配置
     codebuddy_default_model: str = ""
     
-    # 默认 Provider 和 Exec User
-    default_provider: str = "nexus"
+    # 默认 Provider 和 Exec User (default sourced from providers.registry)
+    default_provider: str = "claude"
     default_alias: str = ""
     default_exec_user: str = ""
 

@@ -289,15 +289,12 @@ class ChatView {
     }
 
     _getHistoryConfiguredOrder() {
-        // `nexus` 本身不会产生历史 JSONL（它只是 orchestrator），所以在 History 侧
-        // 统一剔除，避免骨架屏 / 过滤下拉 / 分组里出现一个永远为空的 NEXUS 桶。
-        const HISTORY_EXCLUDED = new Set(['nexus']);
-        const defaultProviders = (this.app?.getDefaultProviders ? this.app.getDefaultProviders() : ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'])
+        const defaultProviders = (this.app?.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'])
             .map(name => String(name || '').trim().toLowerCase())
-            .filter(name => name && !HISTORY_EXCLUDED.has(name));
+            .filter(name => name);
         const aliases = (this.app?.getAllProviders ? this.app.getAllProviders() : defaultProviders)
             .map(name => String(name || '').trim().toLowerCase())
-            .filter(name => name && !HISTORY_EXCLUDED.has(name));
+            .filter(name => name);
         const providerRanks = new Map();
         defaultProviders.forEach((name, idx) => providerRanks.set(name, idx));
         const aliasRanks = new Map();
@@ -908,7 +905,7 @@ class ChatView {
             const agentModels = [...new Set(agents.map(agent => this.app?.normalizeProviderName ? this.app.normalizeProviderName(agent.agent_type) : String(agent.agent_type || '').trim().toLowerCase()))];
             // Merge with custom providers (use getCustomProviderNames for new format)
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -1030,7 +1027,7 @@ class ChatView {
             const agents = this.getAvailableAgents(user);
             const agentModels = [...new Set(agents.map(agent => this.app?.normalizeProviderName ? this.app.normalizeProviderName(agent.agent_type) : String(agent.agent_type || '').trim().toLowerCase()))];
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'gemini', 'codex', 'codebuddy'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -1763,10 +1760,6 @@ class ChatView {
         for (const session of sortedSessions) {
             const rawProvider = String(session.provider || 'unknown').trim() || 'unknown';
             const rawAlias = String(session.alias || session.provider || 'unknown').trim() || 'unknown';
-            // nexus 不产生历史 JSONL，若后端异常返回也直接丢弃，保持 History 面板干净。
-            if (rawProvider.toLowerCase() === 'nexus' || rawAlias.toLowerCase() === 'nexus') {
-                continue;
-            }
             const providerLabel = this.app?.normalizeProviderName
                 ? this.app.normalizeProviderName(rawProvider)
                 : rawProvider;
@@ -4486,7 +4479,7 @@ class NexusApp {
         const trimmed = name.trim();
         if (!trimmed) return false;
 
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
         
         if (defaultProviders.includes(trimmed.toLowerCase()) || 
             this.customProviders.some(p => p.name.toLowerCase() === trimmed.toLowerCase())) {
@@ -4544,7 +4537,7 @@ class NexusApp {
     getProviderDefaultModel(providerOrAlias) {
         if (!providerOrAlias) return '';
         const name = providerOrAlias.trim().toLowerCase();
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
         const models = this._loadProviderModels();
         if (defaultProviders.includes(name)) {
             return models[name] || '';
@@ -4562,7 +4555,7 @@ class NexusApp {
         if (!providerOrAlias) return;
         const name = providerOrAlias.trim().toLowerCase();
         const val = (model || '').trim();
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
         if (defaultProviders.includes(name)) {
             const models = this._loadProviderModels();
             if (val) { models[name] = val; } else { delete models[name]; }
@@ -4580,7 +4573,7 @@ class NexusApp {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim().toLowerCase();
         
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = ['claude', 'gemini', 'codex', 'codebuddy'];
         if (defaultProviders.includes(trimmed)) {
             return false;
         }
@@ -4622,7 +4615,7 @@ class NexusApp {
     }
 
     getDefaultProviders() {
-        return ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        return ['claude', 'gemini', 'codex', 'codebuddy'];
     }
 
     getAllProviders() {
@@ -4632,7 +4625,7 @@ class NexusApp {
     normalizeProviderName(provider) {
         const normalized = String(provider || '').trim().toLowerCase();
         if (!normalized) return '';
-        return normalized === 'nanobot' ? 'nexus' : normalized;
+        return normalized;
     }
 
     // ============================================================
@@ -4641,7 +4634,7 @@ class NexusApp {
     getDefaultProvider() {
         const stored = this.normalizeProviderName(localStorage.getItem('nexus-default-provider'));
         const serverDefault = this.normalizeProviderName(this.serverDefaults?.default_provider);
-        return stored || serverDefault || 'nexus';
+        return stored || serverDefault || 'claude';
     }
 
     setDefaultProvider(provider) {
@@ -4933,8 +4926,8 @@ class NexusApp {
 
     resolveProviderSelection(providerSelection) {
         return this.taskFormController?.resolveProviderSelection?.(providerSelection) || {
-            provider: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'nexus'),
-            alias: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'nexus'),
+            provider: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'claude'),
+            alias: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'claude'),
         };
     }
 

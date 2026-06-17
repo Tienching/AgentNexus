@@ -12,31 +12,14 @@ from typing import Optional
 
 
 class ProviderExecutorMap(dict):
-    """Dictionary-like executor registry with legacy provider aliases."""
-
-    _ALIASES = {"nanobot": "nexus"}
-
-    def _resolve_key(self, key):
-        if isinstance(key, str):
-            return self._ALIASES.get(key, key)
-        return key
-
-    def __getitem__(self, key):
-        return super().__getitem__(self._resolve_key(key))
-
-    def get(self, key, default=None):
-        return super().get(self._resolve_key(key), default)
-
-    def __contains__(self, key):
-        return super().__contains__(self._resolve_key(key))
+    """Dictionary-like executor registry (canonical provider keys only)."""
 
 
 def normalize_provider(name: Optional[str]) -> str:
     """Normalize a provider name (or alias) to its canonical key.
 
     Accepts:
-    - canonical provider names (``claude``/``codex``/``gemini``/``codebuddy``/``nexus``)
-    - legacy ``nanobot`` (mapped to ``nexus``)
+    - canonical provider names (``claude``/``codex``/``gemini``/``codebuddy``)
     - aliases registered via :class:`AliasRegistry` (e.g. ``claude-internal``
       -> ``claude``, ``codex-internal`` -> ``codex``)
 
@@ -46,17 +29,13 @@ def normalize_provider(name: Optional[str]) -> str:
     if not n:
         return _default_provider()
 
-    # Canonical provider names (and the legacy nanobot alias)
-    if n in ("gemini", "codex", "codebuddy", "claude", "nexus"):
+    # Canonical provider names
+    if n in ("gemini", "codex", "codebuddy", "claude"):
         return n
-    if n == "nanobot":
-        return "nexus"
 
     # Alias lookup — consult the global alias registry so that UI selections
     # like ``claude-internal`` correctly resolve to ``claude`` instead of
-    # silently falling through to the default provider (which would route the
-    # request to the Nexus/nanobot orchestrator and make the agent self-
-    # identify as "Nanobot").
+    # silently falling through to the default provider.
     try:
         from src.runtime.stores.alias_registry import AliasRegistry
 
@@ -88,10 +67,13 @@ def normalize_provider(name: Optional[str]) -> str:
 
 
 def _default_provider() -> str:
-    """Return the default provider key (configurable via env var)."""
+    """Return the default provider key (configurable via env var).
+
+    Defaults to providers.registry.DEFAULT_PROVIDER (claude).
+    """
     import os
-    default = os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", "nexus").strip().lower()
-    return "nexus" if default == "nanobot" else default
+    from src.providers.registry import DEFAULT_PROVIDER
+    return os.environ.get("AGENT_NEXUS_DEFAULT_PROVIDER", DEFAULT_PROVIDER).strip().lower() or DEFAULT_PROVIDER
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +94,6 @@ def create_executor(provider: str, *, config=None):
         config = _settings
 
     key = normalize_provider(provider)
-
-    if key == "nexus":
-        from src.providers.nexus import NexusExecutor
-        return NexusExecutor(config=config)
 
     if key == "gemini":
         from src.providers.gemini import GeminiExecutor
@@ -143,16 +121,12 @@ def create_all_executors(*, config=None) -> dict:
         from src.server.config import settings as _settings
         config = _settings
 
-    nexus_executor = create_executor("nexus", config=config)
-    executors = ProviderExecutorMap({
+    return ProviderExecutorMap({
         "claude":    create_executor("claude", config=config),
         "gemini":    create_executor("gemini", config=config),
         "codex":     create_executor("codex", config=config),
         "codebuddy": create_executor("codebuddy", config=config),
-        "nexus":     nexus_executor,
-        "nanobot":   nexus_executor,
     })
-    return executors
 
 
 # ---------------------------------------------------------------------------
@@ -162,10 +136,6 @@ def create_all_executors(*, config=None) -> dict:
 def create_adapter(provider: str):
     """Create a **new** AG-UI adapter instance for *provider*."""
     key = normalize_provider(provider)
-
-    if key == "nexus":
-        from src.providers.nexus import NexusAGUIAdapter
-        return NexusAGUIAdapter()
 
     if key == "gemini":
         from src.runtime.adapters.gemini import GeminiAGUIAdapter

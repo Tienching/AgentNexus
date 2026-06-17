@@ -72,12 +72,12 @@ class TestAgentRuntimes:
         resp = client.get("/api/nexus/agent-runtimes", headers=_auth_headers())
         data = resp.json()
         ids = {r["id"] for r in data["runtimes"]}
-        # All 5 known runtimes should be returned
+        # The 4 canonical CLI runtimes should be returned (nexus/nanobot removed)
         assert "claude" in ids
         assert "codex" in ids
         assert "gemini" in ids
         assert "codebuddy" in ids
-        assert {"nanobot", "nexus"} & ids
+        assert not ({"nanobot", "nexus"} & ids)
 
     def test_single_runtime_filter(self, client):
         resp = client.get(
@@ -134,7 +134,7 @@ class TestAgentRuntimesService:
         from src.server.services.agent_runtimes import detect_all_runtimes
         results = detect_all_runtimes()
         assert isinstance(results, list)
-        assert len(results) == 5  # claude, codex, gemini, codebuddy, and the 5th agent runtime
+        assert len(results) == 4  # claude, codex, gemini, codebuddy (nexus/nanobot removed)
 
     @patch("shutil.which", return_value="/usr/local/bin/claude")
     @patch("subprocess.run")
