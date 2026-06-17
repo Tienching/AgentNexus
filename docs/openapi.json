@@ -15946,6 +15946,22 @@
             ],
             "title": "Pending Operations"
           },
+          "workspace": {
+            "type": "string",
+            "title": "Workspace",
+            "default": "default"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
           "metadata": {
             "additionalProperties": true,
             "type": "object",
@@ -15982,6 +15998,16 @@
           "runtime_id": {
             "type": "string",
             "title": "Runtime Id"
+          },
+          "workspace": {
+            "type": "string",
+            "title": "Workspace",
+            "default": "default"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "default": "unknown"
           },
           "device_name": {
             "type": "string",

@@ -82,6 +82,8 @@ class RuntimeDaemonListResponse(BaseModel):
 class RuntimeDaemonRegisterRequest(BaseModel):
     daemon_id: str
     runtime_id: str
+    workspace: str = "default"
+    provider: str = "unknown"
     device_name: str = ""
     cli_version: Optional[str] = None
     provider_version: Optional[str] = None
@@ -93,6 +95,8 @@ class RuntimeDaemonRegisterRequest(BaseModel):
 class RuntimeDaemonHeartbeatRequest(BaseModel):
     status: Optional[str] = None
     pending_operations: Optional[int] = None
+    workspace: str = "default"
+    provider: Optional[str] = None
     metadata: dict = Field(default_factory=dict)
 
 
@@ -167,6 +171,8 @@ async def register_runtime_daemon(request: RuntimeDaemonRegisterRequest):
     daemon = reg.register_daemon(
         daemon_id=request.daemon_id,
         runtime_id=request.runtime_id,
+        workspace=request.workspace,
+        provider=request.provider,
         device_name=request.device_name,
         cli_version=request.cli_version,
         provider_version=request.provider_version,
@@ -186,6 +192,8 @@ async def runtime_daemon_heartbeat(daemon_id: str, request: RuntimeDaemonHeartbe
         status=request.status,
         pending_operations=request.pending_operations,
         metadata=request.metadata,
+        workspace=request.workspace,
+        provider=request.provider,
     )
     if not daemon:
         from fastapi import HTTPException

@@ -27,6 +27,7 @@ from .routers.nexus_terminal import router as nexus_terminal_router
 from .routers.nexus_utils import router as nexus_utils_router
 from .routers.nexus_runs import router as nexus_runs_router
 from .routers.nexus_runtimes import router as nexus_runtimes_router
+from .routers.daemon_ws import router as daemon_ws_router
 from .routers.nexus_features import router as nexus_features_router
 from .routers.nexus_agents import router as nexus_agents_router
 from .routers.nexus_agent_templates import router as nexus_agent_templates_router
@@ -70,6 +71,7 @@ class AppStartupPolicy:
     start_task_scheduler: bool = True
     start_channel_service: bool = True
     start_terminal_manager: bool = True
+    start_daemon_client: bool = False  # auto-register local providers with a server (set via AGENT_NEXUS_SERVER_URL)
     start_evolution_service: bool = False  # deprecated no-op (evolution retired)
 
 
@@ -432,9 +434,32 @@ async def lifespan(app: FastAPI):
                 + "; ".join(required_startup_failures)
             )
 
+        # Start the daemon client (registers local CLI providers with an upstream server).
+        daemon_client = None
+        if startup_policy.start_daemon_client:
+            try:
+                from src.runtime.daemon import DaemonClient, DaemonConfig
+                daemon_client = DaemonClient(DaemonConfig.from_env())
+                started = await daemon_client.start()
+                if started:
+                    app.state.daemon_client = daemon_client
+                    logger.info("Daemon client started: {} provider(s) -> {}",
+                                len(daemon_client.discover()), daemon_client.config.server_url)
+            except Exception as e:
+                logger.warning(f"Daemon client failed to start: {e}")
+
         yield
     finally:
         # 关闭时
+        # Stop the daemon client.
+        daemon_client = getattr(app.state, "daemon_client", None)
+        if daemon_client is not None:
+            try:
+                await daemon_client.stop()
+                logger.info("Daemon client stopped")
+            except Exception as e:
+                logger.error(f"Error stopping daemon client: {e}")
+
         # 停止 Terminal Manager
         if terminal_manager:
             try:
@@ -559,6 +584,7 @@ def _configure_app(app: FastAPI, app_settings: Settings) -> None:
     app.include_router(nexus_utils_router)
     app.include_router(nexus_runs_router)
     app.include_router(nexus_runtimes_router)
+    app.include_router(daemon_ws_router)
     app.include_router(nexus_features_router)
     app.include_router(nexus_agents_router)
     app.include_router(nexus_agent_templates_router)

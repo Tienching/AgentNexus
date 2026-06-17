@@ -56,6 +56,8 @@ class RuntimeStatus:
 class RuntimeDaemon:
     daemon_id: str
     runtime_id: str
+    workspace: str = "default"
+    provider: str = "unknown"
     device_name: str = ""
     cli_version: Optional[str] = None
     provider_version: Optional[str] = None
@@ -72,6 +74,8 @@ class RuntimeDaemon:
         return {
             "daemon_id": self.daemon_id,
             "runtime_id": self.runtime_id,
+            "workspace": self.workspace,
+            "provider": self.provider,
             "device_name": self.device_name,
             "cli_version": self.cli_version,
             "provider_version": self.provider_version,
@@ -188,7 +192,9 @@ class RuntimeDaemonRegistry:
             self._db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runtime_daemons (
-                    daemon_id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL DEFAULT 'default',
+                    daemon_id TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'unknown',
                     runtime_id TEXT NOT NULL,
                     device_name TEXT NOT NULL DEFAULT '',
                     cli_version TEXT,
@@ -200,9 +206,13 @@ class RuntimeDaemonRegistry:
                     last_health_check REAL NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (workspace, daemon_id, provider)
                 )
                 """
+            )
+            self._db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_runtime_daemons_triple ON runtime_daemons(workspace, daemon_id, provider)"
             )
             self._db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_runtime_daemons_runtime ON runtime_daemons(runtime_id, updated_at DESC)"
@@ -226,6 +236,8 @@ class RuntimeDaemonRegistry:
         return RuntimeDaemon(
             daemon_id=row.get("daemon_id", ""),
             runtime_id=row.get("runtime_id", ""),
+            workspace=row.get("workspace") or "default",
+            provider=row.get("provider") or "unknown",
             device_name=row.get("device_name") or "",
             cli_version=row.get("cli_version") or None,
             provider_version=row.get("provider_version") or None,
@@ -244,6 +256,8 @@ class RuntimeDaemonRegistry:
         daemon_id: str,
         runtime_id: str,
         *,
+        workspace: str = "default",
+        provider: str = "unknown",
         device_name: str = "",
         cli_version: Optional[str] = None,
         provider_version: Optional[str] = None,
@@ -255,6 +269,8 @@ class RuntimeDaemonRegistry:
         daemon = RuntimeDaemon(
             daemon_id=daemon_id,
             runtime_id=runtime_id,
+            workspace=workspace or "default",
+            provider=provider or (metadata or {}).get("provider") or "unknown",
             device_name=device_name or "",
             cli_version=cli_version,
             provider_version=provider_version,
@@ -271,11 +287,11 @@ class RuntimeDaemonRegistry:
             conn.execute(
                 """
                 INSERT INTO runtime_daemons (
-                    daemon_id, runtime_id, device_name, cli_version, provider_version,
+                    workspace, daemon_id, provider, runtime_id, device_name, cli_version, provider_version,
                     status, health_endpoint, pending_operations,
                     last_heartbeat, last_health_check, metadata_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(daemon_id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace, daemon_id, provider) DO UPDATE SET
                     runtime_id=excluded.runtime_id,
                     device_name=excluded.device_name,
                     cli_version=excluded.cli_version,
@@ -289,7 +305,9 @@ class RuntimeDaemonRegistry:
                     updated_at=excluded.updated_at
                 """,
                 (
+                    daemon.workspace,
                     daemon.daemon_id,
+                    daemon.provider,
                     daemon.runtime_id,
                     daemon.device_name,
                     daemon.cli_version,
@@ -313,6 +331,8 @@ class RuntimeDaemonRegistry:
         status: Optional[str] = None,
         pending_operations: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        workspace: str = "default",
+        provider: Optional[str] = None,
     ) -> Optional[RuntimeDaemon]:
         daemon = self.get_daemon(daemon_id)
         if not daemon:
@@ -355,6 +375,8 @@ class RuntimeDaemonRegistry:
         health_endpoint: Optional[str] = None,
         pending_operations: Optional[int] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        workspace: str = "default",
+        provider: Optional[str] = None,
     ) -> Optional[RuntimeDaemon]:
         daemon = self.get_daemon(daemon_id)
         if not daemon:
