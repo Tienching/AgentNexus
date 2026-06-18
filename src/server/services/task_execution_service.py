@@ -238,7 +238,7 @@ def _resolve_task_binding(task: "Task", storage) -> dict:
     provider = normalize_provider(
         getattr(binding, "provider", None)
         or getattr(task, "provider", None)
-        or "nexus"
+        or "claude"
     )
     alias = (getattr(binding, "alias", None) or getattr(task, "alias", None) or provider)
     exec_user = (getattr(binding, "exec_user", None) or getattr(task, "exec_user", None) or "ubuntu")

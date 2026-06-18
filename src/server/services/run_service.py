@@ -63,7 +63,7 @@ def _to_row(run: dict, exec_user: str) -> dict:
         "agent_name": run.get("agent_name"),
         "model": run.get("model"),
         "provider": run.get("provider"),
-        "runtime": run.get("runtime", "nexus"),
+        "runtime": run.get("runtime", "claude"),
         "runtime_version": run.get("runtime_version"),
         "trigger": run.get("trigger"),
         "parent_run_id": run.get("parent_run_id"),
@@ -192,7 +192,7 @@ class RunService:
         record = {
             "id": run_id, "agent_id": run.get("agent_id", ""),
             "agent_name": run.get("agent_name"), "model": run.get("model"),
-            "provider": run.get("provider"), "runtime": run.get("runtime", "nexus"),
+            "provider": run.get("provider"), "runtime": run.get("runtime", "claude"),
             "runtime_version": run.get("runtime_version"), "trigger": run.get("trigger"),
             "parent_run_id": run.get("parent_run_id"), "task_id": run.get("task_id"),
             "status": run.get("status", "pending"), "outcome": run.get("outcome"),

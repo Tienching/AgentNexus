@@ -22,6 +22,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import secrets
 from typing import Any, Dict, Set
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
@@ -74,10 +76,19 @@ def get_daemon_hub() -> DaemonConnectionHub:
 
 
 def _authorized(token: str | None) -> bool:
-    expected = getattr(settings, "nexus_password", "") or ""
-    if not expected:
-        return True  # auth not configured
-    return bool(token) and token == expected
+    """Authorize a WS connection using the SAME sources as the HTTP daemon API.
+
+    Order (mirrors nexus_auth.verify_nexus_auth): NEXUS_AUTH_TOKEN first, then
+    nexus_password. Constant-time comparison via secrets.compare_digest. When
+    neither is configured the endpoint is open (matches HTTP behavior).
+    """
+    api_token = (os.getenv("NEXUS_AUTH_TOKEN") or "").strip()
+    if api_token:
+        return bool(token) and secrets.compare_digest(str(token), api_token)
+    password = getattr(settings, "nexus_password", "") or ""
+    if password:
+        return bool(token) and secrets.compare_digest(str(token), password)
+    return True  # auth not configured
 
 
 @router.websocket("/api/daemon/ws")

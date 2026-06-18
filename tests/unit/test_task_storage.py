@@ -251,7 +251,7 @@ class TestTaskQueue:
         assert task.priority == TaskPriority.THOUGHT
         assert task.status == TaskStatus.TODO
         assert task.exec_user == "test_agent"
-        assert task.provider == "nexus"
+        assert task.provider == "claude"  # default (was nexus pre-refactor)
 
     def test_add_task_with_provider(self, task_queue):
         task = task_queue.add_task(

@@ -24,7 +24,7 @@ import os
 import re
 import signal
 import time
-from typing import Any, AsyncGenerator, List, Optional
+from typing import Any, AsyncGenerator, List, Optional, Tuple
 
 from ..base import BaseExecutor, ExecutorConfig, RequestContext
 
@@ -186,8 +186,9 @@ class OpenClawCLIExecutor(BaseExecutor):
         """Build the `openclaw agent` command.
 
         OpenClaw binds the model at agent-registration time, so --model is NOT
-        passed here. We surface the user's inline --model choice as an explicit
-        warning event instead of silently ignoring it.
+        passed to the CLI. An inline `--model <id>` directive in the prompt is
+        stripped (so it is not sent as literal task text); a warning event is
+        emitted via _execute_internal when inline_model is set.
 
         Flags (per the documented `openclaw agent` contract):
           --message <text>   the task prompt (OpenClaw loads AGENTS.md from cwd)
@@ -195,7 +196,7 @@ class OpenClawCLIExecutor(BaseExecutor):
           --agent <name>     target a registered agent (optional)
           --resume <id>      resume a previous session
         """
-        cleaned_content = (context.content or "").strip()
+        cleaned_content, inline_model = self._parse_model_param(context.content or "")
         is_clear = cleaned_content.lower() == "/clear"
         message = "hello" if is_clear else cleaned_content
 
@@ -218,6 +219,22 @@ class OpenClawCLIExecutor(BaseExecutor):
         if use_resume and not session_cleared and not is_clear and cli_session_id:
             cmd.extend(["--resume", cli_session_id])
         return cmd
+
+    def _parse_model_param(self, content: str) -> Tuple[str, Optional[str]]:
+        """Strip an inline `--model <id>` directive from the prompt.
+
+        OpenClaw binds its model at agent-registration time, so a per-task model
+        choice cannot be honored. We strip it from the message (rather than
+        sending it as literal task text) and return it so the caller can warn.
+        """
+        pattern = r"--model\s+([^\s]+(?:\s*,\s*[^\s,]+)*)"
+        match = re.search(pattern, content)
+        if match:
+            model_value = match.group(1).strip()
+            cleaned = re.sub(pattern, "", content).strip()
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            return cleaned, model_value
+        return content.strip(), None
 
     async def _process_stream(
         self,

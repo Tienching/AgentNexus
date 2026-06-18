@@ -350,7 +350,7 @@ class RuntimeDaemonRegistry:
         workspace: str = "default",
         provider: Optional[str] = None,
     ) -> Optional[RuntimeDaemon]:
-        daemon = self.get_daemon(daemon_id)
+        daemon = self.get_daemon(daemon_id, workspace=workspace, provider=provider)
         if not daemon:
             return None
         now = time.time()
@@ -369,7 +369,7 @@ class RuntimeDaemonRegistry:
                 UPDATE runtime_daemons
                 SET status = ?, pending_operations = ?, last_heartbeat = ?, last_health_check = ?,
                     metadata_json = ?, updated_at = ?
-                WHERE daemon_id = ?
+                WHERE daemon_id = ? AND workspace = ? AND provider = ?
                 """,
                 (
                     daemon.status,
@@ -379,6 +379,8 @@ class RuntimeDaemonRegistry:
                     json.dumps(daemon.metadata, ensure_ascii=False),
                     daemon.updated_at,
                     daemon_id,
+                    daemon.workspace,
+                    daemon.provider,
                 ),
             )
         return daemon
@@ -394,7 +396,7 @@ class RuntimeDaemonRegistry:
         workspace: str = "default",
         provider: Optional[str] = None,
     ) -> Optional[RuntimeDaemon]:
-        daemon = self.get_daemon(daemon_id)
+        daemon = self.get_daemon(daemon_id, workspace=workspace, provider=provider)
         if not daemon:
             return None
         now = time.time()
@@ -414,7 +416,7 @@ class RuntimeDaemonRegistry:
                 UPDATE runtime_daemons
                 SET status = ?, health_endpoint = ?, pending_operations = ?,
                     last_health_check = ?, metadata_json = ?, updated_at = ?
-                WHERE daemon_id = ?
+                WHERE daemon_id = ? AND workspace = ? AND provider = ?
                 """,
                 (
                     daemon.status,
@@ -424,15 +426,37 @@ class RuntimeDaemonRegistry:
                     json.dumps(daemon.metadata, ensure_ascii=False),
                     daemon.updated_at,
                     daemon_id,
+                    daemon.workspace,
+                    daemon.provider,
                 ),
             )
         return daemon
 
-    def get_daemon(self, daemon_id: str) -> Optional[RuntimeDaemon]:
-        row = self._db.execute_fetchone(
-            "SELECT * FROM runtime_daemons WHERE daemon_id = ?",
-            (daemon_id,),
-        )
+    def get_daemon(
+        self,
+        daemon_id: str,
+        *,
+        workspace: str = "default",
+        provider: Optional[str] = None,
+    ) -> Optional[RuntimeDaemon]:
+        """Look up a daemon runtime row.
+
+        With the triple-key schema (workspace, daemon_id, provider) a host may
+        have multiple rows. When ``provider`` is given the exact row is returned;
+        otherwise the most recently updated row for that daemon.
+        """
+        if provider:
+            row = self._db.execute_fetchone(
+                "SELECT * FROM runtime_daemons "
+                "WHERE daemon_id = ? AND workspace = ? AND provider = ?",
+                (daemon_id, workspace, provider),
+            )
+        else:
+            row = self._db.execute_fetchone(
+                "SELECT * FROM runtime_daemons WHERE daemon_id = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (daemon_id,),
+            )
         if not row:
             return None
         return self._row_to_daemon(row)

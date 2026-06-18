@@ -127,12 +127,15 @@ class DaemonClient:
             logger.warning("Daemon %s has no installed CLI providers; skipping register", self.identity.daemon_id)
             return False
 
+        ok_count = 0
         async with httpx.AsyncClient(timeout=self.config.register_timeout) as client:
             for dp in providers:
                 runtime_id = f"{self.identity.daemon_id}/{dp.provider}"
                 payload: Dict[str, Any] = {
                     "daemon_id": self.identity.daemon_id,
                     "runtime_id": runtime_id,
+                    "workspace": self.config.workspace,
+                    "provider": dp.provider,
                     "device_name": self.identity.device_name,
                     "status": "idle",
                     "health_endpoint": None,
@@ -151,6 +154,7 @@ class DaemonClient:
                         headers=self._headers(),
                     )
                     if resp.status_code in (200, 201):
+                        ok_count += 1
                         logger.info(
                             "Registered runtime %s (%s) on %s",
                             runtime_id, dp.provider, self.config.server_url,
@@ -162,8 +166,12 @@ class DaemonClient:
                         )
                 except Exception as exc:
                     logger.warning("Register %s error: %s", runtime_id, exc)
-        self._registered = True
-        return True
+        # Only mark registered if at least one provider succeeded; otherwise the
+        # loop retries registration next tick (C3: no false "registered" on failure).
+        if ok_count > 0:
+            self._registered = True
+            return True
+        return False
 
     async def heartbeat_once(self) -> bool:
         """Send a single heartbeat for every registered runtime."""

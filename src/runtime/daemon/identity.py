@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,10 +66,21 @@ def get_or_create_identity(path: Optional[Path] = None) -> DaemonIdentity:
     identity = DaemonIdentity(daemon_id=daemon_id, device_name=socket.gethostname())
     try:
         id_path.parent.mkdir(parents=True, exist_ok=True)
-        id_path.write_text(
-            json.dumps(identity.to_dict(), indent=2),
-            encoding="utf-8",
-        )
+        # Atomic write: temp file + os.replace (POSIX rename is atomic). Avoids
+        # the TOCTOU race where two processes mint distinct UUIDs and clobber
+        # each other on concurrent first-run.
+        import tempfile as _tmpmod
+        fd, tmp_name = _tmpmod.mkstemp(dir=str(id_path.parent), prefix=".daemon.id.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(identity.to_dict(), indent=2))
+            os.replace(tmp_name, id_path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except Exception:
         # Identity is held in memory even if persistence fails; next run mints again.
         pass

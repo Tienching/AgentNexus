@@ -147,10 +147,12 @@ class TestCreateRun:
         run = svc.create_run(_minimal_run(id="my-run-id"))
         assert run["id"] == "my-run-id"
 
-    def test_default_runtime_is_nexus(self):
+    def test_default_runtime_is_claude(self):
+        # The default runtime/provider is claude (was nexus before the
+        # daemon-platform refactor; nexus provider was removed).
         svc = _make_svc()
         run = svc.create_run(_minimal_run())
-        assert run["runtime"] == "nexus"
+        assert run["runtime"] == "claude"
 
     def test_custom_fields_preserved(self):
         svc = _make_svc()

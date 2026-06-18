@@ -185,7 +185,7 @@ class Task(BaseModel):
     exec_user: Optional[str] = None
 
     # Provider pinned at task creation time (e.g., claude, gemini)
-    provider: str = "nexus"
+    provider: str = "claude"  # default from providers.registry.DEFAULT_PROVIDER
     # Optional alias (defaults to provider)
     alias: Optional[str] = None
     # Optional LLM model name (e.g., claude-opus-4.6, gemini-2.5-pro)
