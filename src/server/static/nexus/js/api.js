@@ -294,16 +294,6 @@ class NexusAPI {
     }
 
     /**
-     * Get available agents
-     * @returns {Promise<Object>} Agents response
-     */
-    static async getAgents() {
-        return NexusAPI._request(`${API_BASE}/agents`, {}, {
-            errorMessage: 'Failed to fetch agents',
-        });
-    }
-
-    /**
      * Get unique projects
      * @param {Object} options - Query options
      * @returns {Promise<Array>} List of project items
@@ -809,7 +799,7 @@ class NexusAPI {
 
     /**
      * Get messages for a specific history session
-     * @param {string} provider - Provider name (claude/codex/codebuddy/gemini)
+     * @param {string} provider - Provider name (claude/codex/codebuddy/hermes)
      * @param {string} sessionId - Session ID
      * @param {Object} options - { execUser?, configPath? }
      * @returns {Promise<Object>} Messages response
@@ -1136,57 +1126,13 @@ class NexusAPI {
         return response.json();
     }
 
-    // ============ Agent Runtimes API ============
+    // ============ Search API ============
 
-    /**
-     * Detect installed agent runtimes (claude, codex, gemini, codebuddy, nexus)
-     * @param {string} [runtimeId] - Optional: detect a specific runtime only
-     * @returns {Promise<Object>} Runtimes detection result
-     */
-    static async getAgentRuntimes(runtimeId) {
-        const params = new URLSearchParams();
-        if (runtimeId) params.set('runtime_id', runtimeId);
-        const query = params.toString();
-        return NexusAPI._request(`${API_BASE}/agent-runtimes${query ? '?' + query : ''}`, {}, {
-            errorMessage: 'Failed to detect runtimes',
-        });
-    }
-
-    // ============ Admin / Ops APIs ============
-
-    static async getDiagnostics() {
-        return NexusAPI._request(`${API_BASE}/diagnostics`, {}, {
-            errorMessage: 'Failed to fetch diagnostics',
-        });
-    }
-
-    static async getSetupReadiness() {
-        return NexusAPI._request(`${API_BASE}/setup/readiness`, {}, {
-            errorMessage: 'Failed to fetch setup readiness',
-        });
-    }
-
-    static async getSecurityScan() {
-        return NexusAPI._request(`${API_BASE}/security-scan`, {}, {
-            errorMessage: 'Failed to fetch security scan',
-        });
-    }
-
-    static async getSystemMonitor() {
-        return NexusAPI._request(`${API_BASE}/system-monitor`, {}, {
-            errorMessage: 'Failed to fetch system monitor',
-        });
-    }
-
-    static async getWorkload() {
-        return NexusAPI._request(`${API_BASE}/workload`, {}, {
-            errorMessage: 'Failed to fetch workload',
-        });
-    }
-
-    static async getStandup() {
-        return NexusAPI._request(`${API_BASE}/standup`, {}, {
-            errorMessage: 'Failed to fetch standup',
+    static async globalSearch(q, type) {
+        const params = new URLSearchParams({ q });
+        if (type && type !== 'all') params.set('type', type);
+        return NexusAPI._request(`${API_BASE}/search?${params}`, {}, {
+            errorMessage: 'Failed to search',
         });
     }
 
@@ -1198,27 +1144,6 @@ class NexusAPI {
         const query = qs.toString();
         return NexusAPI._request(`${API_BASE}/audit${query ? '?' + query : ''}`, {}, {
             errorMessage: 'Failed to fetch audit log',
-        });
-    }
-
-    static async globalSearch(q, type) {
-        const params = new URLSearchParams({ q });
-        if (type && type !== 'all') params.set('type', type);
-        return NexusAPI._request(`${API_BASE}/search?${params}`, {}, {
-            errorMessage: 'Failed to search',
-        });
-    }
-
-    static async getCleanupPreview() {
-        return NexusAPI._request(`${API_BASE}/cleanup`, {}, {
-            errorMessage: 'Failed to fetch cleanup preview',
-        });
-    }
-
-    static async executeCleanup(dryRun = true) {
-        const params = new URLSearchParams({ dry_run: dryRun });
-        return NexusAPI._request(`${API_BASE}/cleanup?${params}`, { method: 'POST' }, {
-            errorMessage: 'Failed to execute cleanup',
         });
     }
 
@@ -1252,84 +1177,6 @@ class NexusAPI {
     static async listSlashCommands() {
         return NexusAPI._request(`${API_BASE}/commands`, {}, {
             errorMessage: 'Failed to fetch slash commands',
-        });
-    }
-
-    // ============ Plan Mode API ============
-
-    /**
-     * Enter plan mode (read-only exploration)
-     * @returns {Promise<Object>} Plan action response
-     */
-    static async enterPlanMode() {
-        return NexusAPI._request(`${API_BASE}/plan/enter`, { method: 'POST' }, {
-            errorMessage: 'Failed to enter plan mode',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    /**
-     * Submit a plan for approval
-     * @param {string} content - The plan content
-     * @returns {Promise<Object>} Plan action response
-     */
-    static async submitPlan(content) {
-        return NexusAPI._request(`${API_BASE}/plan/submit`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content }),
-        }, {
-            errorMessage: 'Failed to submit plan',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    /**
-     * Approve the current plan
-     * @returns {Promise<Object>} Plan action response
-     */
-    static async approvePlan() {
-        return NexusAPI._request(`${API_BASE}/plan/approve`, { method: 'POST' }, {
-            errorMessage: 'Failed to approve plan',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    /**
-     * Reject the current plan
-     * @returns {Promise<Object>} Plan action response
-     */
-    static async rejectPlan() {
-        return NexusAPI._request(`${API_BASE}/plan/reject`, { method: 'POST' }, {
-            errorMessage: 'Failed to reject plan',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    /**
-     * Get current plan mode status
-     * @returns {Promise<Object>} Plan status response
-     */
-    static async getPlanStatus() {
-        return NexusAPI._request(`${API_BASE}/plan/status`, {}, {
-            errorMessage: 'Failed to get plan status',
-            includeStatusText: false,
-        });
-    }
-
-    /**
-     * Exit plan mode
-     * @returns {Promise<Object>} Plan action response
-     */
-    static async exitPlanMode() {
-        return NexusAPI._request(`${API_BASE}/plan/exit`, { method: 'POST' }, {
-            errorMessage: 'Failed to exit plan mode',
-            preferErrorDetail: true,
-            includeStatusText: false,
         });
     }
 
@@ -1605,44 +1452,6 @@ class NexusAPI {
         return response.json();
     }
 
-    // ============ Security / Permission Sync API ============
-
-    static async getPendingPermissions() {
-        return NexusAPI._request(`${API_BASE}/security/permissions/pending`, {}, {
-            errorMessage: 'Failed to fetch pending permissions',
-        });
-    }
-
-    static async approvePermission(id) {
-        return NexusAPI._request(`${API_BASE}/security/permissions/${encodeURIComponent(id)}/approve`, {
-            method: 'POST',
-        }, {
-            errorMessage: 'Failed to approve permission',
-        });
-    }
-
-    static async rejectPermission(id) {
-        return NexusAPI._request(`${API_BASE}/security/permissions/${encodeURIComponent(id)}/reject`, {
-            method: 'POST',
-        }, {
-            errorMessage: 'Failed to reject permission',
-        });
-    }
-
-    static async getPermissionCache() {
-        return NexusAPI._request(`${API_BASE}/security/permissions/cache`, {}, {
-            errorMessage: 'Failed to fetch permission cache',
-        });
-    }
-
-    static async triggerPermissionSync() {
-        return NexusAPI._request(`${API_BASE}/security/permissions/sync`, {
-            method: 'POST',
-        }, {
-            errorMessage: 'Failed to trigger permission sync',
-        });
-    }
-
     // ============ Hook Profile API ============
 
     static async getHookProfile() {
@@ -1660,34 +1469,6 @@ class NexusAPI {
             errorMessage: 'Failed to update hook profile',
             preferErrorDetail: true,
             includeStatusText: false,
-        });
-    }
-
-    // ============ Permissions Mode API ============
-
-    static async getPermissions() {
-        return NexusAPI._request(`${API_BASE}/permissions`, {}, {
-            errorMessage: 'Failed to fetch permissions',
-        });
-    }
-
-    static async setPermissionMode(mode) {
-        return NexusAPI._request(`${API_BASE}/permissions/mode`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode }),
-        }, {
-            errorMessage: 'Failed to set permission mode',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    static async clearPermissionCache() {
-        return NexusAPI._request(`${API_BASE}/permissions/cache/clear`, {
-            method: 'POST',
-        }, {
-            errorMessage: 'Failed to clear permission cache',
         });
     }
 
@@ -1839,24 +1620,6 @@ class NexusAPI {
         return response.json();
     }
 
-    // ============ Memory State API ============
-
-    static async getMemoryState() {
-        return NexusAPI._request(`${API_BASE}/history/memory/state`, {}, {
-            errorMessage: 'Failed to fetch memory state',
-        });
-    }
-
-    static async restoreMemoryContext(sessionId, options = {}) {
-        return NexusAPI._request(`${API_BASE}/history/sessions/${encodeURIComponent(sessionId)}/restore-memory`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(options),
-        }, {
-            errorMessage: 'Failed to restore memory context',
-        });
-    }
-
     // ============ Mission API ============
 
     static async listMissions(options = {}) {
@@ -1993,179 +1756,6 @@ class NexusAPI {
         return response.json();
     }
 
-    // ============ Evolution API ============
-
-    static async triggerEvolution(payload = {}) {
-        return NexusAPI._request(`${API_BASE}/evolution/trigger`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        }, {
-            errorMessage: 'Failed to trigger evolution',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    static async evolutionSynthesis(payload = {}) {
-        return NexusAPI._request(`${API_BASE}/evolution/synthesis`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        }, {
-            errorMessage: 'Failed to run evolution synthesis',
-            preferErrorDetail: true,
-            includeStatusText: false,
-        });
-    }
-
-    static async getEvolutionStatus() {
-        return NexusAPI._request(`${API_BASE}/evolution/status`, {}, {
-            errorMessage: 'Failed to fetch evolution status',
-        });
-    }
-
-    static async getEvolutionMemory() {
-        return NexusAPI._request(`${API_BASE}/evolution/memory`, {}, {
-            errorMessage: 'Failed to fetch evolution memory',
-        });
-    }
-
-    // ============ Admin / Ops APIs (Newly Added) ============
-
-    /**
-     * Get system diagnostics data
-     * @returns {Promise<Object>} Diagnostics response
-     */
-    static async getDiagnostics() {
-        return NexusAPI._request(`${API_BASE}/diagnostics`, {}, {
-            errorMessage: 'Failed to fetch diagnostics',
-        });
-    }
-
-    /**
-     * Get security scan results
-     * @returns {Promise<Object>} Security scan response
-     */
-    static async getSecurityScan() {
-        return NexusAPI._request(`${API_BASE}/security-scan`, {}, {
-            errorMessage: 'Failed to fetch security scan',
-        });
-    }
-
-    /**
-     * Get system monitor data
-     * @returns {Promise<Object>} System monitor response
-     */
-    static async getSystemMonitor() {
-        return NexusAPI._request(`${API_BASE}/system-monitor`, {}, {
-            errorMessage: 'Failed to fetch system monitor',
-        });
-    }
-
-    /**
-     * Get workload statistics
-     * @returns {Promise<Object>} Workload response
-     */
-    static async getWorkload() {
-        return NexusAPI._request(`${API_BASE}/workload`, {}, {
-            errorMessage: 'Failed to fetch workload',
-        });
-    }
-
-    /**
-     * Get standup report
-     * @returns {Promise<Object>} Standup response
-     */
-    static async getStandup() {
-        return NexusAPI._request(`${API_BASE}/standup`, {}, {
-            errorMessage: 'Failed to fetch standup',
-        });
-    }
-
-    /**
-     * Get audit log with filtering
-     * @param {Object} params - Filter parameters {action, task_id, limit}
-     * @returns {Promise<Object>} Audit log response
-     */
-    static async getAuditLog(params = {}) {
-        const qs = new URLSearchParams();
-        if (params.action) qs.set('action', params.action);
-        if (params.task_id) qs.set('task_id', params.task_id);
-        if (params.limit) qs.set('limit', params.limit);
-        const query = qs.toString();
-        return NexusAPI._request(`${API_BASE}/audit${query ? '?' + query : ''}`, {}, {
-            errorMessage: 'Failed to fetch audit log',
-        });
-    }
-
-    /**
-     * Perform global search
-     * @param {string} q - Search query
-     * @param {string} type - Search type (all/task/session)
-     * @returns {Promise<Object>} Search results
-     */
-    static async globalSearch(q, type) {
-        const params = new URLSearchParams({ q });
-        if (type && type !== 'all') params.set('type', type);
-        return NexusAPI._request(`${API_BASE}/search?${params}`, {}, {
-            errorMessage: 'Failed to search',
-        });
-    }
-
-    /**
-     * Get cleanup preview data
-     * @returns {Promise<Object>} Cleanup preview response
-     */
-    static async getCleanupPreview() {
-        return NexusAPI._request(`${API_BASE}/cleanup`, {}, {
-            errorMessage: 'Failed to fetch cleanup preview',
-        });
-    }
-
-    /**
-     * Execute cleanup operation
-     * @param {boolean} dryRun - Whether to perform dry run
-     * @returns {Promise<Object>} Cleanup execution response
-     */
-    static async executeCleanup(dryRun = true) {
-        const params = new URLSearchParams({ dry_run: dryRun });
-        return NexusAPI._request(`${API_BASE}/cleanup?${params}`, { method: 'POST' }, {
-            errorMessage: 'Failed to execute cleanup',
-        });
-    }
-
-    /**
-     * Parse schedule input
-     * @param {string} input - Schedule input string
-     * @returns {Promise<Object>} Schedule parse response
-     */
-    static async parseSchedule(input) {
-        const params = new URLSearchParams({ input });
-        return NexusAPI._request(`${API_BASE}/schedule-parse?${params}`, {}, {
-            errorMessage: 'Failed to parse schedule',
-        });
-    }
-
-    /**
-     * Export data in specified format
-     * @param {string} type - Data type to export
-     * @param {string} format - Export format (JSON/CSV)
-     * @returns {Promise<Object|string>} Export data
-     */
-    static async exportData(type, format) {
-        const params = new URLSearchParams({ type });
-        if (format) params.set('format', format);
-        const response = await NexusAPI._request(`${API_BASE}/export?${params}`, {}, {
-            errorMessage: 'Failed to export data',
-            responseType: 'raw',
-        });
-        const ct = response.headers.get('content-type') || '';
-        if (ct.includes('text/csv') || (format && format.toLowerCase() === 'csv')) {
-            return response.text();
-        }
-        return response.json();
-    }
 }
 
 // Export for use in other scripts
@@ -2175,29 +1765,5 @@ window.NexusAPI = NexusAPI;
 // We keep this synchronous so dependent deferred scripts can assume the globals exist.
 (function bootstrapDeferredNexusComponents() {
     if (typeof window === 'undefined' || typeof XMLHttpRequest === 'undefined') return;
-    const needsAgentsShell = !window.NexusAgentsStore || !window.NexusAgentsViewShell;
-    if (!needsAgentsShell) return;
-
-    const sources = [];
-    if (!window.NexusAgentsStore) {
-        sources.push('js/components/agents-store.js');
-    }
-    if (!window.NexusAgentsViewShell) {
-        sources.push('js/components/agents-view-shell.js');
-    }
-
-    for (const src of sources) {
-        try {
-            const xhr = new XMLHttpRequest();
-            xhr.open('GET', src, false);
-            xhr.send(null);
-            if (xhr.status >= 200 && xhr.status < 400 && xhr.responseText) {
-                (0, eval)(`${xhr.responseText}\n//# sourceURL=${src}`);
-            } else {
-                console.warn('[NexusAPI] Failed to bootstrap component:', src, xhr.status);
-            }
-        } catch (error) {
-            console.warn('[NexusAPI] Failed to load deferred component:', src, error);
-        }
-    }
+    return;
 })();

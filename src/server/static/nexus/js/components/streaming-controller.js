@@ -166,6 +166,20 @@ class NexusStreamingController {
         return toolCall;
     }
 
+    _finalizeOpenToolCalls(status = 'completed', error = '') {
+        for (const toolCall of this.toolCalls.values()) {
+            if (!['pending', 'executing'].includes(toolCall.status || 'executing')) continue;
+            toolCall.status = status;
+            if (error && !toolCall.error) toolCall.error = error;
+            this._emit('onToolCallEnd', toolCall, {
+                type: 'TOOL_CALL_END',
+                toolCallId: toolCall.id,
+                result: toolCall.result || '',
+                error: toolCall.error || '',
+            });
+        }
+    }
+
     processRawSSEEvent(rawEvent) {
         const parsed = NexusStreamingController.parseSSEEvent(rawEvent);
         if (!parsed) return false;
@@ -236,10 +250,12 @@ class NexusStreamingController {
                 return true;
             }
             case 'RUN_FINISHED':
+                this._finalizeOpenToolCalls('completed');
                 this._finished = true;
                 this._emit('onRunFinished', data);
                 return true;
             case 'RUN_ERROR':
+                this._finalizeOpenToolCalls('failed', data.message || data.error || 'Stream error');
                 this._finished = true;
                 this._emit('onRunError', data);
                 return true;

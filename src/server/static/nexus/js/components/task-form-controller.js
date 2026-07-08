@@ -43,7 +43,7 @@ class NexusTaskFormController {
         if (this.app && typeof this.app.getDefaultProviders === 'function') {
             return this.app.getDefaultProviders();
         }
-        return ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        return ['claude', 'codex', 'codebuddy', 'hermes'];
     }
 
     _getCustomProviderNames() {
@@ -361,7 +361,7 @@ class NexusTaskFormController {
     }
 
     resolveProviderSelection(providerSelection) {
-        const normalizedSelection = this._normalizeProviderName(providerSelection || this._getDefaultProvider() || 'nexus');
+        const normalizedSelection = this._normalizeProviderName(providerSelection || this._getDefaultProvider() || 'claude');
         const defaultProviders = this._getDefaultProviders();
         const baseProvider = defaultProviders.includes(normalizedSelection)
             ? normalizedSelection

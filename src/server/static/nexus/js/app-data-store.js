@@ -46,18 +46,11 @@ class AppDataStore {
             tasks:        15000,   // 15s
             sessions:     20000,   // 20s
             historySessions: 20000, // 20s
-            agents:       60000,   // 60s
             schedules:    30000,   // 30s
-            diagnostics:  30000,   // 30s
-            activities:   20000,   // 20s
             defaults:     120000,  // 2min - rarely changes
             usernames:    60000,   // 60s
             skills:       60000,   // 60s
             projects:     60000,   // 60s
-            runtimes:     60000,   // 60s
-            security:     60000,   // 60s
-            workload:     30000,   // 30s
-            audit:        30000,   // 30s
         };
 
         // Data source fetchers — each returns a Promise
@@ -65,18 +58,11 @@ class AppDataStore {
             tasks:       (opts) => NexusAPI.getTasks(opts),
             sessions:    (opts) => NexusAPI.getSessions(opts),
             historySessions: (opts) => NexusAPI.getHistorySessions(opts),
-            agents:      ()     => NexusAPI.getAgents(),
             schedules:   (opts) => NexusAPI.getSchedules(opts),
-            diagnostics: ()     => NexusAPI.getDiagnostics(),
-            activities:  ()     => NexusAPI.getStandup(),
             defaults:    ()     => NexusAPI.getDefaults(),
             usernames:   ()     => NexusAPI.getUsernames(),
             skills:      (opts) => NexusAPI.getSkills(opts),
             projects:    (opts) => NexusAPI.getProjects(opts),
-            runtimes:    (opts) => NexusAPI.getAgentRuntimes(opts?.runtimeId),
-            security:    ()     => NexusAPI.getSecurityScan(),
-            workload:    ()     => NexusAPI.getWorkload(),
-            audit:       (opts) => NexusAPI.getAuditLog(opts),
         };
     }
 

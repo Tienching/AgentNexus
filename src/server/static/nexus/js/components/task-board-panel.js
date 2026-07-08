@@ -100,7 +100,7 @@ class TaskBoardPanel {
             return app.normalizeProviderName(provider);
         }
         const normalized = String(provider || '').trim().toLowerCase();
-        return normalized === 'nanobot' ? 'nexus' : normalized;
+        return normalized;
     }
 
     _normalizeSecondarySurface(surface) {
@@ -2247,9 +2247,10 @@ class TaskBoardPanel {
         } else {
             this._summaryMetrics = {
                 total: this._taskTotalCount || this._tasks.length,
-                active: this._tasks.filter(t => ['pending', 'running', 'in_review'].includes(this._normalizeTaskStatus(t.status))).length,
+                pending: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'pending').length,
                 running: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'running').length,
-                reviewing: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'in_review').length,
+                in_review: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'in_review').length,
+                completed: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'completed').length,
                 failed: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'failed').length,
                 cancelled: this._tasks.filter(t => this._normalizeTaskStatus(t.status) === 'cancelled').length,
                 scheduled: this._scheduleSummaryCount,
@@ -2275,9 +2276,10 @@ class TaskBoardPanel {
             return;
         }
         const filterMap = {
-            active: ['pending', 'running', 'in_review'],
+            pending: ['pending'],
             running: ['running'],
-            reviewing: ['in_review'],
+            in_review: ['in_review'],
+            completed: ['completed'],
             failed: ['failed'],
             cancelled: ['cancelled'],
         };

@@ -12,69 +12,37 @@
             this.app = app;
             this.root = options.root || document.querySelector('[data-settings-section="safety"]');
             this.summary = document.getElementById('settingsSafetySummary');
-            this.securityPanel = document.getElementById('settingsSafetySecurityPanel');
-            this.auditPanel = document.getElementById('settingsSafetyAuditPanel');
-            this.cleanupPanel = document.getElementById('settingsSafetyCleanupPanel');
-            this.adminPanel = document.getElementById('settingsSafetyAdminPanel');
         }
 
         async refresh() {
             if (!this.root) return;
             this.renderSummary();
-            await this._renderAdminPanel('renderSecurity', this.securityPanel);
-            await this._renderAdminPanel('renderAudit', this.auditPanel);
-            await this._renderAdminPanel('renderCleanup', this.cleanupPanel);
-            await this._renderAdminPanel('renderAdminTab', this.adminPanel);
         }
 
         renderSummary() {
             if (!this.summary) return;
 
-            const agents = Array.isArray(this.app.availableAgents) ? this.app.availableAgents.length : 0;
-            const online = Array.isArray(this.app.availableAgents)
-                ? this.app.availableAgents.filter(agent => agent?.available).length
-                : 0;
+            const execUser = this.app.getDefaultExecUser?.() || 'ubuntu';
+            const cliCommand = this.app.serverDefaults?.cli_command || 'codebuddy';
+            const workdir = this.app.serverDefaults?.current_workdir || '—';
 
             this.summary.innerHTML = `
                 <div class="admin-cards">
                     <div class="admin-card">
                         <div class="admin-card-body">
-                            <div class="admin-metric"><span class="admin-metric-label">Agents in Scope</span><span class="admin-metric-value">${agents}</span></div>
-                            <div class="admin-metric"><span class="admin-metric-label">Online Now</span><span class="admin-metric-value">${online}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Exec User</span><span class="admin-metric-value">${escapeHtml(execUser)}</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">CLI</span><span class="admin-metric-value">${escapeHtml(cliCommand)}</span></div>
                         </div>
                     </div>
                     <div class="admin-card">
                         <div class="admin-card-body">
-                            <div class="admin-metric"><span class="admin-metric-label">Safety Surface</span><span class="admin-metric-value">Security · Audit · Cleanup</span></div>
-                            <div class="admin-metric"><span class="admin-metric-label">Governance</span><span class="admin-metric-value">Flags · RBAC · Standup</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Runtime Focus</span><span class="admin-metric-value">Terminal · Workspace</span></div>
+                            <div class="admin-metric"><span class="admin-metric-label">Current Workdir</span><span class="admin-metric-value">${escapeHtml(workdir)}</span></div>
                         </div>
                     </div>
                 </div>
+                <div class="u-text-secondary u-text-sm u-mt-sm">这里仅保留运行相关信息；原先的安全、审计、治理等后台控制面已从主设置流里移除。</div>
             `;
-        }
-
-        async _renderAdminPanel(methodName, container) {
-            if (!container || !this.app.adminView || typeof this.app.adminView[methodName] !== 'function') {
-                return;
-            }
-
-            // Clear any stale content so partial renders from a previous pass don't
-            // visually leak into this section (prevents the "safety tab showing basic
-            // tab's content" bug caused by overlapping async renders).
-            container.innerHTML = '';
-
-            const previousContainer = this.app.adminView.container;
-            this.app.adminView.container = container;
-            try {
-                await this.app.adminView[methodName]();
-            } catch (error) {
-                container.innerHTML = `<div class="admin-error">${escapeHtml(error.message || 'Failed to load section')}</div>`;
-            } finally {
-                // Only restore if nothing else swapped it out meanwhile.
-                if (this.app.adminView.container === container) {
-                    this.app.adminView.container = previousContainer;
-                }
-            }
         }
     }
 

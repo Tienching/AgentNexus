@@ -5,7 +5,6 @@
 
 const { ThemeManager, PageManager, LayoutManager, TabManager } = window.NexusShellManagers || {};
 const { SettingsPage } = window.NexusSettingsPage || {};
-const { AgentsViewShell } = window;
 
 if (!ThemeManager || !PageManager || !LayoutManager || !TabManager) {
     throw new Error('Nexus shell managers failed to load before app.js');
@@ -235,7 +234,10 @@ class ChatView {
         const { aliases } = this._getHistoryConfiguredOrder();
         const providerOf = (name) => {
             const lower = String(name || '').toLowerCase();
-            for (const p of ['claude', 'codex', 'codebuddy', 'gemini']) {
+            const defaultProviders = this.app?.getDefaultProviders
+                ? this.app.getDefaultProviders()
+                : ['claude', 'codex', 'codebuddy', 'hermes'];
+            for (const p of defaultProviders) {
                 if (lower === p || lower.startsWith(p)) return p;
             }
             return lower || 'unknown';
@@ -289,10 +291,8 @@ class ChatView {
     }
 
     _getHistoryConfiguredOrder() {
-        // `nexus` 本身不会产生历史 JSONL（它只是 orchestrator），所以在 History 侧
-        // 统一剔除，避免骨架屏 / 过滤下拉 / 分组里出现一个永远为空的 NEXUS 桶。
-        const HISTORY_EXCLUDED = new Set(['nexus']);
-        const defaultProviders = (this.app?.getDefaultProviders ? this.app.getDefaultProviders() : ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'])
+        const HISTORY_EXCLUDED = new Set();
+        const defaultProviders = (this.app?.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'codex', 'codebuddy', 'hermes'])
             .map(name => String(name || '').trim().toLowerCase())
             .filter(name => name && !HISTORY_EXCLUDED.has(name));
         const aliases = (this.app?.getAllProviders ? this.app.getAllProviders() : defaultProviders)
@@ -908,7 +908,7 @@ class ChatView {
             const agentModels = [...new Set(agents.map(agent => this.app?.normalizeProviderName ? this.app.normalizeProviderName(agent.agent_type) : String(agent.agent_type || '').trim().toLowerCase()))];
             // Merge with custom providers (use getCustomProviderNames for new format)
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'codex', 'codebuddy', 'hermes'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -1030,7 +1030,7 @@ class ChatView {
             const agents = this.getAvailableAgents(user);
             const agentModels = [...new Set(agents.map(agent => this.app?.normalizeProviderName ? this.app.normalizeProviderName(agent.agent_type) : String(agent.agent_type || '').trim().toLowerCase()))];
             const customProviderNames = this.app.getCustomProviderNames ? this.app.getCustomProviderNames() : [];
-            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+            const defaultProviders = this.app.getDefaultProviders ? this.app.getDefaultProviders() : ['claude', 'codex', 'codebuddy', 'hermes'];
             const allModels = [...new Set([...defaultProviders, ...customProviderNames, ...agentModels])];
             if (!allModels.length) {
                 return '<option value="claude">claude</option>';
@@ -1612,7 +1612,7 @@ class ChatView {
         const globalUserFilter = document.getElementById('globalUserFilter');
 
         // For history, paint a provider skeleton immediately so users see the
-        // configured providers (claude / codex / codebuddy / gemini + aliases)
+        // configured providers (claude / codex / codebuddy + aliases)
         // right away, instead of a blank spinner for ~12s during first-time
         // disk scans. The skeleton is replaced by the real list once data arrives.
         if (isHistory) {
@@ -1629,7 +1629,7 @@ class ChatView {
                     // Take the N most-recent sessions for EACH (provider, alias) bucket so
                     // every configured provider is represented in the first response.
                     // Without this, claude alone tends to fill the first page and other
-                    // providers (codex / codebuddy / gemini) never surface in the UI.
+                    // providers (codex / codebuddy) never surface in the UI.
                     perAliasLimit: 50,
                     pageSize: 2000, // upper bound; ignored when per_alias_limit kicks in server-side
                     search: searchInput?.value || '',
@@ -1763,10 +1763,6 @@ class ChatView {
         for (const session of sortedSessions) {
             const rawProvider = String(session.provider || 'unknown').trim() || 'unknown';
             const rawAlias = String(session.alias || session.provider || 'unknown').trim() || 'unknown';
-            // nexus 不产生历史 JSONL，若后端异常返回也直接丢弃，保持 History 面板干净。
-            if (rawProvider.toLowerCase() === 'nexus' || rawAlias.toLowerCase() === 'nexus') {
-                continue;
-            }
             const providerLabel = this.app?.normalizeProviderName
                 ? this.app.normalizeProviderName(rawProvider)
                 : rawProvider;
@@ -2123,7 +2119,7 @@ class ChatView {
         try {
             let data;
             if (source === 'history' && options.provider) {
-                // Use the alias (e.g. "claude-internal") or provider for the history API
+                // Use the alias (e.g. "hermes-lab") or provider for the history API
                 const providerKey = options.alias || options.provider;
                 const globalUserFilter = document.getElementById('globalUserFilter');
                 const cfg = this.app.getAliasConfigPath(providerKey);
@@ -3146,7 +3142,6 @@ class ChatView {
                 <div class="message-avatar">A</div>
                 <div class="message-content">
                     <div class="message-bubble">
-                        <div class="message-recovered-note">Recovered stream activity</div>
                         ${toolCalls.map(tc => this.renderToolCallStandalone(tc)).join('')}
                     </div>
                 </div>
@@ -4298,122 +4293,6 @@ class ChatView {
 // ============================================================
 // Main Application
 // ============================================================
-class AgentsPage {
-    constructor(app) {
-        this.app = app;
-        this.root = document.getElementById('agentsPageRoot');
-        this.summary = document.getElementById('agentsSummary');
-        this.directoryPanel = document.getElementById('agentsDirectoryPanel');
-        this.activityPanel = document.getElementById('agentsActivityPanel');
-        this.memoryPanel = document.getElementById('agentsMemoryPanel');
-        this.schedulingPanel = document.getElementById('agentsSchedulingPanel');
-        this.sectionMap = {
-            directory: document.getElementById('agentsSectionDirectory'),
-            activity: document.getElementById('agentsSectionActivity'),
-            memory: document.getElementById('agentsSectionMemory'),
-            scheduling: document.getElementById('agentsSectionScheduling'),
-        };
-        this.navButtons = Array.from(document.querySelectorAll('[data-agents-nav]'));
-        this._refreshPromise = null;
-        this.bindEvents();
-        this.setActiveNav('directory');
-    }
-
-    bindEvents() {
-        this.navButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.scrollToSection(btn.dataset.agentsNav);
-            });
-        });
-    }
-
-    _esc(str) {
-        return String(str || '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
-
-    setActiveNav(sectionKey) {
-        this.navButtons.forEach(btn => {
-            const isActive = btn.dataset.agentsNav === sectionKey;
-            btn.classList.toggle('primary', isActive);
-            btn.setAttribute('aria-current', isActive ? 'true' : 'false');
-        });
-    }
-
-    scrollToSection(sectionKey) {
-        const key = String(sectionKey || 'directory').trim().toLowerCase();
-        const section = this.sectionMap[key];
-        if (!section) return;
-        this.setActiveNav(key);
-        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-
-    refresh() {
-        if (this._refreshPromise) {
-            return this._refreshPromise;
-        }
-
-        this._refreshPromise = this._refresh().finally(() => {
-            this._refreshPromise = null;
-        });
-        return this._refreshPromise;
-    }
-
-    async _refresh() {
-        if (!this.root) return;
-
-        this.renderSummary();
-        await this._renderAdminPanel('renderAgentsTab', this.directoryPanel);
-        await this._renderAdminPanel('renderActivityTab', this.activityPanel);
-        await this._renderAdminPanel('renderMemoryTab', this.memoryPanel);
-        await this._renderAdminPanel('renderSchedulingTab', this.schedulingPanel);
-    }
-
-    renderSummary() {
-        if (!this.summary) return;
-
-        const agents = Array.isArray(this.app.availableAgents) ? this.app.availableAgents : [];
-        const online = agents.filter(agent => agent?.available).length;
-        const providers = this.app.getAllProviders ? this.app.getAllProviders().length : 0;
-
-        this.summary.innerHTML = `
-            <div class="admin-cards">
-                <div class="admin-card">
-                    <div class="admin-card-body">
-                        <div class="admin-metric"><span class="admin-metric-label">Registered Agents</span><span class="admin-metric-value">${agents.length}</span></div>
-                        <div class="admin-metric"><span class="admin-metric-label">Online Now</span><span class="admin-metric-value admin-metric-value-success">${online}</span></div>
-                    </div>
-                </div>
-                <div class="admin-card">
-                    <div class="admin-card-body">
-                        <div class="admin-metric"><span class="admin-metric-label">Provider Targets</span><span class="admin-metric-value">${providers}</span></div>
-                        <div class="admin-metric"><span class="admin-metric-label">Default Exec User</span><span class="admin-metric-value">${this._esc(this.app.getDefaultExecUser?.() || 'ubuntu')}</span></div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    async _renderAdminPanel(methodName, container) {
-        if (!container || !this.app.adminView || typeof this.app.adminView[methodName] !== 'function') {
-            return;
-        }
-
-        const previousContainer = this.app.adminView.container;
-        this.app.adminView.container = container;
-        try {
-            await this.app.adminView[methodName]();
-        } catch (error) {
-            container.innerHTML = `<div class="admin-error">${this._esc(error.message || 'Failed to load section')}</div>`;
-        } finally {
-            this.app.adminView.container = previousContainer;
-        }
-    }
-}
-
 class NexusApp {
     constructor() {
         this.themeManager = new ThemeManager();
@@ -4427,17 +4306,10 @@ class NexusApp {
         this.tabManager = new TabManager(this);
         this.layoutManager = new LayoutManager(this);
         this.configView = new ConfigView(this);
-        this.adminView = new AdminView(this);
         this.settingsPage = new SettingsPage(this);
-        this.settingsView = this.settingsPage;
-        this.agentsPage = typeof AgentsViewShell === 'function' ? new AgentsViewShell(this) : new AgentsPage(this);
         this.globalSearch = new GlobalSearch(this);
-        this.planModeManager = new PlanModeManager(this);
-        this.planModePanel = this.planModeManager.panel;
-        this.planModeIndicator = this.planModeManager.indicator;
-        this.planModeEditor = this.planModeManager.editor;
-        this.planModeApproval = this.planModeManager.approval;
         this.pageManager = new PageManager(this);
+        this.availableUsers = [];
         this.availableAgents = [];
         this.customProviders = this.loadCustomProviders();
         this.serverDefaults = null; // loaded from GET /api/nexus/defaults
@@ -4457,15 +4329,87 @@ class NexusApp {
             const stored = localStorage.getItem('nexus-custom-providers');
             if (!stored) return [];
             const parsed = JSON.parse(stored);
+            const defaultProviders = new Set(this.getDefaultProviders().map(p => p.toLowerCase()));
+            const deprecatedAliases = new Set(['claude-internal', 'claude-internl']);
+            const seen = new Set();
+            let changed = false;
+
+            const normalizeAlias = (item) => {
+                const raw = typeof item === 'string'
+                    ? { name: item, baseProvider: 'claude', configPath: '', defaultModel: '' }
+                    : item;
+                if (!raw || typeof raw !== 'object') {
+                    changed = true;
+                    return null;
+                }
+
+                const name = String(raw.name || '').trim();
+                const key = name.toLowerCase();
+                if (!name || deprecatedAliases.has(key) || defaultProviders.has(key) || seen.has(key)) {
+                    changed = true;
+                    return null;
+                }
+
+                const requestedBase = String(raw.baseProvider || 'claude').trim().toLowerCase();
+                const baseProvider = defaultProviders.has(requestedBase) ? requestedBase : 'claude';
+                if (baseProvider !== requestedBase) changed = true;
+                seen.add(key);
+                return {
+                    name,
+                    baseProvider,
+                    configPath: String(raw.configPath || '').trim(),
+                    defaultModel: String(raw.defaultModel || '').trim(),
+                };
+            };
+
+            const storedDefaultProvider = String(localStorage.getItem('nexus-default-provider') || '').trim().toLowerCase();
+            if (deprecatedAliases.has(storedDefaultProvider)) {
+                localStorage.removeItem('nexus-default-provider');
+            }
+
+            try {
+                const models = JSON.parse(localStorage.getItem('nexus-provider-models') || '{}');
+                let modelsChanged = false;
+                deprecatedAliases.forEach(alias => {
+                    if (Object.prototype.hasOwnProperty.call(models, alias)) {
+                        delete models[alias];
+                        modelsChanged = true;
+                    }
+                });
+                if (modelsChanged) {
+                    localStorage.setItem('nexus-provider-models', JSON.stringify(models));
+                }
+            } catch {
+                // Best-effort cleanup only.
+            }
+
+            try {
+                const mcp = JSON.parse(localStorage.getItem('nexus-mcp-config') || '{}');
+                if (mcp && mcp.providers && typeof mcp.providers === 'object') {
+                    let mcpChanged = false;
+                    deprecatedAliases.forEach(alias => {
+                        if (Object.prototype.hasOwnProperty.call(mcp.providers, alias)) {
+                            delete mcp.providers[alias];
+                            mcpChanged = true;
+                        }
+                    });
+                    if (mcpChanged) {
+                        localStorage.setItem('nexus-mcp-config', JSON.stringify(mcp));
+                    }
+                }
+            } catch {
+                // Best-effort cleanup only.
+            }
+
             // Migrate old format (string array) to new format (object array)
             if (Array.isArray(parsed)) {
-                return parsed.map(item => {
-                    if (typeof item === 'string') {
-                        return { name: item, baseProvider: 'claude', configPath: '', defaultModel: '' };
-                    }
-                    return { ...item, configPath: item.configPath || '', defaultModel: item.defaultModel || '' };
-                });
+                const providers = parsed.map(normalizeAlias).filter(Boolean);
+                if (changed || providers.length !== parsed.length) {
+                    localStorage.setItem('nexus-custom-providers', JSON.stringify(providers));
+                }
+                return providers;
             }
+            localStorage.setItem('nexus-custom-providers', JSON.stringify([]));
             return [];
         } catch (e) {
             console.error('Failed to load custom providers:', e);
@@ -4486,7 +4430,7 @@ class NexusApp {
         const trimmed = name.trim();
         if (!trimmed) return false;
 
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = this.getDefaultProviders().map(p => p.toLowerCase());
         
         if (defaultProviders.includes(trimmed.toLowerCase()) || 
             this.customProviders.some(p => p.name.toLowerCase() === trimmed.toLowerCase())) {
@@ -4495,6 +4439,7 @@ class NexusApp {
 
         this.customProviders.push({ name: trimmed, baseProvider: baseProvider, configPath: (configPath || '').trim(), defaultModel: '' });
         this.saveCustomProviders();
+        this.rebuildAvailableAgentTargets();
         return true;
     }
 
@@ -4544,7 +4489,7 @@ class NexusApp {
     getProviderDefaultModel(providerOrAlias) {
         if (!providerOrAlias) return '';
         const name = providerOrAlias.trim().toLowerCase();
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = this.getDefaultProviders().map(p => p.toLowerCase());
         const models = this._loadProviderModels();
         if (defaultProviders.includes(name)) {
             return models[name] || '';
@@ -4562,7 +4507,7 @@ class NexusApp {
         if (!providerOrAlias) return;
         const name = providerOrAlias.trim().toLowerCase();
         const val = (model || '').trim();
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = this.getDefaultProviders().map(p => p.toLowerCase());
         if (defaultProviders.includes(name)) {
             const models = this._loadProviderModels();
             if (val) { models[name] = val; } else { delete models[name]; }
@@ -4580,7 +4525,7 @@ class NexusApp {
         if (!name || typeof name !== 'string') return false;
         const trimmed = name.trim().toLowerCase();
         
-        const defaultProviders = ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        const defaultProviders = this.getDefaultProviders().map(p => p.toLowerCase());
         if (defaultProviders.includes(trimmed)) {
             return false;
         }
@@ -4590,6 +4535,7 @@ class NexusApp {
         
         this.customProviders.splice(index, 1);
         this.saveCustomProviders();
+        this.rebuildAvailableAgentTargets();
         return true;
     }
 
@@ -4622,17 +4568,35 @@ class NexusApp {
     }
 
     getDefaultProviders() {
-        return ['nexus', 'claude', 'gemini', 'codex', 'codebuddy'];
+        return ['claude', 'codex', 'codebuddy', 'hermes'];
     }
 
     getAllProviders() {
         return [...this.getDefaultProviders(), ...this.getCustomProviderNames()];
     }
 
+    rebuildAvailableAgentTargets() {
+        const usernames = [...new Set((Array.isArray(this.availableUsers) ? this.availableUsers : [])
+            .map(name => String(name || '').trim())
+            .filter(Boolean))];
+        const resolvedUsers = usernames.length ? usernames : [NexusAPI.getDefaultExecUser()];
+        const providers = [...new Set(this.getAllProviders()
+            .map(name => String(name || '').trim().toLowerCase())
+            .filter(Boolean))];
+
+        this.availableAgents = resolvedUsers.flatMap(username => providers.map(provider => ({
+            id: `${username}::${provider}`,
+            username,
+            agent_type: provider,
+            display_name: `${username} / ${provider}`,
+            available: true,
+        })));
+    }
+
     normalizeProviderName(provider) {
         const normalized = String(provider || '').trim().toLowerCase();
         if (!normalized) return '';
-        return normalized === 'nanobot' ? 'nexus' : normalized;
+        return normalized;
     }
 
     // ============================================================
@@ -4641,7 +4605,9 @@ class NexusApp {
     getDefaultProvider() {
         const stored = this.normalizeProviderName(localStorage.getItem('nexus-default-provider'));
         const serverDefault = this.normalizeProviderName(this.serverDefaults?.default_provider);
-        return stored || serverDefault || 'nexus';
+        const preferred = stored || serverDefault;
+        const available = this.getAllProviders().map(name => this.normalizeProviderName(name));
+        return available.includes(preferred) ? preferred : 'claude';
     }
 
     setDefaultProvider(provider) {
@@ -4700,9 +4666,9 @@ class NexusApp {
         // Initialize layout
         this.layoutManager.setMode(this.layoutManager.mode);
 
-        // Load server defaults and agents
+        // Load server defaults
         this.loadServerDefaults();
-        this.loadAgents();
+        this.loadAvailableUsers();
 
         // Bind global events
         this.bindEvents();
@@ -4719,15 +4685,10 @@ class NexusApp {
             const section = this.pageManager.pendingSettingsSection || 'overview';
             window.setTimeout(() => this.settingsPage?.scrollToSection?.(section, { syncUrl: false, replaceUrl: true }), 0);
             this.pageManager.pendingSettingsSection = null;
-        } else if (currentPage === 'agents' && this.agentsPage) {
-            this.agentsPage.refresh();
         }
 
         // Start auto-refresh for session list and active messages
         this.chatView.startAutoRefresh();
-
-        // Check plan mode status on load
-        this.planModeManager.refreshStatus();
     }
 
     /**
@@ -4749,9 +4710,18 @@ class NexusApp {
             this.serverDefaults = await NexusAPI.getDefaults();
             // Update API-level default exec_user so all API calls use it
             NexusAPI.setDefaultExecUser(this.serverDefaults.exec_user);
+            if (!this.availableUsers.length) {
+                this.availableUsers = [NexusAPI.getDefaultExecUser()];
+            }
+            this.rebuildAvailableAgentTargets();
+            this.updateGlobalUserFilterOptions();
+            this.refreshChatProviders();
             // Re-render settings view if it's currently active so it picks up server defaults
             if (this.pageManager.currentPage === 'settings' && this.settingsPage) {
                 this.settingsPage.refresh();
+            }
+            if (this.pageManager.currentPage === 'chat') {
+                this.chatView.refreshNewSessionSelectors?.();
             }
         } catch (error) {
             console.warn('Failed to load server defaults, using built-in fallbacks:', error);
@@ -4759,41 +4729,46 @@ class NexusApp {
         }
     }
 
-    async loadAgents() {
-        try {
-            const data = await NexusAPI.getAgents();
-            const agents = data.agents || [];
-            this.availableAgents = agents;
+    updateGlobalUserFilterOptions() {
+        const select = document.getElementById('globalUserFilter');
+        if (!select) return;
 
-            const select = document.getElementById('globalUserFilter');
-            if (select) {
-                const usernames = [...new Set(this.availableAgents.map(agent => agent.username))];
-                select.innerHTML = '<option value="">All Users</option>' +
-                    usernames.map(u => `<option value="${u}">${u}</option>`).join('');
-            }
+        const previousValue = select.value || '';
+        const usernames = [...new Set((Array.isArray(this.availableUsers) ? this.availableUsers : [])
+            .map(name => String(name || '').trim())
+            .filter(Boolean))];
+        const resolvedUsers = usernames.length ? usernames : [NexusAPI.getDefaultExecUser()];
+
+        select.innerHTML = '<option value="">All Users</option>' + resolvedUsers
+            .map(username => `<option value="${username}">${username}</option>`)
+            .join('');
+
+        select.value = previousValue && resolvedUsers.includes(previousValue) ? previousValue : '';
+    }
+
+    async loadAvailableUsers() {
+        try {
+            const data = await NexusAPI.getUsernames();
+            const usernames = Array.isArray(data?.usernames) ? data.usernames : [];
+            this.availableUsers = usernames
+                .map(name => String(name || '').trim())
+                .filter(Boolean);
         } catch (error) {
-            console.error('Failed to load agents:', error);
-            const defUser = NexusAPI.getDefaultExecUser();
-            this.availableAgents = [
-                {
-                    id: `${defUser}::claude`,
-                    username: defUser,
-                    agent_type: 'claude',
-                    display_name: `${defUser} / claude`,
-                    available: true
-                }
-            ];
-            const select = document.getElementById('globalUserFilter');
-            if (select) {
-                select.innerHTML = `<option value="">All Users</option><option value="${defUser}">${defUser}</option>`;
-            }
+            console.warn('Failed to load usernames, using default exec user:', error);
+            this.availableUsers = [];
         }
+
+        if (!this.availableUsers.length) {
+            this.availableUsers = [NexusAPI.getDefaultExecUser()];
+        }
+
+        this.rebuildAvailableAgentTargets();
+        this.updateGlobalUserFilterOptions();
+        this.refreshChatProviders();
+        this.taskFormController?.refreshSelectors?.();
 
         if (this.pageManager?.currentPage === 'settings' && this.settingsPage) {
             this.settingsPage.refresh();
-        }
-        if (this.pageManager?.currentPage === 'agents' && this.agentsPage) {
-            this.agentsPage.refresh();
         }
     }
 
@@ -4889,8 +4864,6 @@ class NexusApp {
         } else if (currentPage === 'task') {
             // Refresh task list in the standalone task page
             this.taskBoardPanel.refreshTasks({ force: true });
-        } else if (currentPage === 'agents' && this.agentsPage) {
-            this.agentsPage.refresh();
         } else if (currentPage === 'settings' && this.settingsPage) {
             this.settingsPage.refresh();
         }
@@ -4933,8 +4906,8 @@ class NexusApp {
 
     resolveProviderSelection(providerSelection) {
         return this.taskFormController?.resolveProviderSelection?.(providerSelection) || {
-            provider: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'nexus'),
-            alias: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'nexus'),
+            provider: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'claude'),
+            alias: this.normalizeProviderName(providerSelection || this.getDefaultProvider() || 'claude'),
         };
     }
 

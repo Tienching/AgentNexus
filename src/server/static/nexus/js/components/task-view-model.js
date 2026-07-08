@@ -279,29 +279,30 @@ class TaskViewModel {
     /**
      * Compute summary metrics from an array of enriched tasks.
      *
-     * Returns:
- *   - total     {number}  total task count
- *   - active    {number}  tasks in pending / running / in_review lanes
- *   - running   {number}  tasks with lane_status === 'running'
- *   - reviewing {number}  tasks with lane_status === 'in_review'
- *   - failed    {number}  tasks with lane_status === 'failed'
- *   - cancelled {number}  tasks with lane_status === 'cancelled'
- *   - scheduled {number}  loop-enabled / scheduled tasks
+     * Returns one count per visible board lane so the summary strip and
+     * Kanban columns stay label-aligned. Legacy aggregate aliases are kept
+     * for callers that still read `active` or `reviewing`.
      *
      * @param {Array<Object>} enrichedTasks - array of enriched task objects
      * @returns {Object} summary metrics
      */
     static computeSummaryMetrics(enrichedTasks) {
         const tasks = enrichedTasks || [];
-        const activeStatuses = new Set(['pending', 'running', 'in_review']);
+        const pending = tasks.filter(t => t.lane_status === 'pending').length;
+        const running = tasks.filter(t => t.lane_status === 'running').length;
+        const inReview = tasks.filter(t => t.lane_status === 'in_review').length;
         return {
-            total:     tasks.length,
-            active:    tasks.filter(t => activeStatuses.has(t.lane_status)).length,
-            running:   tasks.filter(t => t.lane_status === 'running').length,
-            reviewing: tasks.filter(t => t.lane_status === 'in_review').length,
-            failed:    tasks.filter(t => t.lane_status === 'failed').length,
+            total: tasks.length,
+            pending: tasks.filter(t => t.lane_status === 'pending').length,
+            running: tasks.filter(t => t.lane_status === 'running').length,
+            in_review: tasks.filter(t => t.lane_status === 'in_review').length,
+            completed: tasks.filter(t => t.lane_status === 'completed').length,
+            failed: tasks.filter(t => t.lane_status === 'failed').length,
             cancelled: tasks.filter(t => t.lane_status === 'cancelled').length,
+            archived: tasks.filter(t => t.lane_status === 'archived').length,
             scheduled: tasks.filter(t => !!t.loop_enabled).length,
+            active: pending + running + inReview,
+            reviewing: inReview,
         };
     }
 }

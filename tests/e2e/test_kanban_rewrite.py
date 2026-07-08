@@ -32,10 +32,8 @@ def live_server():
         startup_policy_overrides={
             "start_task_executor": False,
             "start_task_scheduler": False,
-            "start_channel_service": False,
-            "start_terminal_manager": False,
-            "start_evolution_service": False,
-        },
+                    "start_terminal_manager": False,
+                },
     )
 
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:

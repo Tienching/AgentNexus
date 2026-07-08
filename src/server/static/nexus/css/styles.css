@@ -1548,10 +1548,12 @@
 }
 
 .summary-dot-gray { background: #6b7280; }
-.summary-dot-blue { background: #3b82f6; }
-.summary-dot-green { background: #10b981; }
-.summary-dot-yellow { background: #f59e0b; }
-.summary-dot-red { background: #ef4444; }
+.summary-dot-pending { background: var(--status-pending, #f59e0b); }
+.summary-dot-running { background: var(--status-running, #3b82f6); }
+.summary-dot-in-review { background: var(--status-in-review, #8b5cf6); }
+.summary-dot-completed { background: var(--status-completed, #10b981); }
+.summary-dot-failed { background: var(--status-failed, #ef4444); }
+.summary-dot-cancelled { background: var(--status-cancelled, #9ca3af); }
 .summary-dot-purple { background: #8b5cf6; }
 
 .summary-dot-pulse {
@@ -3104,6 +3106,14 @@ body.kanban-dragging-active {
     color: var(--text-disabled);
 }
 
+.settings-save-status {
+    min-height: 14px;
+}
+
+.settings-save-status[data-state="saved"] {
+    color: var(--success);
+}
+
 .modal-note {
     margin-top: var(--spacing-sm);
     font-size: var(--text-xs);
@@ -4572,78 +4582,117 @@ body.kanban-dragging-active {
 .settings-tab[hidden] { display:none !important; }
 .settings-tab svg { width:18px; height:18px; }
 
-/* -- Stacked Settings page (single scroll container with anchor sections) -- */
-/*
- * The Settings page is a single-scroll layout where Overview / Basic / Extensions /
- * Safety are sections stacked vertically and navigated via scrollIntoView().
- * The container MUST be the scroll parent, otherwise sticky nav mis-aligns and
- * sections visually overlap (child grids overflow outside the intended region).
- */
+/* -- Tabbed Settings page -- */
 .settings-container {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
-    overflow-y: auto;
+    overflow: hidden;
     overflow-x: hidden;
     overscroll-behavior-y: contain;
     padding: var(--spacing-lg);
-    gap: var(--spacing-lg);
-    scroll-behavior: smooth;
+    gap: var(--spacing-md);
 }
 
 .settings-container > * {
     flex: 0 0 auto;
 }
 
+.settings-container > .admin-section {
+    margin-bottom: 0;
+}
+
 .settings-section {
-    flex: 0 0 auto;
+    display: none;
+    flex: 1 1 auto;
     min-height: 0;
     width: 100%;
-    /* Offset sticky short-nav (height ≈ 60px) so scrollIntoView aligns correctly */
-    scroll-margin-top: 80px;
-    padding-top: var(--spacing-md);
-    border-top: 1px solid var(--border-primary);
-}
-
-.settings-section:first-of-type {
-    border-top: 0;
+    overflow: hidden;
     padding-top: 0;
+    border-top: 0;
 }
 
-/*
- * Add a trailing spacer after the final section so that when the user jumps to
- * the last tab (Safety) the section's top can actually align just below the
- * sticky short-nav — otherwise there isn't enough scroll room and the previous
- * section (e.g. Extensions' Teleport panel) keeps peeking in from above.
- * Using ::after is more robust than `:last-of-type { min-height: calc(100% - X) }`
- * because % heights on flex children don't always resolve as expected.
- */
+.settings-section.is-active {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+}
+
+.settings-section[hidden] {
+    display: none !important;
+}
+
 .settings-container::after {
-    content: "";
-    display: block;
-    flex: 0 0 auto;
-    height: 60vh;
-    min-height: 240px;
-    pointer-events: none;
+    display: none;
 }
 
 .settings-section .config-content,
 .settings-section .admin-content {
-    overflow: visible;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-md);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     width: 100%;
-    /*
-     * .admin-content's default rule (further below) is `max-width:1000px; margin:0 auto`,
-     * which was meant for the standalone Admin page. In the stacked Settings layout it
-     * causes the inner panels (e.g. Security Scan cards) to render centered with blank
-     * gutters while the sibling `#settingsSafetySummary .admin-cards` stays flush-left,
-     * producing the "some cards in the middle, some on the side" misalignment.
-     * Override it here so every section block fills the Settings container edge-to-edge.
-     */
     max-width: none;
     margin: 0;
-    padding: 0;
+    padding: 0 var(--spacing-xs) var(--spacing-sm) 0;
+    scrollbar-gutter: stable;
+}
+
+.settings-section .config-section:last-child {
+    margin-bottom: 0;
+}
+
+.settings-sub-nav {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+}
+
+.settings-sub-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 30px;
+    padding: 0 12px;
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.settings-sub-nav-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.settings-sub-nav-btn.is-active {
+    background: var(--surface-2);
+    border-color: rgba(59, 130, 246, 0.4);
+    color: var(--primary-200);
+}
+
+.settings-subpanel {
+    display: none;
+    margin-bottom: 0;
+}
+
+.settings-subpanel.is-active {
+    display: block;
+}
+
+.settings-subpanel[hidden] {
+    display: none !important;
 }
 
 /*
@@ -4670,12 +4719,8 @@ body.kanban-dragging-active {
     margin-right: 0;
 }
 
-/* Legacy .settings-stacked opt-in kept as no-op for backward compatibility */
-.settings-container.settings-stacked {
-    /* styles now applied to base .settings-container */
-}
-.settings-container.settings-stacked .settings-section { flex: 0 0 auto; min-height: auto; }
-.settings-container.settings-stacked .config-content { overflow: visible; }
+.settings-container.settings-stacked .settings-section { min-height: 0; }
+.settings-container.settings-stacked .config-content { overflow-y: auto; }
 .settings-container.settings-stacked #settingsSkillsPanelSection .admin-content { padding-top: 0; }
 
 /* ========== Admin View ========== */
@@ -6045,19 +6090,18 @@ body.kanban-dragging-active {
 }
 
 .settings-short-nav {
-    position: sticky;
-    top: 0;
-    z-index: 10;
+    position: static;
+    z-index: 1;
     display: flex;
+    flex: 0 0 auto;
     flex-wrap: wrap;
     gap: var(--spacing-xs);
     padding: var(--spacing-sm) var(--spacing-sm);
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-xl);
-    /* Fully opaque so content scrolling underneath doesn't bleed through */
     background: var(--surface-1);
     box-shadow: var(--shadow-sm);
-    margin: 0 0 var(--spacing-lg);
+    margin: 0;
 }
 
 .settings-section-block {

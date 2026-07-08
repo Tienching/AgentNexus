@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Nexus - Chat, Task, Agents & Settings</title>
+    <title>Nexus - Chat, Task & Settings</title>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.2.5/400.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/geist-sans@5.2.5/500.min.css">
@@ -20,7 +20,7 @@
     <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
     <link rel="stylesheet" href="css/theme.css?v=33">
     <link rel="stylesheet" href="css/layout.css?v=32">
-    <link rel="stylesheet" href="css/styles.css?v=38">
+    <link rel="stylesheet" href="css/styles.css?v=40">
     <link rel="stylesheet" href="css/streaming.css?v=33">
 </head>
 <body>
@@ -34,7 +34,7 @@
                     </svg>
                 </div>
                 <h1 class="login-title">Nexus</h1>
-                <p class="login-subtitle">Chat, Task, Agents & Settings</p>
+                <p class="login-subtitle">Chat, Task & Settings</p>
             </div>
             <form id="loginForm" class="login-form">
                 <div class="form-group">
@@ -74,12 +74,6 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
                         </svg>
                         <span>Task</span>
-                    </button>
-                    <button class="page-nav-btn" data-page="agents" title="Agent">
-                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
-                        </svg>
-                        <span>Agent</span>
                     </button>
                     <button class="page-nav-btn" data-page="settings" title="Setting">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -123,33 +117,6 @@
             </div>
 
             <div class="header-right" id="projectHeaderRight">
-                <!-- Plan Mode Indicator -->
-                <div id="planModeIndicator" class="plan-mode-indicator" hidden>
-                    <span class="plan-mode-badge">PLAN MODE</span>
-                    <span id="planModeStatus" class="plan-mode-status"></span>
-                    <button id="planModeViewBtn" class="plan-mode-view-btn" title="View plan details">View</button>
-                    <button id="planModeExitBtn" class="plan-mode-exit-btn" title="Exit plan mode">Exit</button>
-                </div>
-
-                <!-- Plan Mode Panel (hidden by default) -->
-                <div id="planModePanel" class="plan-mode-panel" hidden>
-                    <div class="plan-mode-panel-header">
-                        <h3>Plan Mode</h3>
-                        <button id="planPanelCloseBtn" class="plan-panel-close-btn">&times;</button>
-                    </div>
-                    <div id="planEditorContainer" class="plan-editor-container" hidden>
-                        <textarea id="planEditor" class="plan-editor" placeholder="Enter your plan..."></textarea>
-                        <button id="planSubmitBtn" class="plan-action-btn plan-submit-btn">Submit Plan</button>
-                    </div>
-                    <div id="planApprovalContainer" class="plan-approval-container" hidden>
-                        <div id="planContentDisplay" class="plan-content-display"></div>
-                        <div class="plan-approval-actions">
-                            <button id="planApproveBtn" class="plan-action-btn plan-approve-btn">Approve & Execute</button>
-                            <button id="planRejectBtn" class="plan-action-btn plan-reject-btn">Reject</button>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Global Search (Ctrl+K) -->
                 <button id="globalSearchBtn" class="global-search-btn" title="Search (Ctrl+K)">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -253,17 +220,12 @@
                 </div>
             </div><!-- End of chatView -->
 
-            <!-- Task View (standalone full-screen kanban) -->
+            <!-- Task View (standalone full-screen kanban + history) -->
             <div id="taskView" class="page-view">
                 <div class="task-page-container" id="taskPageContainer">
-                    <!-- Task kanban will be rendered here -->
+                    <!-- Task kanban / history will be rendered here -->
                 </div>
             </div><!-- End of taskView -->
-
-            <!-- Agents View -->
-            <div id="agentsView" class="page-view">
-                <!-- Agents shell is rendered by js/components/agents-view-shell.js -->
-            </div><!-- End of agentsView -->
 
             <!-- Settings View -->
             <div id="settingsView" class="page-view">
@@ -271,49 +233,53 @@
                     <div id="settingsPageTopAnchor" aria-hidden="true"></div>
                     <div class="admin-section">
                         <h2 class="admin-section-title">Settings</h2>
-                        <p class="config-section-desc">A single-page settings surface organized around Basic, Extensions, and Safety.</p>
+                        <p class="config-section-desc">按功能分组的轻量设置面：Provider 与默认值、会话与工作区、扩展能力，以及运行时基础信息。</p>
                     </div>
-                    <div class="settings-short-nav u-mb-lg" role="navigation" aria-label="Settings sections">
-                        <button type="button" class="settings-short-nav-btn is-active" data-settings-nav="overview" aria-current="true">Overview</button>
-                        <button type="button" class="settings-short-nav-btn" data-settings-nav="basic" aria-current="false">Basic</button>
-                        <button type="button" class="settings-short-nav-btn" data-settings-nav="extensions" aria-current="false">Extensions</button>
-                        <button type="button" class="settings-short-nav-btn" data-settings-nav="safety" aria-current="false">Safety</button>
+                    <div class="settings-short-nav" role="tablist" aria-label="Settings sections">
+                        <button type="button" class="settings-short-nav-btn is-active" data-settings-nav="provider" aria-current="true" role="tab" aria-selected="true" aria-controls="settingsSectionBasic">Provider</button>
+                        <button type="button" class="settings-short-nav-btn" data-settings-nav="skills" aria-current="false" role="tab" aria-selected="false" aria-controls="settingsSectionSkills">Skills</button>
+                        <button type="button" class="settings-short-nav-btn" data-settings-nav="runtime" aria-current="false" role="tab" aria-selected="false" aria-controls="settingsSectionSafety">Runtime</button>
                     </div>
 
-                    <section id="settingsSectionBasic" class="settings-section" data-settings-section="basic">
+                    <section id="settingsSectionBasic" class="settings-section is-active" data-settings-section="basic" role="tabpanel">
                         <div id="settingsBasicSummary" class="u-mb-lg"></div>
+                        <div class="settings-sub-nav" role="tablist" aria-label="Provider settings">
+                            <button type="button" class="settings-sub-nav-btn is-active" data-settings-subnav="provider-default" role="tab" aria-selected="true">Default</button>
+                            <button type="button" class="settings-sub-nav-btn" data-settings-subnav="provider-models" role="tab" aria-selected="false">Models</button>
+                            <button type="button" class="settings-sub-nav-btn" data-settings-subnav="provider-aliases" role="tab" aria-selected="false">Aliases</button>
+                            <button type="button" class="settings-sub-nav-btn" data-settings-subnav="provider-concurrency" role="tab" aria-selected="false">Concurrency</button>
+                        </div>
                         <div class="config-content">
-                            <div class="config-section">
+                            <div class="config-section settings-subpanel is-active" data-settings-subpanel="provider-default" role="tabpanel">
                                 <h3 class="config-section-title">Default Provider</h3>
                                 <p class="config-section-desc">Select the default agent provider for new chats and tasks</p>
                                 <div class="form-group">
                                     <select id="configDefaultProvider" class="form-input form-select">
-                                        <option value="nexus" selected>nexus</option>
-                                        <option value="claude">claude</option>
-                                        <option value="gemini">gemini</option>
+                                        <option value="claude" selected>claude</option>
                                         <option value="codex">codex</option>
                                         <option value="codebuddy">codebuddy</option>
+                                        <option value="hermes">hermes</option>
                                     </select>
+                                    <div id="defaultProviderStatus" class="form-hint settings-save-status" aria-live="polite"></div>
                                 </div>
                             </div>
 
-                            <div class="config-section">
+                            <div class="config-section settings-subpanel" data-settings-subpanel="provider-models" role="tabpanel" hidden>
                                 <h3 class="config-section-title">Provider Default Models</h3>
-                                <p class="config-section-desc">Set a default LLM model per provider/alias (e.g., claude-opus-4.6, gemini-2.5-pro). Leave empty to use provider default.</p>
+                                <p class="config-section-desc">Set a default LLM model per provider/alias (e.g., claude-opus-4.6, glm-5v-turbo). Leave empty to use provider default.</p>
                                 <div id="providerModelsContainer"></div>
                             </div>
 
-                            <div class="config-section">
+                            <div class="config-section settings-subpanel" data-settings-subpanel="provider-aliases" role="tabpanel" hidden>
                                 <h3 class="config-section-title">Provider Aliases</h3>
                                 <p class="config-section-desc">Create custom aliases for providers</p>
                                 <div class="alias-form">
                                     <input id="newAliasName" type="text" class="form-input" placeholder="Alias name">
                                     <select id="newAliasBase" class="form-input form-select">
-                                        <option value="nexus">nexus</option>
                                         <option value="claude">claude</option>
-                                        <option value="gemini">gemini</option>
                                         <option value="codex">codex</option>
                                         <option value="codebuddy">codebuddy</option>
+                                        <option value="hermes">hermes</option>
                                     </select>
                                     <input id="newAliasConfigPath" type="text" class="form-input" placeholder="Config path (e.g. ~/.codex-internal, optional)">
                                     <button id="addAliasBtn" class="action-btn primary">
@@ -326,7 +292,7 @@
                                 <div id="aliasListContainer" class="alias-list"></div>
                             </div>
 
-                            <div class="config-section">
+                            <div class="config-section settings-subpanel" data-settings-subpanel="provider-concurrency" role="tabpanel" hidden>
                                 <h3 class="config-section-title">Concurrency Limits</h3>
                                 <p class="config-section-desc">Control max parallel tasks globally or per provider/alias</p>
                                 <div class="u-mb-md">
@@ -349,48 +315,11 @@
                             </div>
                         </div>
 
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">System Overview</h3>
-                        </div>
-                        <div id="settingsBasicOverviewPanel" class="admin-content"></div>
-
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">Onboarding</h3>
-                        </div>
-                        <div id="settingsBasicOnboardingPanel" class="admin-content"></div>
-
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">Runtimes</h3>
-                        </div>
-                        <div id="settingsBasicRuntimesPanel" class="admin-content"></div>
                     </section>
 
-                    <section id="settingsSectionExtensions" class="settings-section u-mt-lg" data-settings-section="extensions">
-                        <div id="settingsExtensionsSummary" class="u-mb-lg"></div>
+                    <section id="settingsSectionSkills" class="settings-section" data-settings-section="skills" role="tabpanel" hidden>
+                        <div id="settingsSkillsSummary" class="u-mb-lg"></div>
                         <div class="config-content">
-                            <div class="config-section">
-                                <h3 class="config-section-title">Global MCP Servers</h3>
-                                <p class="config-section-desc">MCP servers available to all providers</p>
-                                <div class="mcp-form">
-                                    <input id="globalMcpName" type="text" class="form-input" placeholder="Server name">
-                                    <input id="globalMcpCommand" type="text" class="form-input" placeholder="Command (e.g., npx)">
-                                    <input id="globalMcpArgs" type="text" class="form-input" placeholder="Args (comma-separated)">
-                                    <button id="addGlobalMcpBtn" class="action-btn primary">
-                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" class="u-icon-sm">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                        </svg>
-                                        Add
-                                    </button>
-                                </div>
-                                <div id="globalMcpList" class="mcp-list"></div>
-                            </div>
-
-                            <div class="config-section">
-                                <h3 class="config-section-title">Provider-specific MCP Servers</h3>
-                                <p class="config-section-desc">Configure MCP servers for individual providers</p>
-                                <div id="providerMcpPanels" class="provider-panels"></div>
-                            </div>
-
                             <div class="config-section">
                                 <h3 class="config-section-title">Provider Skills</h3>
                                 <p class="config-section-desc">Skills discovered from provider config directories (e.g. ~/.claude/skills/). Create new skills or manage existing ones.</p>
@@ -400,34 +329,21 @@
                             </div>
                         </div>
 
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">Integrations</h3>
-                        </div>
-                        <div id="settingsExtensionsIntegrationsPanel" class="admin-content"></div>
                     </section>
 
-                    <section id="settingsSectionSafety" class="settings-section u-mt-lg" data-settings-section="safety">
+                    <section id="settingsSectionSafety" class="settings-section" data-settings-section="safety" role="tabpanel" hidden>
                         <div id="settingsSafetySummary" class="u-mb-lg"></div>
 
-                        <div class="admin-inline-heading">
-                            <h3 class="admin-section-title u-mb-0">Security</h3>
+                        <div class="config-content">
+                            <div class="config-section">
+                                <h3 class="config-section-title">Runtime Defaults</h3>
+                                <p class="config-section-desc">显示当前运行所依赖的 CLI、执行用户与工作目录基础信息。</p>
+                            </div>
+                            <div class="config-section">
+                                <h3 class="config-section-title">Terminal Access</h3>
+                                <p class="config-section-desc">Terminal 作为会话内能力保留，不再承载额外的远程控制或治理入口。</p>
+                            </div>
                         </div>
-                        <div id="settingsSafetySecurityPanel" class="admin-content"></div>
-
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">Audit</h3>
-                        </div>
-                        <div id="settingsSafetyAuditPanel" class="admin-content"></div>
-
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">Cleanup</h3>
-                        </div>
-                        <div id="settingsSafetyCleanupPanel" class="admin-content"></div>
-
-                        <div class="admin-inline-heading u-mt-lg">
-                            <h3 class="admin-section-title u-mb-0">Governance</h3>
-                        </div>
-                        <div id="settingsSafetyAdminPanel" class="admin-content"></div>
                     </section>
                 </div>
             </div><!-- End of settingsView -->
@@ -469,7 +385,7 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label">Model</label>
-                    <input id="taskLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, gemini-2.5-pro (optional)">
+                    <input id="taskLlmModel" type="text" class="form-input" placeholder="e.g., claude-opus-4.6, glm-5v-turbo (optional)">
                 </div>
 
                 <!-- Workspace / Depends On -->
@@ -708,10 +624,9 @@
     <script src="js/components/filters.js?v=33" defer></script>
     <script src="js/components/list-view.js?v=32" defer></script>
     <script src="js/components/inline-picker.js?v=32" defer></script>
-    <script src="js/components/permission-sync.js?v=32" defer></script>
     <script src="js/components/slash-completer.js?v=32" defer></script>
-    <script src="js/components/streaming-controller.js?v=33" defer></script>
-    <script src="js/components/task-form-controller.js?v=32" defer></script>
+    <script src="js/components/streaming-controller.js?v=35" defer></script>
+    <script src="js/components/task-form-controller.js?v=33" defer></script>
     <script src="js/api.js?v=33" defer></script>
     <script src="js/app-data-store.js?v=32" defer></script>
     <!-- TV-001/TV-002/TV-007: Read model, view store, summary strip -->
@@ -721,13 +636,11 @@
     <script src="js/components/task-board-panel.js?v=35" defer></script>
     <script src="js/components/task-components.js?v=32" defer></script>
     <script src="js/shell-managers.js?v=33" defer></script>
-    <script src="js/shell-views.js?v=33" defer></script>
-    <script src="js/components/settings-basic-section.js?v=1" defer></script>
-    <script src="js/components/settings-extensions-section.js?v=1" defer></script>
+    <script src="js/shell-views.js?v=35" defer></script>
+    <script src="js/components/settings-basic-section.js?v=2" defer></script>
+    <script src="js/components/settings-extensions-section.js?v=2" defer></script>
     <script src="js/components/settings-safety-section.js?v=1" defer></script>
-    <script src="js/components/settings-page.js?v=2" defer></script>
-    <script src="js/components/agents-store.js?v=2" defer></script>
-    <script src="js/components/agents-view-shell.js?v=2" defer></script>
-    <script src="js/app.js?v=36" defer></script>
+    <script src="js/components/settings-page.js?v=4" defer></script>
+    <script src="js/app.js?v=39" defer></script>
 </body>
 </html>

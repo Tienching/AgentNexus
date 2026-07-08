@@ -30,7 +30,7 @@ class ThemeManager {
 }
 
 // ============================================================
-// Page Manager - Handles Chat / Task / Agents / Settings switching
+// Page Manager - Handles Chat / Task / Settings switching
 // ============================================================
 class PageManager {
     constructor(app) {
@@ -45,7 +45,6 @@ class PageManager {
 
         this.chatView = document.getElementById('chatView');
         this.taskPageView = document.getElementById('taskView');
-        this.agentsView = document.getElementById('agentsView');
         this.settingsView = document.getElementById('settingsView');
         this.projectHeaderCenter = document.getElementById('projectHeaderCenter');
         this.projectHeaderRight = document.getElementById('projectHeaderRight');
@@ -92,15 +91,15 @@ class PageManager {
     _normalizePage(page) {
         const normalized = String(page || '').trim().toLowerCase();
         if (normalized === 'project') return 'chat';
-        if (normalized === 'dashboard') return 'agents';
+        if (normalized === 'dashboard') return 'settings';
         if (normalized === 'config' || normalized === 'admin') return 'settings';
-        return ['chat', 'task', 'agents', 'settings'].includes(normalized) ? normalized : 'chat';
+        return ['chat', 'task', 'settings'].includes(normalized) ? normalized : 'chat';
     }
 
     _getLegacySettingsSection(page) {
         const normalized = String(page || '').trim().toLowerCase();
-        if (normalized === 'admin') return 'safety';
-        if (normalized === 'config') return 'basic';
+        if (normalized === 'admin') return 'runtime';
+        if (normalized === 'config') return 'provider';
         return null;
     }
 
@@ -115,7 +114,11 @@ class PageManager {
 
     _normalizeSettingsSection(section) {
         const normalized = String(section || '').trim().toLowerCase();
-        return ['basic', 'extensions', 'safety'].includes(normalized) ? normalized : null;
+        if (normalized === 'basic' || normalized === 'provider') return 'provider';
+        if (normalized === 'extensions') return 'skills';
+        if (normalized === 'skills') return 'skills';
+        if (normalized === 'safety' || normalized === 'runtime') return 'runtime';
+        return ['provider', 'skills', 'runtime'].includes(normalized) ? normalized : 'provider';
     }
 
     _readSettingsSectionFromUrl() {
@@ -165,14 +168,9 @@ class PageManager {
     _refreshCurrentPage() {
         if (this.currentPage === 'settings' && this.app.settingsPage) {
             this.app.settingsPage.refresh();
-            const section = this.pendingSettingsSection || 'overview';
+            const section = this.pendingSettingsSection || 'provider';
             window.setTimeout(() => this.app.settingsPage?.scrollToSection?.(section, { syncUrl: false, replaceUrl: true }), 0);
             this.pendingSettingsSection = null;
-            return;
-        }
-
-        if (this.currentPage === 'agents' && this.app.agentsPage) {
-            this.app.agentsPage.refresh();
             return;
         }
 
@@ -224,9 +222,6 @@ class PageManager {
         }
         if (this.taskPageView) {
             this.taskPageView.classList.toggle('active', this.currentPage === 'task');
-        }
-        if (this.agentsView) {
-            this.agentsView.classList.toggle('active', this.currentPage === 'agents');
         }
         if (this.settingsView) {
             this.settingsView.classList.toggle('active', this.currentPage === 'settings');
