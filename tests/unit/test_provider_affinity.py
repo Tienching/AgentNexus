@@ -48,10 +48,6 @@ class TestScoreProviderForTask:
         score = score_provider_for_task("codebuddy", "quick rename move file update readme")
         assert score > 1
 
-    def test_gemini_scores_high_for_implementation(self):
-        score = score_provider_for_task("gemini", "implement a new component and refactor the module")
-        assert score > 1
-
     def test_score_is_additive_per_keyword(self):
         # "research" and "investigate" both in affinity for claude
         score_one = score_provider_for_task("claude", "research the topic")
@@ -96,7 +92,7 @@ class TestSelectProviderForTask:
     def test_selects_codex_for_code_tasks(self):
         result = select_provider_for_task(
             "implement unit test for api endpoint and fix bug",
-            ["claude", "gemini", "codex", "codebuddy"],
+            ["claude", "codex", "codebuddy", "hermes"],
         )
         # codex has 'implement', 'unit test', 'api', 'endpoint', 'fix', 'bug'
         assert result == "codex"
@@ -113,10 +109,10 @@ class TestSelectProviderForTask:
         # Use a text with no affinity keywords — all providers score 1
         result = select_provider_for_task(
             "do the task xyz",
-            ["gemini", "claude"],
+            ["codex", "claude"],
         )
-        # Both will score 1 (minimum); gemini is first
-        assert result == "gemini"
+        # Both will score 1 (minimum); codex is first
+        assert result == "codex"
 
     def test_unknown_providers_not_scored(self):
         """Providers not in the affinity table score 0 and lose to known ones."""

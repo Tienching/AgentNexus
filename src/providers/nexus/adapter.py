@@ -3,6 +3,4 @@
 
 from src.runtime.adapters.nexus.agui_adapter import NexusAGUIAdapter
 
-NanobotAGUIAdapter = NexusAGUIAdapter
-
-__all__ = ["NexusAGUIAdapter", "NanobotAGUIAdapter"]
+__all__ = ["NexusAGUIAdapter"]

@@ -13,6 +13,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from .._error_sanitize import safe_error_message
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -44,7 +45,7 @@ class CodexExecutorConfig(ExecutorConfig):
 class CodexExecutor(BaseExecutor):
     """Codex CLI executor via MCP JSON-RPC.
     
-    Unlike CLI/Gemini executors that use command-line streaming,
+    Unlike the CLI executor that uses command-line streaming,
     Codex uses MCP protocol for bidirectional communication.
     """
     
@@ -184,7 +185,7 @@ class CodexExecutor(BaseExecutor):
             
         except Exception as e:
             logger.error(f"Codex process error: {e}", exc_info=True)
-            yield json.dumps({"type": "error", "message": str(e)})
+            yield json.dumps({"type": "error", "message": safe_error_message(e)})
             
         finally:
             if self._connection:

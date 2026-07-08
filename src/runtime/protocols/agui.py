@@ -55,9 +55,6 @@ class AGUIProtocol:
         self.state = AGUIState(thread_id=thread_id, run_id=run_id)
 
     def _generate_message_id(self, provider: str) -> str:
-        if (provider or "").strip().lower() == "gemini":
-            return f"gemini-msg-{uuid.uuid4().hex}"
-
         # Claude/default: match `claude_code_api/adapters/agui_adapter.py` behavior.
         if not self.state:
             return f"msg_{uuid.uuid4().hex[:8]}_0001"

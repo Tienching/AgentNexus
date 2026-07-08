@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import pwd
+import re
 import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -16,6 +17,27 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_USERNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
+_RESERVED_EXEC_USERS = {"root", "toor", "nobody", "daemon", "bin", "sys", "halt", "shutdown"}
+
+
+def _validate_target_user(user: str) -> str:
+    """Authoritative exec_user validation (shared by all layers).
+
+    Pure function raising ``ValueError``. Does NOT echo the username in error
+    messages (prevents user-enumeration). Server/providers/runtime all call this
+    so the rules cannot drift apart.
+    """
+    if not isinstance(user, str) or not _USERNAME_RE.match(user):
+        raise ValueError("Invalid exec_user format")
+    if user.lower() in _RESERVED_EXEC_USERS:
+        raise ValueError("exec_user is reserved and not permitted")
+    try:
+        pwd.getpwnam(user)
+    except KeyError:
+        raise ValueError("exec_user does not exist on host")
+    return user
 
 
 def _is_local_reference(value: Any) -> bool:
@@ -190,6 +212,7 @@ class BaseExecutor(ABC):
         - If cwd_mode="inplace" and cwd is set, use that directly
         - Otherwise, use session-based directory under user home
         """
+        _validate_target_user(context.exec_user)
         if context.cwd_mode == "inplace" and context.cwd:
             return Path(str(context.cwd))
         
@@ -217,6 +240,7 @@ class BaseExecutor(ABC):
         Returns:
             Shell command list ready for execution
         """
+        _validate_target_user(target_user)
         current_user = pwd.getpwuid(os.getuid()).pw_name
         cmd_str = " ".join(shlex.quote(arg) for arg in cmd)
         full_cmd = f"cd {shlex.quote(str(exec_dir))} && {cmd_str}"

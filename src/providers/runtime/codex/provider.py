@@ -11,6 +11,7 @@ from typing import AsyncIterator, Any, Optional
 from pathlib import Path
 
 from ..base import Provider, Executor, RunContext
+from src.providers._error_sanitize import safe_error_message
 from src.runtime.events import (
     Event,
     TokenEvent,
@@ -97,7 +98,7 @@ class CodexProvider:
                 provider=self.name,
                 session_id=context.session_id,
                 code="execution_error",
-                message=str(e),
+                message=safe_error_message(e),
                 recoverable=False,
             )
         

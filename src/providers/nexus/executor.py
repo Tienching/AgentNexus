@@ -18,6 +18,7 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
+from src.providers._error_sanitize import safe_error_message
 from src.providers.base import BaseExecutor, RequestContext
 from src.providers.nexus.event_schema import (
     ErrorEvent,
@@ -68,9 +69,9 @@ class _NexusPool:
     async def _create_loop(cls, workspace: str, model: str | None) -> Any:
         """Construct a fresh AgentLoop."""
         try:
-            from src.nanobot.config.loader import load_config
-            from src.nanobot.bus.queue import MessageBus
-            from src.nanobot.agent.loop import AgentLoop
+            from src.core.agent_runtime.config.loader import load_config
+            from src.core.agent_runtime.bus.queue import MessageBus
+            from src.core.agent_runtime.agent.loop import AgentLoop
 
             # load_config() uses ~/.nexus/config.json by default
             config = load_config()
@@ -115,8 +116,8 @@ class _NexusPool:
         Extracted from nexus/cli/commands.py::_make_provider — we need this
         because cli/ was excluded from the source merge.
         """
-        from src.nanobot.providers.base import GenerationSettings
-        from src.nanobot.providers.registry import find_by_name
+        from src.core.agent_runtime.providers.base import GenerationSettings
+        from src.core.agent_runtime.providers.registry import find_by_name
 
         model = model_override or config.agents.defaults.model
         provider_name = config.get_provider_name(model)
@@ -125,17 +126,17 @@ class _NexusPool:
         backend = spec.backend if spec else "openai_compat"
 
         if backend == "openai_codex":
-            from src.nanobot.providers.openai_codex_provider import OpenAICodexProvider
+            from src.core.agent_runtime.providers.openai_codex_provider import OpenAICodexProvider
             provider = OpenAICodexProvider(default_model=model)
         elif backend == "azure_openai":
-            from src.nanobot.providers.azure_openai_provider import AzureOpenAIProvider
+            from src.core.agent_runtime.providers.azure_openai_provider import AzureOpenAIProvider
             provider = AzureOpenAIProvider(
                 api_key=p.api_key if p else None,
                 api_base=p.api_base if p else None,
                 default_model=model,
             )
         elif backend == "anthropic":
-            from src.nanobot.providers.anthropic_provider import AnthropicProvider
+            from src.core.agent_runtime.providers.anthropic_provider import AnthropicProvider
             provider = AnthropicProvider(
                 api_key=p.api_key if p else None,
                 api_base=config.get_api_base(model),
@@ -143,7 +144,7 @@ class _NexusPool:
                 extra_headers=p.extra_headers if p else None,
             )
         else:
-            from src.nanobot.providers.openai_compat_provider import OpenAICompatProvider
+            from src.core.agent_runtime.providers.openai_compat_provider import OpenAICompatProvider
             provider = OpenAICompatProvider(
                 api_key=p.api_key if p else None,
                 api_base=config.get_api_base(model),
@@ -237,7 +238,7 @@ class NexusExecutor(BaseExecutor):
         try:
             agent_loop = await _NexusPool.get_or_create(workspace, model_override or self._model)
         except Exception as e:
-            err = ErrorEvent(message=f"Failed to initialise nexus: {e}")
+            err = ErrorEvent(message=safe_error_message(e))
             yield json.dumps({"type": err.type, "message": err.message})
             return
 
@@ -294,7 +295,7 @@ class NexusExecutor(BaseExecutor):
                 await queue.put(ErrorEvent(message="Request cancelled"))
             except Exception as exc:
                 logger.exception("AgentLoop.process_direct failed")
-                await queue.put(ErrorEvent(message=str(exc)))
+                await queue.put(ErrorEvent(message=safe_error_message(exc)))
             finally:
                 await queue.put(_SENTINEL)
 
@@ -335,15 +336,11 @@ def _serialise_event(event: NexusEvent) -> str:
     return json.dumps(d, ensure_ascii=False)
 
 
-NanobotExecutor = NexusExecutor
-_NanobotPool = _NexusPool
 _LoopPool = _NexusPool
 
 __all__ = [
     "NexusExecutor",
-    "NanobotExecutor",
     "_NexusPool",
-    "_NanobotPool",
     "_LoopPool",
     "_serialise_event",
 ]

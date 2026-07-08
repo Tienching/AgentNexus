@@ -77,9 +77,10 @@ class ProviderRegistry:
         names = set(self._providers.keys())
         names.update({
             "claude",
-            "gemini",
             "codex",
             "codebuddy",
+            "hermes",
+            "nexus",
         })
         return sorted(names)
     

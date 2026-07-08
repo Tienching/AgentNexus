@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Callable, Awaitable
 
 from ..base import BaseExecutor, ExecutorConfig, RequestContext
+from .._error_sanitize import safe_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,7 @@ class CLIExecutor(BaseExecutor):
                 
         except Exception as e:
             logger.error(f"Slash command error: {e}", exc_info=True)
-            yield json.dumps({"type": "error", "message": f"命令执行错误: {str(e)}"})
+            yield json.dumps({"type": "error", "message": safe_error_message(e)})
     
     async def _process_stream(
         self,

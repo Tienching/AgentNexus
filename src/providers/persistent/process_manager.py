@@ -26,6 +26,9 @@ import asyncio
 import json
 import logging
 import os
+import pwd
+import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +42,14 @@ from typing import (
 from .completion_detector import CompletionDetector, CompletionStatus
 
 logger = logging.getLogger(__name__)
+
+# Defense-in-depth validation for the su target user. The authoritative
+# guard lives in src/server/security/exec_user_guard.py; this is a local
+# copy so the providers layer never builds a command for an unsafe user.
+# exec_user validation reused from providers.base (single source of truth)
+from src.providers.base import _validate_target_user as _validate_exec_user
+
+
 
 # Providers that support --input-format stream-json
 _STREAM_INPUT_PROVIDERS = frozenset({"claude", "codebuddy", "claude-internal"})
@@ -358,15 +369,21 @@ class PersistentProcessManager:
         alias: Optional[str] = None,
     ) -> PersistentProcess:
         """Spawn a new persistent CLI process."""
+        # Defense-in-depth: validate exec_user before any su wrapping.
+        _validate_exec_user(exec_user)
+
         cmd = self._build_persistent_cmd(provider, exec_dir, model, alias)
 
-        # Determine if we need su wrapper
+        # Determine if we need su wrapper.
+        # IMPORTANT: shlex.quote every argument so user-controlled values
+        # (model/alias/provider) cannot inject shell metacharacters.
         current_user = os.environ.get("USER", "")
+        quoted = " ".join(shlex.quote(arg) for arg in cmd)
         if current_user == exec_user:
-            full_cmd = " ".join(cmd)
+            full_cmd = quoted
             exec_cmd = ["bash", "-c", full_cmd]
         else:
-            full_cmd = " ".join(cmd)
+            full_cmd = quoted
             exec_cmd = ["su", "-", exec_user, "-c", full_cmd]
 
         logger.info(

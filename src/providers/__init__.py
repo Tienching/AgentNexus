@@ -16,7 +16,6 @@ __all__ = [
     "RequestContext",
     # Submodules (actual implementations)
     "claude",
-    "gemini",
     # Provider registry
     "runtime",
 ]

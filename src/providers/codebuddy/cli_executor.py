@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import json
 import logging
+from .._error_sanitize import safe_error_message
 import os
 import re
 import signal
@@ -226,7 +227,7 @@ class CodebuddyCLIExecutor(BaseExecutor):
 
         except Exception as e:
             logger.exception("Codebuddy process error")
-            yield json.dumps({"type": "error", "message": f"处理错误: {e}"})
+            yield json.dumps({"type": "error", "message": safe_error_message(e)})
 
         finally:
             _ = start_time  # keep parity hook for future metrics
