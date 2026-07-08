@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 
 # Known slash commands
 # NOTE: `/think` and `/log` are intentionally removed (no compatibility).
-SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/worktree", "/plan", "/exit"]
+SLASH_COMMANDS = ["/task", "/check", "/usage", "/report", "/cancel", "/trash", "/clear", "/help", "/chat", "/workspace", "/config", "/switch", "/history", "/worktree", "/exit"]
 
 # Dynamic slash extension hooks (MC-062)
 SlashExtensionHandler = Callable[["SlashCommandHandler", ParsedSlashCommand, Dict[str, Any]], str]
@@ -112,7 +112,7 @@ def _ensure_slash_extensions_loaded() -> None:
         loader()
 
     try:
-        from src.nanobot.skills.registry import get_skill_registry
+        from src.core.agent_runtime.skills.registry import get_skill_registry
 
         get_skill_registry().load_slash_extensions()
     except Exception:
@@ -1964,7 +1964,6 @@ class SlashCommandHandler:
             response += "- `/switch -u tswitch` — 切换当前会话的执行用户\n"
             response += "- `/switch -m claude-opus-4.6` — 仅切换模型\n"
             response += "- `/switch -r codex` — 直接切换 Provider\n"
-            response += "- `/switch -l gemini-internal` — 通过别名切换\n"
             response += "- `/switch -r codex -u tswitch` — 同时切换 Provider 与执行用户\n"
             response += "- `/switch -r codex -a` — 自动生成全量上下文后切换（默认）\n"
             response += "- `/switch -r codex -a -x windowed` — 使用窗口截断上下文后切换\n"
@@ -2021,7 +2020,7 @@ class SlashCommandHandler:
         alias_registry = get_alias_registry()
         resolved = alias_registry.resolve(target_provider)
         if not resolved:
-            valid_providers = ["claude", "codex", "gemini", "codebuddy"]
+            valid_providers = ["claude", "codex", "codebuddy"]
             if target_provider.lower() not in valid_providers:
                 all_aliases = alias_registry.list_all()
                 alias_list = ", ".join(f"`{a}`" for a in sorted(all_aliases.keys()))
@@ -2795,7 +2794,7 @@ class SlashCommandHandler:
 - 可选 `-r/--provider` 指定执行 Provider（未指定则使用默认配置）
 - 可选 `-u/--exec-user` 指定执行用户（未指定则使用默认配置）
 - 可选 `-l/--alias` 指定别名（未指定则默认等于 Provider）
-- 可选 `-m/--model` 指定 LLM 模型（如 claude-opus-4.6, gemini-2.5-pro）
+- 可选 `-m/--model` 指定 LLM 模型（如 claude-opus-4.6, glm-5v-turbo）
 
 **`/chat`** - 对话管理
 ```
@@ -2867,7 +2866,7 @@ class SlashCommandHandler:
 /history                      # 列出最近 10 个 CLI 历史会话（默认所有用户）
 /history -u tswitch           # 只看指定用户
 /history -n 20                # 列出最近 20 个
-/history -r gemini            # 只看 gemini 的
+/history -r codex            # 只看 codex 的
 /history -s <session_id>      # 查看某个 JSONL session 详情
 /history -f -s <session_id>   # 从 CLI 文件刷新当前 Runtime session
 /history -c -s <session_id>   # 从历史恢复为 Runtime session

@@ -38,7 +38,7 @@ def test_task_queue_is_cached_per_exec_user():
 
 def test_history_service_comes_preloaded_with_default_parsers():
     history = get_app_container().history_service()
-    assert history.registered_providers() == ["claude", "codebuddy", "codex", "gemini"]
+    assert history.registered_providers() == ["claude", "codebuddy", "codex"]
 
 
 def test_service_facades_export_canonical_runtime_types():

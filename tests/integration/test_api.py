@@ -5,11 +5,36 @@ import json
 import warnings
 from unittest.mock import patch
 from httpx import AsyncClient
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from starlette.requests import Request
 
 from src.server.app import validation_exception_handler
 from src.server.models import RequestModel
+
+
+def _disable_nexus_auth(monkeypatch):
+    from src.server.routers import nexus_auth
+
+    monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", None)
+    monkeypatch.setattr(nexus_auth.settings, "nexus_password", None)
+    monkeypatch.delenv("NEXUS_AUTH_TOKEN", raising=False)
+
+
+class _FakeStreamHandler:
+    async def handle_agui_request(self, request, body_dict, exec_user):
+        async def events():
+            yield 'data: {"type":"RUN_FINISHED"}\n\n'
+
+        return StreamingResponse(
+            events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
 
 class TestAPIEndpoints:
@@ -56,19 +81,18 @@ class TestAPIEndpoints:
         app = app_factory(settings_overrides={
             "executor_enabled": False,
             "scheduler_enabled": False,
-            "evolution_enabled": False,
         })
 
-        with patch("src.server.services.channel_service.create_channel_service", return_value=None), \
-             patch("src.server.services.terminal_manager.TerminalManager", side_effect=RuntimeError("tmux missing")):
+        with patch("src.server.services.terminal_manager.TerminalManager", side_effect=RuntimeError("tmux missing")):
             with pytest.raises(RuntimeError, match="Terminal Manager"):
                 async with app.router.lifespan_context(app):
                     pass
 
     @pytest.mark.asyncio
-    async def test_chat_stream_endpoint_headers(self, client: AsyncClient, sample_request):
+    async def test_chat_stream_endpoint_headers(self, client: AsyncClient, monkeypatch):
         """测试聊天流端点的响应头"""
-        response = await client.post("/chat/stream/testuser", json=sample_request, follow_redirects=True)
+        _disable_nexus_auth(monkeypatch)
+        response = await client.post("/chat/stream/ubuntu", json={}, follow_redirects=True)
 
         # 检查响应状态
         assert response.status_code == 200
@@ -80,18 +104,20 @@ class TestAPIEndpoints:
         assert response.headers.get("x-accel-buffering") == "no"
 
     @pytest.mark.asyncio
-    async def test_chat_stream_with_minimal_request(self, client: AsyncClient):
+    async def test_chat_stream_with_minimal_request(self, client: AsyncClient, monkeypatch):
         """测试最小请求的聊天流"""
         minimal_request = {
             "user": "test_user",
             "content": "hi"
         }
 
-        response = await client.post("/chat/stream/testuser", json=minimal_request)
+        _disable_nexus_auth(monkeypatch)
+        with patch("src.server.routers.chat.StreamHandler", return_value=_FakeStreamHandler()):
+            response = await client.post("/chat/stream/ubuntu", json=minimal_request)
         assert response.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_chat_stream_with_invalid_request(self, client: AsyncClient):
+    async def test_chat_stream_with_invalid_request(self, client: AsyncClient, monkeypatch):
         """测试无效请求的聊天流"""
         invalid_request = {
             "user": "test_user"
@@ -100,7 +126,8 @@ class TestAPIEndpoints:
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always", DeprecationWarning)
-            response = await client.post("/chat/stream/testuser", json=invalid_request)
+            _disable_nexus_auth(monkeypatch)
+            response = await client.post("/chat/stream/ubuntu", json=invalid_request)
 
         assert response.status_code == 422  # Unprocessable Content
         assert not any(
@@ -121,7 +148,7 @@ class TestAPIEndpoints:
         request = Request({
             "type": "http",
             "method": "POST",
-            "path": "/chat/stream/testuser",
+            "path": "/chat/stream/ubuntu",
             "headers": [],
             "query_string": b"",
             "scheme": "http",
@@ -166,17 +193,19 @@ class TestAPIEndpoints:
         assert len(response.headers["X-Correlation-ID"]) > 0
 
     @pytest.mark.asyncio
-    async def test_chat_stream_with_different_commands(self, client: AsyncClient):
+    async def test_chat_stream_with_different_commands(self, client: AsyncClient, monkeypatch):
         """测试不同CLI命令的聊天流"""
         minimal_request = {
             "user": "test_user",
             "content": "hi"
         }
 
-        # 测试不同的命令
-        for cmd in ["ccr", "codebuddy", "codebuddy-code"]:
-            response = await client.post("/chat/stream/testuser", json=minimal_request)
-            assert response.status_code == 200
+        _disable_nexus_auth(monkeypatch)
+        # 测试不同的命令入口不会破坏基础流响应
+        with patch("src.server.routers.chat.StreamHandler", return_value=_FakeStreamHandler()):
+            for cmd in ["ccr", "codebuddy", "codebuddy-code"]:
+                response = await client.post("/chat/stream/ubuntu", json={**minimal_request, "agent_type": cmd})
+                assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_404_not_found(self, client: AsyncClient):

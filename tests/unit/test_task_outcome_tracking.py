@@ -339,7 +339,7 @@ class TestGetTaskOutcomesEndpoint:
         from src.server.routers.nexus_tasks import get_task_outcomes
 
         t1 = self._make_done_task(outcome="success", provider="claude")
-        t2 = self._make_done_task(outcome="failed", provider="gemini")
+        t2 = self._make_done_task(outcome="failed", provider="codex")
 
         task_map = {t1.id: t1, t2.id: t2}
         queue = MagicMock()
@@ -350,9 +350,9 @@ class TestGetTaskOutcomesEndpoint:
 
         result = await get_task_outcomes(timeframe="all", exec_user="testuser")
         assert "claude" in result.by_provider
-        assert "gemini" in result.by_provider
+        assert "codex" in result.by_provider
         assert result.by_provider["claude"]["success"] == 1
-        assert result.by_provider["gemini"]["failed"] == 1
+        assert result.by_provider["codex"]["failed"] == 1
 
     @pytest.mark.asyncio
     @patch("src.server.routers.nexus_tasks.get_task_queue")

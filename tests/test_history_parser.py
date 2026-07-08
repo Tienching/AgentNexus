@@ -18,15 +18,15 @@ def test_history_list_with_num():
 
 
 def test_history_list_with_provider():
-    r = parse_slash_command("/history -r gemini")
+    r = parse_slash_command("/history -r codex")
     assert r.subcmd == "list"
-    assert r.options["provider"] == "gemini"
+    assert r.options["provider"] == "codex"
 
 
 def test_history_list_combined():
-    r = parse_slash_command("/history -r gemini -n 5")
+    r = parse_slash_command("/history -r codex -n 5")
     assert r.subcmd == "list"
-    assert r.options["provider"] == "gemini"
+    assert r.options["provider"] == "codex"
     assert r.options["num"] == 5
 
 

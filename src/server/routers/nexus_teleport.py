@@ -126,7 +126,7 @@ async def connect_remote(req: TeleportConnectRequest):
         return TeleportSessionResponse(**session.to_dict())
     except Exception as e:
         logger.error(f"Teleport connect failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(e))
 
 
 @router.post("/disconnect", response_model=TeleportActionResponse)
@@ -154,7 +154,7 @@ async def execute_remote(req: TeleportExecuteRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Teleport execute failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(e))
 
 
 @router.get("/sessions", response_model=TeleportSessionsListResponse)

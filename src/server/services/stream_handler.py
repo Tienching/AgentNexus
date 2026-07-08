@@ -22,6 +22,7 @@ from ..logger import get_logger
 from .observability import record_sampled_event, telemetry
 from ..providers import get_provider_registry
 from ..utils.ids import resolve_session_id
+from ..utils.error_sanitize import safe_error_message
 from .callback_handler import CallbackHandler
 from .media_downloader import (
     download_files_with_sources,
@@ -36,6 +37,7 @@ from src.providers.dispatcher import (
     create_adapter,
 )
 from src.runtime.streaming import StreamOrchestrator
+from ..security.exec_user_guard import validate_exec_user
 
 logger = get_logger(__name__)
 
@@ -714,7 +716,7 @@ class StreamHandler:
 
         # In /workspace -t mode, the workspace provider (stored in Redis session)
         # should override the request-level provider for executor and adapter selection.
-        # Without this, a workspace using gemini would get a Claude executor/adapter.
+        # Without this, a workspace using codex would get a Claude executor/adapter.
         # Priority: session-level exec_user/provider overrides > workspace_provider > handoff_provider > request default
         session_id = resolved_session_id
         workspace_provider = None
@@ -725,6 +727,8 @@ class StreamHandler:
                 storage = get_session_storage()
 
                 session_exec_user = storage.get_session_exec_user(session_id)
+                if session_exec_user:
+                    session_exec_user = await validate_exec_user(session_exec_user)
                 if session_exec_user and session_exec_user != exec_user:
                     logger.info(
                         f"Session exec_user override: {exec_user} -> {session_exec_user}",
@@ -751,12 +755,12 @@ class StreamHandler:
                         provider = hp
                         workspace_alias = ha  # reuse variable for alias propagation below
 
-                # Also restore the original alias (e.g., 'gemini-internal') for CLI command selection
+                # Also restore the original alias (e.g., 'codex-internal') for CLI command selection
                 if not workspace_alias:
                     workspace_alias = storage.get_workspace_alias(session_id)
                 if workspace_alias:
                     logger.info(f"Alias restored: {workspace_alias}")
-                # Set exec_dir override (cwd) for non-CLIExecutor executors (e.g., GeminiExecutor)
+                # Set exec_dir override (cwd) for non-CLIExecutor executors (e.g., CodexCLIExecutor)
                 exec_dir_override = storage.get_exec_dir_override(session_id)
                 if exec_dir_override:
                     request_model.cwd = exec_dir_override
@@ -797,7 +801,7 @@ class StreamHandler:
         request_model.exec_user = exec_user
         request_model.provider = provider
         request_model.agent_type = provider
-        # Set alias on request_model so executors (e.g., GeminiExecutor) use the correct CLI command
+        # Set alias on request_model so executors (e.g., CodexCLIExecutor) use the correct CLI command
         if workspace_alias and not getattr(request_model, "alias", None):
             request_model.alias = workspace_alias
 
@@ -827,7 +831,7 @@ class StreamHandler:
 
         self._prepare_fresh_agenthub_history_request(request_model)
 
-        # In workspace mode, mark as chat_continue so GeminiExecutor adds --resume latest
+        # In workspace mode, mark as chat_continue so the executor adds resume flags
         if workspace_provider:
             request_model.run_kind = "chat_continue"
 
@@ -1324,9 +1328,10 @@ class StreamHandler:
                         
             except Exception as e:
                 logger.error(f"AG-UI producer error: {e}", exc_info=True)
-                await archiver.on_run_error(str(e))
+                client_error = safe_error_message(e)
+                await archiver.on_run_error(client_error)
                 stream_state["error_occurred"] = True
-                await message_queue.put(("error", str(e)))
+                await message_queue.put(("error", client_error))
             finally:
                 # Store agent-generated summary and send notification BEFORE signaling done
                 if handoff_pending_target and summary_text_parts:

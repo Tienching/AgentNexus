@@ -18,7 +18,7 @@ from .db import Database, get_db
 logger = logging.getLogger(__name__)
 
 # Known provider families.  Used to validate provider values on registration.
-KNOWN_PROVIDERS = frozenset({"claude", "codex", "gemini", "codebuddy"})
+KNOWN_PROVIDERS = frozenset({"claude", "codex", "codebuddy", "hermes"})
 
 
 class AliasRegistry:
@@ -33,9 +33,9 @@ class AliasRegistry:
         "claude-internal": "claude",
         "codex": "codex",
         "codex-internal": "codex",
-        "gemini": "gemini",
-        "gemini-internal": "gemini",
         "codebuddy": "codebuddy",
+        "hermes": "hermes",
+        "hermes-internal": "hermes",
     }
 
     def __init__(self, db: Optional[Database] = None, redis_client=None):

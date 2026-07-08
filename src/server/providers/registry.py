@@ -46,7 +46,7 @@ class ProviderResolution:
     """Resolved provider information.
 
     - `name`: the requested/provider label (e.g., from query/body/session meta)
-    - `backend`: which backend implementation is used (gemini -> gemini, else claude)
+    - `backend`: which backend implementation is used (provider name, else claude)
     """
 
     name: str
@@ -119,20 +119,10 @@ class ProviderRegistry:
             session_meta={"provider": session_provider} if session_provider else None,
         )
 
-        name = resolved.provider_name if resolved.provider_name else "nanobot"
-        # Map backend based on provider name
+        name = resolved.provider_name if resolved.provider_name else "claude"
         if name == "nanobot":
-            backend = "nanobot"
-        elif name == "gemini":
-            backend = "gemini"
-        elif name == "codex":
-            backend = "codex"
-        elif name == "codebuddy":
-            backend = "codebuddy"
-        elif name == "claude":
-            backend = "claude"
-        else:
-            backend = "nanobot"
+            name = "nexus"
+        backend = name if name in {"claude", "codex", "codebuddy", "hermes", "nexus"} else "claude"
         return ProviderResolution(name=name, backend=backend)
 
 

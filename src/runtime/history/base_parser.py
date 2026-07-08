@@ -35,7 +35,7 @@ class BaseHistoryParser(ABC):
     @property
     @abstractmethod
     def provider_name(self) -> str:
-        """Return the provider name (e.g. 'claude', 'codex', 'codebuddy', 'gemini')."""
+        """Return the provider name (e.g. 'claude', 'codex', 'codebuddy')."""
         ...
 
     @abstractmethod

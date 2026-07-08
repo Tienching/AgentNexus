@@ -402,7 +402,6 @@ class TestExecutorConfig:
         )
         
         assert config.get_provider_max_concurrency(None) == 0  # no limit
-        assert config.get_provider_max_concurrency("gemini") == 0  # no limit
         assert config.get_provider_max_concurrency("claude") == 5
 
 

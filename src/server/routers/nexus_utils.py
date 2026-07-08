@@ -65,7 +65,6 @@ async def list_slash_commands():
             "/switch": "Switch context or provider",
             "/history": "View command history",
             "/worktree": "Manage git worktrees",
-            "/plan": "Enter plan mode for read-only exploration",
             "/exit": "Exit the current session",
         }
 

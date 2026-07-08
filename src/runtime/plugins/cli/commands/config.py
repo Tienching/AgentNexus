@@ -82,14 +82,13 @@ class ConfigCommand(BaseCommand):
             "keys": [
                 ("CLI_COMMAND", "CLI 执行命令（默认 Provider）", "claude"),
                 ("CLI_TIMEOUT", "CLI 执行超时（秒）", "600"),
-                ("GEMINI_COMMAND", "Gemini CLI 命令", "gemini"),
             ],
         },
         "defaults": {
             "title": "默认值配置",
             "keys": [
-                ("DEFAULT_PROVIDER", "默认 Provider (claude/gemini/codex/codebuddy)", "codebuddy"),
-                ("DEFAULT_ALIAS", "默认 Alias (如 claude-internal/gemini-internal 等别名)", ""),
+                ("DEFAULT_PROVIDER", "默认 Provider (claude/codex/codebuddy/hermes)", "codebuddy"),
+                ("DEFAULT_ALIAS", "默认 Alias (如 claude-internal 等别名)", ""),
                 ("DEFAULT_EXEC_USER", "默认 Exec User 名称", ""),
             ],
         },

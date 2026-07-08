@@ -2,13 +2,12 @@
 """History API Router for NexusHub.
 
 Provides REST API endpoints for reading native CLI session history files
-from Claude Code, Codex, CodeBuddy, and Gemini providers.
+from Claude Code, Codex, and CodeBuddy providers.
 """
 
 from __future__ import annotations
 
 import time
-import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -19,8 +18,6 @@ from ..logger import get_logger
 from ..models import (
     SessionMessagesResponse,
     SessionMeta,
-    StoredMessage,
-    MessageStatus,
 )
 from ..services.session_storage import get_session_storage
 from .nexus_auth import verify_nexus_auth
@@ -37,7 +34,6 @@ from .nexus_history_helpers import (
     resolve_exec_user_home,
     resolve_history_candidate_configs as _resolve_history_candidate_configs,
     resolve_history_user_homes as _resolve_history_user_homes,
-    resolve_nexus_workspace_path as _resolve_nexus_workspace_path,
     resolve_provider_config_path,
 )
 from .nexus_history_queries import (
@@ -51,7 +47,6 @@ from .nexus_models import (
     build_history_session_summary,
 )
 
-from src.nanobot.agent.memory import MemoryStore
 
 logger = get_logger(__name__)
 
@@ -70,7 +65,7 @@ async def list_history_projects(
 ):
     """Discover all available project paths from local CLI history files.
 
-    Scans Claude, CodeBuddy, Codex, and Gemini config directories to find
+    Scans Claude, CodeBuddy, and Codex config directories to find
     all project workspaces that have history sessions.
 
     Returns a list of projects, each with:
@@ -93,7 +88,7 @@ async def list_history_sessions(
     project_path: str = Query(default="", description="Optional project workspace path (e.g. /home/bob/myproject). Leave empty to search all projects."),
     exec_user: str = Query(default="", description="Exec user for home directory resolution"),
     custom_paths: str = Query(default="", description="JSON-encoded dict of alias->configPath"),
-    provider: Optional[str] = Query(default=None, description="Filter by provider (claude/codex/codebuddy/gemini)"),
+    provider: Optional[str] = Query(default=None, description="Filter by provider (claude/codex/codebuddy/hermes)"),
     search: Optional[str] = Query(default=None, description="Search text for session title"),
     page: int = Query(default=1, ge=1, description="Page number"),
     page_size: int = Query(default=20, ge=1, le=2000, description="Page size"),
@@ -145,7 +140,7 @@ async def get_history_session_messages(
     """Get messages and tool calls for a specific history session.
 
     Path parameters:
-    - provider: Provider or alias name (e.g. claude, codex, codebuddy, gemini, claude-internal)
+    - provider: Provider or alias name (e.g. claude, codex, codebuddy, hermes, hermes-lab)
     - session_id: Session ID
     """
     unique_candidates = _resolve_history_candidate_configs(
@@ -253,93 +248,6 @@ class PromoteHistoryRequest(BaseModel):
 class PromoteHistoryResponse(BaseModel):
     runtime_session_id: str
     created: bool = True
-
-
-class MemoryStateResponse(BaseModel):
-    workspace: str
-    has_long_term_memory: bool
-    has_history: bool
-    long_term_chars: int
-    history_chars: int
-    history_entries: int
-
-
-class RestoreMemoryRequest(BaseModel):
-    workspace: Optional[str] = Field(default=None, description="Nexus workspace path")
-    max_chars: int = Field(default=8000, ge=512, le=64000)
-    max_entries: int = Field(default=8, ge=1, le=100)
-    inject_message: bool = Field(default=True, description="Append restored context as a system message")
-    set_bootstrap: bool = Field(default=True, description="Set restored context as one-shot bootstrap context")
-
-
-class RestoreMemoryResponse(BaseModel):
-    session_id: str
-    workspace: str
-    restored_chars: int
-    restored_entries: int
-    injected_message: bool = False
-    bootstrap_updated: bool = False
-
-@router.get("/memory/state", response_model=MemoryStateResponse)
-async def get_memory_state(
-    workspace: Optional[str] = Query(default=None, description="Nexus workspace path"),
-):
-    """Expose long-term vs consolidated history memory state."""
-    resolved_workspace = _resolve_nexus_workspace_path(workspace)
-    store = MemoryStore(resolved_workspace)
-    state = store.get_memory_state()
-    return MemoryStateResponse(
-        workspace=str(resolved_workspace),
-        has_long_term_memory=bool(state.get("has_long_term_memory", False)),
-        has_history=bool(state.get("has_history", False)),
-        long_term_chars=int(state.get("long_term_chars", 0) or 0),
-        history_chars=int(state.get("history_chars", 0) or 0),
-        history_entries=int(state.get("history_entries", 0) or 0),
-    )
-
-
-@router.post("/sessions/{session_id}/restore-memory", response_model=RestoreMemoryResponse)
-async def restore_memory_context(
-    session_id: str,
-    req: RestoreMemoryRequest,
-):
-    """Restore consolidated memory context into a runtime session."""
-    storage = get_session_storage()
-    meta = storage.get_session_meta(session_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail=f"Runtime session '{session_id}' not found")
-
-    resolved_workspace = _resolve_nexus_workspace_path(req.workspace)
-    store = MemoryStore(resolved_workspace)
-    memory_state = store.get_memory_state()
-    restored_context = store.build_recovery_context(max_chars=req.max_chars, max_entries=req.max_entries)
-    if not restored_context.strip():
-        raise HTTPException(status_code=404, detail="No consolidated memory content available")
-
-    injected = False
-    if req.inject_message:
-        restored_message = StoredMessage(
-            id=f"memory-restore-{uuid.uuid4().hex[:12]}",
-            role="system",
-            content=f"[Recovered Memory Context]\n{restored_context}",
-            status=MessageStatus.COMPLETE,
-        )
-        injected = storage.add_session_message(session_id, restored_message)
-        if not injected:
-            raise HTTPException(status_code=500, detail="Failed to inject restored context message")
-
-    bootstrap_updated = False
-    if req.set_bootstrap:
-        bootstrap_updated = storage.set_history_bootstrap_context(session_id, restored_context)
-
-    return RestoreMemoryResponse(
-        session_id=session_id,
-        workspace=str(resolved_workspace),
-        restored_chars=len(restored_context),
-        restored_entries=min(int(memory_state.get("history_entries", 0) or 0), req.max_entries),
-        injected_message=injected,
-        bootstrap_updated=bootstrap_updated,
-    )
 
 
 async def _resume_history_session(

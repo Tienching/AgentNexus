@@ -34,6 +34,7 @@ def test_build_alias_config_map_merges_defaults_registry_and_custom_paths(tmp_pa
     user_home = tmp_path / "alice"
     user_home.mkdir()
     (user_home / ".claude").mkdir()
+    (user_home / ".codex").mkdir()
     (user_home / ".claude-internal").mkdir()
     external = user_home / "custom-codex"
     external.mkdir()
@@ -54,15 +55,16 @@ def test_build_alias_config_map_filters_provider_family(tmp_path):
     user_home = tmp_path / "alice"
     user_home.mkdir()
     (user_home / ".claude").mkdir()
-    (user_home / ".gemini-alt").mkdir()
+    (user_home / ".codex").mkdir()
+    (user_home / ".codex-lab").mkdir()
 
     alias_map = build_alias_config_map(
         user_home=user_home,
-        provider_filter="gemini",
+        provider_filter="codex",
         alias_registry_map={},
         custom_paths_str="",
     )
 
     assert "claude" not in alias_map
-    assert alias_map["gemini"] == user_home / ".gemini"
-    assert alias_map["gemini-alt"] == user_home / ".gemini-alt"
+    assert alias_map["codex"] == user_home / ".codex"
+    assert alias_map["codex-lab"] == user_home / ".codex-lab"

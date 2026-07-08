@@ -34,15 +34,6 @@ command: "claude"
 default_model: ""
 """,
     },
-    "gemini": {
-        "name": "Gemini",
-        "package": None,  # 内置
-        "config_template": """# Gemini Provider 配置
-enabled: true
-command: "gemini"
-default_model: ""
-""",
-    },
     "codex": {
         "name": "Codex",
         "package": None,
@@ -95,8 +86,8 @@ class PluginInstaller:
             else:
                 self.config_dir = user_config
 
-        self._installed_providers: set = {"claude", "gemini"}  # 内置
-        self._enabled_providers: set = {"claude", "gemini"}
+        self._installed_providers: set = {"claude"}  # 内置
+        self._enabled_providers: set = {"claude"}
 
     def init_config(self) -> None:
         """初始化配置目录"""
@@ -139,7 +130,7 @@ log_level: INFO
         config_path = self.get_config_path(plugin_type, name)
         if not config_path.exists():
             # 内置默认启用
-            if name in ("claude", "gemini"):
+            if name == "claude":
                 return True
             return False
 

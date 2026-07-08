@@ -19,9 +19,6 @@ from .handler import (
     register_slash_extension_loader,
 )
 
-# Import plan module to trigger extension registration
-from . import plan as _plan  # noqa: F401
-
 __all__ = [
     "SlashCommandParseError",
     "CommandSpec",

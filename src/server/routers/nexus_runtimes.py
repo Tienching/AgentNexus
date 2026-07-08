@@ -123,7 +123,7 @@ async def get_agent_runtimes(
     """Detect installed agent runtimes.
 
     Ported from mission-control GET /api/agent-runtimes (src/lib/agent-runtimes.ts).
-    Checks for installed CLI tools (claude, codex, gemini, codebuddy, nanobot),
+    Checks for installed CLI tools (claude, codex, codebuddy, hermes),
     their versions, and authentication status.
     """
     loop = asyncio.get_event_loop()

@@ -9,11 +9,17 @@ import asyncio
 import logging
 import os
 import pwd
+import re
 import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
+
+# exec_user validation reused from providers.base (single source of truth)
+from src.providers.base import _validate_target_user
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +149,7 @@ class BaseExecutor(ABC):
         Returns:
             Shell command list ready for execution
         """
+        _validate_target_user(target_user)
         current_user = pwd.getpwuid(os.getuid()).pw_name
         cmd_str = " ".join(shlex.quote(arg) for arg in cmd)
         full_cmd = f"cd {shlex.quote(str(exec_dir))} && {cmd_str}"

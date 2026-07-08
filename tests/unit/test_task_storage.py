@@ -251,18 +251,18 @@ class TestTaskQueue:
         assert task.priority == TaskPriority.THOUGHT
         assert task.status == TaskStatus.TODO
         assert task.exec_user == "test_agent"
-        assert task.provider == "nexus"
+        assert task.provider == "claude"
 
     def test_add_task_with_provider(self, task_queue):
         task = task_queue.add_task(
-            description="Gemini task",
-            provider="gemini",
+            description="Codex task",
+            provider="codex",
         )
-        assert task.provider == "gemini"
+        assert task.provider == "codex"
 
         stored = task_queue.get_task(task.id)
         assert stored is not None
-        assert stored.provider == "gemini"
+        assert stored.provider == "codex"
 
     def test_add_task_with_project(self, task_queue):
         """Test adding a task with project"""

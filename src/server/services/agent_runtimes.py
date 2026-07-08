@@ -4,7 +4,7 @@
 Ported from mission-control:
   - src/lib/agent-runtimes.ts  (commit 14f34d1)
 
-Detects installed CLI agent runtimes (claude, codex, gemini, codebuddy, nexus),
+Detects installed CLI agent runtimes (claude, codex, codebuddy, hermes),
 their versions, and authentication status. Adapted for Python/FastAPI — no
 Node.js, no SQLite, no install jobs (agent-nexus runs CLI tools, not gateways).
 """
@@ -25,7 +25,7 @@ from src.runtime.stores.db import Database, get_db
 
 logger = get_logger(__name__)
 
-RuntimeId = Literal["claude", "codex", "gemini", "codebuddy", "nexus", "nanobot"]
+RuntimeId = Literal["claude", "codex", "codebuddy", "hermes"]
 
 
 @dataclass
@@ -100,13 +100,6 @@ RUNTIME_META: Dict[str, RuntimeMeta] = {
         auth_hint='Run "codex auth" after install to authenticate.',
         binaries=["codex"],
     ),
-    "gemini": RuntimeMeta(
-        name="Gemini CLI",
-        description="Google CLI agent for code tasks.",
-        auth_required=True,
-        auth_hint='Set GEMINI_API_KEY in environment to authenticate.',
-        binaries=["gemini"],
-    ),
     "codebuddy": RuntimeMeta(
         name="CodeBuddy",
         description="Multi-model CLI agent with tool use.",
@@ -114,19 +107,12 @@ RUNTIME_META: Dict[str, RuntimeMeta] = {
         auth_hint='Configure API keys in CodeBuddy settings.',
         binaries=["codebuddy"],
     ),
-    "nexus": RuntimeMeta(
-        name="Nexus",
-        description="In-process lightweight chat provider.",
-        auth_required=False,
-        auth_hint="",
-        binaries=["nexus"],
-    ),
-    "nanobot": RuntimeMeta(
-        name="Nexus",
-        description="Legacy alias for the in-process lightweight chat provider.",
-        auth_required=False,
-        auth_hint="",
-        binaries=["nexus", "nanobot"],
+    "hermes": RuntimeMeta(
+        name="Hermes",
+        description="Hermes ACP/CLI agent runtime.",
+        auth_required=True,
+        auth_hint='Configure Hermes credentials before use.',
+        binaries=["hermes"],
     ),
 }
 
@@ -181,10 +167,6 @@ def _check_codex_auth() -> bool:
     )
 
 
-def _check_gemini_auth() -> bool:
-    """Check if Gemini API key is available."""
-    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
-
 
 def _check_codebuddy_auth() -> bool:
     """Check if CodeBuddy has configuration."""
@@ -192,25 +174,17 @@ def _check_codebuddy_auth() -> bool:
     return (home / ".codebuddy").exists() or (home / ".config" / "codebuddy").exists()
 
 
-def _check_nexus_auth() -> bool:
-    """Nexus is in-process, always authenticated if importable."""
-    try:
-        import importlib
-        return (
-            importlib.util.find_spec("src.nexus") is not None
-            or importlib.util.find_spec("src.nanobot") is not None
-        )
-    except Exception:
-        return False
+def _check_hermes_auth() -> bool:
+    """Check if Hermes has configuration."""
+    home = Path.home()
+    return (home / ".hermes").exists() or (home / ".config" / "hermes").exists()
 
 
 AUTH_CHECKERS = {
     "claude": _check_claude_auth,
     "codex": _check_codex_auth,
-    "gemini": _check_gemini_auth,
     "codebuddy": _check_codebuddy_auth,
-    "nexus": _check_nexus_auth,
-    "nanobot": _check_nexus_auth,
+    "hermes": _check_hermes_auth,
 }
 
 
@@ -505,22 +479,6 @@ def detect_runtime(runtime_id: str) -> RuntimeStatus:
     auth_checker = AUTH_CHECKERS.get(runtime_id)
     authenticated = auth_checker() if auth_checker else False
 
-    # Special case: nexus (and legacy nanobot alias) is always "installed" if the module exists
-    if runtime_id in ("nexus", "nanobot") and not installed:
-        try:
-            import importlib
-            spec = (
-                importlib.util.find_spec("src.nexus")
-                or importlib.util.find_spec("src.nanobot")
-            )
-            if spec is not None:
-                installed = True
-                version = "in-process"
-                bin_path = None
-                authenticated = True
-        except Exception:
-            pass
-
     return RuntimeStatus(
         id=runtime_id,
         name=meta.name,
@@ -536,4 +494,4 @@ def detect_runtime(runtime_id: str) -> RuntimeStatus:
 
 def detect_all_runtimes() -> List[RuntimeStatus]:
     """Detect all known runtimes."""
-    return [detect_runtime(rid) for rid in RUNTIME_META if rid != "nanobot"]
+    return [detect_runtime(rid) for rid in RUNTIME_META]

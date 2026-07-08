@@ -84,6 +84,9 @@ class MockSessionStorage:
     def get_tool_call(self, session_id: str, tool_call_id: str):
         self.call_log.append(("get_tool_call", session_id, tool_call_id))
         return self.tool_calls.get(session_id, {}).get(tool_call_id)
+
+    def get_session_tool_calls(self, session_id: str):
+        return list(self.tool_calls.get(session_id, {}).values())
     
     def update_tool_call(self, session_id: str, tool_call: StoredToolCall) -> bool:
         return self.save_tool_call(session_id, tool_call)
@@ -345,6 +348,21 @@ class TestOnRunFinished:
         assert len(messages) == 1
         assert messages[0].content == "Hello, I'm the assistant!"
         assert messages[0].status == MessageStatus.COMPLETE
+
+    @pytest.mark.asyncio
+    async def test_on_run_finished_finalizes_pending_tool_calls(self, archiver, mock_storage):
+        await archiver.on_run_started([{"id": "msg-1", "role": "user", "content": "Use tools"}])
+        await archiver.archive_event({
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-pending",
+            "toolCallName": "search: *",
+        })
+
+        await archiver.on_run_finished()
+
+        tool_call = mock_storage.get_tool_call("session-123", "tool-pending")
+        assert tool_call.status == ToolCallStatus.COMPLETED
+        assert tool_call.end_time is not None
 
     @pytest.mark.asyncio
     async def test_on_run_finished_does_not_overwrite_prior_run_error(self, archiver, mock_storage):
@@ -632,6 +650,84 @@ class TestAguiSegmentCoalescing:
         assert messages[0].content_segments[0].content == "先读文件，"
         assert messages[0].content_segments[1].tool_call_id == "tool-read"
         assert messages[0].content_segments[2].content == "再总结结果。"
+
+
+    @pytest.mark.asyncio
+    async def test_tool_calls_before_text_attach_to_later_assistant_message(self, archiver, mock_storage):
+        await archiver.on_run_started()
+
+        await archiver.archive_event({
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-date",
+            "toolCallName": "terminal: date",
+        })
+        await archiver.archive_event({
+            "type": "TOOL_CALL_RESULT",
+            "toolCallId": "tool-date",
+            "content": "ok",
+        })
+        await archiver.archive_event({"type": "TEXT_MESSAGE_START", "messageId": "msg-after-tools"})
+        await archiver.archive_event({
+            "type": "TEXT_MESSAGE_CONTENT",
+            "messageId": "msg-after-tools",
+            "delta": "Final answer",
+        })
+        await archiver.archive_event({"type": "TEXT_MESSAGE_END", "messageId": "msg-after-tools"})
+
+        messages = mock_storage.get_session_messages("session-123")
+        tool_call = mock_storage.get_tool_call("session-123", "tool-date")
+        assert len(messages) == 1
+        assert messages[0].content == "Final answer"
+        assert messages[0].tool_call_ids == ["tool-date"]
+        assert [segment.type for segment in messages[0].content_segments] == ["tool_call", "text"]
+        assert messages[0].content_segments[0].tool_call_id == "tool-date"
+        assert tool_call.parent_message_id == "msg-after-tools"
+
+    @pytest.mark.asyncio
+    async def test_parented_late_tool_calls_do_not_attach_to_followup_text_message(self, archiver, mock_storage):
+        await archiver.on_run_started()
+
+        await archiver.archive_event({"type": "TEXT_MESSAGE_START", "messageId": "msg-preamble"})
+        await archiver.archive_event({
+            "type": "TEXT_MESSAGE_CONTENT",
+            "messageId": "msg-preamble",
+            "delta": "I will call a few tools.",
+        })
+        await archiver.archive_event({"type": "TEXT_MESSAGE_END", "messageId": "msg-preamble"})
+
+        await archiver.archive_event({
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-date",
+            "toolCallName": "Bash: date",
+        })
+        await archiver.archive_event({
+            "type": "TOOL_CALL_RESULT",
+            "messageId": "msg-preamble",
+            "toolCallId": "tool-date",
+            "content": "2026-06-29",
+        })
+        await archiver.archive_event({
+            "type": "TOOL_CALL_END",
+            "toolCallId": "tool-date",
+        })
+
+        await archiver.archive_event({"type": "TEXT_MESSAGE_START", "messageId": "msg-summary"})
+        await archiver.archive_event({
+            "type": "TEXT_MESSAGE_CONTENT",
+            "messageId": "msg-summary",
+            "delta": "Tool result summary.",
+        })
+        await archiver.archive_event({"type": "TEXT_MESSAGE_END", "messageId": "msg-summary"})
+
+        preamble = mock_storage.get_message_by_id("session-123", "msg-preamble")
+        summary = mock_storage.get_message_by_id("session-123", "msg-summary")
+        tool_call = mock_storage.get_tool_call("session-123", "tool-date")
+
+        assert preamble.tool_call_ids == ["tool-date"]
+        assert [segment.type for segment in preamble.content_segments] == ["text", "tool_call"]
+        assert summary.tool_call_ids is None
+        assert [segment.type for segment in summary.content_segments] == ["text"]
+        assert tool_call.parent_message_id == "msg-preamble"
 
 
 class TestFinalizeCurrentMessage:

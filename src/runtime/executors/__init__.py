@@ -3,12 +3,11 @@
 CLI Executors - unified abstraction for subprocess CLI execution.
 
 This module provides the base interfaces and implementations for
-executing CLI tools (Claude, Gemini, Codex, CodeBuddy) as subprocesses.
+executing CLI tools (Claude, Codex, CodeBuddy) as subprocesses.
 """
 
 from .base import BaseExecutor, ExecutorConfig, RequestContext
 from .cli_executor import CLIExecutor, CLIExecutorConfig
-from .gemini_executor import GeminiExecutor
 
 __all__ = [
     "BaseExecutor",
@@ -16,5 +15,4 @@ __all__ = [
     "RequestContext",
     "CLIExecutor",
     "CLIExecutorConfig",
-    "GeminiExecutor",
 ]

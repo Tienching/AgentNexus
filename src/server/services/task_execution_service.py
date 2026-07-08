@@ -21,9 +21,11 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from src.providers.dispatcher import normalize_provider, create_executor, create_adapter
+from src.server.security.exec_user_guard import validate_exec_user_sync
 from src.server.logger import get_logger
 from src.server.services.observability import record_sampled_event, telemetry
 from src.server.utils.ids import gen_run_id
+from src.server.utils.error_sanitize import safe_error_message
 
 if TYPE_CHECKING:
     from src.server.models import Task
@@ -112,15 +114,15 @@ def classify_task_model(task: "Task") -> Optional[str]:
 # (commit 1acbf8e).
 #
 # MC scores *named agents* (coder/researcher/reviewer/…) for task-text keyword
-# match.  Nexus uses *provider names* (claude/gemini/codex/codebuddy) instead
+# match.  Nexus uses *provider names* (claude/codex/codebuddy/hermes) instead
 # of agent roles.  The same keyword-affinity table and scoring algorithm are
 # preserved; only the role→provider mapping changes.
 #
 # Provider affinity keywords:
 #   claude     → broad reasoning / architecture / security / research
-#   gemini     → code generation / refactor / implement / build
 #   codex      → code / implement / api / function / test / ci / deploy
 #   codebuddy  → quick / simple / format / rename / status / translate
+#   hermes     → autonomous agent / ACP / tool-heavy implementation
 # ---------------------------------------------------------------------------
 
 _PROVIDER_AFFINITY: dict[str, list[str]] = {
@@ -129,11 +131,6 @@ _PROVIDER_AFFINITY: dict[str, list[str]] = {
         "architect", "design", "diagnos", "root cause", "incident", "explain",
         "why", "evaluate", "compare", "survey", "benchmark", "strategy",
         "document", "summarize",
-    ],
-    "gemini": [
-        "code", "implement", "build", "refactor", "feature", "component",
-        "module", "class", "function", "endpoint", "api", "interface",
-        "migrate", "convert", "rewrite", "scaffold",
     ],
     "codex": [
         "code", "implement", "test", "unit test", "fix", "bug", "patch",
@@ -144,6 +141,11 @@ _PROVIDER_AFFINITY: dict[str, list[str]] = {
         "quick", "simple", "minor", "routine", "format", "rename", "move file",
         "read file", "update readme", "bump version", "send message", "notify",
         "translate", "ping", "list ", "fetch ", "status check",
+    ],
+    "hermes": [
+        "agent", "autonomous", "acp", "tool", "tools", "multi-step",
+        "investigate", "implement", "fix", "debug", "workflow", "orchestrate",
+        "execute", "end-to-end", "e2e",
     ],
 }
 
@@ -157,7 +159,7 @@ def score_provider_for_task(provider: str, task_text: str) -> int:
     fallback.
 
     Args:
-        provider:   Lowercase provider name (``"claude"``, ``"gemini"``, etc.)
+        provider:   Lowercase provider name (``"claude"``, ``"codex"``, etc.)
         task_text:  Concatenated task description + project name, lower-cased
                     by the caller.
 
@@ -238,10 +240,10 @@ def _resolve_task_binding(task: "Task", storage) -> dict:
     provider = normalize_provider(
         getattr(binding, "provider", None)
         or getattr(task, "provider", None)
-        or "nexus"
+        or "claude"
     )
     alias = (getattr(binding, "alias", None) or getattr(task, "alias", None) or provider)
-    exec_user = (getattr(binding, "exec_user", None) or getattr(task, "exec_user", None) or "ubuntu")
+    exec_user = validate_exec_user_sync(getattr(binding, "exec_user", None) or getattr(task, "exec_user", None) or "ubuntu")
     work_dir = getattr(binding, "work_dir", None) or getattr(task, "workspace", None)
     source_session_id = getattr(binding, "source_session_id", None) or getattr(task, "source_session_id", None)
     session_kind = getattr(binding, "session_kind", None) or getattr(task, "session_kind", None) or "task"
@@ -670,20 +672,21 @@ async def execute_task(task: "Task", task_queue=None) -> Optional[str]:
                 "error": str(e),
             },
         )
-        _task_error = str(e)
+        client_error = safe_error_message(e)
+        _task_error = client_error
         try:
-            await archiver.on_run_error(str(e))
+            await archiver.on_run_error(client_error)
         except Exception:
             pass
 
         try:
-            err_event = adapter.create_error_event(str(e))
+            err_event = adapter.create_error_event(client_error)
             if err_event:
                 await _archive_converted_sse(err_event)
         except Exception:
             pass
 
-        return str(e)
+        return client_error
     finally:
         try:
             await archiver.on_run_finished()

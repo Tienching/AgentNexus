@@ -292,7 +292,7 @@ def _row_to_task(row: dict) -> Task:
         project_name=row.get("project_name"),
         workspace=row.get("workspace"),
         exec_user=row.get("exec_user", "default"),
-        provider=row.get("provider") or "nexus",
+        provider=row.get("provider") or "claude",
         alias=row.get("alias"),
         model=row.get("model"),
         session_id=row.get("session_id"),
@@ -337,7 +337,7 @@ def _row_to_task(row: dict) -> Task:
             session_id=row.get("session_id") or f"task_{row['id']}",
             cli_session_id=_ctx_value("cli_session_id"),
             session_kind=_ctx_value("session_kind") or "task",
-            provider=row.get("provider") or "nexus",
+            provider=row.get("provider") or "claude",
             alias=row.get("alias"),
             exec_user=row.get("exec_user") or "default",
             work_dir=_ctx_value("worktree_path", "prior_work_dir") or row.get("workspace"),
@@ -636,7 +636,7 @@ class TaskQueue:
         from src.runtime.utils.ids import gen_session_id
         resolved_session_id = (session_id or "").strip() or gen_session_id()
 
-        default_provider = "nexus"
+        default_provider = "claude"
         normalized_provider = (provider or "").strip().lower() or default_provider
         alias_value = (alias or "").strip() or normalized_provider
 

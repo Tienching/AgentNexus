@@ -7,6 +7,16 @@ import pytest
 from src.server.models import Task, TaskPriority, TaskStatus
 
 
+@pytest.fixture(autouse=True)
+def disable_real_nexus_auth(monkeypatch):
+    from src.server.routers import nexus_auth
+
+    monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", None)
+    monkeypatch.setattr(nexus_auth.settings, "nexus_password", None)
+    monkeypatch.delenv("NEXUS_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("NEXUS_PASSWORD", raising=False)
+
+
 class MockTaskQueue:
     def __init__(self):
         self._tasks = {}
@@ -58,7 +68,7 @@ class TestNexusCreateTask:
                 params={"exec_user": "ubuntu"},
                 json={
                     "description": "Build feature",
-                    "provider": "gemini",
+                    "provider": "codex",
                     "workspace": str(workspace),
                     "agent": "ubuntu",
                 },
@@ -67,12 +77,33 @@ class TestNexusCreateTask:
         assert resp.status_code == 200
         data = resp.json()
         assert data["description"] == "Build feature"
-        assert data["provider"] == "gemini"
+        assert data["provider"] == "codex"
         assert data["status"] == "pending"
         assert data["workspace"] == str(workspace.resolve())
+        assert next(iter(q._tasks.values())).exec_user == "ubuntu"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("provider", ["claude", "gemini", "codex", "codebuddy"])
+    async def test_create_task_rejects_reserved_exec_user(self, client, tmp_path):
+        q = MockTaskQueue()
+        workspace = tmp_path / "ws-root"
+        workspace.mkdir()
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=q):
+            resp = await client.post(
+                "/api/nexus/tasks",
+                params={"exec_user": "ubuntu"},
+                json={
+                    "description": "Build feature",
+                    "provider": "claude",
+                    "workspace": str(workspace),
+                    "exec_user": "root",
+                },
+            )
+
+        assert resp.status_code == 403
+        assert q._tasks == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["claude", "codex", "codebuddy", "hermes"])
     async def test_create_task_valid_providers_success(self, client, provider, tmp_path):
         q = MockTaskQueue()
         workspace = tmp_path / f"ws-{provider}"
@@ -117,7 +148,7 @@ class TestNexusCreateTask:
         assert data["alias"] == "claude-internal"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("alias", ["claude-internal", "gemini-internal", "codex-internal"])
+    @pytest.mark.parametrize("alias", ["claude-internal", "codex-internal"])
     async def test_create_task_internal_aliases_rejected_as_provider(self, client, alias):
         """Aliases like -internal are not valid provider names and should be rejected."""
         q = MockTaskQueue()

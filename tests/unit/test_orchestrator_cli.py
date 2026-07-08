@@ -339,7 +339,7 @@ class TestCmdGet:
     def test_get_basic(self, mock_get, capsys):
         mock_get.return_value = {
             "id": "abc", "status": "doing", "priority": "normal",
-            "provider": "gemini", "description": "Analyze data",
+            "provider": "codex", "description": "Analyze data",
             "session_id": "sess_abc",
         }
         args = _make_args(task_id="abc")

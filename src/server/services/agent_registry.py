@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Agent Registry service — singleton wrapper for AgentLifecycle registry."""
 
-from src.nanobot.agent.lifecycle import AgentRegistry
+from src.core.agent_runtime.agent.lifecycle import AgentRegistry
 
 _registry: AgentRegistry | None = None
 

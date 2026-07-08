@@ -184,11 +184,11 @@ class Task(BaseModel):
     # Exec user isolation (Linux user for su command)
     exec_user: Optional[str] = None
 
-    # Provider pinned at task creation time (e.g., claude, gemini)
-    provider: str = "nexus"
+    # Provider pinned at task creation time (e.g., claude, codex)
+    provider: str = "claude"
     # Optional alias (defaults to provider)
     alias: Optional[str] = None
-    # Optional LLM model name (e.g., claude-opus-4.6, gemini-2.5-pro)
+    # Optional LLM model name (e.g., claude-opus-4.6, glm-5v-turbo)
     model: Optional[str] = None
     
     # Session ID for conversation storage (format: {session_id}_{task_id})
@@ -207,7 +207,7 @@ class Task(BaseModel):
     depends_on: List[str] = Field(default_factory=list)
 
     # CLI session UUID for context resumption (provider-agnostic).
-    # Used with: claude/gemini --resume ID, codebuddy -r ID, codex resume ID
+    # Used with: claude --resume ID, codebuddy -r ID, codex resume ID
     cli_session_id: Optional[str] = None
 
     # Control-plane execution binding metadata

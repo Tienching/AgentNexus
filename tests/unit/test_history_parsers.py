@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """Unit tests for the history parsing module.
 
-Tests Claude, Codex, CodeBuddy, and Gemini parsers using temporary fixture data.
+Tests Claude, Codex, and CodeBuddy parsers using temporary fixture data.
 """
 
-import hashlib
 import json
 import time
 import uuid
@@ -15,7 +14,6 @@ from src.runtime.history.base_parser import BaseHistoryParser, HistorySessionDet
 from src.runtime.history.claude_parser import ClaudeHistoryParser
 from src.runtime.history.codex_parser import CodexHistoryParser
 from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
-from src.runtime.history.gemini_parser import GeminiHistoryParser
 from src.runtime.history.service import HistoryService
 from src.runtime.models.session import SessionMeta, SessionStatus
 
@@ -38,10 +36,6 @@ def codebuddy_parser():
     return CodeBuddyHistoryParser()
 
 
-@pytest.fixture
-def gemini_parser():
-    return GeminiHistoryParser()
-
 
 @pytest.fixture
 def history_service():
@@ -49,7 +43,6 @@ def history_service():
     svc.register_parser(ClaudeHistoryParser())
     svc.register_parser(CodexHistoryParser())
     svc.register_parser(CodeBuddyHistoryParser())
-    svc.register_parser(GeminiHistoryParser())
     return svc
 
 
@@ -1028,7 +1021,6 @@ class TestCodeBuddyParser:
         assert sessions[0].title == "line1 line2"
 
 
-# ============ Gemini Parser Tests ============
 
 
 def _write_json(path, data):
@@ -1038,282 +1030,6 @@ def _write_json(path, data):
         json.dump(data, f)
 
 
-class TestGeminiParser:
-    """Tests for GeminiHistoryParser."""
-
-    def test_provider_name(self, gemini_parser):
-        assert gemini_parser.provider_name == "gemini"
-
-    def test_hash_project_path(self, gemini_parser):
-        """SHA256 hash is computed correctly."""
-        expected = hashlib.sha256(b"/home/bob/myproject").hexdigest()
-        assert gemini_parser._hash_project_path("/home/bob/myproject") == expected
-
-    def test_list_sessions_empty(self, gemini_parser, tmp_path):
-        sessions = gemini_parser.list_sessions(tmp_path, "/home/bob/myproject")
-        assert sessions == []
-
-    def test_list_sessions_basic(self, gemini_parser, tmp_path):
-        """Parse Gemini JSON session files."""
-        project_path = "/home/bob/myproject"
-        project_hash = gemini_parser._hash_project_path(project_path)
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-sess-1",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "m1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "user", "content": "Hello Gemini"},
-                {"id": "m2", "timestamp": "2026-02-10T10:00:05.000Z",
-                 "type": "gemini", "content": "Hi! How can I help?"},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-sess-1.json", session_data)
-
-        sessions = gemini_parser.list_sessions(tmp_path, project_path)
-        assert len(sessions) == 1
-        assert sessions[0].id == "gem-sess-1"
-        assert sessions[0].provider == "gemini"
-        assert sessions[0].source == "history"
-        assert sessions[0].title == "Hello Gemini"
-        assert sessions[0].message_count == 2
-        assert sessions[0].updated_at > 0
-
-    def test_list_sessions_skips_system_messages(self, gemini_parser, tmp_path):
-        """error/info/warning messages are not counted."""
-        project_path = "/home/bob/myproject"
-        project_hash = gemini_parser._hash_project_path(project_path)
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-sys",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "e1", "timestamp": "2026-02-10T10:00:00.000Z",
-                 "type": "error", "content": "Update failed"},
-                {"id": "i1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "info", "content": "Update available"},
-                {"id": "w1", "timestamp": "2026-02-10T10:00:02.000Z",
-                 "type": "warning", "content": "Rate limited"},
-                {"id": "m1", "timestamp": "2026-02-10T10:00:03.000Z",
-                 "type": "user", "content": "Hello"},
-                {"id": "m2", "timestamp": "2026-02-10T10:00:04.000Z",
-                 "type": "gemini", "content": "Hi!"},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-sys.json", session_data)
-
-        sessions = gemini_parser.list_sessions(tmp_path, project_path)
-        assert len(sessions) == 1
-        assert sessions[0].message_count == 2  # Only user + gemini
-
-    def test_get_session_detail_basic(self, gemini_parser, tmp_path):
-        """Basic message detail retrieval."""
-        project_hash = "abc123"
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-detail",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "m1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "user", "content": "What is Python?"},
-                {"id": "m2", "timestamp": "2026-02-10T10:00:05.000Z",
-                 "type": "gemini", "content": "Python is a programming language."},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-detail.json", session_data)
-
-        detail = gemini_parser.get_session_detail(tmp_path, "gem-detail")
-        assert detail is not None
-        assert len(detail.messages) == 2
-        assert detail.messages[0].role == "user"
-        assert detail.messages[0].content == "What is Python?"
-        assert detail.messages[1].role == "assistant"
-
-    def test_get_session_detail_with_tool_calls(self, gemini_parser, tmp_path):
-        """Parse Gemini toolCalls."""
-        project_hash = "abc123"
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-tools",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "m1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "user", "content": "Read pyproject.toml"},
-                {"id": "m2", "timestamp": "2026-02-10T10:00:05.000Z",
-                 "type": "gemini", "content": "I'll read that file.",
-                 "toolCalls": [
-                     {
-                         "id": "tc-1",
-                         "name": "read_file",
-                         "args": {"file_path": "pyproject.toml"},
-                         "result": [
-                             {"functionResponse": {
-                                 "id": "tc-1",
-                                 "name": "read_file",
-                                 "response": {"output": "[project]\nname = \"test\""},
-                             }},
-                         ],
-                     },
-                 ]},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-tools.json", session_data)
-
-        detail = gemini_parser.get_session_detail(tmp_path, "gem-tools")
-        assert detail is not None
-        assert len(detail.messages) == 2
-        assert len(detail.tool_calls) == 1
-        assert detail.tool_calls[0].tool_name == "read_file"
-        assert detail.tool_calls[0].id == "tc-1"
-        assert "[project]" in detail.tool_calls[0].result
-        assert detail.messages[1].tool_call_ids == ["tc-1"]
-
-    def test_get_session_detail_skips_system_messages(self, gemini_parser, tmp_path):
-        """System messages are excluded from detail."""
-        project_hash = "abc123"
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-skip-sys",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "e1", "timestamp": "2026-02-10T10:00:00.000Z",
-                 "type": "error", "content": "Some error"},
-                {"id": "m1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "user", "content": "Hello"},
-                {"id": "w1", "timestamp": "2026-02-10T10:00:02.000Z",
-                 "type": "warning", "content": "Rate limited"},
-                {"id": "m2", "timestamp": "2026-02-10T10:00:03.000Z",
-                 "type": "gemini", "content": "Hi"},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-skip-sys.json", session_data)
-
-        detail = gemini_parser.get_session_detail(tmp_path, "gem-skip-sys")
-        assert detail is not None
-        assert len(detail.messages) == 2
-        assert detail.messages[0].role == "user"
-        assert detail.messages[1].role == "assistant"
-
-    def test_get_session_detail_empty_gemini_message(self, gemini_parser, tmp_path):
-        """Gemini messages with no content and no toolCalls are skipped."""
-        project_hash = "abc123"
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-empty",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "m1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "user", "content": "Hello"},
-                {"id": "m2", "timestamp": "2026-02-10T10:00:02.000Z",
-                 "type": "gemini", "content": ""},
-                {"id": "m3", "timestamp": "2026-02-10T10:00:03.000Z",
-                 "type": "gemini", "content": "Real response"},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-empty.json", session_data)
-
-        detail = gemini_parser.get_session_detail(tmp_path, "gem-empty")
-        assert detail is not None
-        assert len(detail.messages) == 2  # user + non-empty gemini
-
-    def test_get_session_detail_not_found(self, gemini_parser, tmp_path):
-        (tmp_path / "tmp").mkdir()
-        detail = gemini_parser.get_session_detail(tmp_path, "non-existent")
-        assert detail is None
-
-    def test_session_id_from_filename(self, gemini_parser):
-        """Extract session ID from various filename formats."""
-        assert gemini_parser._session_id_from_filename(
-            "session-2026-01-28T07-47-7833c16a.json"
-        ) == "7833c16a"
-
-    def test_tool_call_error_result(self, gemini_parser, tmp_path):
-        """Tool call with error result marks status as FAILED."""
-        project_hash = "abc123"
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        session_data = {
-            "sessionId": "gem-tc-err",
-            "projectHash": project_hash,
-            "startTime": "2026-02-10T10:00:00.000Z",
-            "lastUpdated": "2026-02-10T10:05:00.000Z",
-            "messages": [
-                {"id": "m1", "timestamp": "2026-02-10T10:00:01.000Z",
-                 "type": "gemini", "content": "Trying to read...",
-                 "toolCalls": [
-                     {
-                         "id": "tc-err",
-                         "name": "read_file",
-                         "args": {"file_path": "missing.py"},
-                         "result": [
-                             {"functionResponse": {
-                                 "id": "tc-err",
-                                 "name": "read_file",
-                                 "response": {"error": "File not found"},
-                             }},
-                         ],
-                     },
-                 ]},
-            ],
-        }
-
-        _write_json(chats_dir / "session-2026-02-10T10-00-gem-tc-err.json", session_data)
-
-        detail = gemini_parser.get_session_detail(tmp_path, "gem-tc-err")
-        assert detail is not None
-        assert len(detail.tool_calls) == 1
-        assert detail.tool_calls[0].status.value == "failed"
-        assert "File not found" in detail.tool_calls[0].result
-
-    def test_large_file_skipped(self, gemini_parser, tmp_path):
-        """Files exceeding size limit are skipped."""
-        project_hash = "abc123"
-        chats_dir = tmp_path / "tmp" / project_hash / "chats"
-        chats_dir.mkdir(parents=True)
-
-        # Create an oversized file (just check the safety mechanism)
-        big_file = chats_dir / "session-2026-01-01T00-00-big.json"
-        big_file.write_text("{}" + " " * (51 * 1024 * 1024))
-
-        sessions = gemini_parser.list_sessions(tmp_path, "/home/bob/fake")
-        # Should not crash; file is skipped
-        # No sessions because hash won't match anyway
-
-
-# ============ HistoryService Tests ============
-
-
 class TestHistoryService:
     """Tests for the HistoryService aggregation layer."""
 
@@ -1321,7 +1037,6 @@ class TestHistoryService:
         assert history_service.get_parser("claude") is not None
         assert history_service.get_parser("codex") is not None
         assert history_service.get_parser("codebuddy") is not None
-        assert history_service.get_parser("gemini") is not None
         assert history_service.get_parser("unknown") is None
 
     def test_resolve_parser_for_alias(self, history_service):

@@ -64,8 +64,6 @@ async def get_server_defaults():
     return ServerDefaultsResponse(
         exec_user=settings.exec_user or "",
         default_provider=settings.default_provider or "",
-        default_alias=settings.default_alias or "",
-        default_exec_user=settings.default_exec_user or "",
         current_workdir=os.getcwd(),
     )
 

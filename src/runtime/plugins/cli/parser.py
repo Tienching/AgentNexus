@@ -345,7 +345,7 @@ def _add_install_parser(subparsers) -> None:
     provider_parser.add_argument(
         "name",
         type=str,
-        help="Provider 名称（如 claude, gemini, codex）",
+        help="Provider 名称（如 claude, codex）",
     )
 
 

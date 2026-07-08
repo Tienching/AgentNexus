@@ -48,9 +48,7 @@ def _worst(statuses: List[str]) -> str:
 _STARTUP_SUBSYSTEM_ORDER = [
     "task_executor",
     "task_scheduler",
-    "channel_service",
     "terminal_manager",
-    "evolution_service",
 ]
 
 

@@ -40,6 +40,7 @@ from ..services.session_storage import get_session_storage
 from ..services.domain_events import query_domain_events
 from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
+from ..security.exec_user_guard import validate_exec_user
 from .nexus_models import (
     SuccessResponse,
     TaskItem,
@@ -423,8 +424,8 @@ async def create_task(
 
     alias_value = (request.alias or "").strip() or default_alias or provider
 
-    default_exec_user = (settings.default_exec_user or "").strip() or None
-    effective_exec_user = (request.exec_user or "").strip() or default_exec_user
+    default_exec_user = (settings.default_exec_user or "").strip() or settings.exec_user
+    effective_exec_user = await validate_exec_user((request.exec_user or "").strip() or default_exec_user)
 
     project_name = (request.project_name or "").strip() or None
     project_id = (request.project_id or "").strip() or None
@@ -516,7 +517,7 @@ async def bulk_create_tasks(
     allowed_providers = set(get_provider_registry().list_providers())
     default_provider = (settings.default_provider or "").strip().lower() or "codebuddy"
     default_alias = (settings.default_alias or "").strip().lower()
-    default_exec_user = (settings.default_exec_user or "").strip() or None
+    default_exec_user = (settings.default_exec_user or "").strip() or settings.exec_user
 
     created: List[TaskItem] = []
     errors: List[Dict[str, str]] = []
@@ -537,7 +538,7 @@ async def bulk_create_tasks(
                 continue
             alias_value = (getattr(task_req, "alias", None) or "").strip() or default_alias or provider
 
-            effective_exec_user = (task_req.exec_user or "").strip() or default_exec_user
+            effective_exec_user = await validate_exec_user((task_req.exec_user or "").strip() or default_exec_user)
 
             project_name = (task_req.project_name or "").strip() or None
             project_id = (task_req.project_id or "").strip() or None

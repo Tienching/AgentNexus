@@ -205,8 +205,6 @@ class CLIExecutor(BaseExecutor):
         "claude-internal": "claude",
         "codex": "codex",
         "codex-internal": "codex",
-        "gemini": "gemini",
-        "gemini-internal": "gemini",
         "codebuddy": "codebuddy",
         "codebuddy-internal": "codebuddy",
         "ccr": "claude",
@@ -252,7 +250,6 @@ class CLIExecutor(BaseExecutor):
         # Resolve canonical provider for type detection (alias -> provider)
         provider = self._resolve_provider_from_cli_command(cli_command)
         is_codex = provider == "codex"
-        is_gemini = provider == "gemini"
         model_param = (
             (inline_model.strip() if isinstance(inline_model, str) else "")
             or (getattr(context, "model", "").strip() if isinstance(getattr(context, "model", ""), str) else "")
@@ -268,18 +265,12 @@ class CLIExecutor(BaseExecutor):
             # When cli_session_id is available, use precise session resume:
             #   - claude: --resume SESSION_ID (instead of -c)
             #   - codebuddy: -r SESSION_ID (instead of -c)
-            #   - gemini: --resume SESSION_ID (instead of --resume latest)
             #   - codex: resume SESSION_ID (instead of resume --last)
             session_cleared = getattr(context, "session_cleared", False)
 
             if use_continue and not session_cleared and not model_changed:
                 if is_codex:
                     pass  # codex uses "resume ..." appended after prompt
-                elif is_gemini:
-                    if cli_session_id:
-                        cmd.extend(["--resume", cli_session_id])
-                    else:
-                        cmd.extend(["--resume", "latest"])
                 elif provider == "codebuddy" or provider.startswith("codebuddy-"):
                     if cli_session_id:
                         cmd.extend(["-r", cli_session_id])
@@ -306,12 +297,6 @@ class CLIExecutor(BaseExecutor):
                     cmd.extend(["resume", cli_session_id])
                 else:
                     cmd.extend(["resume", "--last"])
-        elif is_gemini:
-            # Gemini: -p <prompt>, --output-format stream-json only
-            cmd.extend(["--output-format", "stream-json"])
-            if model_param:
-                cmd.extend(["--model", model_param])
-            cmd.extend(["-p", message])
         elif is_claude or is_codebuddy:
             # Claude/CodeBuddy: full flag set
             cmd.extend([

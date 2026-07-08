@@ -7,7 +7,7 @@ Single source of truth for:
   - src.runtime.models       — session / task data models
   - src.runtime.stores       — Redis client, session & task storage
   - src.runtime.streaming    — SSE stream orchestrator
-  - src.runtime.adapters     — AG-UI protocol adapters (Claude/Gemini/Codex/Codebuddy)
+  - src.runtime.adapters     — AG-UI protocol adapters (Claude/Codex/Codebuddy)
   - src.runtime.execution    — task executor, workspace queue
   - src.runtime.commands     — slash commands
   - src.runtime.archiving    — stream archiver

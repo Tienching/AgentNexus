@@ -7,7 +7,7 @@ import uuid
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Depends, Request, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from src.runtime.stores.alias_registry import KNOWN_PROVIDERS, get_alias_registry
@@ -16,8 +16,10 @@ from ..services.stream_handler import StreamHandler
 from ..logger import get_logger
 from ..config import settings
 from ..utils.ids import resolve_session_id, resolve_run_id, gen_run_id, gen_session_id
+from .nexus_auth import verify_nexus_auth
+from ..security.exec_user_guard import validate_exec_user
 
-router = APIRouter(tags=["chat"])
+router = APIRouter(tags=["chat"], dependencies=[Depends(verify_nexus_auth)])
 logger = get_logger(__name__)
 
 _SENSITIVE_FIELD_RE = re.compile(
@@ -320,6 +322,9 @@ async def chat_stream(request: Request, exec_user: str):
         request: FastAPI请求对象
         exec_user: Linux系统用户名，通过su切换到该用户运行CLI命令
     """
+    # 安全校验：exec_user 必须是受控的真实系统用户，堵住身份伪造
+    exec_user = await validate_exec_user(exec_user)
+
     # 获取原始请求体
     try:
         body_bytes = await request.body()

@@ -80,9 +80,6 @@ _EXPORTS = {
     "NotificationSink": ("src.server.services.notification", "NotificationSink"),
     "UnifiedNotificationHandler": ("src.server.services.notification", "UnifiedNotificationHandler"),
     "get_notification_handler": ("src.server.services.notification", "get_notification_handler"),
-    "DiscordSink": ("src.server.services.notification", "DiscordSink"),
-    "FeishuSink": ("src.server.services.notification", "FeishuSink"),
-    "SlackSink": ("src.server.services.notification", "SlackSink"),
 }
 
 __all__ = list(_EXPORTS)

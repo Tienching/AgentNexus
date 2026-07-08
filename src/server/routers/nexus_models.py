@@ -206,7 +206,7 @@ class CreateSessionRequest(BaseModel):
     title: Optional[str] = Field(None, description="Session title")
     username: Optional[str] = Field(None, description="Username")
     exec_user: Optional[str] = Field(None, description="Linux exec user")
-    provider: Optional[str] = Field(None, description="Provider (e.g. claude, gemini)")
+    provider: Optional[str] = Field(None, description="Provider (e.g. claude, codex)")
     alias: Optional[str] = Field(None, description="Alias (defaults to provider)")
     exec_dir: Optional[str] = Field(None, description="Working directory")
     prior_session_id: Optional[str] = Field(None, description="Explicit resume source session id")
@@ -260,7 +260,6 @@ class HistoryProjectSummary(BaseModel):
     providers: List[HistoryProjectProviderSummary] = Field(default_factory=list)
     total_sessions: int = 0
     last_active: int = 0
-    gemini_hash: Optional[str] = None
 
 
 # ============ File Models ============
@@ -395,9 +394,9 @@ class CreateTaskRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
     description: str = Field(..., description="Task description")
-    provider: Optional[str] = Field(None, description="Provider name (claude/gemini/codex/codebuddy)")
+    provider: Optional[str] = Field(None, description="Provider name (claude/codex/codebuddy/hermes)")
     alias: Optional[str] = Field(None, description="Alias (defaults to provider)")
-    llm_model: Optional[str] = Field(None, alias="model", description="LLM model name (e.g., claude-opus-4.6, gemini-2.5-pro)")
+    llm_model: Optional[str] = Field(None, alias="model", description="LLM model name (e.g., claude-opus-4.6, glm-5v-turbo)")
     workspace: Optional[str] = Field(None, description="Execution workspace")
     project_name: Optional[str] = Field(None, description="Optional project name")
     project_id: Optional[str] = Field(None, description="Optional project id (slug)")
@@ -542,8 +541,6 @@ class CreateSkillRequest(BaseModel):
 class ServerDefaultsResponse(BaseModel):
     exec_user: str = ""
     default_provider: str = ""
-    default_alias: str = ""
-    default_exec_user: str = ""
     current_workdir: str = ""
 
 

@@ -20,7 +20,7 @@ class InstallCommand(BaseCommand):
     
     安装依赖：
     - install channel [telegram|slack|discord|all]: 安装 Channel 依赖
-    - install provider [claude|gemini|codex]: 安装 Provider
+    - install provider [claude|codex]: 安装 Provider
     """
     
     name = "install"
@@ -38,7 +38,7 @@ class InstallCommand(BaseCommand):
     }
     
     # Provider 配置
-    AVAILABLE_PROVIDERS = ["claude", "gemini", "codex", "codebuddy"]
+    AVAILABLE_PROVIDERS = ["claude", "codex", "codebuddy", "hermes"]
     
     def __init__(self):
         self.printer = Printer()

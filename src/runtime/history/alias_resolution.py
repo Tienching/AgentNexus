@@ -12,7 +12,6 @@ PROVIDER_CONFIG_DIRS: Dict[str, str] = {
     "claude": ".claude",
     "codebuddy": ".codebuddy",
     "codex": ".codex",
-    "gemini": ".gemini",
 }
 
 
@@ -144,7 +143,7 @@ def build_alias_config_map(
     # Auto-discover dotdirs on disk, but ONLY trust names that are either the
     # provider base directory itself or explicitly present in the alias registry.
     # When a provider family filter is active, we also allow clean aliases that
-    # belong to that provider family (for example `.gemini-alt`) so filtered
+    # belong to that provider family (for example `.codex-alt`) so filtered
     # history views still surface legitimate local provider variants.
     # Without these guards, backup directories like
     # `.codebuddy.backup.20260317_102924` or

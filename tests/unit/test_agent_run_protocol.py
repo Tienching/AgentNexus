@@ -147,10 +147,10 @@ class TestCreateRun:
         run = svc.create_run(_minimal_run(id="my-run-id"))
         assert run["id"] == "my-run-id"
 
-    def test_default_runtime_is_nexus(self):
+    def test_default_runtime_is_claude(self):
         svc = _make_svc()
         run = svc.create_run(_minimal_run())
-        assert run["runtime"] == "nexus"
+        assert run["runtime"] == "claude"
 
     def test_custom_fields_preserved(self):
         svc = _make_svc()
@@ -230,10 +230,10 @@ class TestGetRun:
 
     def test_round_trip(self):
         svc = _make_svc()
-        created = svc.create_run(_minimal_run(model="gemini"))
+        created = svc.create_run(_minimal_run(model="codex"))
         fetched = svc.get_run(created["id"])
         assert fetched is not None
-        assert fetched["model"] == "gemini"
+        assert fetched["model"] == "codex"
         assert fetched["agent_id"] == "agent-alpha"
 
     def test_provenance_round_trip(self):

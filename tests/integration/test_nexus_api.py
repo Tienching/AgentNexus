@@ -28,9 +28,7 @@ from src.server.models import (
 TEST_SAFE_STARTUP_POLICY = {
     "start_task_executor": False,
     "start_task_scheduler": False,
-    "start_channel_service": False,
     "start_terminal_manager": False,
-    "start_evolution_service": False,
 }
 
 
@@ -263,8 +261,13 @@ def mock_storage():
 
 
 @pytest.fixture
-async def client(mock_storage, app_factory):
+async def client(mock_storage, app_factory, monkeypatch):
     """Create test client with mocked storage"""
+    from src.server.routers import nexus_auth
+
+    monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", None)
+    monkeypatch.setattr(nexus_auth.settings, "nexus_password", None)
+    monkeypatch.delenv("NEXUS_AUTH_TOKEN", raising=False)
     with patch('src.server.routers.nexus_sessions.get_session_storage', return_value=mock_storage), \
          patch('src.server.routers.nexus_tasks.get_session_storage', return_value=mock_storage), \
          patch('src.server.routers.nexus_streaming.get_session_storage', return_value=mock_storage), \
@@ -281,6 +284,7 @@ class TestNexusAuthStatus:
         from src.server.routers import nexus_auth
 
         monkeypatch.setattr(nexus_auth.settings, "nexus_password", None)
+        monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", "api-token")
         monkeypatch.setenv("NEXUS_AUTH_TOKEN", "api-token")
 
         unauthenticated = await client.get("/api/nexus/auth/status")
@@ -299,6 +303,7 @@ class TestNexusAuthStatus:
         from src.server.routers import nexus_auth
 
         monkeypatch.setattr(nexus_auth.settings, "nexus_password", "password")
+        monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", "api-token")
         monkeypatch.setenv("NEXUS_AUTH_TOKEN", "api-token")
 
         response = await client.get(
@@ -308,6 +313,22 @@ class TestNexusAuthStatus:
 
         assert response.status_code == 200
         assert response.json() == {"authenticated": True, "auth_required": True}
+
+
+    @pytest.mark.asyncio
+    async def test_password_login_session_works_when_api_token_also_configured(self, client, monkeypatch):
+        from src.server.routers import nexus_auth
+
+        monkeypatch.setattr(nexus_auth.settings, "nexus_password", "password")
+        monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", "api-token")
+        monkeypatch.setenv("NEXUS_AUTH_TOKEN", "api-token")
+
+        login = await client.post("/api/nexus/auth/login", json={"password": "password"})
+        assert login.status_code == 200
+
+        status_response = await client.get("/api/nexus/auth/status")
+        assert status_response.status_code == 200
+        assert status_response.json() == {"authenticated": True, "auth_required": True}
 
 
 class TestListSessions:
@@ -400,6 +421,21 @@ class TestListSessions:
         data = response.json()
         # Should return all sessions when username is not provided
         assert data["total"] == 5
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_accepts_frontend_page_size(self, client, mock_storage):
+        """Test the page size used by the Nexus frontend session sidebar."""
+        with patch('src.server.routers.nexus_sessions.get_session_storage', return_value=mock_storage):
+            response = await client.get(
+                "/api/nexus/sessions",
+                params={"page": 1, "page_size": 200},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 5
+        assert data["page"] == 1
+        assert data["page_size"] == 200
 
 
 class TestGetSession:
@@ -1601,271 +1637,7 @@ class TestDeleteTaskAndCascade:
         assert mock_storage.get_session_meta(session_id) is None
 
 
-class FakeAgentsTaskQueue:
-    def list_tasks(self, page=1, page_size=200, status=None):
-        tasks = [
-            SimpleNamespace(status="running"),
-            SimpleNamespace(status="pending"),
-            SimpleNamespace(status="failed"),
-        ]
-        return tasks, len(tasks)
-
-
-class FakeTokenTracker:
-    def get_stats(self, since=None):
-        return SimpleNamespace(
-            total_requests=6,
-            total_prompt_tokens=1200,
-            total_completion_tokens=300,
-            total_tokens=1500,
-            total_cost_usd=1.2345,
-        )
-
-    def get_attribution_breakdown(self, since=None):
-        return {
-            "by_workspace": [
-                {
-                    "key": "/tmp/agents",
-                    "count": 6,
-                    "prompt_tokens": 1200,
-                    "completion_tokens": 300,
-                    "total_tokens": 1500,
-                    "total_cost_usd": 1.2345,
-                }
-            ],
-            "by_agent": [
-                {
-                    "key": "agent-worker-2",
-                    "count": 4,
-                    "prompt_tokens": 900,
-                    "completion_tokens": 250,
-                    "total_tokens": 1150,
-                    "total_cost_usd": 0.9345,
-                },
-                {
-                    "key": "agent-planner",
-                    "count": 2,
-                    "prompt_tokens": 300,
-                    "completion_tokens": 50,
-                    "total_tokens": 350,
-                    "total_cost_usd": 0.3000,
-                },
-            ],
-            "by_runtime": [
-                {
-                    "key": "swarm",
-                    "count": 6,
-                    "prompt_tokens": 1200,
-                    "completion_tokens": 300,
-                    "total_tokens": 1500,
-                    "total_cost_usd": 1.2345,
-                }
-            ],
-        }
-
-
-class FakeTeamManager:
-    def __init__(self):
-        self._teams = {"alpha-team": {"detail": {"provider": "claude", "runtime": "swarm"}}}
-
-    def get_team_status(self, team_name: str):
-        if team_name != "alpha-team":
-            return {"error": f"Team not found: {team_name}"}
-        return {
-            "team_name": "alpha-team",
-            "members": [
-                {
-                    "name": "lead",
-                    "role": "lead",
-                    "status": "running",
-                    "agent_id": "agent-worker-2",
-                    "capabilities": ["planning", "review"],
-                    "unread_mail": 1,
-                    "tasks": ["task-1"],
-                },
-                {
-                    "name": "worker-a",
-                    "role": "worker",
-                    "status": "idle",
-                    "agent_id": "agent-planner",
-                    "capabilities": ["memory", "analysis"],
-                    "unread_mail": 0,
-                    "tasks": [],
-                },
-            ],
-            "shared_state": {
-                "display_name": "Alpha Team",
-                "mission": "Ship Agents page",
-                "workspace": "/tmp/agents",
-                "shared_memory_policy": "team",
-                "tags": ["frontend", "agents"],
-            },
-            "task_assignments": {},
-            "available_tasks": ["task-2"],
-            "running_agents": ["run-1"],
-        }
-
-
-def _build_agent_registry():
-    from src.nanobot.agent.lifecycle import AgentRegistry, AgentState
-
-    registry = AgentRegistry()
-    worker = registry.register(
-        name="Worker 2",
-        provider="claude",
-        workspace="/tmp/agents",
-        capabilities=["planning", "review"],
-        model="claude-3-sonnet",
-        alias="claude",
-        agent_id="agent-worker-2",
-        metadata={
-            "exec_user": "ubuntu",
-            "memory_summary": "Shared session context available",
-            "memory_entries": ["brief", "notes"],
-        },
-    )
-    registry.update_status(worker.id, AgentState.RUNNING)
-
-    planner = registry.register(
-        name="Planner",
-        provider="codex",
-        workspace="/tmp/agents",
-        capabilities=["memory", "analysis"],
-        model="gpt-4o",
-        alias="codex",
-        agent_id="agent-planner",
-        metadata={
-            "exec_user": "ubuntu",
-            "memory_summary": "Read-only memory",
-            "memory_entries": ["timeline"],
-        },
-    )
-    registry.update_status(planner.id, AgentState.ERROR)
-    return registry
-
-
-class TestAgentsContracts:
-    @pytest.mark.asyncio
-    async def test_agents_overview_includes_dashboard_costs_activity_and_team_summaries(self, client):
-        registry = _build_agent_registry()
-        fake_team_manager = FakeTeamManager()
-
-        with patch.dict("src.server.routers.nexus_agents._AGENT_BINDINGS", {}, clear=True), \
-             patch.dict("src.server.routers.nexus_agents._TEAM_CONFIGS", {}, clear=True), \
-             patch("src.server.services.agent_registry.get_registry", return_value=registry), \
-             patch("src.core.cost.tracker.get_token_tracker", return_value=FakeTokenTracker()), \
-             patch("src.server.routers.nexus_models.get_task_queue", return_value=FakeAgentsTaskQueue()), \
-             patch("src.server.routers.nexus_agents._get_subagent_manager", return_value=fake_team_manager):
-            response = await client.get("/api/nexus/agents/overview")
-
-        assert response.status_code == 200
-        data = response.json()
-
-        assert data["dashboard"]["total_agents"] == 2
-        assert data["summary"]["teams_total"] == 1
-        assert data["dashboard"]["online_agents"] == 2
-        assert data["dashboard"]["running_agents"] == 1
-        assert data["dashboard"]["error_agents"] == 1
-        assert data["costs"]["total_cost_usd"] == pytest.approx(1.2345)
-        assert data["recent_activity"]
-
-        worker = next(agent for agent in data["agents"] if agent["id"] == "agent-worker-2")
-        assert worker["identity"]["title"] == "Worker 2"
-        assert worker["runtime"]["status"] == "running"
-        assert worker["memory"]["summary"] == "Shared session context available"
-        assert worker["cost"]["total_cost_usd"] == pytest.approx(0.9345)
-
-        team = next(team for team in data["teams"] if team["team_name"] == "alpha-team")
-        assert team["identity"]["title"] == "Alpha Team"
-        assert team["runtime"]["status"] == "running"
-        assert team["members"][0]["role"] == "lead"
-        assert team["cost"]["total_cost_usd"] == pytest.approx(1.2345)
-
-    @pytest.mark.asyncio
-    async def test_agent_binding_get_and_patch_returns_stable_detail_sections(self, client):
-        registry = _build_agent_registry()
-
-        with patch.dict("src.server.routers.nexus_agents._AGENT_BINDINGS", {}, clear=True), \
-             patch("src.server.services.agent_registry.get_registry", return_value=registry), \
-             patch("src.core.cost.tracker.get_token_tracker", return_value=FakeTokenTracker()):
-            get_response = await client.get("/api/nexus/agents/agent-worker-2/binding")
-            patch_response = await client.patch(
-                "/api/nexus/agents/agent-worker-2/binding",
-                json={
-                    "team_name": "alpha-team",
-                    "runtime_profile": "balanced",
-                    "memory_scope": "team",
-                    "notes": "Pinned to alpha team",
-                    "capabilities": ["planning", "review", "handoff"],
-                },
-            )
-            refetch_response = await client.get("/api/nexus/agents/agent-worker-2/binding")
-
-        assert get_response.status_code == 200
-        initial = get_response.json()
-        assert initial["binding"]["memory_scope"] == "session"
-        assert initial["identity"]["title"] == "Worker 2"
-        assert initial["runtime"]["status"] == "running"
-
-        assert patch_response.status_code == 200
-        updated = patch_response.json()
-        assert updated["binding"]["team_name"] == "alpha-team"
-        assert updated["binding"]["runtime_profile"] == "balanced"
-        assert updated["binding"]["memory_scope"] == "team"
-        assert updated["memory"]["scope"] == "team"
-        assert updated["capabilities"] == ["planning", "review", "handoff"]
-        assert updated["tools"] == ["planning", "review", "handoff"]
-
-        assert refetch_response.status_code == 200
-        refetched = refetch_response.json()
-        assert refetched["binding"]["notes"] == "Pinned to alpha team"
-        assert refetched["runtime"]["team_name"] == "alpha-team"
-
-    @pytest.mark.asyncio
-    async def test_team_config_get_and_patch_returns_runtime_memory_and_members(self, client):
-        registry = _build_agent_registry()
-        fake_team_manager = FakeTeamManager()
-
-        with patch.dict("src.server.routers.nexus_agents._TEAM_CONFIGS", {}, clear=True), \
-             patch("src.server.services.agent_registry.get_registry", return_value=registry), \
-             patch("src.core.cost.tracker.get_token_tracker", return_value=FakeTokenTracker()), \
-             patch("src.server.routers.nexus_agents._get_subagent_manager", return_value=fake_team_manager):
-            get_response = await client.get("/api/nexus/agents/teams/alpha-team/config")
-            patch_response = await client.patch(
-                "/api/nexus/agents/teams/alpha-team/config",
-                json={
-                    "display_name": "Alpha Control",
-                    "workspace": "/srv/alpha",
-                    "mission": "Coordinate detail views",
-                    "shared_memory_policy": "shared",
-                    "auto_balance": True,
-                    "notes": "Keep overview stable",
-                    "tags": ["ops", "ui"],
-                },
-            )
-            refetch_response = await client.get("/api/nexus/agents/teams/alpha-team/config")
-
-        assert get_response.status_code == 200
-        initial = get_response.json()
-        assert initial["config"]["display_name"] == "Alpha Team"
-        assert initial["runtime_detail"]["status"] == "running"
-        assert initial["memory"]["scope"] == "team"
-        assert len(initial["members"]) == 2
-
-        assert patch_response.status_code == 200
-        updated = patch_response.json()
-        assert updated["config"]["display_name"] == "Alpha Control"
-        assert updated["config"]["workspace"] == "/srv/alpha"
-        assert updated["config"]["mission"] == "Coordinate detail views"
-        assert updated["config"]["shared_memory_policy"] == "shared"
-        assert updated["memory_policy"] == "shared"
-        assert updated["config"]["auto_balance"] is True
-        assert updated["config"]["tags"] == ["ops", "ui"]
-
-        assert refetch_response.status_code == 200
-        refetched = refetch_response.json()
-        assert refetched["config"]["notes"] == "Keep overview stable"
-
+class TestTaskSessionCascade:
     @pytest.mark.asyncio
     async def test_delete_task_idempotent(self, client, mock_storage, mock_task_queue):
         with patch('src.server.routers.nexus_tasks.get_task_queue', return_value=mock_task_queue):

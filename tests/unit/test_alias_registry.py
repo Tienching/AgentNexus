@@ -35,9 +35,6 @@ class TestResolve:
     def test_builtin_claude_internal(self, registry):
         assert registry.resolve("claude-internal") == "claude"
 
-    def test_builtin_gemini(self, registry):
-        assert registry.resolve("gemini") == "gemini"
-
     def test_builtin_codex_internal(self, registry):
         assert registry.resolve("codex-internal") == "codex"
 
@@ -52,9 +49,9 @@ class TestResolve:
         assert registry.resolve(None) is None
 
     def test_redis_registered_overrides_builtin(self, registry, mock_redis):
-        # Suppose someone re-registered "claude" -> "gemini" in Redis
-        mock_redis.hget.return_value = "gemini"
-        assert registry.resolve("claude") == "gemini"
+        # Suppose someone re-registered "claude" -> "codex" in Redis
+        mock_redis.hget.return_value = "codex"
+        assert registry.resolve("claude") == "codex"
 
     def test_redis_registered_custom_alias(self, registry, mock_redis):
         mock_redis.hget.return_value = "claude"
@@ -67,7 +64,6 @@ class TestResolve:
 
     def test_case_insensitive(self, registry):
         assert registry.resolve("Claude-Internal") == "claude"
-        assert registry.resolve("GEMINI") == "gemini"
 
 
 class TestRegister:
@@ -115,7 +111,6 @@ class TestListAll:
         result = registry.list_all()
         assert "claude" in result
         assert "claude-internal" in result
-        assert "gemini" in result
         assert result["claude-internal"] == "claude"
 
     def test_list_merges_redis_entries(self, registry, mock_redis):
@@ -125,6 +120,6 @@ class TestListAll:
         assert "claude" in result  # builtins still present
 
     def test_list_redis_overrides_builtin(self, registry, mock_redis):
-        mock_redis.hgetall.return_value = {"claude": "gemini"}
+        mock_redis.hgetall.return_value = {"claude": "codex"}
         result = registry.list_all()
-        assert result["claude"] == "gemini"  # overridden
+        assert result["claude"] == "codex"  # overridden

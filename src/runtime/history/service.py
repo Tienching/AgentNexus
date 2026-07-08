@@ -2,7 +2,6 @@
 """History service — aggregates parsers and provides unified query interface."""
 
 import asyncio
-import hashlib
 import logging
 import time
 from collections import OrderedDict
@@ -60,13 +59,11 @@ class HistoryService:
         from .claude_parser import ClaudeHistoryParser
         from .codex_parser import CodexHistoryParser
         from .codebuddy_parser import CodeBuddyHistoryParser
-        from .gemini_parser import GeminiHistoryParser
 
         return [
             ClaudeHistoryParser(),
             CodexHistoryParser(),
             CodeBuddyHistoryParser(),
-            GeminiHistoryParser(),
         ]
 
     @classmethod
@@ -515,8 +512,7 @@ class HistoryService:
     ) -> List[Dict[str, Any]]:
         """Discover all available project paths across all providers.
 
-        Aggregates results from each parser's list_projects(), merges by path,
-        and resolves Gemini hashes against known paths from other providers.
+        Aggregates results from each parser's list_projects() and merges by path.
 
         Returns a list of dicts:
             {
@@ -526,9 +522,8 @@ class HistoryService:
                 "last_active": int,  # ms timestamp
             }
         """
-        # Phase 1: Collect projects from all providers (except Gemini hashes)
+        # Collect projects from all providers, merge by path.
         path_map: Dict[str, Dict[str, Any]] = {}
-        gemini_hashes: List[Dict[str, Any]] = []
 
         for alias, config_path in alias_config_map.items():
             parser = self._resolve_parser_for_alias(alias)
@@ -553,13 +548,9 @@ class HistoryService:
                     entries = []
 
             for entry in entries:
-                if "hash" in entry and "path" not in entry:
-                    # Gemini hash entry — save for Phase 2 matching
-                    entry["alias"] = alias
-                    gemini_hashes.append(entry)
+                path = entry.get("path")
+                if not path:
                     continue
-
-                path = entry["path"]
                 if path not in path_map:
                     path_map[path] = {
                         "path": path,
@@ -575,39 +566,6 @@ class HistoryService:
                 path_map[path]["total_sessions"] += entry.get("session_count", 0)
                 if entry.get("last_active", 0) > path_map[path]["last_active"]:
                     path_map[path]["last_active"] = entry["last_active"]
-
-        # Phase 2: Match Gemini hashes against known project paths
-        if gemini_hashes:
-            for known_path in list(path_map.keys()):
-                path_hash = hashlib.sha256(known_path.encode("utf-8")).hexdigest()
-                for gh in gemini_hashes:
-                    if gh["hash"] == path_hash:
-                        alias = gh.get("alias", "gemini")
-                        path_map[known_path]["providers"].append({
-                            "provider": "gemini",
-                            "alias": alias,
-                            "session_count": gh.get("session_count", 0),
-                        })
-                        path_map[known_path]["total_sessions"] += gh.get("session_count", 0)
-                        if gh.get("last_active", 0) > path_map[known_path]["last_active"]:
-                            path_map[known_path]["last_active"] = gh["last_active"]
-                        gemini_hashes.remove(gh)
-                        break
-
-            # Remaining unmatched Gemini hashes — add as unknown entries
-            for gh in gemini_hashes:
-                alias = gh.get("alias", "gemini")
-                path_map[f"[gemini:{gh['hash'][:12]}...]"] = {
-                    "path": f"[gemini:{gh['hash'][:12]}...]",
-                    "providers": [{
-                        "provider": "gemini",
-                        "alias": alias,
-                        "session_count": gh.get("session_count", 0),
-                    }],
-                    "total_sessions": gh.get("session_count", 0),
-                    "last_active": gh.get("last_active", 0),
-                    "gemini_hash": gh["hash"],
-                }
 
         # Sort by last_active descending
         result = sorted(path_map.values(), key=lambda x: x["last_active"], reverse=True)

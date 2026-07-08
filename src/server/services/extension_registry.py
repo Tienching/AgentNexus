@@ -165,7 +165,7 @@ class ExtensionRegistryService:
         return providers
 
     def list_bundled_skills(self) -> List[ExtensionSkill]:
-        root = Path(__file__).resolve().parents[2] / "nanobot" / "skills"
+        root = Path(__file__).resolve().parents[2] / "core" / "agent_runtime" / "skills"
         return self._scan_skills_dir(root, provider="bundled", source="bundled")
 
     def list_provider_skills(self, *, custom_paths: Optional[Dict[str, str]] = None) -> Dict[str, List[ExtensionSkill]]:
@@ -226,7 +226,7 @@ class ExtensionRegistryService:
         normalized_provider = (provider or "").strip().lower()
         if not _SKILL_NAME_RE.match(normalized_name):
             raise ValueError("invalid skill_name")
-        source_dir = Path(__file__).resolve().parents[2] / "nanobot" / "skills" / normalized_name
+        source_dir = Path(__file__).resolve().parents[2] / "core" / "agent_runtime" / "skills" / normalized_name
         if not (source_dir / "SKILL.md").is_file():
             raise ValueError(f"bundled skill not found: {normalized_name}")
         allowed_root = None

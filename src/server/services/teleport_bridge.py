@@ -25,6 +25,7 @@ from typing import Any, AsyncGenerator
 import httpx
 
 from ..logger import get_logger
+from src.core.agent_runtime.security.network import validate_url_target
 
 logger = get_logger(__name__)
 
@@ -195,6 +196,12 @@ class TeleportBridge:
 
         credentials = credentials or {}
         metadata = metadata or {}
+
+        # SSRF protection: validate remote_url before any request.
+        ok, err = validate_url_target(remote_url)
+        if not ok:
+            logger.warning("Blocked unsafe teleport remote_url: %s", err)
+            raise ValueError(f"Unsafe remote_url: {err}")
 
         # Validate connectivity
         client = self._get_http_client()

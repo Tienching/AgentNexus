@@ -133,7 +133,7 @@ async def set_permission_mode(req: PermissionModeRequest):
     Changing the mode clears the permission cache.
     Valid modes: auto, ask, plan, bypass.
     """
-    from src.nanobot.agent.permissions import PermissionMode
+    from src.core.agent_runtime.agent.permissions import PermissionMode
 
     gate = _get_permission_gate()
     if gate is None:

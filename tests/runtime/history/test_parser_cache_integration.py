@@ -16,7 +16,6 @@ from src.runtime.history.cache_store import CacheStore
 from src.runtime.history.claude_parser import ClaudeHistoryParser
 from src.runtime.history.codebuddy_parser import CodeBuddyHistoryParser
 from src.runtime.history.codex_parser import CodexHistoryParser
-from src.runtime.history.gemini_parser import GeminiHistoryParser
 
 
 @pytest.fixture(autouse=True)
@@ -328,59 +327,4 @@ class TestCodexCache:
 
 
 # ----------------------------------------------------------------------
-#  Gemini  (1 JSON file == 1 session)
 # ----------------------------------------------------------------------
-
-class TestGeminiCache:
-    def _setup(self, tmp_path: Path) -> tuple[Path, str]:
-        import hashlib
-        config = tmp_path / ".gemini"
-        project = "/home/test/proj"
-        project_hash = hashlib.sha256(project.encode()).hexdigest()
-        chats = config / "tmp" / project_hash / "chats"
-        chats.mkdir(parents=True)
-
-        (chats / "session-2026-04-22T10-00-gem-1.json").write_text(json.dumps({
-            "sessionId": "gem-1",
-            "startTime": "2026-04-22T10:00:00Z",
-            "lastUpdated": "2026-04-22T10:05:00Z",
-            "messages": [
-                {"type": "user", "content": "hello", "timestamp": "2026-04-22T10:00:00Z"},
-                {"type": "gemini", "content": "hi there", "timestamp": "2026-04-22T10:00:01Z"},
-            ],
-        }), encoding="utf-8")
-        return config, project
-
-    def test_list_sessions_warms_then_hits_cache(self, tmp_path, monkeypatch):
-        parser = GeminiHistoryParser()
-        config, project_path = self._setup(tmp_path)
-
-        first = parser.list_sessions(config, project_path)
-        assert len(first) == 1
-        assert first[0].id == "gem-1"
-        assert first[0].message_count == 2
-
-        parse_counter = {"n": 0}
-        real = parser._parse_file_to_meta
-        monkeypatch.setattr(
-            parser, "_parse_file_to_meta",
-            lambda f: (parse_counter.__setitem__("n", parse_counter["n"] + 1) or real(f)),
-        )
-
-        second = parser.list_sessions(config, project_path)
-        assert parse_counter["n"] == 0
-        assert second[0].id == "gem-1"
-
-    def test_list_all_sessions_injects_exec_dir(self, tmp_path):
-        """Shard has no exec_dir; list_all_sessions must add the hash tag."""
-        parser = GeminiHistoryParser()
-        config, _ = self._setup(tmp_path)
-
-        # Warm the cache via list_sessions (hash-scoped)
-        parser.list_sessions(config, "/home/test/proj")
-        # Now list_all_sessions must still produce the hash tag, even
-        # though shards are cached without exec_dir
-        all_s = parser.list_all_sessions(config)
-        assert len(all_s) == 1
-        assert all_s[0].exec_dir is not None
-        assert all_s[0].exec_dir.startswith("[gemini:")

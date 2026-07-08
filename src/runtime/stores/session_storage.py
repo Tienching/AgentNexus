@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import pwd
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -41,6 +44,32 @@ logger = logging.getLogger(__name__)
 
 SESSION_TTL = 7 * 24 * 60 * 60
 STREAMING_CONTENT_TTL = 60 * 60
+
+_USERNAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
+_RESERVED_EXEC_USERS = {"root", "toor", "nobody", "daemon", "bin", "sys", "halt", "shutdown"}
+
+
+def _allowed_exec_users() -> Optional[set[str]]:
+    raw = (os.getenv("ALLOWED_EXEC_USERS") or "").strip()
+    if not raw:
+        return None
+    return {name.strip() for name in raw.split(",") if name.strip()}
+
+
+def _validate_exec_user_name(exec_user: str) -> str:
+    normalized = (exec_user or "").strip()
+    if not normalized or not _USERNAME_RE.match(normalized):
+        raise ValueError("invalid exec_user format")
+    if normalized.lower() in _RESERVED_EXEC_USERS:
+        raise ValueError(f"exec_user {normalized!r} is reserved")
+    try:
+        pwd.getpwnam(normalized)
+    except KeyError as exc:
+        raise ValueError(f"exec_user {normalized!r} does not exist") from exc
+    allowed = _allowed_exec_users()
+    if allowed is not None and normalized not in allowed:
+        raise ValueError("exec_user is not in the allow list")
+    return normalized
 
 
 def _emit_session_domain_event(
@@ -645,10 +674,18 @@ class SessionStorage:
             if row:
                 user = (row.get("session_exec_user") or "").strip()
                 if user:
-                    return user
+                    try:
+                        return _validate_exec_user_name(user)
+                    except ValueError as e:
+                        logger.warning("Ignoring invalid stored session exec_user for %s: %s", session_id, e)
+                        return None
             binding = self.get_effective_execution_binding(session_id)
             if binding and binding.exec_user:
-                return (binding.exec_user or "").strip() or None
+                try:
+                    return _validate_exec_user_name(binding.exec_user)
+                except ValueError as e:
+                    logger.warning("Ignoring invalid execution binding exec_user for %s: %s", session_id, e)
+                    return None
             return None
         except Exception:
             return None
@@ -657,8 +694,10 @@ class SessionStorage:
         return str(Path(user_home_base) / exec_user / ".nexus" / "sessions" / session_id)
 
     def set_session_exec_user(self, session_id: str, exec_user: str, user_home_base: Optional[str] = None) -> bool:
-        normalized = (exec_user or "").strip()
-        if not normalized:
+        try:
+            normalized = _validate_exec_user_name(exec_user)
+        except ValueError as e:
+            logger.warning("Rejected invalid session exec_user for %s: %s", session_id, e)
             return False
         fields = {"session_exec_user": normalized, "username": normalized}
         try:

@@ -278,7 +278,7 @@ class TestSlashCommandHandler:
         assert "#" in response  # Task ID
 
     def test_task_command_with_provider(self, handler):
-        response = handler.handle_command("/task -r gemini -- Build feature")
+        response = handler.handle_command("/task -r codex -- Build feature")
         assert "Task Created" in response
         assert "Build feature" in response
 

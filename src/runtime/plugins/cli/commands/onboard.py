@@ -133,12 +133,6 @@ PROVIDER_CHOICES = {
         "install_hint": "请先安装 Claude CLI，并确保 `claude` 已加入 PATH。",
         "auth_hint": "安装后运行 `claude login` 完成认证。",
     },
-    "gemini": {
-        "display": "Gemini CLI",
-        "command": "gemini",
-        "install_hint": "请先安装 Gemini CLI，并确保 `gemini` 已加入 PATH。",
-        "auth_hint": "安装后先完成 Gemini CLI 的登录或 API 配置。",
-    },
     "codex": {
         "display": "Codex CLI",
         "command": "codex",
@@ -467,62 +461,11 @@ class OnboardCommand(BaseCommand):
         self.printer.success(f"{ch['display']} 配置完成 ✓")
 
     def _wechat_qr_login(self) -> bool:
-        """在 onboard 流程中执行微信扫码登录
-
-        Returns:
-            True 如果登录成功，False 如果失败或取消
-        """
-        try:
-            from channels.wechat_login import (
-                LoginError,
-                LoginTimeoutError,
-                QRCodeExpiredError,
-                WeChatQRLogin,
-            )
-        except ImportError:
-            self.printer.error("无法导入微信登录模块")
-            return False
-
-        login_client = WeChatQRLogin()
-
-        def on_qr(qr_text: str) -> None:
-            self.printer.print()
-            self.printer.print(qr_text)
-            self.printer.print()
-
-        def on_status(status: str, message: str) -> None:
-            status_icons = {
-                "fetching_qr": "🔄",
-                "wait": "⏳",
-                "scaned": "📱",
-                "confirmed": "✅",
-                "expired": "⏰",
-                "success": "🎉",
-            }
-            icon = status_icons.get(status, "ℹ️")
-            self.printer.print(f"  {icon} {message}")
-
-        try:
-            result = login_client.login(on_qr=on_qr, on_status=on_status)
-        except (LoginTimeoutError, QRCodeExpiredError, LoginError) as e:
-            self.printer.error(str(e))
-            return False
-        except KeyboardInterrupt:
-            self.printer.warning("登录已取消")
-            return False
-        except Exception as e:
-            self.printer.error(f"未知错误: {e}")
-            return False
-
-        # 保存 Token
-        self.env_manager.set_value("WECHAT_BOT_TOKEN", result.bot_token)
-        self.printer.success("WECHAT_BOT_TOKEN 已保存到 .env")
-
-        if result.base_url and result.base_url != "https://ilinkai.weixin.qq.com":
-            self.env_manager.set_value("WECHAT_BASE_URL", result.base_url)
-            self.printer.success(f"WECHAT_BASE_URL 已保存: {result.base_url}")
-
-        return True
+        """精简版不再提供微信扫码登录。"""
+        self.printer.warning("当前精简版已移除消息渠道扫码登录流程。")
+        self.printer.list_item("如需继续精简，请跳过 Channel 登录并使用 Provider 主流程")
+        self.printer.list_item("如需旧能力，请从历史版本恢复对应 channel 模块")
+        return False
 
     # ─── Step 4: 安装依赖 ──────────────────────────────────────────────
 

@@ -10,7 +10,6 @@ Provides REST API endpoints for session management:
 
 from __future__ import annotations
 
-import pwd
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -28,12 +27,11 @@ from ..services.session_storage import get_session_storage
 from ..services.domain_events import query_domain_events
 from ..logger import get_logger
 from .nexus_auth import verify_nexus_auth
+from ..security.exec_user_guard import validate_exec_user
 from .nexus_models import (
     SuccessResponse,
     CancelResponse,
     UsernamesResponse,
-    AgentInfo,
-    AgentsResponse,
     SessionBulkRequest,
     SessionBulkResponse,
     CreateSessionRequest,
@@ -90,59 +88,6 @@ async def get_usernames():
     return UsernamesResponse(usernames=usernames)
 
 
-# ============ Agents API ============
-
-@router.get("/agents", response_model=AgentsResponse)
-async def get_agents():
-    """Get available agents by user and tool type.
-
-    Returns a list of available agent configurations for the UI selector.
-    """
-    home_base = Path(settings.user_home_base)
-    usernames: list[str] = []
-    try:
-        if home_base.exists():
-            for entry in home_base.iterdir():
-                if not entry.is_dir():
-                    continue
-                name = entry.name
-                try:
-                    pw = pwd.getpwnam(name)
-                except KeyError:
-                    continue
-                if pw.pw_shell in ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/nologin"):
-                    continue
-                usernames.append(name)
-        usernames = sorted(set(usernames))
-    except Exception:
-        usernames = []
-    if not usernames:
-        usernames = ["ubuntu"]
-
-    agent_types = [
-        {"type": "nexus", "label": "nexus"},
-        {"type": "claude", "label": "claude"},
-        {"type": "gemini", "label": "gemini"},
-        {"type": "codex", "label": "codex"},
-        {"type": "codebuddy", "label": "codebuddy"},
-    ]
-
-    agents: list[AgentInfo] = []
-    for username in usernames:
-        for entry in agent_types:
-            agent_type = entry["type"]
-            label = entry["label"]
-            agents.append(AgentInfo(
-                id=f"{username}::{agent_type}",
-                username=username,
-                agent_type=agent_type,
-                display_name=f"{username} / {label}",
-                available=True,
-            ))
-
-    return AgentsResponse(agents=agents)
-
-
 # ============ Session List API ============
 
 @router.post("/sessions", response_model=SessionMeta)
@@ -158,8 +103,8 @@ async def create_session(request: CreateSessionRequest):
     session_id = gen_session_id()
 
     username = request.username or settings.exec_user
-    exec_user = request.exec_user or username
-    provider = request.provider or getattr(settings, "default_provider", None) or "nexus"
+    exec_user = await validate_exec_user(request.exec_user or username)
+    provider = request.provider or getattr(settings, "default_provider", None) or "claude"
 
     meta = SessionMeta(
         id=session_id,
@@ -197,7 +142,7 @@ async def create_session(request: CreateSessionRequest):
 async def list_sessions(
     username: Optional[str] = Query(None, description="Username (optional, if not provided returns all sessions)"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Page size"),
+    page_size: int = Query(20, ge=1, le=200, description="Page size"),
     search: Optional[str] = Query(None, description="Search term for title"),
     status_param: Optional[str] = Query(None, alias="status", description="Filter by status"),
 ):
@@ -205,7 +150,7 @@ async def list_sessions(
 
     - **username**: Optional. If provided, returns only that user's sessions. If not, returns all sessions.
     - **page**: Page number (default: 1)
-    - **page_size**: Number of sessions per page (default: 20, max: 100)
+    - **page_size**: Number of sessions per page (default: 20, max: 200)
     - **search**: Optional search term to filter by title
     - **status**: Optional status filter (idle, running, completed, error)
     """
@@ -635,10 +580,11 @@ async def get_tmux_command(session_id: str):
             cli_parts += ["--resume", cli_session_id]
         else:
             cli_parts.append("-c")
-    elif provider == "gemini":
-        cli_parts.append("--resume latest")
     elif provider == "codex":
         cli_parts += ["resume", "--last"]
+    elif provider == "hermes":
+        if cli_session_id:
+            cli_parts += ["--resume", cli_session_id]
 
     cli_cmd = " ".join(cli_parts)
 

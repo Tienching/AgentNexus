@@ -49,7 +49,7 @@ class StreamArchiver:
             run_id: AG-UI run ID
             username: Username
             exec_user: Optional exec_user name
-            provider: Optional provider (e.g., claude, gemini)
+            provider: Optional provider (e.g., claude, codex)
             storage: Optional SessionStorage instance
         """
         self.session_id = session_id
@@ -235,11 +235,13 @@ class StreamArchiver:
             # RUN_ERROR immediately followed by RUN_FINISHED and reloads a
             # misleading "completed" snapshot.
             if self._saw_run_error:
+                self._finalize_pending_tool_calls(ToolCallStatus.FAILED)
                 self._storage.update_session_status(self.session_id, SessionStatus.ERROR)
                 logger.debug(f"Run finished skipped after prior error for session: {self.session_id}")
                 return
             
             # Update session status
+            self._finalize_pending_tool_calls(ToolCallStatus.COMPLETED)
             self._storage.update_session_status(self.session_id, SessionStatus.COMPLETED)
             
             # Write terminal event to event log so SSE stream knows to close
@@ -276,6 +278,7 @@ class StreamArchiver:
                 self._last_assistant_message_id = self._current_message_id
             
             # Update session status
+            self._finalize_pending_tool_calls(ToolCallStatus.FAILED, error=error)
             self._storage.update_session_status(self.session_id, SessionStatus.ERROR)
             
             # Write terminal event to event log so SSE stream knows to close
@@ -324,6 +327,7 @@ class StreamArchiver:
 
             if event_type == "TEXT_MESSAGE_START":
                 message_id = event_data.get("messageId") or f"msg-{int(time.time() * 1000)}"
+                orphan_tool_ids = list(dict.fromkeys(self._pending_tool_calls))
                 self._current_message_id = message_id
                 self._current_message_content = ""
                 self._current_tool_call_id = None
@@ -331,6 +335,7 @@ class StreamArchiver:
                 self._content_segments = []
                 self._segment_sequence = 0
                 self._last_text_content = ""
+                self._attach_pending_tool_calls_to_message(message_id, orphan_tool_ids)
 
                 msg = StoredMessage(
                     id=message_id,
@@ -346,6 +351,7 @@ class StreamArchiver:
                 msg_id = event_data.get("messageId")
                 if msg_id and msg_id != self._current_message_id:
                     # Switch message context
+                    orphan_tool_ids = list(dict.fromkeys(self._pending_tool_calls))
                     await self._finalize_current_message()
                     self._current_message_id = msg_id
                     self._current_message_content = ""
@@ -354,6 +360,7 @@ class StreamArchiver:
                     self._content_segments = []
                     self._segment_sequence = 0
                     self._last_text_content = ""
+                    self._attach_pending_tool_calls_to_message(msg_id, orphan_tool_ids)
                     msg = StoredMessage(
                         id=msg_id,
                         role="assistant",
@@ -646,6 +653,78 @@ class StreamArchiver:
         """Handle result event (end of response)"""
         # Finalize current message
         await self._finalize_current_message()
+
+    def _remove_pending_tool_call(self, tool_id: str) -> None:
+        self._pending_tool_calls = [
+            pending_id for pending_id in self._pending_tool_calls
+            if pending_id != tool_id
+        ]
+
+    def _attach_pending_tool_calls_to_message(self, message_id: str, tool_ids: List[str]) -> None:
+        """Attach unparented tool calls emitted before assistant text."""
+        existing_segment_ids = {
+            segment.tool_call_id
+            for segment in self._content_segments
+            if segment.type == "tool_call" and segment.tool_call_id
+        }
+
+        for tool_id in dict.fromkeys(tool_ids):
+            if not tool_id:
+                continue
+
+            tool_call = None
+            try:
+                tool_call = self._storage.get_tool_call(self.session_id, tool_id)
+            except Exception:
+                tool_call = None
+
+            parent_message_id = getattr(tool_call, "parent_message_id", None) if tool_call else None
+            if parent_message_id and parent_message_id != message_id:
+                continue
+
+            if tool_id not in self._pending_tool_calls:
+                self._pending_tool_calls.append(tool_id)
+
+            if tool_id not in existing_segment_ids:
+                self._content_segments.append(ContentSegment(
+                    type="tool_call",
+                    tool_call_id=tool_id,
+                    sequence=self._segment_sequence,
+                ))
+                existing_segment_ids.add(tool_id)
+                self._segment_sequence += 1
+
+            if tool_call and not parent_message_id:
+                try:
+                    tool_call.parent_message_id = message_id
+                    self._storage.update_tool_call(self.session_id, tool_call)
+                except Exception:
+                    pass
+
+    def _finalize_pending_tool_calls(self, status: ToolCallStatus, error: Optional[str] = None) -> None:
+        """Close tool calls that did not emit a terminal event before run end."""
+        try:
+            now_ms = int(time.time() * 1000)
+            for tool_call in self._storage.get_session_tool_calls(self.session_id):
+                current = tool_call.status.value if hasattr(tool_call.status, "value") else str(tool_call.status)
+                if current not in (ToolCallStatus.PENDING.value, ToolCallStatus.EXECUTING.value):
+                    continue
+
+                tool_call.status = status
+                tool_call.end_time = tool_call.end_time or now_ms
+                if error and not tool_call.error:
+                    tool_call.error = error
+                self._storage.update_tool_call(self.session_id, tool_call)
+                logger.info(
+                    "[Archiver] finalized pending tool call at run end: id=%s status=%s session=%s",
+                    tool_call.id,
+                    status.value,
+                    self.session_id,
+                )
+            self._pending_tool_calls = []
+            self._current_tool_call_id = None
+        except Exception as exc:
+            logger.warning("Failed to finalize pending tool calls: %s", exc)
 
     async def _finalize_current_message(self):
         """Finalize the current message being streamed"""

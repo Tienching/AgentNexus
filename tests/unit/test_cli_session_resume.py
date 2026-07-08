@@ -2,22 +2,19 @@
 """CLI session resume (cli_session_id) comprehensive tests.
 
 Validates that all 4 providers' executors correctly implement precise session
-resumption via cli_session_id, across all 6 executor variants:
+resumption via cli_session_id, across all 4 providers' executors:
 
 1. providers/claude/executor.py         - ClaudeExecutor
 2. providers/codebuddy/cli_executor.py  - CodebuddyCLIExecutor
-3. providers/gemini/executor.py         - GeminiExecutor (provider layer)
-4. providers/codex/cli_executor.py      - CodexCLIExecutor
-5. runtime/executors/gemini_executor.py - GeminiExecutor (runtime layer)
-6. runtime/executors/cli_executor.py    - CLIExecutor (runtime layer, multi-provider)
-7. server/services/cli_executor.py      - CLIExecutor (server layer, multi-provider)
+3. providers/codex/cli_executor.py      - CodexCLIExecutor
+4. runtime/executors/cli_executor.py    - CLIExecutor (runtime layer, multi-provider)
+5. server/services/cli_executor.py      - CLIExecutor (server layer, multi-provider)
 
 Resume Strategy Table:
 | Provider        | No cli_session_id | With cli_session_id      |
 |-----------------|-------------------|--------------------------|
 | Claude          | -c                | --resume SESSION_ID      |
 | CodeBuddy       | -c                | -r SESSION_ID            |
-| Gemini          | --resume latest   | --resume SESSION_ID      |
 | Codex           | resume --last     | resume SESSION_ID        |
 """
 
@@ -204,11 +201,11 @@ class TestCodebuddyProviderSessionResume:
         cfg.codebuddy_command = "codebuddy"
         cfg.timeout = 120
         cfg.user_home_base = "/home"
-        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        cfg.codebuddy_default_model = "glm-5v-flash"
         executor = CodebuddyCLIExecutor(config=cfg)
         cmd = executor._build_command(_make_context("Hello"))
         idx_model = cmd.index("--model")
-        assert cmd[idx_model + 1] == "gemini-3.5-flash"
+        assert cmd[idx_model + 1] == "glm-5v-flash"
 
     def test_explicit_model_overrides_default_model(self):
         """Request model keeps priority over the provider default model."""
@@ -217,7 +214,7 @@ class TestCodebuddyProviderSessionResume:
         cfg.codebuddy_command = "codebuddy"
         cfg.timeout = 120
         cfg.user_home_base = "/home"
-        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        cfg.codebuddy_default_model = "glm-5v-flash"
         executor = CodebuddyCLIExecutor(config=cfg)
         cmd = executor._build_command(_make_context("Hello", model="venus"))
         idx_model = cmd.index("--model")
@@ -260,53 +257,7 @@ class TestCodebuddyProviderSessionResume:
 
 
 # ===========================================================================
-# 3. providers/gemini/executor.py – GeminiExecutor (provider layer)
 # ===========================================================================
-
-class TestGeminiProviderSessionResume:
-    """providers/gemini/executor.py — precise session resume."""
-
-    @pytest.fixture
-    def executor(self):
-        from src.providers.gemini.executor import GeminiExecutor
-        cfg = Mock()
-        cfg.gemini_command = "gemini"
-        cfg.timeout = 120
-        cfg.user_home_base = "/home"
-        return GeminiExecutor(config=cfg)
-
-    def test_no_session_id_uses_resume_latest(self, executor):
-        """Without cli_session_id, chat_continue should use --resume latest."""
-        ctx = _make_context("Follow up", run_kind="chat_continue")
-        cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == "latest"
-
-    def test_with_session_id_uses_resume_uuid(self, executor):
-        """With cli_session_id, should use --resume SESSION_ID."""
-        ctx = _make_context("Follow up", run_kind="chat_continue",
-                            cli_session_id=TEST_SESSION_UUID)
-        cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == TEST_SESSION_UUID
-        assert "latest" not in cmd
-
-    def test_session_id_ignored_when_not_continue(self, executor):
-        """cli_session_id should not trigger resume on normal execution."""
-        ctx = _make_context("Hello", run_kind="",
-                            cli_session_id=TEST_SESSION_UUID)
-        cmd = executor._build_command(ctx)
-        assert "--resume" not in cmd
-
-    def test_no_claude_specific_flags(self, executor):
-        """Gemini should never include Claude-specific flags."""
-        ctx = _make_context("Follow up", run_kind="chat_continue",
-                            cli_session_id=TEST_SESSION_UUID)
-        cmd = executor._build_command(ctx)
-        assert "--include-partial-messages" not in cmd
-        assert "--verbose" not in cmd
-        assert "--dangerously-skip-permissions" not in cmd
-
 
 # ===========================================================================
 # 4. providers/codex/cli_executor.py – CodexCLIExecutor
@@ -372,41 +323,7 @@ class TestCodexProviderSessionResume:
 
 
 # ===========================================================================
-# 5. runtime/executors/gemini_executor.py – GeminiExecutor (runtime layer)
 # ===========================================================================
-
-class TestGeminiRuntimeSessionResume:
-    """runtime/executors/gemini_executor.py — precise session resume."""
-
-    @pytest.fixture
-    def executor(self):
-        from src.runtime.executors.gemini_executor import GeminiExecutor
-        cfg = Mock()
-        cfg.gemini_command = "gemini"
-        cfg.timeout = 120
-        cfg.user_home_base = "/home"
-        return GeminiExecutor(config=cfg)
-
-    def test_no_session_id_uses_resume_latest(self, executor):
-        ctx = _make_context("Follow up", run_kind="chat_continue")
-        cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == "latest"
-
-    def test_with_session_id_uses_resume_uuid(self, executor):
-        ctx = _make_context("Follow up", run_kind="chat_continue",
-                            cli_session_id=TEST_SESSION_UUID)
-        cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == TEST_SESSION_UUID
-        assert "latest" not in cmd
-
-    def test_session_id_ignored_when_not_continue(self, executor):
-        ctx = _make_context("Hello", run_kind="",
-                            cli_session_id=TEST_SESSION_UUID)
-        cmd = executor._build_command(ctx)
-        assert "--resume" not in cmd
-
 
 # ===========================================================================
 # 6. runtime/executors/cli_executor.py – CLIExecutor (runtime layer)
@@ -441,23 +358,6 @@ class TestCLIRuntimeSessionResume:
         assert cmd[idx_resume + 1] == TEST_SESSION_UUID
         assert "-c" not in cmd
 
-    # --- Gemini ---
-
-    def test_gemini_no_session_id_uses_resume_latest(self):
-        ex = self._make_executor(cmd_map={"gemini_user": "gemini"})
-        ctx = _make_context("Hello", exec_user="gemini_user")
-        cmd = ex._build_command(ctx, use_continue=True)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == "latest"
-
-    def test_gemini_with_session_id_uses_resume_uuid(self):
-        ex = self._make_executor(cmd_map={"gemini_user": "gemini"})
-        ctx = _make_context("Hello", exec_user="gemini_user",
-                            cli_session_id=TEST_SESSION_UUID)
-        cmd = ex._build_command(ctx, use_continue=True)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == TEST_SESSION_UUID
-        assert "latest" not in cmd
 
     # --- Codex ---
 
@@ -551,25 +451,6 @@ class TestCLIServerSessionResume:
         assert cmd[idx_resume + 1] == TEST_SESSION_UUID
         assert "-c" not in cmd
 
-    # --- Gemini ---
-
-    def test_gemini_no_session_id_uses_resume_latest(self, executor):
-        cmd = executor._build_command(
-            exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini",
-        )
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == "latest"
-
-    def test_gemini_with_session_id_uses_resume_uuid(self, executor):
-        cmd = executor._build_command(
-            exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini",
-            cli_session_id=TEST_SESSION_UUID,
-        )
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == TEST_SESSION_UUID
-        assert "latest" not in cmd
 
     # --- Codex ---
 
@@ -646,19 +527,6 @@ class TestCLIServerSessionResume:
         idx_resume = cmd.index("--resume")
         assert cmd[idx_resume + 1] == TEST_SESSION_UUID
         assert "-c" not in cmd
-
-    def test_gemini_session_id_with_alias_override(self, executor):
-        """Gemini alias should not affect resume UUID."""
-        cmd = executor._build_command(
-            exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini",
-            alias="gemini-internal",
-            cli_session_id=TEST_SESSION_UUID,
-        )
-        assert cmd[0] == "gemini-internal"
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == TEST_SESSION_UUID
-        assert "latest" not in cmd
 
     def test_codex_session_id_with_alias_override(self, executor):
         """Codex alias should not affect resume UUID."""
@@ -944,26 +812,6 @@ class TestCliSessionIdEdgeCases:
         )
         assert "-c" in cmd
         assert "--resume" not in cmd
-
-    def test_whitespace_only_treated_as_no_session(self):
-        """Whitespace-only cli_session_id should fallback to resume latest."""
-        ctx = _make_context("Follow up", run_kind="chat_continue",
-                            cli_session_id="   ")
-        # The RequestContext stores whatever is passed, but executors use
-        # `getattr(context, "cli_session_id", None) or None` which treats
-        # empty/whitespace strings as falsy → None.
-        from src.providers.gemini.executor import GeminiExecutor
-        cfg = Mock()
-        cfg.gemini_command = "gemini"
-        cfg.timeout = 120
-        cfg.user_home_base = "/home"
-        executor = GeminiExecutor(config=cfg)
-        cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
-        # "   " is truthy in Python so it won't be treated as None by `or None`
-        # But it's an invalid UUID - let's verify the behavior is at least consistent
-        # The executor should pass through the raw value
-        assert idx_resume >= 0
 
     def test_none_session_id_in_context(self):
         """Explicit None should not trigger resume."""

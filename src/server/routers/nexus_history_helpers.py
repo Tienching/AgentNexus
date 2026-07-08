@@ -37,7 +37,6 @@ PROVIDER_PARSER_MAP = {
     "claude": "claude",
     "codebuddy": "codebuddy",
     "codex": "codex",
-    "gemini": "gemini",
 }
 
 _history_observability = {

@@ -5,14 +5,8 @@ from pathlib import Path
 _SCRIPT_CANDIDATES = [
     Path(__file__).resolve().parents[2]
     / "src"
-    / "nexus"
-    / "skills"
-    / "skill-creator"
-    / "scripts"
-    / "init_skill.py",
-    Path(__file__).resolve().parents[2]
-    / "src"
-    / "nanobot"
+    / "core"
+    / "agent_runtime"
     / "skills"
     / "skill-creator"
     / "scripts"

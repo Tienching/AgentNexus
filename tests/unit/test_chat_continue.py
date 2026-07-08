@@ -21,39 +21,6 @@ def _make_context(content: str = "Hello", run_kind: str = "", **kw) -> RequestCo
 
 
 # ===========================================================================
-# 1. providers/gemini – GeminiExecutor
-# ===========================================================================
-
-class TestGeminiProviderContinue:
-    """providers/gemini/executor.py"""
-
-    @pytest.fixture
-    def executor(self):
-        from src.providers.gemini.executor import GeminiExecutor
-        cfg = Mock()
-        cfg.gemini_command = "gemini"
-        cfg.timeout = 120
-        cfg.user_home_base = "/home"
-        return GeminiExecutor(config=cfg)
-
-    def test_normal_no_resume(self, executor):
-        ctx = _make_context("Hello")
-        cmd = executor._build_command(ctx)
-        assert "--resume" not in cmd
-        assert "-p" in cmd
-        assert "Hello" in cmd
-
-    def test_chat_continue_adds_resume_latest(self, executor):
-        ctx = _make_context("Follow up", run_kind="chat_continue")
-        cmd = executor._build_command(ctx)
-        # --resume latest should appear before -p
-        idx_resume = cmd.index("--resume")
-        idx_p = cmd.index("-p")
-        assert cmd[idx_resume + 1] == "latest"
-        assert idx_resume < idx_p
-
-
-# ===========================================================================
 # 2. providers/codebuddy – CodebuddyCLIExecutor
 # ===========================================================================
 
@@ -129,34 +96,6 @@ class TestCodexProviderContinue:
 
 
 # ===========================================================================
-# 4. runtime/executors/gemini_executor – GeminiExecutor (runtime layer)
-# ===========================================================================
-
-class TestGeminiRuntimeContinue:
-    """runtime/executors/gemini_executor.py"""
-
-    @pytest.fixture
-    def executor(self):
-        from src.runtime.executors.gemini_executor import GeminiExecutor
-        cfg = Mock()
-        cfg.gemini_command = "gemini"
-        cfg.timeout = 120
-        cfg.user_home_base = "/home"
-        return GeminiExecutor(config=cfg)
-
-    def test_normal_no_resume(self, executor):
-        ctx = _make_context("Hello")
-        cmd = executor._build_command(ctx)
-        assert "--resume" not in cmd
-
-    def test_chat_continue_adds_resume_latest(self, executor):
-        ctx = _make_context("Follow up", run_kind="chat_continue")
-        cmd = executor._build_command(ctx)
-        idx_resume = cmd.index("--resume")
-        assert cmd[idx_resume + 1] == "latest"
-
-
-# ===========================================================================
 # 5. runtime/executors/cli_executor – CLIExecutor (runtime layer)
 # ===========================================================================
 
@@ -197,20 +136,6 @@ class TestCLIRuntimeProviderAware:
         assert "resume" in cmd
         assert "--last" in cmd
 
-    def test_gemini_command_uses_resume(self):
-        ex = self._make_executor_with_map(
-            cmd_map={"gemini_user": "gemini"},
-        )
-        ctx = _make_context("Hello", exec_user="gemini_user")
-        cmd = ex._build_command(ctx, use_continue=True)
-        assert "--resume" in cmd
-        assert "latest" in cmd
-        assert "-c" not in cmd
-        # Gemini must NOT have Claude-specific flags
-        assert "--include-partial-messages" not in cmd
-        assert "--verbose" not in cmd
-        assert "--dangerously-skip-permissions" not in cmd
-
     def test_no_continue_skips_all(self, executor):
         ctx = _make_context("Hello")
         cmd = executor._build_command(ctx, use_continue=False)
@@ -250,19 +175,6 @@ class TestCLIServerProviderAware:
         assert "resume" in cmd
         assert "--last" in cmd
 
-    def test_gemini_uses_resume(self, executor):
-        cmd = executor._build_command(
-            exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini",
-        )
-        assert "--resume" in cmd
-        assert "latest" in cmd
-        assert "-c" not in cmd
-        # Gemini must NOT have Claude-specific flags
-        assert "--include-partial-messages" not in cmd
-        assert "--verbose" not in cmd
-        assert "--dangerously-skip-permissions" not in cmd
-
     def test_codebuddy_uses_c(self, executor):
         cmd = executor._build_command(
             exec_user="ubuntu", content="Hello",
@@ -298,27 +210,6 @@ class TestCLIServerProviderAware:
         )
         assert "resume" not in cmd
         assert "--last" not in cmd
-
-    def test_gemini_command_maps_to_gemini(self, executor):
-        """gemini agent_type should produce 'gemini' as CLI command."""
-        cmd = executor._build_command(
-            exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini",
-        )
-        assert cmd[0] == "gemini"
-
-    def test_gemini_internal_command_maps_correctly(self, executor):
-        """gemini-internal as alias should produce 'gemini-internal' CLI command but gemini params."""
-        cmd = executor._build_command(
-            exec_user="ubuntu", content="Hello",
-            use_continue=True, agent_type="gemini",
-            alias="gemini-internal",
-        )
-        assert cmd[0] == "gemini-internal"
-        # Gemini must NOT have Claude-specific flags
-        assert "--include-partial-messages" not in cmd
-        assert "--verbose" not in cmd
-        assert "--dangerously-skip-permissions" not in cmd
 
     def test_codebuddy_command_maps_correctly(self, executor):
         """codebuddy agent_type should produce 'codebuddy' CLI command."""

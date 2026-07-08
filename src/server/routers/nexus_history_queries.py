@@ -202,9 +202,6 @@ def _merge_project_entry(merged_by_path: Dict[str, Dict[str, Any]], entry: Dict[
         int(bucket.get("last_active", 0) or 0),
         int(entry.get("last_active", 0) or 0),
     )
-    if entry.get("gemini_hash"):
-        bucket["gemini_hash"] = entry.get("gemini_hash")
-
 
 
 def _build_project_summaries(merged_by_path: Dict[str, Dict[str, Any]]) -> List[HistoryProjectSummary]:
@@ -234,7 +231,6 @@ def _build_project_summaries(merged_by_path: Dict[str, Dict[str, Any]]) -> List[
                 ],
                 total_sessions=int(bucket.get("total_sessions", 0) or 0),
                 last_active=int(bucket.get("last_active", 0) or 0),
-                gemini_hash=bucket.get("gemini_hash"),
             )
         )
     return result

@@ -35,10 +35,10 @@ class TestExplicitModelOverride:
         task = _make_task(
             description="debug why the service is broken",
             priority="thought",
-            model="gemini-2.5-pro",
+            model="glm-5v-turbo",
         )
         result = classify_task_model(task)
-        assert result == "gemini-2.5-pro", (
+        assert result == "glm-5v-turbo", (
             "When task.model is set explicitly it must be returned unchanged"
         )
 
