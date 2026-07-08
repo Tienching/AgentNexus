@@ -179,4 +179,3 @@ class HermesACPExecutor(BaseExecutor):
             except Exception:
                 pass
             return None, True
-
