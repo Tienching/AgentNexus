@@ -122,7 +122,7 @@ class Task(BaseModel):
     # Exec user isolation (Linux user for su command)
     exec_user: Optional[str] = None
 
-    # Provider pinned at task creation time (e.g., claude, gemini)
+    # Provider pinned at task creation time (e.g., claude, codex)
     provider: str = "claude"
     # Optional alias (defaults to provider)
     alias: Optional[str] = None

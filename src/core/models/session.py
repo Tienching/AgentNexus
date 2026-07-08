@@ -29,7 +29,7 @@ class SessionMeta(BaseModel):
     title: str = Field("New Session", description="Session title (first user message)")
     username: str = Field(..., description="Username")
     exec_user: Optional[str] = Field(None, description="Linux exec user for command execution")
-    provider: Optional[str] = Field(None, description="Provider (e.g., claude, gemini)")
+    provider: Optional[str] = Field(None, description="Provider (e.g., claude, codex)")
     alias: Optional[str] = Field(None, description="Alias (optional, defaults to provider)")
     prior_session_id: Optional[str] = Field(None, description="Explicit resume source session ID")
     prior_work_dir: Optional[str] = Field(None, description="Explicit prior working directory")

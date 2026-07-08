@@ -49,7 +49,7 @@ class StreamArchiver:
             run_id: AG-UI run ID
             username: Username
             exec_user: Optional Linux exec user
-            provider: Optional provider (e.g., claude, gemini)
+            provider: Optional provider (e.g., claude, codex)
             storage: Optional SessionStorage instance
         """
         self.session_id = session_id
