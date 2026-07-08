@@ -71,3 +71,6 @@ task-batches.json
 .omb/
 task.json
 *.zip
+.env.*
+!.env.example
+pytest-of-*/

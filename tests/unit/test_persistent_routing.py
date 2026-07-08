@@ -149,11 +149,11 @@ class TestShouldUsePersistent:
     # ── Provider check ───────────────────────────────────────────────
 
     def test_unsupported_provider_returns_false(self, executor_enabled):
-        req = _make_mock_request(agent_type="gemini", use_persistent=True)
+        req = _make_mock_request(agent_type="cursor", use_persistent=True)
         # Even with request override True, provider check should...
         # Actually, request override=True wins at step 2 before provider check
         # Let's test without request override
-        req2 = _make_mock_request(agent_type="gemini")
+        req2 = _make_mock_request(agent_type="cursor")
         storage = _make_mock_storage(persistent_mode=False)
         assert executor_enabled._should_use_persistent(req2, "s1", storage) is False
 
@@ -198,5 +198,5 @@ class TestTransitionHandling:
 
     def test_supports_persistent_check(self):
         """After model switch to unsupported provider, persistent should be False."""
-        assert PersistentProcessManager.supports_persistent("gemini") is False
+        assert PersistentProcessManager.supports_persistent("cursor") is False
         assert PersistentProcessManager.supports_persistent("claude") is True

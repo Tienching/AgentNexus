@@ -79,21 +79,6 @@ class TestCLIExecutorAlias:
         assert cmd[0] == "claude-internal"
         assert "-c" in cmd  # parameter format still follows claude (provider)
 
-    def test_alias_overrides_gemini_provider(self, executor):
-        cmd = executor._build_command(
-            exec_user="ubuntu",
-            content="Hello",
-            use_continue=True,
-            agent_type="gemini",
-            alias="gemini-internal",
-        )
-        assert cmd[0] == "gemini-internal"
-        assert "--resume" in cmd  # parameter format follows gemini
-        # Gemini must NOT have Claude-specific flags
-        assert "--include-partial-messages" not in cmd
-        assert "--verbose" not in cmd
-        assert "--dangerously-skip-permissions" not in cmd
-
     def test_no_alias_uses_provider(self, executor):
         cmd = executor._build_command(
             exec_user="ubuntu",
@@ -118,7 +103,7 @@ class TestCLIExecutorAlias:
         cfg = Mock()
         cfg.agent_cli_command_map = {}
         cfg.cli_command = "claude"
-        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        cfg.codebuddy_default_model = "glm-5v-flash"
         executor = CLIExecutor(config=cfg)
 
         cmd = executor._build_command(
@@ -129,7 +114,7 @@ class TestCLIExecutorAlias:
         )
 
         idx_model = cmd.index("--model")
-        assert cmd[idx_model + 1] == "gemini-3.5-flash"
+        assert cmd[idx_model + 1] == "glm-5v-flash"
 
     def test_codebuddy_provider_enables_native_analyst_team(self):
         cfg = Mock()
@@ -162,7 +147,7 @@ class TestCLIExecutorAlias:
         cfg = Mock()
         cfg.agent_cli_command_map = {}
         cfg.cli_command = "claude"
-        cfg.codebuddy_default_model = "gemini-3.5-flash"
+        cfg.codebuddy_default_model = "glm-5v-flash"
         executor = CLIExecutor(config=cfg)
 
         cmd = executor._build_command(

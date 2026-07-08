@@ -272,9 +272,6 @@ class TestProviderSupport:
     def test_codebuddy_supported(self):
         assert PersistentProcessManager.supports_persistent("codebuddy") is True
 
-    def test_gemini_not_supported(self):
-        assert PersistentProcessManager.supports_persistent("gemini") is False
-
     def test_codex_not_supported(self):
         assert PersistentProcessManager.supports_persistent("codex") is False
 

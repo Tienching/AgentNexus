@@ -24,6 +24,12 @@ from urllib.parse import urlparse
 
 import httpx
 
+from src.core.agent_runtime.security.network import (
+    validate_redirect_location,
+    validate_resolved_url,
+    validate_url_target,
+)
+
 logger = logging.getLogger(__name__)
 
 # Defaults
@@ -48,6 +54,26 @@ MIME_EXT_MAP = {
     "image/bmp": ".bmp",
     "image/svg+xml": ".svg",
 }
+
+
+async def _get_with_safe_redirects(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    max_redirects: int = 5,
+) -> httpx.Response:
+    """GET a URL while validating every redirect target before following it."""
+    current = url
+    for _ in range(max_redirects + 1):
+        resp = await client.get(current)
+        if resp.status_code not in {301, 302, 303, 307, 308}:
+            return resp
+        location = resp.headers.get("location")
+        ok, err, next_url = validate_redirect_location(current, location)
+        if not ok:
+            raise ValueError(f"Blocked unsafe redirected URL: {err}")
+        current = next_url
+    raise ValueError("Too many redirects")
 
 
 def _fallback_dir(session_id: str) -> Path:
@@ -326,9 +352,19 @@ async def download_image(
         out_dir = _fallback_dir(session_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # SSRF protection
+    ok, err = validate_url_target(url)
+    if not ok:
+        logger.warning("Blocked unsafe image URL: %s (%s)", err, url[:80])
+        return None
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await _get_with_safe_redirects(client, url)
+            final_url = str(resp.url)
+            ok, err = validate_resolved_url(final_url)
+            if not ok:
+                logger.warning("Blocked unsafe redirected image URL: %s (%s -> %s)", err, url[:80], final_url[:80])
+                return None
             if resp.status_code != 200:
                 logger.warning(f"Image download failed: HTTP {resp.status_code} for {url}")
                 return None
@@ -483,9 +519,19 @@ async def download_file(
     Returns:
         Local file path on success, ``None`` on failure.
     """
+    # SSRF protection
+    ok, err = validate_url_target(url)
+    if not ok:
+        logger.warning("Blocked unsafe file URL: %s (%s)", err, url[:80])
+        return None
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            resp = await client.get(url)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await _get_with_safe_redirects(client, url)
+            final_url = str(resp.url)
+            ok, err = validate_resolved_url(final_url)
+            if not ok:
+                logger.warning("Blocked unsafe redirected file URL: %s (%s -> %s)", err, url[:80], final_url[:80])
+                return None
             if resp.status_code != 200:
                 logger.warning(f"File download failed: HTTP {resp.status_code} for {url}")
                 return None
@@ -560,7 +606,7 @@ async def _download_file_via_agui_media_resolver(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             resp = await client.post(resolver_url, json=payload, headers=headers)
         if resp.status_code != 200:
             logger.warning(

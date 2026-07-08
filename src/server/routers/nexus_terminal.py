@@ -10,9 +10,6 @@ Protocol (JSON messages):
     {"type": "input", "data": "..."}      – keyboard input
     {"type": "resize", "cols": N, "rows": N}  – terminal resize
     {"type": "ping"}                       – keepalive
-    {"type": "teleport_connect", "remote_url": "...", "credentials": {...}}  – connect remote
-    {"type": "teleport_execute", "session_id": "...", "task": "..."}        – remote exec
-    {"type": "teleport_sync", "session_id": "..."}                          – sync state
 
   Server → Client:
     {"type": "output", "data": "..."}      – terminal output (base64)
@@ -20,9 +17,6 @@ Protocol (JSON messages):
     {"type": "pong"}                       – keepalive response
     {"type": "error", "message": "..."}    – error
     {"type": "disconnected"}               – process ended
-    {"type": "teleport_output", "session_id": "...", "data": "..."}  – remote output
-    {"type": "teleport_result", "session_id": "...", "result": {...}}  – remote result
-    {"type": "teleport_sync_result", "session_id": "...", "result": {...}}  – sync result
 """
 
 from __future__ import annotations
@@ -30,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -37,8 +32,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from ..config import settings
 from ..logger import get_logger
+from ..utils.error_sanitize import safe_error_message
 from ..services.session_storage import get_session_storage
-from .nexus_auth import _is_auth_required, _validate_session
+from .nexus_auth import _is_auth_required, _get_api_token, _validate_session
 
 logger = get_logger(__name__)
 
@@ -96,10 +92,11 @@ def _build_tmux_command(session_meta, storage) -> dict:
             cli_parts += ["--resume", cli_session_id]
         else:
             cli_parts.append("-c")
-    elif provider == "gemini":
-        cli_parts.append("--resume latest")
     elif provider == "codex":
         cli_parts += ["resume", "--last"]
+    elif provider == "hermes":
+        if cli_session_id:
+            cli_parts += ["--resume", cli_session_id]
 
     cli_cmd = " ".join(cli_parts)
 
@@ -123,14 +120,24 @@ async def terminal_ws(
     """WebSocket endpoint: interactive terminal for a nexus session."""
 
     # --- Auth ---
-    if _is_auth_required():
+    # Require auth when EITHER a password or an API token is configured.
+    auth_needed = _is_auth_required() or bool(_get_api_token())
+    if auth_needed:
         # Try query param token first, then cookie from WebSocket headers
         auth_token = token
         if not auth_token:
             # WebSocket connections send cookies in headers
             cookies = websocket.cookies
             auth_token = cookies.get("nexus_token")
-        if not auth_token or not _validate_session(auth_token):
+        if not auth_token:
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+        # Accept either a valid session token or the configured API token.
+        api_token = _get_api_token()
+        is_valid = _validate_session(auth_token) or (
+            bool(api_token) and secrets.compare_digest(auth_token, api_token)
+        )
+        if not is_valid:
             await websocket.close(code=4401, reason="Unauthorized")
             return
 
@@ -158,7 +165,7 @@ async def terminal_ws(
         )
     except Exception as e:
         logger.error(f"Failed to create terminal for {session_id}: {e}", exc_info=True)
-        await websocket.send_json({"type": "error", "message": f"Failed to create terminal: {e}"})
+        await websocket.send_json({"type": "error", "message": safe_error_message(e)})
         await websocket.close(code=4500, reason="Terminal creation failed")
         return
 
@@ -218,14 +225,6 @@ async def terminal_ws(
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
 
-            elif msg_type == "teleport_connect":
-                await _handle_teleport_connect(websocket, msg)
-
-            elif msg_type == "teleport_execute":
-                await _handle_teleport_execute(websocket, msg)
-
-            elif msg_type == "teleport_sync":
-                await _handle_teleport_sync(websocket, msg)
 
     except WebSocketDisconnect:
         logger.info(f"Terminal WebSocket disconnected: session={session_id}")
@@ -241,96 +240,3 @@ async def terminal_ws(
 
         # Don't kill the tmux session on disconnect — allow reconnect
         logger.info(f"Terminal WebSocket closed: session={session_id}, terminal={terminal_id}")
-
-
-# ── Teleport WebSocket Command Handlers ───────────────────────────
-
-async def _handle_teleport_connect(websocket: WebSocket, msg: dict) -> None:
-    """Handle teleport_connect command: connect to a remote environment."""
-    from ..services.teleport_bridge import TeleportBridge
-
-    remote_url = msg.get("remote_url", "")
-    credentials = msg.get("credentials", {})
-    metadata = msg.get("metadata", {})
-
-    if not remote_url:
-        await websocket.send_json({"type": "error", "message": "remote_url is required"})
-        return
-
-    bridge = TeleportBridge.get_instance()
-    try:
-        session = await bridge.connect(remote_url, credentials, metadata)
-        await websocket.send_json({
-            "type": "teleport_result",
-            "session_id": session.id,
-            "result": session.to_dict(),
-        })
-    except Exception as e:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Teleport connect failed: {e}",
-        })
-
-
-async def _handle_teleport_execute(websocket: WebSocket, msg: dict) -> None:
-    """Handle teleport_execute command: execute a task on a remote environment."""
-    from ..services.teleport_bridge import TeleportBridge
-
-    session_id = msg.get("session_id", "")
-    task = msg.get("task", "")
-
-    if not session_id or not task:
-        await websocket.send_json({"type": "error", "message": "session_id and task are required"})
-        return
-
-    bridge = TeleportBridge.get_instance()
-    try:
-        # Stream output back to the WebSocket
-        async for chunk in bridge.execute_remote_streaming(session_id, task):
-            await websocket.send_json({
-                "type": "teleport_output",
-                "session_id": session_id,
-                "data": chunk,
-            })
-
-        # Send final result
-        result = bridge.get_result(session_id)  # may be None
-        await websocket.send_json({
-            "type": "teleport_result",
-            "session_id": session_id,
-            "result": result.to_dict() if result else {"status": "unknown"},
-        })
-    except ValueError as e:
-        await websocket.send_json({"type": "error", "message": str(e)})
-    except Exception as e:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Teleport execute failed: {e}",
-        })
-
-
-async def _handle_teleport_sync(websocket: WebSocket, msg: dict) -> None:
-    """Handle teleport_sync command: sync state with remote environment."""
-    from ..services.teleport_bridge import TeleportBridge
-
-    session_id = msg.get("session_id", "")
-
-    if not session_id:
-        await websocket.send_json({"type": "error", "message": "session_id is required"})
-        return
-
-    bridge = TeleportBridge.get_instance()
-    try:
-        result = await bridge.sync_state(session_id)
-        await websocket.send_json({
-            "type": "teleport_sync_result",
-            "session_id": session_id,
-            "result": result.to_dict(),
-        })
-    except ValueError as e:
-        await websocket.send_json({"type": "error", "message": str(e)})
-    except Exception as e:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Teleport sync failed: {e}",
-        })

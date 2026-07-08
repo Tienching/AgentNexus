@@ -2,7 +2,7 @@
 """CLI Command Executor Service
 
 Responsibilities:
-- Build and execute CLI commands for all providers (Claude, Gemini, Codex, CodeBuddy)
+- Build and execute CLI commands for all providers (Claude, Codex, CodeBuddy)
 - Process streaming output
 - 格式化 SSE 响应
 """
@@ -19,6 +19,7 @@ from typing import AsyncGenerator, List, Dict, Any, Optional
 
 from ..models import RequestModel
 from ..config import settings
+from ..security.exec_user_guard import validate_exec_user
 from ..logger import get_logger
 from .user_directory import UserDirectoryManager
 from src.runtime.commands.slash.handler import SlashCommandHandler, SLASH_COMMANDS
@@ -153,6 +154,7 @@ class CLIExecutor:
         if not request.user:
             logger.error("Missing required user parameter", extra={"exec_user": exec_user})
             raise ValueError("用户名参数是必需的，请在请求中提供 'user' 字段")
+        exec_user = await validate_exec_user(exec_user)
 
         # 清理输入内容
         cleaned_content = self._clean_content(request.content)
@@ -453,7 +455,7 @@ class CLIExecutor:
             agent_type = binding.provider
 
         # In /workspace -t mode, override agent_type with the task's provider
-        # so that the correct resume mechanism is used (gemini -> --resume latest,
+        # so that the correct resume mechanism is used (per-provider differences),
         # codex -> skip -c, claude -> -c).
         workspace_alias = getattr(binding, "alias", None) if binding else None
         if exec_dir_override and not workspace_alias:
@@ -1205,7 +1207,7 @@ class CLIExecutor:
             alias: CLI 命令名覆盖（如 claude-internal），不影响参数格式
             model: Explicit LLM model name override. Inline --model in content takes priority.
             cli_session_id: Specific CLI session UUID for precise resume.
-                Provider-specific: claude/gemini use --resume, codebuddy uses -r,
+                Provider-specific: claude uses --resume, codebuddy uses -r,
                 codex uses resume SESSION_ID.
             image_paths: Local image file paths to inject into the prompt.
             file_paths: Local file paths (non-image) to inject into the prompt.
@@ -1224,7 +1226,6 @@ class CLIExecutor:
         provider_command_map = {
             "claude": "claude",
             "codex": "codex",
-            "gemini": "gemini",
             "codebuddy": "codebuddy",
         }
 
@@ -1243,7 +1244,6 @@ class CLIExecutor:
             cmd.append("code")
 
         is_codex = provider == "codex"
-        is_gemini = provider == "gemini"
 
         if cleaned_content.lower() == "/clear":
             message = "你好"
@@ -1296,17 +1296,11 @@ class CLIExecutor:
         # When cli_session_id is available, use precise session resume:
         #   - claude: --resume SESSION_ID (instead of -c which is "latest")
         #   - codebuddy: -r SESSION_ID (instead of -c)
-        #   - gemini: --resume SESSION_ID (instead of --resume latest)
         #   - codex: resume SESSION_ID (instead of resume --last)
         # Fallback to generic "latest" resume when no specific session ID.
         if use_continue and cleaned_content.lower() != "/clear":
             if is_codex:
                 pass  # codex uses "resume ..." appended after prompt
-            elif is_gemini:
-                if cli_session_id:
-                    cmd.extend(["--resume", cli_session_id])
-                else:
-                    cmd.extend(["--resume", "latest"])
             elif is_codebuddy_provider:
                 if cli_session_id:
                     cmd.extend(["-r", cli_session_id])
@@ -1326,7 +1320,6 @@ class CLIExecutor:
         #       -p is a boolean flag (--print), prompt is positional
         #       flags: --output-format stream-json --include-partial-messages --verbose
         #       safety: --dangerously-skip-permissions
-        #   - gemini:
         #       -p/--prompt is a [string] option — MUST be immediately followed by
         #       the prompt text (e.g. -p "hello").  Other flags must NOT sit between
         #       -p and the prompt.
@@ -1350,12 +1343,6 @@ class CLIExecutor:
                     cmd.extend(["resume", cli_session_id])
                 else:
                     cmd.extend(["resume", "--last"])
-        elif is_gemini:
-            # Gemini: -p <prompt>, --output-format stream-json only
-            cmd.extend(["--output-format", "stream-json"])
-            if model_param:
-                cmd.extend(["--model", model_param])
-            cmd.extend(["-p", message])
         elif is_claude or is_codebuddy:
             # Claude/CodeBuddy: full flag set
             cmd.extend([

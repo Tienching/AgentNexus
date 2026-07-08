@@ -14,27 +14,13 @@ from pydantic import ValidationError
 
 from .config import Settings, settings
 from .middleware import CorrelationMiddleware
-from .routers import chat_router, health_router, channels_router
+from .middleware.security_headers import SecurityHeadersMiddleware
+from .middleware.rate_limit import RateLimitMiddleware
+from .routers import chat_router, health_router
 from .routers.nexus import router as nexus_router
-from .routers.nexus_admin import router as nexus_admin_router
 from .routers.nexus_auth import router as nexus_auth_router
 from .routers.nexus_history import router as nexus_history_router
-from .routers.nexus_ops import router as nexus_ops_router
-from .routers.nexus_schedules import router as nexus_schedules_router
-from .routers.nexus_security import router as nexus_security_router
-from .routers.nexus_system import router as nexus_system_router
 from .routers.nexus_terminal import router as nexus_terminal_router
-from .routers.nexus_utils import router as nexus_utils_router
-from .routers.nexus_runs import router as nexus_runs_router
-from .routers.nexus_runtimes import router as nexus_runtimes_router
-from .routers.nexus_missions import router as nexus_missions_router
-from .routers.nexus_evolution import router as nexus_evolution_router
-from .routers.nexus_features import router as nexus_features_router
-from .routers.nexus_permissions import router as nexus_permissions_router
-from .routers.nexus_agents import router as nexus_agents_router
-from .routers.nexus_agent_templates import router as nexus_agent_templates_router
-from .routers.nexus_events import router as nexus_events_router
-from .routers.nexus_teleport import router as nexus_teleport_router
 from .logger import setup_logger, get_logger
 from .services import (
     TaskQueue,
@@ -62,9 +48,7 @@ RALPH_LOOP_RETRY_SIGNAL = "__RALPH_LOOP_RETRY__"
 STARTUP_SUBSYSTEMS = {
     "task_executor": "Task Executor",
     "task_scheduler": "Task Scheduler",
-    "channel_service": "Channel Service",
     "terminal_manager": "Terminal Manager",
-    "evolution_service": "Evolution Service",
 }
 
 
@@ -72,9 +56,7 @@ STARTUP_SUBSYSTEMS = {
 class AppStartupPolicy:
     start_task_executor: bool = True
     start_task_scheduler: bool = True
-    start_channel_service: bool = True
     start_terminal_manager: bool = True
-    start_evolution_service: bool = True
 
 
 def create_app_settings(
@@ -231,7 +213,6 @@ async def lifespan(app: FastAPI):
 
     # 启动定时调度器 (Cron Scheduler)
     scheduler = None
-    schedule_storage = None  # Shared with evolution_service
     if not startup_policy.start_task_scheduler:
         _record_startup_state(
             app,
@@ -283,27 +264,11 @@ async def lifespan(app: FastAPI):
             from src.runtime.execution.scheduler import create_and_start_scheduler
 
             schedule_storage = ScheduleStorage(exec_user=exec_user)
-
-            # Evolution callback: wired up later when evolution_service starts.
-            # We store a reference that can be updated after evolution_service init.
-            _evo_callback_ref = {"fn": None}
-
-            async def _evolution_schedule_callback(schedule):
-                """Bridge: TaskScheduler → EvolutionService.on_schedule_fired."""
-                if _evo_callback_ref["fn"] is not None:
-                    await _evo_callback_ref["fn"](schedule)
-                else:
-                    from loguru import logger as _l
-                    _l.warning("Evolution schedule {} fired but no callback registered yet", schedule.id)
-
             scheduler = await create_and_start_scheduler(
                 schedule_storage=schedule_storage,
                 task_queue=_task_queue,
                 poll_interval=app_settings.scheduler_poll_interval,
-                evolution_callback=_evolution_schedule_callback,
             )
-            # Store callback ref so evolution_service can wire itself in later
-            app.state._evo_callback_ref = _evo_callback_ref
 
             logger.info(f"Task scheduler started (poll_interval={app_settings.scheduler_poll_interval}s)")
             _record_startup_state(
@@ -319,62 +284,6 @@ async def lifespan(app: FastAPI):
             _record_startup_state(
                 app,
                 "task_scheduler",
-                status="unhealthy",
-                message=f"Startup failed: {e}",
-                required=True,
-                detail={"error": str(e), "exception_type": type(e).__name__},
-            )
-
-    # 启动 Channel 服务（Telegram, Slack, Discord 等）
-    channel_service = None
-    if not startup_policy.start_channel_service:
-        _record_startup_state(
-            app,
-            "channel_service",
-            status="disabled",
-            message="Skipped by app startup policy",
-            required=False,
-            detail={"enabled": False, "reason": "startup_policy"},
-        )
-    else:
-        try:
-            from .services.channel_service import create_channel_service
-            channel_service = await create_channel_service()
-            if channel_service:
-                await channel_service.start()
-                logger.info("Channel service started")
-                _record_startup_state(
-                    app,
-                    "channel_service",
-                    status="healthy",
-                    message="Started",
-                    required=True,
-                    detail={"configured": True},
-                )
-            else:
-                _record_startup_state(
-                    app,
-                    "channel_service",
-                    status="disabled",
-                    message="No channels configured",
-                    required=False,
-                    detail={"configured": False},
-                )
-        except ImportError as e:
-            logger.debug(f"Channel service not available: {e}")
-            _record_startup_state(
-                app,
-                "channel_service",
-                status="unhealthy",
-                message=f"Startup failed: {e}",
-                required=True,
-                detail={"error": str(e), "exception_type": type(e).__name__},
-            )
-        except Exception as e:
-            logger.warning(f"Failed to start channel service: {e}")
-            _record_startup_state(
-                app,
-                "channel_service",
                 status="unhealthy",
                 message=f"Startup failed: {e}",
                 required=True,
@@ -418,58 +327,6 @@ async def lifespan(app: FastAPI):
                 detail={"error": str(e), "exception_type": type(e).__name__},
             )
 
-    # 启动自我进化系统（如果启用）
-    evolution_service = None
-    if not startup_policy.start_evolution_service:
-        _record_startup_state(
-            app,
-            "evolution_service",
-            status="disabled",
-            message="Skipped by app startup policy",
-            required=False,
-            detail={"enabled": False, "reason": "startup_policy"},
-        )
-    elif app_settings.evolution_enabled:
-        try:
-            from .services.evolution_service import EvolutionService
-            evolution_service = EvolutionService.create()
-            # Pass schedule_storage so evolution schedules are registered in Redis
-            await evolution_service.start(schedule_storage=schedule_storage)
-            # Wire the evolution callback so TaskScheduler can invoke it
-            _evo_cb_ref = getattr(app.state, "_evo_callback_ref", None)
-            if _evo_cb_ref is not None:
-                _evo_cb_ref["fn"] = evolution_service.on_schedule_fired
-            logger.info("Evolution service started")
-            # Expose to routers via app state
-            app.state.evolution_service = evolution_service
-            _record_startup_state(
-                app,
-                "evolution_service",
-                status="healthy",
-                message="Started",
-                required=True,
-                detail={"enabled": True},
-            )
-        except Exception as e:
-            logger.warning(f"Failed to start evolution service: {e}")
-            _record_startup_state(
-                app,
-                "evolution_service",
-                status="unhealthy",
-                message=f"Startup failed: {e}",
-                required=True,
-                detail={"error": str(e), "exception_type": type(e).__name__},
-            )
-    else:
-        _record_startup_state(
-            app,
-            "evolution_service",
-            status="disabled",
-            message="Disabled by configuration",
-            required=False,
-            detail={"enabled": False},
-        )
-
     startup_subsystems = getattr(app.state, "startup_subsystems", {})
     required_startup_failures = []
     for subsystem, state in startup_subsystems.items():
@@ -502,14 +359,6 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         # 关闭时
-        # 停止自我进化系统
-        if evolution_service:
-            try:
-                await evolution_service.stop()
-                logger.info("Evolution service stopped")
-            except Exception as e:
-                logger.error(f"Error stopping evolution service: {e}")
-
         # 停止 Terminal Manager
         if terminal_manager:
             try:
@@ -517,14 +366,6 @@ async def lifespan(app: FastAPI):
                 logger.info("Terminal manager stopped")
             except Exception as e:
                 logger.error(f"Error stopping terminal manager: {e}")
-
-        # 停止 Channel 服务
-        if channel_service:
-            try:
-                await channel_service.stop()
-                logger.info("Channel service stopped")
-            except Exception as e:
-                logger.error(f"Error stopping channel service: {e}")
 
         # 停止定时调度器
         if scheduler:
@@ -617,31 +458,19 @@ def _configure_app(app: FastAPI, app_settings: Settings) -> None:
 
     # 添加关联ID中间件
     app.add_middleware(CorrelationMiddleware, metrics=metrics)
+    # Rate limiter registered outermost so brute-force / DoS traffic is
+    # rejected before any other processing. Disabled when env disables it.
+    RateLimitMiddleware_enabled = str(getattr(app_settings, "rate_limit_enabled", True)).lower() not in {"0", "false", "no"}
+    app.add_middleware(RateLimitMiddleware, enabled=RateLimitMiddleware_enabled)
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # 注册路由
     app.include_router(health_router)
     app.include_router(chat_router)
-    app.include_router(channels_router)
-    app.include_router(nexus_admin_router)
     app.include_router(nexus_auth_router)
     app.include_router(nexus_router)
     app.include_router(nexus_history_router)
-    app.include_router(nexus_ops_router)
-    app.include_router(nexus_schedules_router)
-    app.include_router(nexus_security_router)
-    app.include_router(nexus_system_router)
     app.include_router(nexus_terminal_router)
-    app.include_router(nexus_utils_router)
-    app.include_router(nexus_runs_router)
-    app.include_router(nexus_runtimes_router)
-    app.include_router(nexus_missions_router)
-    app.include_router(nexus_evolution_router)
-    app.include_router(nexus_features_router)
-    app.include_router(nexus_permissions_router)
-    app.include_router(nexus_agents_router)
-    app.include_router(nexus_agent_templates_router)
-    app.include_router(nexus_events_router)
-    app.include_router(nexus_teleport_router)
 
     # Mount static files for NexusHub Web UI (with cache-control middleware)
     static_dir = os.path.join(os.path.dirname(__file__), "static", "nexus")
@@ -727,18 +556,3 @@ def create_app_with_overrides(
 
 # 创建FastAPI应用
 app = create_app()
-
-
-def get_agent_loop():
-    """Get the primary AgentLoop instance from the NanobotExecutor pool.
-
-    Returns the first available loop, or None if no loops are running.
-    """
-    try:
-        from src.providers.nanobot.executor import _LoopPool
-        instances = _LoopPool._instances
-        if instances:
-            return next(iter(instances.values()))
-    except Exception:
-        pass
-    return None

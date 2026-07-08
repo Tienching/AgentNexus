@@ -10,6 +10,7 @@ import httpx
 from typing import List, Dict, Any, Optional
 
 from ..logger import get_logger
+from src.core.agent_runtime.security.network import validate_url_target
 
 logger = get_logger(__name__)
 
@@ -48,6 +49,12 @@ class CallbackHandler:
 
         callback_data = self._build_callback_payload(messages, request_data)
         full_response = callback_data.get("markdown", {}).get("content", "")
+
+        # SSRF protection: reject callbacks to private/internal/loopback targets.
+        ok, err = validate_url_target(response_url)
+        if not ok:
+            logger.warning("Blocked unsafe callback response_url: %s", err)
+            return False
 
         logger.info(
             "Sending callback to response_url",

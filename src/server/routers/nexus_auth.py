@@ -67,7 +67,11 @@ def _is_auth_required() -> bool:
 
 
 def _get_api_token() -> str:
-    return (os.getenv("NEXUS_AUTH_TOKEN") or "").strip()
+    # Prefer the Settings-managed value (loaded from .env via pydantic), so the
+    # token works regardless of how the process is launched. Fall back to the
+    # raw environment for explicit `export NEXUS_AUTH_TOKEN=...` usage.
+    val = getattr(settings, "nexus_auth_token", None) or os.getenv("NEXUS_AUTH_TOKEN")
+    return (val or "").strip()
 
 
 def _verify_password(password: str) -> bool:
@@ -205,6 +209,19 @@ def _build_authenticated_user(request: Request, *, allow_header_user: bool = Fal
     # otherwise any token holder can spoof audit actors.
     header_user = request.headers.get("X-Nexus-User") if allow_header_user else None
     username = (header_user or settings.exec_user or "nexus").strip() or "nexus"
+    # Privilege is now tied to HOW the user was authenticated:
+    #   - allow_header_user=True means "no real credential was checked" (the
+    #     development / open-deployment fallback). Such callers get the least
+    #     privilege (VIEWER) and never administrative scopes, so an unauthenticated
+    #     deployment cannot mutate the control plane.
+    #   - allow_header_user=False means a real token or password session matched,
+    #     so the caller is trusted as ADMIN.
+    if allow_header_user:
+        logger.warning(
+            "Granting VIEWER role to unauthenticated request (auth not configured); "
+            "set NEXUS_PASSWORD or NEXUS_AUTH_TOKEN to enforce real authentication."
+        )
+        return AuthenticatedUser(username=username, role=Role.VIEWER, scopes=[])
     return AuthenticatedUser(username=username, role=Role.ADMIN, scopes=["admin"])
 
 
@@ -242,7 +259,9 @@ async def verify_nexus_auth(request: Request) -> bool:
 
     api_token = _get_api_token()
     if api_token:
-        if token and secrets.compare_digest(token, api_token):
+        token_matches_api_key = bool(token and secrets.compare_digest(token, api_token))
+        token_matches_password_session = bool(_is_auth_required() and _validate_session(token))
+        if token_matches_api_key or token_matches_password_session:
             user = _build_authenticated_user(request, allow_header_user=False)
             request.state.nexus_user = user
             set_current_user(user)
@@ -286,7 +305,13 @@ async def auth_status(request: Request):
     token = get_auth_token(request)
     api_token = _get_api_token()
     if api_token:
-        authenticated = bool(token and secrets.compare_digest(token, api_token))
+        authenticated = bool(
+            token
+            and (
+                secrets.compare_digest(token, api_token)
+                or (_is_auth_required() and _validate_session(token))
+            )
+        )
     else:
         authenticated = _validate_session(token)
     
@@ -299,18 +324,27 @@ async def login(request: LoginRequest, response: Response, http_request: Request
 
     If NEXUS_PASSWORD is not set, always succeeds.
     """
-    if not _is_auth_required():
-        return LoginResponse(success=True, message="Authentication not required")
+    api_token = _get_api_token()
+    password_required = _is_auth_required()
 
-    if not _verify_password(request.password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid password",
-        )
-
-    # Generate and store session token
-    token = _generate_token()
-    _create_session(token)
+    if not password_required:
+        if not api_token:
+            return LoginResponse(success=True, message="Authentication not required")
+        if not secrets.compare_digest((request.password or "").encode("utf-8"), api_token.encode("utf-8")):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid password",
+            )
+        token = api_token
+    else:
+        if not _verify_password(request.password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid password",
+            )
+        # Generate and store session token for password-based UI logins.
+        token = _generate_token()
+        _create_session(token)
 
     # Set cookie — only mark Secure when behind HTTPS to avoid
     # silent cookie rejection on plain-HTTP deployments.
