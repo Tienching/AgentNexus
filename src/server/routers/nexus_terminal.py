@@ -34,7 +34,7 @@ from ..config import settings
 from ..logger import get_logger
 from ..utils.error_sanitize import safe_error_message
 from ..services.session_storage import get_session_storage
-from .nexus_auth import _is_auth_required, _get_api_token, _validate_session
+from .nexus_auth import _connection_settings, _is_auth_required, _get_api_token, _validate_session
 
 logger = get_logger(__name__)
 
@@ -121,7 +121,8 @@ async def terminal_ws(
 
     # --- Auth ---
     # Require auth when EITHER a password or an API token is configured.
-    auth_needed = _is_auth_required() or bool(_get_api_token())
+    app_settings = _connection_settings(websocket)
+    auth_needed = _is_auth_required(app_settings) or bool(_get_api_token(app_settings))
     if auth_needed:
         # Try query param token first, then cookie from WebSocket headers
         auth_token = token
@@ -133,7 +134,7 @@ async def terminal_ws(
             await websocket.close(code=4401, reason="Unauthorized")
             return
         # Accept either a valid session token or the configured API token.
-        api_token = _get_api_token()
+        api_token = _get_api_token(app_settings)
         is_valid = _validate_session(auth_token) or (
             bool(api_token) and secrets.compare_digest(auth_token, api_token)
         )

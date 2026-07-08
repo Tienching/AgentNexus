@@ -425,7 +425,9 @@ async def create_task(
     alias_value = (request.alias or "").strip() or default_alias or provider
 
     default_exec_user = (settings.default_exec_user or "").strip() or settings.exec_user
-    effective_exec_user = await validate_exec_user((request.exec_user or "").strip() or default_exec_user)
+    query_exec_user = exec_user if isinstance(exec_user, str) else None
+    requested_exec_user = (request.exec_user or "").strip() or (query_exec_user or "").strip() or default_exec_user
+    effective_exec_user = await validate_exec_user(requested_exec_user)
 
     project_name = (request.project_name or "").strip() or None
     project_id = (request.project_id or "").strip() or None
@@ -435,7 +437,7 @@ async def create_task(
     priority = TaskPriority.PROJECT if (project_name or project_id) else TaskPriority.THOUGHT
     normalized_workspace = _normalize_workspace_or_400(request.workspace)
 
-    queue = get_task_queue(exec_user)
+    queue = get_task_queue(effective_exec_user)
     task = queue.add_task(
         description=desc,
         priority=priority,
@@ -513,11 +515,11 @@ async def bulk_create_tasks(
     if len(tasks_data) > 50:
         raise HTTPException(status_code=400, detail="Maximum 50 tasks per request")
 
-    queue = get_task_queue(exec_user)
     allowed_providers = set(get_provider_registry().list_providers())
     default_provider = (settings.default_provider or "").strip().lower() or "codebuddy"
     default_alias = (settings.default_alias or "").strip().lower()
     default_exec_user = (settings.default_exec_user or "").strip() or settings.exec_user
+    query_exec_user = exec_user if isinstance(exec_user, str) else None
 
     created: List[TaskItem] = []
     errors: List[Dict[str, str]] = []
@@ -538,7 +540,9 @@ async def bulk_create_tasks(
                 continue
             alias_value = (getattr(task_req, "alias", None) or "").strip() or default_alias or provider
 
-            effective_exec_user = await validate_exec_user((task_req.exec_user or "").strip() or default_exec_user)
+            requested_exec_user = (task_req.exec_user or "").strip() or (query_exec_user or "").strip() or default_exec_user
+            effective_exec_user = await validate_exec_user(requested_exec_user)
+            queue = get_task_queue(effective_exec_user)
 
             project_name = (task_req.project_name or "").strip() or None
             project_id = (task_req.project_id or "").strip() or None

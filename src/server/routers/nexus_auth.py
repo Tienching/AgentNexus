@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
 from src.core.auth.rbac import AuthenticatedUser, Role, get_current_user, set_current_user
-from ..config import settings
+from ..config import Settings, settings
 from ..logger import get_logger
 
 logger = get_logger(__name__)
@@ -61,27 +61,37 @@ class AuthStatusResponse(BaseModel):
     auth_required: bool
 
 
-def _is_auth_required() -> bool:
-    """Check if authentication is required (NEXUS_PASSWORD is set)"""
-    return bool(settings.nexus_password and settings.nexus_password.strip())
+def _connection_settings(connection: Request | None = None) -> Settings:
+    """Return the settings bound to this FastAPI app, falling back to process settings."""
+    app = getattr(connection, "app", None) if connection is not None else None
+    if app is None and connection is not None:
+        app = getattr(connection, "scope", {}).get("app")
+    return getattr(getattr(app, "state", None), "settings", settings)
 
 
-def _get_api_token() -> str:
-    # Prefer the Settings-managed value (loaded from .env via pydantic), so the
-    # token works regardless of how the process is launched. Fall back to the
-    # raw environment for explicit `export NEXUS_AUTH_TOKEN=...` usage.
-    val = getattr(settings, "nexus_auth_token", None) or os.getenv("NEXUS_AUTH_TOKEN")
+def _is_auth_required(app_settings: Settings | None = None) -> bool:
+    """Check if authentication is required (NEXUS_PASSWORD is set)."""
+    app_settings = app_settings or settings
+    return bool(app_settings.nexus_password and app_settings.nexus_password.strip())
+
+
+def _get_api_token(app_settings: Settings | None = None) -> str:
+    # Prefer the Settings-managed value for the current FastAPI app. Fall back to
+    # the raw environment for explicit `export NEXUS_AUTH_TOKEN=...` usage.
+    app_settings = app_settings or settings
+    val = getattr(app_settings, "nexus_auth_token", None) or os.getenv("NEXUS_AUTH_TOKEN")
     return (val or "").strip()
 
 
-def _verify_password(password: str) -> bool:
-    """Verify the provided password against configured NEXUS_PASSWORD"""
-    if not _is_auth_required():
+def _verify_password(password: str, app_settings: Settings | None = None) -> bool:
+    """Verify the provided password against configured NEXUS_PASSWORD."""
+    app_settings = app_settings or settings
+    if not _is_auth_required(app_settings):
         return True
     # Use constant-time comparison to prevent timing attacks
     return secrets.compare_digest(
         password.encode("utf-8"),
-        settings.nexus_password.encode("utf-8")
+        app_settings.nexus_password.encode("utf-8")
     )
 
 
@@ -111,9 +121,10 @@ def _redis_available() -> bool:
     return _session_db() is not None
 
 
-def _create_session(token: str) -> None:
+def _create_session(token: str, app_settings: Settings | None = None) -> None:
     """Create a new session with expiry (SQLite preferred, fallback to memory)."""
-    ttl = int(settings.nexus_session_ttl)
+    app_settings = app_settings or settings
+    ttl = int(app_settings.nexus_session_ttl)
     expiry = time.time() + ttl
 
     db = _session_db() if _redis_available() else None
@@ -207,8 +218,9 @@ def _build_authenticated_user(request: Request, *, allow_header_user: bool = Fal
     # X-Nexus-User is a development/convenience header, not a verified identity.
     # Do not honor it for bearer-token or password-session authenticated requests,
     # otherwise any token holder can spoof audit actors.
+    app_settings = _connection_settings(request)
     header_user = request.headers.get("X-Nexus-User") if allow_header_user else None
-    username = (header_user or settings.exec_user or "nexus").strip() or "nexus"
+    username = (header_user or app_settings.exec_user or "nexus").strip() or "nexus"
     # Privilege is now tied to HOW the user was authenticated:
     #   - allow_header_user=True means "no real credential was checked" (the
     #     development / open-deployment fallback). Such callers get the least
@@ -229,7 +241,8 @@ def get_authenticated_nexus_user(request: Request) -> AuthenticatedUser:
     user = getattr(request.state, "nexus_user", None) or get_current_user()
     if user is not None:
         return user
-    if not _is_auth_required() and not _get_api_token():
+    app_settings = _connection_settings(request)
+    if not _is_auth_required(app_settings) and not _get_api_token(app_settings):
         user = _build_authenticated_user(request, allow_header_user=True)
         request.state.nexus_user = user
         set_current_user(user)
@@ -257,10 +270,11 @@ async def verify_nexus_auth(request: Request) -> bool:
     token = get_auth_token(request)
     set_current_user(None)
 
-    api_token = _get_api_token()
+    app_settings = _connection_settings(request)
+    api_token = _get_api_token(app_settings)
     if api_token:
         token_matches_api_key = bool(token and secrets.compare_digest(token, api_token))
-        token_matches_password_session = bool(_is_auth_required() and _validate_session(token))
+        token_matches_password_session = bool(_is_auth_required(app_settings) and _validate_session(token))
         if token_matches_api_key or token_matches_password_session:
             user = _build_authenticated_user(request, allow_header_user=False)
             request.state.nexus_user = user
@@ -272,7 +286,7 @@ async def verify_nexus_auth(request: Request) -> bool:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not _is_auth_required():
+    if not _is_auth_required(app_settings):
         user = _build_authenticated_user(request, allow_header_user=True)
         request.state.nexus_user = user
         set_current_user(user)
@@ -297,19 +311,20 @@ async def auth_status(request: Request):
     
     Returns whether auth is required and current authentication state.
     """
-    auth_required = _is_auth_required() or bool(_get_api_token())
+    app_settings = _connection_settings(request)
+    auth_required = _is_auth_required(app_settings) or bool(_get_api_token(app_settings))
     
     if not auth_required:
         return AuthStatusResponse(authenticated=True, auth_required=False)
     
     token = get_auth_token(request)
-    api_token = _get_api_token()
+    api_token = _get_api_token(app_settings)
     if api_token:
         authenticated = bool(
             token
             and (
                 secrets.compare_digest(token, api_token)
-                or (_is_auth_required() and _validate_session(token))
+                or (_is_auth_required(app_settings) and _validate_session(token))
             )
         )
     else:
@@ -324,8 +339,9 @@ async def login(request: LoginRequest, response: Response, http_request: Request
 
     If NEXUS_PASSWORD is not set, always succeeds.
     """
-    api_token = _get_api_token()
-    password_required = _is_auth_required()
+    app_settings = _connection_settings(http_request)
+    api_token = _get_api_token(app_settings)
+    password_required = _is_auth_required(app_settings)
 
     if not password_required:
         if not api_token:
@@ -337,14 +353,14 @@ async def login(request: LoginRequest, response: Response, http_request: Request
             )
         token = api_token
     else:
-        if not _verify_password(request.password):
+        if not _verify_password(request.password, app_settings):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid password",
             )
         # Generate and store session token for password-based UI logins.
         token = _generate_token()
-        _create_session(token)
+        _create_session(token, app_settings)
 
     # Set cookie — only mark Secure when behind HTTPS to avoid
     # silent cookie rejection on plain-HTTP deployments.
@@ -352,7 +368,7 @@ async def login(request: LoginRequest, response: Response, http_request: Request
     response.set_cookie(
         key="nexus_token",
         value=token,
-        max_age=settings.nexus_session_ttl,
+        max_age=app_settings.nexus_session_ttl,
         httponly=True,
         samesite="lax",
         secure=_is_https,
