@@ -163,7 +163,9 @@ class TestStreamResponse:
                 types = [e.get("type") for e in events if isinstance(e, dict)]
                 assert "RUN_ERROR" in types
                 error_events = [e for e in events if e.get("type") == "RUN_ERROR"]
-                assert any("Process failed" in (e.get("message", "")) for e in error_events)
+                messages = [e.get("message", "") for e in error_events]
+                assert "处理请求时出错，请稍后重试或联系管理员" in messages
+                assert all("Process failed" not in message for message in messages)
 
     @pytest.mark.asyncio
     async def test_stream_timeout_handling(self, client: AsyncClient, sample_request):

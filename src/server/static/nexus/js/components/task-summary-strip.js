@@ -14,7 +14,7 @@
  *   const strip = new TaskSummaryStrip({
  *       onMetricClick: (key) => console.log('metric', key)
  *   });
- *   strip.render(container, { total: 42, active: 10, running: 3, ... });
+ *   strip.render(container, { total: 42, pending: 10, running: 3, ... });
  *   strip.setActiveMetric('running');
  */
 

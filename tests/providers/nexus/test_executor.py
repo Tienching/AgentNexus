@@ -102,7 +102,8 @@ class TestNexusExecutorExecute:
         assert len(lines) == 1
         d = json.loads(lines[0])
         assert d["type"] == "error"
-        assert "nexus not installed" in d["message"]
+        assert d["message"] == "处理请求时出错，请稍后重试或联系管理员"
+        assert "nexus not installed" not in d["message"]
 
     async def test_streaming_text(self):
         """Mock AgentLoop to push text events through the queue."""

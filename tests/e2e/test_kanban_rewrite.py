@@ -23,17 +23,27 @@ from playwright.sync_api import sync_playwright
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-@pytest.fixture(scope="module")
-def live_server():
+@pytest.fixture()
+def live_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DB_PATH", str(tmp_path / "nexus-e2e.db"))
+
+    from src.server.routers import nexus_tasks
+
+    async def accept_exec_user(user):
+        return user
+
+    monkeypatch.setattr(nexus_tasks, "validate_exec_user", accept_exec_user)
+
     from src.server import app as server_app
 
     app = server_app.create_app_with_overrides(
         use_env=False,
+        settings_overrides={"log_dir": str(tmp_path / "logs")},
         startup_policy_overrides={
             "start_task_executor": False,
             "start_task_scheduler": False,
-                    "start_terminal_manager": False,
-                },
+            "start_terminal_manager": False,
+        },
     )
 
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
@@ -74,9 +84,10 @@ def browser():
 
 @pytest.fixture()
 def page(browser):
-    page = browser.new_page(viewport={"width": 1440, "height": 960})
+    context = browser.new_context(viewport={"width": 1440, "height": 960})
+    page = context.new_page()
     yield page
-    page.close()
+    context.close()
 
 
 def _create_task(
@@ -210,7 +221,7 @@ def test_task_board_navigation_survives_refresh_and_api_updates(live_server, pag
     assert refreshed_card.filter(has_text="updated").count() >= 1
 
 
-def test_task_summary_strip_reports_total_active_running_reviewing_failed_cancelled_and_scheduled(live_server, page):
+def test_task_summary_strip_reports_lane_counts_and_scheduled(live_server, page):
     exec_user = f"summary-{uuid.uuid4().hex[:8]}"
     _create_task(live_server, f"summary pending {uuid.uuid4().hex[:8]}", exec_user=exec_user)
     running = _create_task(live_server, f"summary running {uuid.uuid4().hex[:8]}", exec_user=exec_user)
@@ -244,12 +255,17 @@ def test_task_summary_strip_reports_total_active_running_reviewing_failed_cancel
     page.wait_for_timeout(2500)
 
     assert page.locator('.summary-card[data-metric="total"] .summary-value').text_content() == "4"
-    assert page.locator('.summary-card[data-metric="active"] .summary-value').text_content() == "3"
+    assert page.locator('.summary-card[data-metric="pending"] .summary-value').text_content() == "1"
     assert page.locator('.summary-card[data-metric="running"] .summary-value').text_content() == "1"
-    assert page.locator('.summary-card[data-metric="reviewing"] .summary-value').text_content() == "1"
+    assert page.locator('.summary-card[data-metric="in_review"] .summary-value').text_content() == "1"
+    assert page.locator('.summary-card[data-metric="completed"] .summary-value').text_content() == "0"
     assert page.locator('.summary-card[data-metric="failed"] .summary-value').text_content() == "1"
     assert page.locator('.summary-card[data-metric="cancelled"] .summary-value').text_content() == "0"
     assert page.locator('.summary-card[data-metric="scheduled"] .summary-value').text_content() == "0"
+    assert page.locator('.summary-card[data-metric="pending"] .summary-label').text_content() == "To Do"
+    assert page.locator('.summary-card[data-metric="running"] .summary-label').text_content() == "Doing"
+    assert page.locator('.summary-card[data-metric="in_review"] .summary-label').text_content() == "In Review"
+    assert page.locator('.summary-card[data-metric="completed"] .summary-label').text_content() == "Done"
     assert page.locator('.summary-card[data-metric="scheduled"] .summary-label').text_content() == "Scheduled"
 
 

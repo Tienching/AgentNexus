@@ -280,18 +280,38 @@ async def client(mock_storage, app_factory, monkeypatch):
 
 class TestNexusAuthStatus:
     @pytest.mark.asyncio
-    async def test_auth_status_requires_and_accepts_api_token(self, client, monkeypatch):
+    async def test_auth_status_uses_app_settings_override(self, app_factory):
+        from httpx import ASGITransport, AsyncClient
         from src.server.routers import nexus_auth
 
-        monkeypatch.setattr(nexus_auth.settings, "nexus_password", None)
-        monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", "api-token")
-        monkeypatch.setenv("NEXUS_AUTH_TOKEN", "api-token")
+        # Simulate a protected process-level .env while the isolated test app
+        # explicitly disables auth through app.state.settings.
+        original_password = nexus_auth.settings.nexus_password
+        original_token = nexus_auth.settings.nexus_auth_token
+        nexus_auth.settings.nexus_password = "process-password"
+        nexus_auth.settings.nexus_auth_token = None
+        try:
+            app = app_factory(settings_overrides={"nexus_password": None, "nexus_auth_token": None})
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                response = await ac.get("/api/nexus/auth/status")
+        finally:
+            nexus_auth.settings.nexus_password = original_password
+            nexus_auth.settings.nexus_auth_token = original_token
 
-        unauthenticated = await client.get("/api/nexus/auth/status")
-        authenticated = await client.get(
-            "/api/nexus/auth/status",
-            headers={"Authorization": "Bearer api-token"},
-        )
+        assert response.status_code == 200
+        assert response.json() == {"authenticated": True, "auth_required": False}
+
+    @pytest.mark.asyncio
+    async def test_auth_status_requires_and_accepts_api_token(self, app_factory):
+        app = app_factory(settings_overrides={"nexus_password": None, "nexus_auth_token": "api-token"})
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            unauthenticated = await client.get("/api/nexus/auth/status")
+            authenticated = await client.get(
+                "/api/nexus/auth/status",
+                headers={"Authorization": "Bearer api-token"},
+            )
 
         assert unauthenticated.status_code == 200
         assert unauthenticated.json() == {"authenticated": False, "auth_required": True}
@@ -299,34 +319,28 @@ class TestNexusAuthStatus:
         assert authenticated.json() == {"authenticated": True, "auth_required": True}
 
     @pytest.mark.asyncio
-    async def test_auth_status_accepts_bearer_token_when_password_also_configured(self, client, monkeypatch):
-        from src.server.routers import nexus_auth
-
-        monkeypatch.setattr(nexus_auth.settings, "nexus_password", "password")
-        monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", "api-token")
-        monkeypatch.setenv("NEXUS_AUTH_TOKEN", "api-token")
-
-        response = await client.get(
-            "/api/nexus/auth/status",
-            headers={"Authorization": "Bearer api-token"},
-        )
+    async def test_auth_status_accepts_bearer_token_when_password_also_configured(self, app_factory):
+        app = app_factory(settings_overrides={"nexus_password": "password", "nexus_auth_token": "api-token"})
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/nexus/auth/status",
+                headers={"Authorization": "Bearer api-token"},
+            )
 
         assert response.status_code == 200
         assert response.json() == {"authenticated": True, "auth_required": True}
 
-
     @pytest.mark.asyncio
-    async def test_password_login_session_works_when_api_token_also_configured(self, client, monkeypatch):
-        from src.server.routers import nexus_auth
+    async def test_password_login_session_works_when_api_token_also_configured(self, app_factory):
+        app = app_factory(settings_overrides={"nexus_password": "password", "nexus_auth_token": "api-token"})
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            login = await client.post("/api/nexus/auth/login", json={"password": "password"})
+            assert login.status_code == 200
 
-        monkeypatch.setattr(nexus_auth.settings, "nexus_password", "password")
-        monkeypatch.setattr(nexus_auth.settings, "nexus_auth_token", "api-token")
-        monkeypatch.setenv("NEXUS_AUTH_TOKEN", "api-token")
+            status_response = await client.get("/api/nexus/auth/status")
 
-        login = await client.post("/api/nexus/auth/login", json={"password": "password"})
-        assert login.status_code == 200
-
-        status_response = await client.get("/api/nexus/auth/status")
         assert status_response.status_code == 200
         assert status_response.json() == {"authenticated": True, "auth_required": True}
 
@@ -1201,6 +1215,43 @@ class TestTaskAPI:
         data = response.json()
         assert data["total"] == 1
         assert data["tasks"][0]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_create_task_inherits_query_exec_user_for_storage(self, client, mock_storage):
+        registry = SimpleNamespace(list_providers=lambda: ["codebuddy"])
+        queues = {}
+
+        def queue_for(exec_user):
+            return queues.setdefault(exec_user, MockTaskQueue([]))
+
+        async def accept_exec_user(user):
+            return user
+
+        with patch('src.server.routers.nexus_tasks.get_task_queue', side_effect=queue_for), \
+             patch('src.server.routers.nexus_tasks.validate_exec_user', side_effect=accept_exec_user), \
+             patch('src.server.routers.nexus_tasks.get_provider_registry', return_value=registry):
+            created = await client.post(
+                "/api/nexus/tasks",
+                params={"exec_user": "isolated-user"},
+                json={
+                    "description": "Create under query exec user",
+                    "provider": "codebuddy",
+                    "workspace": "/tmp",
+                },
+            )
+            assert created.status_code == 200
+            task_id = created.json()["id"]
+            assert created.json()["exec_user"] == "isolated-user"
+            assert queues["isolated-user"].get_task(task_id) is not None
+
+            updated = await client.patch(
+                f"/api/nexus/tasks/{task_id}/status",
+                params={"exec_user": "isolated-user"},
+                json={"status": "running"},
+            )
+
+        assert updated.status_code == 200
+        assert updated.json()["status"] == "running"
 
     @pytest.mark.asyncio
     async def test_create_task_execution_binding_prefers_prior_session_id(self, client, mock_storage, mock_task_queue):

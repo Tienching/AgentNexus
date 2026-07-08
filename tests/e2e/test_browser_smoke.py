@@ -22,17 +22,20 @@ from playwright.sync_api import sync_playwright
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-@pytest.fixture(scope="module")
-def live_server():
+@pytest.fixture()
+def live_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_DB_PATH", str(tmp_path / "nexus-e2e.db"))
+
     from src.server import app as server_app
 
     app = server_app.create_app_with_overrides(
         use_env=False,
+        settings_overrides={"log_dir": str(tmp_path / "logs")},
         startup_policy_overrides={
             "start_task_executor": False,
             "start_task_scheduler": False,
-                    "start_terminal_manager": False,
-                },
+            "start_terminal_manager": False,
+        },
     )
 
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
@@ -73,9 +76,10 @@ def browser():
 
 @pytest.fixture()
 def page(browser):
-    page = browser.new_page(viewport={"width": 1440, "height": 960})
+    context = browser.new_context(viewport={"width": 1440, "height": 960})
+    page = context.new_page()
     yield page
-    page.close()
+    context.close()
 
 
 def _create_task(base_url: str, description: str) -> dict:
@@ -179,7 +183,7 @@ def test_settings_single_page_sections_and_legacy_dashboard_route_work(live_serv
     page.goto(f"{live_server}/?page=dashboard", wait_until="commit", timeout=20_000)
     page.wait_for_timeout(2000)
 
-    assert page.locator('.page-nav-btn[data-page="agents"]').evaluate(
+    assert page.locator('.page-nav-btn[data-page="settings"]').evaluate(
         "el => el.classList.contains('active')"
     )
 
@@ -189,40 +193,40 @@ def test_settings_single_page_sections_and_legacy_dashboard_route_work(live_serv
     assert page.locator('.page-nav-btn[data-page="settings"]').evaluate(
         "el => el.classList.contains('active')"
     )
-    assert page.locator('[data-settings-nav=\"basic\"]').count() == 1
-    assert page.locator('[data-settings-nav=\"extensions\"]').count() == 1
-    assert page.locator('[data-settings-nav=\"safety\"]').count() == 1
+    assert page.locator('[data-settings-nav=\"provider\"]').count() == 1
+    assert page.locator('[data-settings-nav=\"skills\"]').count() == 1
+    assert page.locator('[data-settings-nav=\"runtime\"]').count() == 1
     assert page.locator('[data-settings-section=\"basic\"]').count() == 1
-    assert page.locator('[data-settings-section=\"extensions\"]').count() == 1
+    assert page.locator('[data-settings-section=\"skills\"]').count() == 1
     assert page.locator('[data-settings-section=\"safety\"]').count() == 1
 
 
-def test_settings_section_navigation_supports_overview_and_browser_back(live_server, page):
+def test_settings_section_navigation_supports_provider_and_browser_back(live_server, page):
     page.goto(f"{live_server}/?page=settings", wait_until="commit", timeout=20_000)
     page.wait_for_timeout(2000)
 
     assert "settingsSection=" not in page.url
-    assert page.locator('[data-settings-nav="overview"]').get_attribute("aria-current") == "true"
+    assert page.locator('[data-settings-nav="provider"]').get_attribute("aria-current") == "true"
 
-    page.click('[data-settings-nav="extensions"]')
+    page.click('[data-settings-nav="skills"]')
     page.wait_for_timeout(1000)
-    assert "settingsSection=extensions" in page.url
-    assert page.locator('[data-settings-nav="extensions"]').get_attribute("aria-current") == "true"
+    assert "settingsSection=skills" in page.url
+    assert page.locator('[data-settings-nav="skills"]').get_attribute("aria-current") == "true"
 
-    page.click('[data-settings-nav="safety"]')
+    page.click('[data-settings-nav="runtime"]')
     page.wait_for_timeout(1000)
-    assert "settingsSection=safety" in page.url
-    assert page.locator('[data-settings-nav="safety"]').get_attribute("aria-current") == "true"
+    assert "settingsSection=runtime" in page.url
+    assert page.locator('[data-settings-nav="runtime"]').get_attribute("aria-current") == "true"
 
     page.go_back(wait_until="domcontentloaded")
     page.wait_for_timeout(1500)
-    assert "settingsSection=extensions" in page.url
-    assert page.locator('[data-settings-nav="extensions"]').get_attribute("aria-current") == "true"
+    assert "settingsSection=skills" in page.url
+    assert page.locator('[data-settings-nav="skills"]').get_attribute("aria-current") == "true"
 
     page.go_back(wait_until="domcontentloaded")
     page.wait_for_timeout(1500)
     assert "settingsSection=" not in page.url
-    assert page.locator('[data-settings-nav="overview"]').get_attribute("aria-current") == "true"
+    assert page.locator('[data-settings-nav="provider"]').get_attribute("aria-current") == "true"
 
 
 def test_global_search_task_result_navigates_to_task_deep_link(live_server, page):
