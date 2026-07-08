@@ -11,13 +11,6 @@ from typing import Dict, Optional
 from .base import NotificationSink
 from .models import NotificationTarget, NotificationResult
 from .http_webhook_sink import HttpWebhookSink
-from .telegram_sink import TelegramSink
-from .discord_sink import DiscordSink
-from .feishu_sink import FeishuSink
-from .slack_sink import SlackSink
-from .wecom_sink import WeComSink
-from .wecom_bot_sink import WeComBotSink
-from .wechat_sink import WeChatSink
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +24,6 @@ class UnifiedNotificationHandler:
     def __init__(self):
         self._sinks: Dict[str, NotificationSink] = {
             "response_url": HttpWebhookSink(),
-            "telegram": TelegramSink(),
-            "discord": DiscordSink(),
-            "feishu": FeishuSink(),
-            "slack": SlackSink(),
-            "wecom": WeComSink(),
-            "wecom_bot": WeComBotSink(),
-            "wechat": WeChatSink(),
         }
 
     def register_sink(self, sink_type: str, sink: NotificationSink) -> None:
@@ -109,21 +95,6 @@ class UnifiedNotificationHandler:
             response_url=response_url,
             request_data=request_data or {},
         )
-
-    @staticmethod
-    def build_target_from_channel(
-        channel_name: str,
-        chat_id: str,
-        message_id: str = "",
-    ) -> NotificationTarget:
-        """Convenience: create a target for a messaging channel."""
-        return NotificationTarget(
-            sink_type=channel_name,
-            channel_name=channel_name,
-            chat_id=chat_id,
-            message_id=message_id,
-        )
-
 
 def get_notification_handler() -> UnifiedNotificationHandler:
     """Get or create the global notification handler singleton."""
