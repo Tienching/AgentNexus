@@ -1389,11 +1389,15 @@ class TestTaskAPI:
         assert response.status_code == 200
         assert response.json() == {
             "total": 6,
+            "pending": 1,
             "active": 3,
             "running": 1,
+            "in_review": 1,
             "reviewing": 1,
+            "completed": 1,
             "failed": 1,
             "cancelled": 1,
+            "archived": 0,
             "scheduled": 2,
         }
 

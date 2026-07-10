@@ -361,11 +361,15 @@ class TaskListResponse(BaseModel):
 class TaskSummaryMetrics(BaseModel):
     """Summary metrics for the task workbench header strip (TV-019)."""
     total: int = 0
+    pending: int = 0
     active: int = 0
     running: int = 0
+    in_review: int = 0
     reviewing: int = 0
+    completed: int = 0
     failed: int = 0
     cancelled: int = 0
+    archived: int = 0
     scheduled: int = 0
 
 

@@ -13923,6 +13923,11 @@
             "title": "Total",
             "default": 0
           },
+          "pending": {
+            "type": "integer",
+            "title": "Pending",
+            "default": 0
+          },
           "active": {
             "type": "integer",
             "title": "Active",
@@ -13933,9 +13938,19 @@
             "title": "Running",
             "default": 0
           },
+          "in_review": {
+            "type": "integer",
+            "title": "In Review",
+            "default": 0
+          },
           "reviewing": {
             "type": "integer",
             "title": "Reviewing",
+            "default": 0
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
             "default": 0
           },
           "failed": {
@@ -13946,6 +13961,11 @@
           "cancelled": {
             "type": "integer",
             "title": "Cancelled",
+            "default": 0
+          },
+          "archived": {
+            "type": "integer",
+            "title": "Archived",
             "default": 0
           },
           "scheduled": {

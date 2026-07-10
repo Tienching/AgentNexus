@@ -354,11 +354,21 @@ async def get_task_summary(exec_user: str = Query(None)):
         return TaskSummaryMetrics()
 
     items = assemble_task_items(all_tasks)
-    active = [t for t in items if t.lane_status in {"pending", "running", "in_review"}]
-    running = [t for t in items if t.lane_status == "running"]
-    reviewing = [t for t in items if t.lane_status == "in_review"]
-    failed = [t for t in items if t.lane_status == "failed"]
-    cancelled = [t for t in items if t.lane_status == "cancelled"]
+    lane_counts = {
+        "pending": 0,
+        "running": 0,
+        "in_review": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+        "archived": 0,
+    }
+    for item in items:
+        lane_status = item.lane_status or normalize_task_status(item.status)
+        if lane_status in lane_counts:
+            lane_counts[lane_status] += 1
+
+    active_count = lane_counts["pending"] + lane_counts["running"] + lane_counts["in_review"]
     scheduled = 0
     try:
         _, scheduled = ScheduleStorage(exec_user=effective_exec_user).list_schedules(
@@ -371,11 +381,15 @@ async def get_task_summary(exec_user: str = Query(None)):
 
     return TaskSummaryMetrics(
         total=len(items),
-        active=len(active),
-        running=len(running),
-        reviewing=len(reviewing),
-        failed=len(failed),
-        cancelled=len(cancelled),
+        pending=lane_counts["pending"],
+        active=active_count,
+        running=lane_counts["running"],
+        in_review=lane_counts["in_review"],
+        reviewing=lane_counts["in_review"],
+        completed=lane_counts["completed"],
+        failed=lane_counts["failed"],
+        cancelled=lane_counts["cancelled"],
+        archived=lane_counts["archived"],
         scheduled=scheduled,
     )
 

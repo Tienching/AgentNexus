@@ -178,11 +178,13 @@ def test_task_summary_strip_uses_board_lane_labels_and_metrics():
     assert "const statusLabels = TaskSummaryStrip._statusLabels();" in task_summary_strip_js
     for key in ["pending", "running", "in_review", "completed", "failed", "cancelled"]:
         assert f"key: '{key}', label: statusLabels.{key}" in task_summary_strip_js
-        assert f"{key}: tasks.filter(t => t.lane_status === '{key}').length" in task_view_model_js
+        assert f"{key}: 0" in task_view_model_js
         assert f"{key}: ['{key}']" in task_board_js
         css_key = key.replace("_", "-")
         assert f".summary-dot-{css_key}" in styles_css
 
+    assert "summary.active = summary.pending + summary.running + summary.in_review;" in task_view_model_js
+    assert "summary.reviewing = summary.in_review;" in task_view_model_js
     assert "key: 'active', label: 'Active'" not in task_summary_strip_js
     assert "key: 'reviewing', label: 'Reviewing'" not in task_summary_strip_js
 

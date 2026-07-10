@@ -288,22 +288,31 @@ class TaskViewModel {
      */
     static computeSummaryMetrics(enrichedTasks) {
         const tasks = enrichedTasks || [];
-        const pending = tasks.filter(t => t.lane_status === 'pending').length;
-        const running = tasks.filter(t => t.lane_status === 'running').length;
-        const inReview = tasks.filter(t => t.lane_status === 'in_review').length;
-        return {
+        const summary = {
             total: tasks.length,
-            pending: tasks.filter(t => t.lane_status === 'pending').length,
-            running: tasks.filter(t => t.lane_status === 'running').length,
-            in_review: tasks.filter(t => t.lane_status === 'in_review').length,
-            completed: tasks.filter(t => t.lane_status === 'completed').length,
-            failed: tasks.filter(t => t.lane_status === 'failed').length,
-            cancelled: tasks.filter(t => t.lane_status === 'cancelled').length,
-            archived: tasks.filter(t => t.lane_status === 'archived').length,
-            scheduled: tasks.filter(t => !!t.loop_enabled).length,
-            active: pending + running + inReview,
-            reviewing: inReview,
+            pending: 0,
+            running: 0,
+            in_review: 0,
+            completed: 0,
+            failed: 0,
+            cancelled: 0,
+            archived: 0,
+            scheduled: 0,
+            active: 0,
+            reviewing: 0,
         };
+        for (const task of tasks) {
+            const laneStatus = task?.lane_status || 'pending';
+            if (Object.prototype.hasOwnProperty.call(summary, laneStatus)) {
+                summary[laneStatus] += 1;
+            }
+            if (task?.loop_enabled) {
+                summary.scheduled += 1;
+            }
+        }
+        summary.active = summary.pending + summary.running + summary.in_review;
+        summary.reviewing = summary.in_review;
+        return summary;
     }
 }
 
