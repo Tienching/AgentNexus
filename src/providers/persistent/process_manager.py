@@ -26,8 +26,6 @@ import asyncio
 import json
 import logging
 import os
-import pwd
-import re
 import shlex
 import time
 from dataclasses import dataclass, field
@@ -39,6 +37,8 @@ from typing import (
     Optional,
 )
 
+from src.providers.base import _validate_target_user as _validate_exec_user
+
 from .completion_detector import CompletionDetector, CompletionStatus
 
 logger = logging.getLogger(__name__)
@@ -46,10 +46,6 @@ logger = logging.getLogger(__name__)
 # Defense-in-depth validation for the su target user. The authoritative
 # guard lives in src/server/security/exec_user_guard.py; this is a local
 # copy so the providers layer never builds a command for an unsafe user.
-# exec_user validation reused from providers.base (single source of truth)
-from src.providers.base import _validate_target_user as _validate_exec_user
-
-
 
 # Providers that support --input-format stream-json
 _STREAM_INPUT_PROVIDERS = frozenset({"claude", "codebuddy", "claude-internal"})
@@ -68,6 +64,9 @@ class PersistentProcess:
     provider: str
     process: asyncio.subprocess.Process
     detector: CompletionDetector
+    exec_dir: Optional[Path] = None
+    model: Optional[str] = None
+    alias: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -82,6 +81,24 @@ class PersistentProcess:
     def cli_session_id(self) -> Optional[str]:
         """CLI-internal session UUID (extracted from init/result events)."""
         return self._cli_session_id or self.detector.session_id
+
+    def matches_binding(
+        self,
+        *,
+        exec_user: str,
+        provider: str,
+        exec_dir: Path,
+        model: Optional[str],
+        alias: Optional[str],
+    ) -> bool:
+        """Return whether this process was started for the requested binding."""
+        return (
+            self.exec_user == exec_user
+            and self.provider == provider
+            and self.exec_dir == Path(exec_dir)
+            and (self.model or None) == (model or None)
+            and (self.alias or None) == (alias or None)
+        )
 
     async def wait_for_init(self, timeout: float = 60.0) -> Optional[Dict[str, Any]]:
         """Wait for the ``{"type": "system", "subtype": "init", ...}`` event.
@@ -320,11 +337,24 @@ class PersistentProcessManager:
             if session_id in self._processes:
                 proc = self._processes[session_id]
                 if proc.alive:
+                    if proc.matches_binding(
+                        exec_user=exec_user,
+                        provider=provider,
+                        exec_dir=exec_dir,
+                        model=model,
+                        alias=alias,
+                    ):
+                        logger.info(
+                            "Reusing persistent process for session %s",
+                            session_id,
+                        )
+                        return proc
                     logger.info(
-                        "Reusing persistent process for session %s",
+                        "Persistent process binding changed for session %s; recreating",
                         session_id,
                     )
-                    return proc
+                    await proc.kill()
+                    del self._processes[session_id]
                 else:
                     logger.info(
                         "Persistent process for session %s is dead, recreating",
@@ -414,6 +444,9 @@ class PersistentProcessManager:
             provider=provider,
             process=process,
             detector=detector,
+            exec_dir=Path(exec_dir),
+            model=model,
+            alias=alias,
         )
 
         # Wait for init event (non-blocking, with timeout)
@@ -541,6 +574,9 @@ class PersistentProcessManager:
             "session_id": proc.session_id,
             "exec_user": proc.exec_user,
             "provider": proc.provider,
+            "exec_dir": str(proc.exec_dir) if proc.exec_dir else None,
+            "model": proc.model,
+            "alias": proc.alias,
             "alive": proc.alive,
             "cli_session_id": proc.cli_session_id,
             "created_at": proc.created_at,

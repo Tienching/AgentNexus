@@ -20,8 +20,6 @@ from src.runtime.models.task_models import Task, TaskStatus, TaskPriority
 from src.server.routers.nexus_models import (
     UpdateTaskOutcomeRequest,
     TaskOutcomesResponse,
-    TaskOutcomeSummary,
-    OutcomeBuckets,
     task_to_item,
 )
 
@@ -199,7 +197,7 @@ class TestUpdateTaskOutcomeEndpoint:
         mock_get_queue.return_value = queue
 
         req = UpdateTaskOutcomeRequest(outcome="success", feedback_rating=5)
-        result = await update_task_outcome(task.id, req, exec_user="testuser")
+        await update_task_outcome(task.id, req, exec_user="testuser")
 
         queue._redis.hset.assert_called_once()
         hset_updates = queue._redis.hset.call_args[0][1]
@@ -238,6 +236,29 @@ class TestUpdateTaskOutcomeEndpoint:
         with pytest.raises(HTTPException) as exc_info:
             await update_task_outcome("nonexistent", req, exec_user="testuser")
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("src.server.routers.nexus_tasks.get_task_queue")
+    async def test_active_task_rejects_terminal_outcome(self, mock_get_queue):
+        from fastapi import HTTPException
+        from src.server.routers.nexus_tasks import update_task_outcome
+
+        task = self._make_task(status=TaskStatus.RUNNING)
+        queue = MagicMock()
+        queue.get_task.return_value = task
+        mock_get_queue.return_value = queue
+
+        with pytest.raises(HTTPException) as exc_info:
+            await update_task_outcome(
+                task.id,
+                UpdateTaskOutcomeRequest(outcome="success"),
+                exec_user="testuser",
+            )
+
+        assert exc_info.value.status_code == 409
+        assert task.outcome is None
+        assert task.completed_at is None
+        queue.update_task.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("src.server.routers.nexus_tasks.get_task_queue")

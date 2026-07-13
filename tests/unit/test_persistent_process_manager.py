@@ -13,11 +13,11 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 
-from src.providers.persistent.completion_detector import CompletionDetector, CompletionStatus
+from src.providers.persistent.completion_detector import CompletionDetector
 from src.providers.persistent.process_manager import (
     PersistentProcess,
     PersistentProcessManager,
@@ -63,6 +63,9 @@ def _make_persistent_process(
     session_id: str = "test-session",
     exec_user: str = "ubuntu",
     provider: str = "claude",
+    exec_dir: Path = Path("/home/ubuntu"),
+    model: str = None,
+    alias: str = None,
     alive: bool = True,
     last_activity: float = None,
 ) -> PersistentProcess:
@@ -75,6 +78,9 @@ def _make_persistent_process(
         provider=provider,
         process=mock_proc,
         detector=detector,
+        exec_dir=exec_dir,
+        model=model,
+        alias=alias,
     )
     if last_activity is not None:
         pp.last_activity = last_activity
@@ -485,3 +491,44 @@ class TestProcessReuse:
         )
         assert result is pp_new
         assert result is not pp_dead
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "changed_binding",
+        [
+            {"exec_user": "worker"},
+            {"provider": "codebuddy"},
+            {"exec_dir": Path("/home/ubuntu/other")},
+            {"model": "different-model"},
+            {"alias": "claude-internal"},
+        ],
+    )
+    async def test_recreates_alive_process_when_binding_changes(self, changed_binding):
+        manager = PersistentProcessManager(config=_make_mock_config())
+        existing = _make_persistent_process(session_id="binding-change", model="model-a")
+        manager._processes["binding-change"] = existing
+        replacement = _make_persistent_process(session_id="binding-change")
+        manager._create_process = AsyncMock(return_value=replacement)
+        requested = {
+            "session_id": "binding-change",
+            "exec_user": "ubuntu",
+            "provider": "claude",
+            "exec_dir": Path("/home/ubuntu"),
+            "model": "model-a",
+            "alias": None,
+        }
+        requested.update(changed_binding)
+
+        result = await manager.get_or_create(**requested)
+
+        assert result is replacement
+        existing.process.kill.assert_called_once()
+        existing.process.wait.assert_awaited_once()
+        manager._create_process.assert_awaited_once_with(
+            requested["session_id"],
+            requested["exec_user"],
+            requested["provider"],
+            requested["exec_dir"],
+            requested["model"],
+            requested["alias"],
+        )

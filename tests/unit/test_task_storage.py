@@ -530,6 +530,28 @@ class TestTaskQueue:
         assert task.id in task_queue._redis.lrange(task_queue._queue_key("/path/requeue"), 0, -1)
         assert task.id not in task_queue._redis.smembers(task_queue._executing_key("/path/requeue"))
 
+    def test_requeue_clears_started_and_terminal_timestamps(self, task_queue):
+        failed = task_queue.add_task(description="Failed task")
+        task_queue.start_task(failed.id)
+        task_queue.complete_task(failed.id, error_message="failed")
+
+        cancelled = task_queue.add_task(description="Cancelled task")
+        task_queue.cancel_task(cancelled.id)
+
+        archived = task_queue.add_task(description="Archived task")
+        task_queue.start_task(archived.id)
+        task_queue.complete_task(archived.id)
+        task_queue.update_task_status(archived.id, TaskStatus.ARCHIVED)
+
+        for task_id in (failed.id, cancelled.id, archived.id):
+            pending = task_queue.update_task_status(task_id, TaskStatus.PENDING)
+            assert pending is not None
+            assert pending.status == TaskStatus.PENDING
+            assert pending.started_at is None
+            assert pending.completed_at is None
+            assert pending.deleted_at is None
+            assert pending.archived_at is None
+
     def test_fail_task_marks_doing_task_failed(self, task_queue):
         task = task_queue.add_task(description="To fail publicly", workspace="/path/fail")
         task_queue.start_task(task.id)

@@ -392,7 +392,11 @@ class ScheduleStorage:
                 )
                 if next_run is not None and jitter:
                     next_run = next_run + timedelta(seconds=jitter)
-                if schedule.expires_at and next_run and next_run >= schedule.expires_at:
+                if schedule.run_at is not None and next_run is None:
+                    schedule.status = ScheduleStatus.CANCELLED
+                    schedule.cancelled_at = now
+                    schedule.next_run_at = None
+                elif schedule.expires_at and next_run and next_run >= schedule.expires_at:
                     schedule.status = ScheduleStatus.CANCELLED
                     schedule.cancelled_at = now
                     schedule.next_run_at = None

@@ -229,7 +229,7 @@ class SessionMetaRepository:
         with self._db.transaction() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO sessions (
+                INSERT INTO sessions (
                     id, thread_id, title, username, agent_name, workspace,
                     exec_dir, exec_dir_override, status, message_count,
                     provider, model, cli_session_id, claude_session_id,
@@ -246,6 +246,24 @@ class SessionMetaRepository:
                     :task_id, :persistent_mode, :archived_at,
                     :created_at, :updated_at, :expires_at
                 )
+                ON CONFLICT(id) DO UPDATE SET
+                    thread_id = excluded.thread_id,
+                    title = excluded.title,
+                    username = excluded.username,
+                    agent_name = excluded.agent_name,
+                    workspace = excluded.workspace,
+                    exec_dir = excluded.exec_dir,
+                    status = excluded.status,
+                    message_count = excluded.message_count,
+                    provider = excluded.provider,
+                    model = excluded.model,
+                    cli_session_id = excluded.cli_session_id,
+                    claude_session_id = excluded.claude_session_id,
+                    session_exec_user = excluded.session_exec_user,
+                    task_id = excluded.task_id,
+                    archived_at = excluded.archived_at,
+                    updated_at = excluded.updated_at,
+                    expires_at = excluded.expires_at
                 """,
                 {
                     "id": meta.id,

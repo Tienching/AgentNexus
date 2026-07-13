@@ -919,6 +919,14 @@ async def update_task_outcome(
             detail=f"Invalid outcome '{outcome_val}'. Must be one of: {sorted(_VALID_OUTCOMES)}",
         )
 
+    raw_status = task.status.value if hasattr(task.status, "value") else str(task.status)
+    current_status = TaskStatus.from_legacy(raw_status)
+    if current_status != TaskStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Task outcome can only be updated after the task is completed",
+        )
+
     # Persist outcome fields on the task Redis hash
     updates: dict = {"outcome": outcome_val}
     if request.resolution is not None:

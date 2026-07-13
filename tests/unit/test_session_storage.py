@@ -327,6 +327,44 @@ class TestSessionMetadataOperations:
         assert binding.source_type == "chat"
         assert binding.session_kind == "chat"
 
+    def test_save_session_meta_preserves_runtime_routing_state(self, session_storage):
+        meta = SessionMeta(
+            id="session-preserve-routing",
+            thread_id="thread-preserve-routing",
+            username="testuser",
+            title="Routing State",
+        )
+        assert session_storage.save_session_meta(meta) is True
+        assert session_storage.set_exec_dir_override("session-preserve-routing", "/tmp/work") is True
+        assert session_storage.set_exec_user_switched("session-preserve-routing") is True
+        assert session_storage.set_session_cleared("session-preserve-routing") is True
+        assert session_storage.set_target_session_id("session-preserve-routing", "target-001") is True
+        assert session_storage.set_workspace_provider("session-preserve-routing", "codebuddy") is True
+        assert session_storage.set_workspace_alias("session-preserve-routing", "cb") is True
+        assert session_storage.set_persistent_mode("session-preserve-routing") is True
+
+        meta.title = "Routing State Updated"
+        assert session_storage.save_session_meta(meta) is True
+
+        row = session_storage._db.execute_fetchone(
+            """
+            SELECT exec_dir_override, exec_user_switched, session_cleared,
+                   target_session_id, workspace_provider, workspace_alias,
+                   persistent_mode
+            FROM sessions WHERE id = ?
+            """,
+            ("session-preserve-routing",),
+        )
+        assert row == {
+            "exec_dir_override": "/tmp/work",
+            "exec_user_switched": 1,
+            "session_cleared": 1,
+            "target_session_id": "target-001",
+            "workspace_provider": "codebuddy",
+            "workspace_alias": "cb",
+            "persistent_mode": 1,
+        }
+
     def test_clear_helpers_clear_execution_binding_fallback_fields(self, session_storage):
         meta = SessionMeta(
             id="session-clear-binding",

@@ -890,6 +890,11 @@ class TaskQueue:
             task.runtime_orphaned_at = None
             task.runtime_last_heartbeat = None
         else:
+            if new_status == TaskStatus.PENDING:
+                task.started_at = None
+                task.completed_at = None
+                task.deleted_at = None
+                task.archived_at = None
             if str(getattr(task, "runtime_status", "")) != "orphaned":
                 task.runtime_status = "queued"
                 task.runtime_last_heartbeat = None
