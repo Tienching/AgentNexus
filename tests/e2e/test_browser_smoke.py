@@ -23,9 +23,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 @pytest.fixture()
-def live_server(tmp_path, monkeypatch):
-    monkeypatch.setenv("NEXUS_DB_PATH", str(tmp_path / "nexus-e2e.db"))
-
+def live_server(tmp_path):
     from src.server import app as server_app
 
     app = server_app.create_app_with_overrides(

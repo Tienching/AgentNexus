@@ -1,11 +1,47 @@
 """Pytest配置和fixtures"""
 
 import asyncio
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+
+
+_TEST_ENV_KEYS = ("NEXUS_DB_PATH", "NEXUS_HISTORY_CACHE_PATH")
+_previous_test_env: dict[str, str | None] = {}
+_test_runtime_dir: Path | None = None
+
+
+def pytest_configure(config):
+    """Bind the entire test process to disposable runtime storage."""
+    del config
+    global _previous_test_env, _test_runtime_dir
+    if _test_runtime_dir is not None:
+        return
+
+    _test_runtime_dir = Path(tempfile.mkdtemp(prefix="agent-nexus-pytest-"))
+    _previous_test_env = {key: os.environ.get(key) for key in _TEST_ENV_KEYS}
+    os.environ["NEXUS_DB_PATH"] = str(_test_runtime_dir / "nexus.db")
+    os.environ["NEXUS_HISTORY_CACHE_PATH"] = str(_test_runtime_dir / "history-cache.sqlite")
+
+
+def pytest_unconfigure(config):
+    """Restore the caller environment and remove disposable test storage."""
+    del config
+    global _previous_test_env, _test_runtime_dir
+    for key, value in _previous_test_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    if _test_runtime_dir is not None:
+        shutil.rmtree(_test_runtime_dir, ignore_errors=True)
+    _previous_test_env = {}
+    _test_runtime_dir = None
 
 
 def pytest_collection_modifyitems(config, items):

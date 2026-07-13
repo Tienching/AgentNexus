@@ -9,6 +9,8 @@ def test_systemd_service_runs_unprivileged_on_loopback():
 
     assert "User=ubuntu" in service
     assert "Group=ubuntu" in service
+    assert "Environment=NEXUS_DB_PATH=/home/ubuntu/.nexus/agent-nexus-prod.db" in service
+    assert "Environment=EXEC_USER=tencent" in service
     assert "--host 127.0.0.1" in service
     assert "--port 8081" in service
     assert "NoNewPrivileges=true" in service

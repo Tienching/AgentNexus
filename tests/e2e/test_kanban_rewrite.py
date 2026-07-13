@@ -25,8 +25,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 @pytest.fixture()
 def live_server(tmp_path, monkeypatch):
-    monkeypatch.setenv("NEXUS_DB_PATH", str(tmp_path / "nexus-e2e.db"))
-
     from src.server.routers import nexus_tasks
 
     async def accept_exec_user(user):

@@ -9,6 +9,8 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/Projects/agent-nexus_AONA_master/agent-nexus
 EnvironmentFile=-/home/ubuntu/Projects/agent-nexus_AONA_master/agent-nexus/.env
+Environment=NEXUS_DB_PATH=/home/ubuntu/.nexus/agent-nexus-prod.db
+Environment=EXEC_USER=tencent
 ExecStart=/home/ubuntu/Projects/agent-nexus_AONA_master/agent-nexus/.venv/bin/python -m uvicorn src.server.app:app --host 127.0.0.1 --port 8081
 Restart=on-failure
 RestartSec=5s
