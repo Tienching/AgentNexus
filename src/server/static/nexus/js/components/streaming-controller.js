@@ -24,6 +24,13 @@ class NexusStreamingController {
         return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
     }
 
+    static toolCallDomToken(value) {
+        const token = Array.from(String(value ?? ''))
+            .map((character) => character.codePointAt(0).toString(16))
+            .join('-');
+        return token || 'empty';
+    }
+
     static parseSSEEvent(rawEvent) {
         if (!rawEvent || !String(rawEvent).trim()) return null;
 
@@ -420,38 +427,40 @@ class NexusStreamSessionView {
     }
 
     updateToolCallArgs(toolCall) {
-        const argsEl = document.getElementById(`streaming-tool-args-${toolCall.id}`);
+        const domToken = NexusStreamingController.toolCallDomToken(toolCall.id);
+        const argsEl = document.getElementById(`streaming-tool-args-${domToken}`);
         if (argsEl) {
             argsEl.textContent = toolCall.args || '';
         }
-        const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
+        const titleEl = document.querySelector(`[data-streaming-tool-token="${domToken}"] .tool-call-name`);
         if (titleEl) {
             titleEl.textContent = this.formatToolCallTitle(toolCall.name, {}, toolCall.args || '');
         }
     }
 
     updateToolCallResult(toolCall, data = {}) {
-        const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
+        const domToken = NexusStreamingController.toolCallDomToken(toolCall.id);
+        const titleEl = document.querySelector(`[data-streaming-tool-token="${domToken}"] .tool-call-name`);
         if (titleEl) {
             titleEl.textContent = this.formatToolCallTitle(toolCall.name, {}, toolCall.args || '');
         }
 
-        const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-status-icon`);
+        const statusEl = document.querySelector(`[data-streaming-tool-token="${domToken}"] .tool-call-status-icon`);
         if (statusEl && (data.type === 'TOOL_CALL_END' || toolCall.error || data.error)) {
             NexusStreamingController.setToolCallStatus(statusEl, !!(toolCall.error || data.error));
         }
 
         const resultValue = toolCall.result || data.result || data.content || '';
-        const resultSection = document.getElementById(`streaming-tool-result-section-${toolCall.id}`);
-        const resultEl = document.getElementById(`streaming-tool-result-${toolCall.id}`);
+        const resultSection = document.getElementById(`streaming-tool-result-section-${domToken}`);
+        const resultEl = document.getElementById(`streaming-tool-result-${domToken}`);
         if (resultSection && resultEl && resultValue) {
             NexusStreamingController.setElementVisibility(resultSection, true);
             resultEl.textContent = typeof resultValue === 'string' ? resultValue : JSON.stringify(resultValue, null, 2);
         }
 
         const errorValue = toolCall.error || data.error || '';
-        const errorSection = document.getElementById(`streaming-tool-error-section-${toolCall.id}`);
-        const errorEl = document.getElementById(`streaming-tool-error-${toolCall.id}`);
+        const errorSection = document.getElementById(`streaming-tool-error-section-${domToken}`);
+        const errorEl = document.getElementById(`streaming-tool-error-${domToken}`);
         if (errorSection && errorEl && errorValue) {
             NexusStreamingController.setElementVisibility(errorSection, true);
             errorEl.textContent = errorValue;

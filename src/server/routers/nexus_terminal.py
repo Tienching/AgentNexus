@@ -25,6 +25,7 @@ import asyncio
 import base64
 import json
 import secrets
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
 from ..config import settings
 from ..logger import get_logger
+from ..security.exec_user_guard import validate_exec_user
 from ..utils.error_sanitize import safe_error_message
 from ..services.session_storage import get_session_storage
 from .nexus_auth import _connection_settings, _is_auth_required, _get_api_token, _validate_session
@@ -98,7 +100,7 @@ def _build_tmux_command(session_meta, storage) -> dict:
         if cli_session_id:
             cli_parts += ["--resume", cli_session_id]
 
-    cli_cmd = " ".join(cli_parts)
+    cli_cmd = shlex.join([str(part) for part in cli_parts])
 
     short_id = session_id[:12]
     tmux_session_name = f"nexus-{short_id}"
@@ -157,6 +159,11 @@ async def terminal_ws(
     # --- Create PTY + tmux ---
     manager = _get_terminal_manager()
     try:
+        cmd_info["exec_user"] = await validate_exec_user(cmd_info["exec_user"])
+        exec_dir = Path(cmd_info["exec_dir"])
+        if not exec_dir.is_absolute() or not exec_dir.is_dir():
+            raise ValueError("Terminal working directory must be an existing absolute path")
+        cmd_info["exec_dir"] = str(exec_dir)
         terminal_id, fd = manager.create_terminal(
             session_id=session_id,
             exec_user=cmd_info["exec_user"],

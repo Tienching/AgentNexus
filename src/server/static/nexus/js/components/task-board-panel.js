@@ -1339,9 +1339,10 @@ class TaskBoardPanel {
                 const tc = streamingToolCalls.get(toolCall.id);
                 if (tc) {
                     tc.args = toolCall.args || '';
-                    const argsEl = document.getElementById(`streaming-tool-args-${toolCall.id}`);
+                    const domToken = NexusStreamingController.toolCallDomToken(toolCall.id);
+                    const argsEl = document.getElementById(`streaming-tool-args-${domToken}`);
                     if (argsEl) argsEl.textContent = tc.args;
-                    const titleEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-name`);
+                    const titleEl = document.querySelector(`[data-streaming-tool-token="${domToken}"] .tool-call-name`);
                     if (titleEl && chatView) {
                         titleEl.textContent = tc.displayName
                             || chatView.formatToolCallTitle(tc.name, tc.description ? { description: tc.description } : {}, tc.args);
@@ -1353,12 +1354,13 @@ class TaskBoardPanel {
                 if (tc) {
                     tc.status = toolCall.status;
                     tc.result = toolCall.result || '';
-                    const statusEl = document.querySelector(`[data-streaming-tool-id="${toolCall.id}"] .tool-call-status-icon`);
+                    const domToken = NexusStreamingController.toolCallDomToken(toolCall.id);
+                    const statusEl = document.querySelector(`[data-streaming-tool-token="${domToken}"] .tool-call-status-icon`);
                     if (statusEl) {
                         NexusStreamingController.setToolCallStatus(statusEl, !!data.error);
                     }
-                    const resultSection = document.getElementById(`streaming-tool-result-section-${toolCall.id}`);
-                    const resultEl = document.getElementById(`streaming-tool-result-${toolCall.id}`);
+                    const resultSection = document.getElementById(`streaming-tool-result-section-${domToken}`);
+                    const resultEl = document.getElementById(`streaming-tool-result-${domToken}`);
                     if (resultSection && resultEl && tc.result) {
                         NexusStreamingController.setElementVisibility(resultSection, true);
                         resultEl.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2);
@@ -1370,8 +1372,9 @@ class TaskBoardPanel {
                 const tc = streamingToolCalls.get(toolCall.id);
                 if (tc) {
                     tc.result = toolCall.result || '';
-                    const s = document.getElementById(`streaming-tool-result-section-${toolCall.id}`);
-                    const el = document.getElementById(`streaming-tool-result-${toolCall.id}`);
+                    const domToken = NexusStreamingController.toolCallDomToken(toolCall.id);
+                    const s = document.getElementById(`streaming-tool-result-section-${domToken}`);
+                    const el = document.getElementById(`streaming-tool-result-${domToken}`);
                     if (s && el && tc.result) {
                         NexusStreamingController.setElementVisibility(s, true);
                         el.textContent = typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2);

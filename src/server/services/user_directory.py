@@ -5,6 +5,7 @@ import asyncio
 import shlex
 import os
 import pwd
+import re
 import shutil
 from pathlib import Path
 from typing import Optional, Tuple
@@ -13,6 +14,7 @@ from ..config import settings
 from ..logger import get_logger
 
 logger = get_logger(__name__)
+_EXEC_USER_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,31}$")
 
 
 class UserDirectoryManager:
@@ -23,6 +25,8 @@ class UserDirectoryManager:
 
     def resolve_user_home(self, exec_user: str) -> Path:
         """Resolve the effective home root for the given exec_user."""
+        if not isinstance(exec_user, str) or not _EXEC_USER_PATH_COMPONENT_RE.fullmatch(exec_user):
+            raise ValueError("invalid exec_user path component")
         preferred_home = Path(self.config.user_home_base) / exec_user
         current_user = pwd.getpwuid(os.getuid()).pw_name
         if current_user != exec_user and os.geteuid() != 0:
@@ -167,7 +171,7 @@ class UserDirectoryManager:
                     # 当前用户就是目标用户，直接创建目录
                     user_dir.mkdir(parents=True, exist_ok=True)
                     logger.info(
-                        f"Created user directory directly",
+                        "Created user directory directly",
                         extra={
                             "exec_user": exec_user,
                             "api_user": api_user,
@@ -199,7 +203,7 @@ class UserDirectoryManager:
                         cmd = ["su", "-", exec_user, "-c", mkdir_cmd]
 
                         logger.info(
-                            f"Creating user directory as exec user",
+                            "Creating user directory as exec user",
                             extra={
                                 "exec_user": exec_user,
                                 "api_user": api_user,
@@ -221,7 +225,7 @@ class UserDirectoryManager:
                         if process.returncode != 0:
                             error_msg = stderr.decode('utf-8').strip() if stderr else "Unknown error"
                             logger.error(
-                                f"Failed to create user directory via su",
+                                "Failed to create user directory via su",
                                 extra={
                                     "exec_user": exec_user,
                                     "api_user": api_user,
@@ -233,7 +237,7 @@ class UserDirectoryManager:
                             raise RuntimeError(f"无法以 {exec_user} 用户身份创建目录 {user_dir}: {error_msg}")
 
                         logger.info(
-                            f"Successfully created user directory",
+                            "Successfully created user directory",
                             extra={
                                 "exec_user": exec_user,
                                 "api_user": api_user,
@@ -244,7 +248,7 @@ class UserDirectoryManager:
 
             except Exception as e:
                 logger.error(
-                    f"Failed to create user directory",
+                    "Failed to create user directory",
                     extra={
                         "exec_user": exec_user,
                         "api_user": api_user,
@@ -256,7 +260,7 @@ class UserDirectoryManager:
                 raise RuntimeError(f"无法创建用户目录 {user_dir}: {e}")
         else:
             logger.debug(
-                f"User directory already exists",
+                "User directory already exists",
                 extra={
                     "exec_user": exec_user,
                     "api_user": api_user,
@@ -280,7 +284,7 @@ class UserDirectoryManager:
         """
         if not user_dir.exists():
             logger.info(
-                f"User session directory does not exist, nothing to clear",
+                "User session directory does not exist, nothing to clear",
                 extra={
                     "exec_user": exec_user,
                     "api_user": api_user,
@@ -296,7 +300,7 @@ class UserDirectoryManager:
             cmd = ["su", "-", exec_user, "-c", rm_cmd]
 
             logger.info(
-                f"Clearing user session directory as exec user",
+                "Clearing user session directory as exec user",
                 extra={
                     "exec_user": exec_user,
                     "api_user": api_user,
@@ -319,7 +323,7 @@ class UserDirectoryManager:
             if process.returncode != 0:
                 error_msg = stderr.decode('utf-8').strip() if stderr else "Unknown error"
                 logger.error(
-                    f"Failed to clear user session directory command",
+                    "Failed to clear user session directory command",
                     extra={
                         "exec_user": exec_user,
                         "api_user": api_user,
@@ -332,7 +336,7 @@ class UserDirectoryManager:
                 raise RuntimeError(f"无法删除用户会话目录 {user_dir}: {error_msg}")
 
             logger.info(
-                f"Successfully cleared user session directory",
+                "Successfully cleared user session directory",
                 extra={
                     "exec_user": exec_user,
                     "api_user": api_user,
@@ -344,7 +348,7 @@ class UserDirectoryManager:
 
         except Exception as e:
             logger.error(
-                f"Failed to clear user session directory",
+                "Failed to clear user session directory",
                 extra={
                     "exec_user": exec_user,
                     "api_user": api_user,

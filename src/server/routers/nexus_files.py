@@ -19,6 +19,7 @@ from ..config import settings
 from ..services.user_directory import UserDirectoryManager
 from ..services.session_storage import get_session_storage
 from ..logger import get_logger
+from ..security.exec_user_guard import validate_exec_user
 from .nexus_auth import verify_nexus_auth
 from .nexus_models import (
     FileItem,
@@ -136,6 +137,7 @@ async def list_session_files(
     - **exec_user**: Exec user for folder resolution
     - **subpath**: Optional subdirectory path
     """
+    exec_user = await validate_exec_user(exec_user)
     folder = _resolve_session_folder(session_id, exec_user)
 
     if not folder:
@@ -203,6 +205,7 @@ async def download_session_file(
     - **file_path**: File path relative to session folder
     - **exec_user**: Exec user for folder resolution
     """
+    exec_user = await validate_exec_user(exec_user)
     folder = _resolve_session_folder(session_id, exec_user)
 
     if not folder:

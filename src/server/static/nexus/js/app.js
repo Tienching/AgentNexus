@@ -1561,12 +1561,14 @@ class ChatView {
             completed: { icon: '✓', color: 'var(--text-muted)' },
             failed: { icon: '✗', color: 'var(--error)' }
         };
-        const cfg = statusConfig[status] || statusConfig.executing;
+        const normalizedStatus = Object.prototype.hasOwnProperty.call(statusConfig, status) ? status : 'executing';
+        const cfg = statusConfig[normalizedStatus];
+        const domToken = NexusStreamingController.toolCallDomToken(toolCallId);
         
         return `
-            <div class="tool-call" data-streaming-tool-id="${toolCallId}">
+            <div class="tool-call" data-streaming-tool-token="${domToken}">
                 <div class="tool-call-header" data-action="toggle-tool-call">
-                    <div class="tool-call-status status-${status}">
+                    <div class="tool-call-status status-${normalizedStatus}">
                         <span class="tool-call-status-icon">${cfg.icon}</span>
                     </div>
                     <svg class="tool-call-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1583,19 +1585,19 @@ class ChatView {
                         <div class="tool-call-section-header">
                             <span class="tool-call-section-title">Input</span>
                         </div>
-                        <div class="tool-call-content" id="streaming-tool-args-${toolCallId}"></div>
+                        <div class="tool-call-content" id="streaming-tool-args-${domToken}"></div>
                     </div>
-                    <div class="tool-call-section is-hidden" id="streaming-tool-result-section-${toolCallId}">
+                    <div class="tool-call-section is-hidden" id="streaming-tool-result-section-${domToken}">
                         <div class="tool-call-section-header">
                             <span class="tool-call-section-title">Output</span>
                         </div>
-                        <div class="tool-call-content tool-call-result" id="streaming-tool-result-${toolCallId}"></div>
+                        <div class="tool-call-content tool-call-result" id="streaming-tool-result-${domToken}"></div>
                     </div>
-                    <div class="tool-call-section is-hidden" id="streaming-tool-error-section-${toolCallId}">
+                    <div class="tool-call-section is-hidden" id="streaming-tool-error-section-${domToken}">
                         <div class="tool-call-section-header">
                             <span class="tool-call-section-title is-error">Error</span>
                         </div>
-                        <div class="tool-call-content tool-call-error" id="streaming-tool-error-${toolCallId}"></div>
+                        <div class="tool-call-content tool-call-error" id="streaming-tool-error-${domToken}"></div>
                     </div>
                 </div>
             </div>
@@ -3256,7 +3258,6 @@ class ChatView {
     }
     
     renderToolCallStandalone(tc, isFromUser = false) {
-        const status = tc.status || 'pending';
         const toolTitle = this.formatToolCallTitle(tc.tool_name || tc.name || 'Tool Call', tc.args, tc.args_string || '');
         const statusConfig = {
             pending: { icon: '⏳', color: 'var(--text-muted)', bgColor: 'rgba(148, 163, 184, 0.1)', label: 'Pending' },
@@ -3264,7 +3265,8 @@ class ChatView {
             completed: { icon: '✓', color: 'var(--text-muted)', bgColor: 'rgba(113, 113, 122, 0.1)', label: 'Completed' },
             failed: { icon: '✗', color: 'var(--error)', bgColor: 'rgba(239, 68, 68, 0.1)', label: 'Failed' }
         };
-        const cfg = statusConfig[status] || statusConfig.pending;
+        const status = Object.prototype.hasOwnProperty.call(statusConfig, tc.status) ? tc.status : 'pending';
+        const cfg = statusConfig[status];
         
         // Calculate execution time
         let execTime = '';
@@ -3281,7 +3283,8 @@ class ChatView {
             (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
         
         // Generate unique IDs for copy buttons
-        const toolId = `tool-${tc.id || Math.random().toString(36).substr(2, 9)}`;
+        const rawToolId = tc.id || Math.random().toString(36).substr(2, 9);
+        const toolId = `tool-${NexusStreamingController.toolCallDomToken(rawToolId)}`;
         
         return `
             <div class="tool-call-standalone" data-tool-id="${toolId}">
@@ -3367,7 +3370,6 @@ class ChatView {
     }
 
     renderToolCall(tc) {
-        const status = tc.status || 'pending';
         const toolTitle = this.formatToolCallTitle(tc.tool_name || tc.name || 'Tool Call', tc.args, tc.args_string || '');
         const statusConfig = {
             pending: { icon: '⏳', color: 'var(--text-muted)', label: 'Pending' },
@@ -3375,7 +3377,8 @@ class ChatView {
             completed: { icon: '✓', color: 'var(--success)', label: 'Completed' },
             failed: { icon: '✗', color: 'var(--error)', label: 'Failed' }
         };
-        const cfg = statusConfig[status] || statusConfig.pending;
+        const status = Object.prototype.hasOwnProperty.call(statusConfig, tc.status) ? tc.status : 'pending';
+        const cfg = statusConfig[status];
         
         // Calculate execution time
         let execTime = '';
@@ -3392,7 +3395,8 @@ class ChatView {
             (typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)) : '';
         
         // Generate unique IDs for copy buttons
-        const toolId = `tool-${tc.id || Math.random().toString(36).substr(2, 9)}`;
+        const rawToolId = tc.id || Math.random().toString(36).substr(2, 9);
+        const toolId = `tool-${NexusStreamingController.toolCallDomToken(rawToolId)}`;
         
         return `
             <div class="tool-call" data-tool-id="${toolId}">

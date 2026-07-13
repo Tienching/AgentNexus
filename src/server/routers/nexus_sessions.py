@@ -10,6 +10,7 @@ Provides REST API endpoints for session management:
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -555,11 +556,12 @@ async def get_tmux_command(session_id: str):
             detail=f"Session not found: {session_id}",
         )
 
+    exec_user = await validate_exec_user(session.exec_user or settings.exec_user)
+
     # Resolve working directory
     exec_dir = session.exec_dir or storage.get_exec_dir_override(session_id)
     if not exec_dir:
         home_base = settings.user_home_base
-        exec_user = session.exec_user or session.username or settings.exec_user
         exec_dir = str(Path(home_base) / exec_user)
 
     # Resolve provider / alias
@@ -586,18 +588,23 @@ async def get_tmux_command(session_id: str):
         if cli_session_id:
             cli_parts += ["--resume", cli_session_id]
 
-    cli_cmd = " ".join(cli_parts)
+    cli_cmd = shlex.join([str(part) for part in cli_parts])
 
     # Build tmux session name (short, unique per session)
     short_id = session_id[:12]
     tmux_name = f"nexus-{short_id}"
 
     # Full tmux command: create new session or attach to existing
-    tmux_cmd = (
-        f"tmux new-session -A -s {tmux_name} "
-        f"-c {exec_dir} "
-        f"'{cli_cmd}'"
-    )
+    tmux_cmd = shlex.join([
+        "tmux",
+        "new-session",
+        "-A",
+        "-s",
+        tmux_name,
+        "-c",
+        exec_dir,
+        cli_cmd,
+    ])
 
     return {
         "success": True,

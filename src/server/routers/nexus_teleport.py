@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..routers.nexus_auth import verify_nexus_auth
 from ..services.teleport_bridge import TeleportBridge
 from ..logger import get_logger
+from ..utils.error_sanitize import safe_error_message
 
 logger = get_logger(__name__)
 
@@ -189,7 +190,7 @@ async def sync_state(req: TeleportSyncRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Teleport sync failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=safe_error_message(e))
 
 
 @router.get("/sessions/{session_id}/output")
@@ -205,7 +206,7 @@ async def stream_output(session_id: str):
             async for chunk in bridge.stream_output(session_id):
                 yield f"data: {chunk}\n\n"
         except ValueError:
-            yield f"data: {{'error': 'Session not found'}}\n\n"
+            yield "data: {'error': 'Session not found'}\n\n"
 
     return StreamingResponse(
         event_generator(),

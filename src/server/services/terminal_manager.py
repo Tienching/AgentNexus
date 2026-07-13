@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import fcntl
 import os
+import pwd
 import pty
 import select
+import shlex
 import signal
 import struct
 import termios
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from ..logger import get_logger
@@ -75,17 +76,13 @@ class TerminalManager:
 
         terminal_id = f"term_{session_id[:12]}_{int(time.time())}"
 
-        # Build the full shell command
-        tmux_cmd = f"tmux new-session -A -s {tmux_session_name} -c {exec_dir} '{cli_cmd}'"
-
-        # Wrap with su if needed
-        current_user = os.environ.get("USER", "root")
-        if current_user != exec_user and exec_user:
-            shell_cmd = f"su - {exec_user} -c {_shell_quote(f'cd {exec_dir} && {tmux_cmd}')}"
-        else:
-            shell_cmd = f"cd {exec_dir} && {tmux_cmd}"
-
-        logger.info(f"Creating terminal {terminal_id}: {shell_cmd}")
+        command_argv = _build_terminal_argv(
+            exec_user=exec_user,
+            exec_dir=exec_dir,
+            cli_cmd=cli_cmd,
+            tmux_session_name=tmux_session_name,
+        )
+        logger.info(f"Creating terminal {terminal_id}: {shlex.join(command_argv)}")
 
         pid, fd = pty.fork()
 
@@ -93,7 +90,7 @@ class TerminalManager:
             # ---- Child process ----
             # Set TERM so tmux/CLI tools render correctly
             os.environ["TERM"] = "xterm-256color"
-            os.execvp("/bin/sh", ["/bin/sh", "-c", shell_cmd])
+            os.execvp(command_argv[0], command_argv)
             # execvp never returns; if it fails the child exits
             os._exit(1)
 
@@ -233,6 +230,29 @@ class TerminalManager:
             return False
 
 
-def _shell_quote(s: str) -> str:
-    """Single-quote a string for shell, escaping any embedded single quotes."""
-    return "'" + s.replace("'", "'\"'\"'") + "'"
+def _build_terminal_argv(
+    *,
+    exec_user: str,
+    exec_dir: str,
+    cli_cmd: str,
+    tmux_session_name: str,
+    current_user: Optional[str] = None,
+) -> list[str]:
+    """Build an argv-safe tmux command, optionally wrapped by ``su``."""
+    if not exec_user:
+        raise ValueError("exec_user is required")
+
+    tmux_argv = [
+        "tmux",
+        "new-session",
+        "-A",
+        "-s",
+        tmux_session_name,
+        "-c",
+        exec_dir,
+        cli_cmd,
+    ]
+    resolved_user = current_user or pwd.getpwuid(os.getuid()).pw_name
+    if resolved_user == exec_user:
+        return tmux_argv
+    return ["su", "-", exec_user, "-c", shlex.join(tmux_argv)]

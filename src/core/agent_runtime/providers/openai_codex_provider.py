@@ -9,7 +9,6 @@ from collections.abc import Awaitable, Callable
 from typing import Any, AsyncGenerator
 
 import httpx
-from loguru import logger
 try:
     from oauth_cli_kit import get_token as get_codex_token
 except ImportError:
@@ -62,19 +61,12 @@ class OpenAICodexProvider(LLMProvider):
             body["tools"] = _convert_tools(tools)
 
         try:
-            try:
-                content, tool_calls, finish_reason = await _request_codex(
-                    DEFAULT_CODEX_URL, headers, body, verify=True,
-                    on_content_delta=on_content_delta,
-                )
-            except Exception as e:
-                if "CERTIFICATE_VERIFY_FAILED" not in str(e):
-                    raise
-                logger.warning("SSL verification failed for Codex API; retrying with verify=False")
-                content, tool_calls, finish_reason = await _request_codex(
-                    DEFAULT_CODEX_URL, headers, body, verify=False,
-                    on_content_delta=on_content_delta,
-                )
+            content, tool_calls, finish_reason = await _request_codex(
+                DEFAULT_CODEX_URL,
+                headers,
+                body,
+                on_content_delta=on_content_delta,
+            )
             return LLMResponse(content=content, tool_calls=tool_calls, finish_reason=finish_reason)
         except Exception as e:
             return LLMResponse(content=f"Error calling Codex: {e}", finish_reason="error")
@@ -122,10 +114,9 @@ async def _request_codex(
     url: str,
     headers: dict[str, str],
     body: dict[str, Any],
-    verify: bool,
     on_content_delta: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, list[ToolCallRequest], str]:
-    async with httpx.AsyncClient(timeout=60.0, verify=verify) as client:
+    async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 text = await response.aread()
@@ -232,7 +223,7 @@ async def _iter_sse(response: httpx.Response) -> AsyncGenerator[dict[str, Any], 
     async for line in response.aiter_lines():
         if line == "":
             if buffer:
-                data_lines = [l[5:].strip() for l in buffer if l.startswith("data:")]
+                data_lines = [buffer_line[5:].strip() for buffer_line in buffer if buffer_line.startswith("data:")]
                 buffer = []
                 if not data_lines:
                     continue
