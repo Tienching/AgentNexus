@@ -23,8 +23,6 @@ from src.server.routers.nexus_models import (
     CreateCommentRequest,
 )
 from src.server.routers.nexus_tasks import (
-    _comment_key,
-    _comments_index_key,
     _load_comment,
     _build_comment_tree,
     get_task_comments,
@@ -374,3 +372,54 @@ class TestCreateTaskCommentRoute:
         assert "mentions" in payload
         assert "alice" in payload["mentions"]
         assert "bob" in payload["mentions"]
+
+
+class TestSQLiteTaskCommentsRoute:
+    @pytest.fixture()
+    def task_queue(self, tmp_path):
+        from src.runtime.stores.task_storage import TaskQueue
+
+        queue = TaskQueue(db_path=str(tmp_path / "comments.db"), exec_user="alice")
+        task = queue.add_task(description="Comment persistence")
+        yield queue, task
+        queue._db.close()
+
+    @pytest.mark.asyncio
+    async def test_empty_comments_without_redis(self, task_queue):
+        queue, task = task_queue
+        assert queue._redis is None
+
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=queue):
+            result = await get_task_comments(task.id, exec_user="alice")
+
+        assert result.task_id == task.id
+        assert result.comments == []
+        assert result.total == 0
+
+    @pytest.mark.asyncio
+    async def test_comment_thread_round_trip_without_redis(self, task_queue):
+        queue, task = task_queue
+
+        with patch("src.server.routers.nexus_tasks.get_task_queue", return_value=queue):
+            parent = await create_task_comment(
+                task.id,
+                CreateCommentRequest(content="please ask @bob", author="alice"),
+                exec_user="alice",
+            )
+            reply = await create_task_comment(
+                task.id,
+                CreateCommentRequest(content="done", author="bob", parent_id=parent.id),
+                exec_user="alice",
+            )
+            result = await get_task_comments(task.id, exec_user="alice")
+
+        assert reply.parent_id == parent.id
+        assert result.total == 2
+        assert len(result.comments) == 1
+        assert result.comments[0].mentions == ["bob"]
+        assert [item.id for item in result.comments[0].replies] == [reply.id]
+        row = queue._db.execute_fetchone(
+            "SELECT content FROM task_comments WHERE id = ?",
+            (reply.id,),
+        )
+        assert row == {"content": "done"}

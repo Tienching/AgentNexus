@@ -1568,10 +1568,11 @@ async def get_cost_summary(
 # Task comments
 # Ported from mission-control GET/POST /api/tasks/[id]/comments (commit 4ef91d4).
 #
-# Redis key layout (mirrors task storage namespace conventions):
+# Legacy Redis key layout (kept for injected compatibility backends):
 #   task_comment:{exec_user}:{task_id}:{comment_id}  → HASH (id, task_id, author,
 #                                                        content, created_at, parent_id)
 #   task_comments:{exec_user}:{task_id}               → ZSET  score=created_at → comment_id
+# The default runtime persists comments in the SQLite task_comments table.
 # ---------------------------------------------------------------------------
 
 
@@ -1607,6 +1608,38 @@ def _load_comment(redis, exec_user: str, task_id: str, comment_id: str) -> Optio
     )
 
 
+def _comment_from_db_row(row: Dict[str, Any]) -> TaskComment:
+    mentions_raw = row.get("mentions_json", "[]")
+    try:
+        mentions = json.loads(mentions_raw) if isinstance(mentions_raw, str) else []
+        if not isinstance(mentions, list):
+            mentions = []
+    except Exception:
+        mentions = []
+
+    return TaskComment(
+        id=str(row.get("id") or ""),
+        task_id=str(row.get("task_id") or ""),
+        author=str(row.get("author") or "user"),
+        content=str(row.get("content") or ""),
+        created_at=float(row.get("created_at") or 0),
+        parent_id=str(row["parent_id"]) if row.get("parent_id") else None,
+        mentions=[str(mention) for mention in mentions],
+    )
+
+
+def _load_db_comment(db, exec_user: str, task_id: str, comment_id: str) -> Optional[TaskComment]:
+    row = db.execute_fetchone(
+        """
+        SELECT id, task_id, author, content, mentions_json, parent_id, created_at
+        FROM task_comments
+        WHERE id = ? AND task_id = ? AND exec_user = ?
+        """,
+        (comment_id, task_id, exec_user),
+    )
+    return _comment_from_db_row(row) if row else None
+
+
 def _build_comment_tree(flat: List[TaskComment]) -> List[TaskComment]:
     """Build threaded tree from flat list (same algorithm as MC). Returns top-level comments."""
     by_id: Dict[str, TaskComment] = {c.id: c.model_copy(deep=True) for c in flat}
@@ -1638,15 +1671,25 @@ async def get_task_comments(
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
-    redis = queue._redis
-    index_key = _comments_index_key(exec_user, task_id)
-    comment_ids = redis.zrange(index_key, 0, -1)
-
     flat: List[TaskComment] = []
-    for cid in comment_ids:
-        comment = _load_comment(redis, exec_user, task_id, cid)
-        if comment:
-            flat.append(comment)
+    redis = queue._redis
+    if redis is not None:
+        index_key = _comments_index_key(exec_user, task_id)
+        for comment_id in redis.zrange(index_key, 0, -1):
+            comment = _load_comment(redis, exec_user, task_id, comment_id)
+            if comment:
+                flat.append(comment)
+    else:
+        rows = queue._db.execute_fetchall(
+            """
+            SELECT id, task_id, author, content, mentions_json, parent_id, created_at
+            FROM task_comments
+            WHERE task_id = ? AND exec_user = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (task_id, exec_user),
+        )
+        flat = [_comment_from_db_row(row) for row in rows]
 
     return TaskCommentsResponse(
         task_id=task_id,
@@ -1678,7 +1721,11 @@ async def create_task_comment(
 
     # Validate parent exists if provided
     if request.parent_id:
-        parent = _load_comment(redis, exec_user, task_id, request.parent_id)
+        parent = (
+            _load_comment(redis, exec_user, task_id, request.parent_id)
+            if redis is not None
+            else _load_db_comment(queue._db, exec_user, task_id, request.parent_id)
+        )
         if not parent:
             raise HTTPException(status_code=400, detail="Parent comment not found")
 
@@ -1698,8 +1745,29 @@ async def create_task_comment(
     if request.parent_id:
         payload["parent_id"] = request.parent_id
 
-    redis.hset(_comment_key(exec_user, task_id, comment_id), payload)
-    redis.zadd(_comments_index_key(exec_user, task_id), {comment_id: now})
+    if redis is not None:
+        redis.hset(_comment_key(exec_user, task_id, comment_id), payload)
+        redis.zadd(_comments_index_key(exec_user, task_id), {comment_id: now})
+    else:
+        with queue._db.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO task_comments (
+                    id, task_id, exec_user, author, content,
+                    mentions_json, parent_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    comment_id,
+                    task_id,
+                    exec_user,
+                    request.author,
+                    request.content,
+                    payload["mentions"],
+                    request.parent_id,
+                    now,
+                ),
+            )
 
     return TaskComment(
         id=comment_id,
