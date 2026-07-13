@@ -1,21 +1,29 @@
 [Unit]
 Description=Agent Nexus Service
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/ubuntu/Projects/agent-nexus
-ExecStart=/home/ubuntu/.local/bin/uv run python -m uvicorn src.server.app:app --host 0.0.0.0 --port 8080
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/Projects/agent-nexus_AONA_master/agent-nexus
+EnvironmentFile=-/home/ubuntu/Projects/agent-nexus_AONA_master/agent-nexus/.env
+ExecStart=/home/ubuntu/Projects/agent-nexus_AONA_master/agent-nexus/.venv/bin/python -m uvicorn src.server.app:app --host 127.0.0.1 --port 8081
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
 StandardError=journal
-
-# 日志限制
-SystemMaxUse=100M
-SystemMaxFileSize=10M
-SystemMaxFiles=10
-MaxRetentionSec=7d
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target

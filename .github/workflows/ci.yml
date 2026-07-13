@@ -42,21 +42,7 @@ jobs:
         run: uv build
 
       - name: Verify frontend bundles parse
-        run: |
-          node --check src/server/static/nexus/js/app.js
-          node --check src/server/static/nexus/js/api.js
-          node --check src/server/static/nexus/js/components/task-board-panel.js
-          node --check src/server/static/nexus/js/components/filters.js
-          node --check src/server/static/nexus/js/components/inline-picker.js
-          node --check src/server/static/nexus/js/components/list-view.js
-          node --check src/server/static/nexus/js/components/agents-store.js
-          node --check src/server/static/nexus/js/components/agents-view-shell.js
-          node --check src/server/static/nexus/js/components/settings-basic-section.js
-          node --check src/server/static/nexus/js/components/settings-extensions-section.js
-          node --check src/server/static/nexus/js/components/settings-safety-section.js
-          node --check src/server/static/nexus/js/components/settings-page.js
-          node --check src/server/static/nexus/js/shell-managers.js
-          node --check src/server/static/nexus/js/shell-views.js
+        run: find src/server/static/nexus/js -name '*.js' -print0 | xargs -0 -n1 node --check
 
   tests:
     runs-on: ubuntu-latest
@@ -74,7 +60,7 @@ jobs:
         run: uv sync --extra dev --group dev
 
       - name: Run unit and integration tests with coverage
-        run: uv run pytest -q -m "not slow and not optional_backend" --cov=src --cov-report=term --cov-report=xml tests/unit tests/integration tests/providers
+        run: uv run pytest -q -m "not slow and not optional_backend" --ignore=tests/e2e --cov=src --cov-report=term --cov-report=xml tests
 
   browser-e2e:
     runs-on: ubuntu-latest
